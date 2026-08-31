@@ -45,6 +45,7 @@ from ..schemas import (
     SetPriceRequest,
 )
 from ..pie_service import Bands
+from ..sellable_catalog import sellable_pool_for
 from ..store import Line, Quote, store
 from ..ingestion.errors import SourceWriteRefused, SourceWriteUnknown
 from ..zoho import (
@@ -222,7 +223,12 @@ def intake(quote_id: str, body: IntakeRequest,
                           _customer_scope(session, principal, q.customer_ref),
                           _bands(session, principal),
                           _mapping_store(session, principal),
-                          rows=[ln.to_row() for ln in read.lines] or None)
+                          rows=[ln.to_row() for ln in read.lines] or None,
+                          # Once per intake, not once per line. Every line of
+                          # this RFQ then resolves against one book, so a sync
+                          # landing mid-intake cannot make one quote resolve two
+                          # ways — the same reason the source snapshots itself.
+                          pool=_sellable_pool(session, principal))
     if read.provider_called:
         # ``provider_called``, not ``used_ai``. The gate used to be success, so
         # the three paths where the enquiry was sent and the answer was
@@ -350,13 +356,26 @@ def _quote_customer_ref(session: Session, principal: Principal,
         return ""
 
 
-# The three org-scoped facts an engine call needs — the bands, the confirmed
-# mappings and the customer's identity scope. Implemented in ``app/resolution``
-# because the public resolution API needs exactly the same setup; these three
-# lines are the adapter from this router's ``Principal`` to it, kept so the call
-# sites below read as they always have.
+# The four org-scoped facts an engine call needs — the bands, the confirmed
+# mappings, the customer's identity scope and this organization's own sellable
+# book. The first three are implemented in ``app/resolution`` because the public
+# resolution API needs exactly the same setup; these lines are the adapter from
+# this router's ``Principal`` to them, kept so the call sites below read as they
+# always have.
+#
+# The fourth is *not* re-exported through ``app/resolution``, and the asymmetry
+# is deliberate rather than an oversight. The other three are per-request
+# lookups; ``sellable_pool_for`` is a cache over a 154-164 ms build, shared
+# across requests and keyed on the book's own version. An alias in
+# ``resolution`` would be a second name for one piece of state, which is the
+# wrapper CLAUDE.md §2 calls abstraction redundancy — so both routers reach the
+# one function directly.
 def _mapping_store(session: Session, principal: Principal) -> Optional[Any]:
     return resolution.mapping_store_for(session, principal.organization_id)
+
+
+def _sellable_pool(session: Session, principal: Principal) -> Optional[Any]:
+    return sellable_pool_for(session, principal.organization_id)
 
 
 def _bands(session: Session, principal: Principal) -> Optional[Bands]:

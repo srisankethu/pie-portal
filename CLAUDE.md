@@ -172,6 +172,34 @@ suggestion — and `identity.service.confirm_proposed_identity` refuses anything
 else. Picking a different product is a substitution on one quote and must stay
 one. `tests/test_identity_confirmation_gate.py` pins both.
 
+**The first of those two conditions was false for as long as this paragraph has
+claimed it, and the paragraph is kept because the way it failed is the lesson.**
+`_identity_candidate` did not read which branch produced the candidate; it
+re-derived the question from `outcome == "NEEDS_REVIEW" and len(candidates) ==
+1`. Those two fields cannot answer it. `PieService._map` carries the engine's
+outcome through its *suggestion* branch verbatim, so a payload with no match and
+one scored suggestion arrived wearing exactly that shape — reproduced, a
+`POSSIBLE` at 0.93 came back as `identity_proposal.confirmable: true`, and
+`confirm_proposed_identity` checks only that the selection equals the proposal.
+It would have been written as asserted identity.
+
+The distinction — `matches` or `suggestions` — exists **only inside `_map`'s
+branch structure and in none of its output fields**. So `_map` now sets
+`Resolution.identity_candidate`, in one branch, and `_identity_candidate` reads
+it. Everything else defaults to `None`, which is why a hand-built `Resolution`
+proposes nothing until it says so on purpose.
+
+Two general rules come out of it, and they are worth more than the fix:
+
+- **A predicate re-derived downstream from published fields is a guess about
+  what the producer meant.** If the producer knows something its output shape
+  does not carry, the output shape is what has to change.
+- **A test that can only speak in the output's vocabulary cannot express the
+  distinction the gate turns on.** These assertions hand-built `Resolution`
+  objects, so they could say "NEEDS_REVIEW with one candidate" and could not say
+  "and it came from a match" — and they agreed with the wrong predicate for as
+  long as it stood. They ask the real `_map` now.
+
 **Two callers now reach that gate and it is one function on purpose.** The
 Quote Builder (`routers.quote._confirm_identity`) and the public resolution API
 (`routers.resolve.confirm`) both go through `confirm_proposed_identity`; the

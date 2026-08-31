@@ -62,26 +62,32 @@ it while its own printed output showed the pairs three times over — a false
 zero of exactly the kind CLAUDE.md §1 names, found in this module's own
 measurement.
 
-**Read this before assuming the book is in the pool in production.** The engine
-side is wired — ``PieService.resolve`` takes a ``pool`` and composes it into the
-source list — but the three call sites that would *build* one are in files this
-change does not own, so today only the tests pass one. That is exactly the state
-``test_attribute_decoration_run`` records about ``decorate_products``, which
-"shipped with the store and nothing called it ... so in production the table was
-empty", and it is written down here rather than left to a grep. The remaining
-change is one argument at each of three call sites, alongside the mapping store
-they already build:
+**Wired, on every path that resolves.** The three call sites this docstring used
+to list as remaining work are done: ``routers.resolve.resolve_line`` and
+``routers.resolve.confirm`` each obtain a pool and pass it, and
+``routers.quote.intake`` obtains one per intake and hands it to
+``store.add_rfq`` → ``build_lines``, which reuses it for every line. The store
+still receives a *built* pool and never a session, which is what keeps it
+database-free.
 
-* ``resolution.resolve`` — add a ``sellable_pool_for(session, org)`` beside
-  ``mapping_store_for(session, org)`` and pass it through, the way
-  ``bands_for`` and ``customer_scope_for`` already travel;
-* ``store.build_lines`` / ``add_rfq`` — take the pool as a parameter and hand it
-  to ``pie_service.resolve``. That store is deliberately database-free, so it
-  must receive a built pool and never a session, exactly as it does with
-  ``mapping_store``;
-* ``routers.resolve.confirm`` — it re-resolves the line to check the engine's
-  own proposal, and must resolve against the same pool the first call used or
-  the two answers are about different questions.
+``routers.resolve.confirm`` matters more than the count of three suggests. It
+re-resolves the line to recompute the engine's own proposal rather than trusting
+one echoed back by the caller, and a proposal is only meaningful relative to
+what the engine could see — so resolving there against a different pool would
+check the caller's selection against an answer they were never shown. Both calls
+go through ``sellable_pool_for``, which caches on the organization and its book
+version, so they agree unless the book genuinely moved between the two requests.
+
+``tests/test_the_pool_reaches_every_resolving_path.py`` is what keeps that true.
+It is deliberately **engine-free** — it asserts object identity between what
+``sellable_pool_for`` returned and what ``pie_service.resolve`` received, using a
+recording stub rather than a real pool — because a real one needs
+``CanonicalRecord`` from pie-parser, and an engine-backed test runs in neither
+``make verify`` on a checkout without the submodule nor a credential-less CI job.
+Those are exactly the places a wiring regression has to be caught. Five mutants
+were run against it (each site dropping the pool, and one passing another
+organization's) and each is caught by the assertion that names it.
+
 """
 from __future__ import annotations
 
@@ -388,6 +394,32 @@ class SellableCatalogSource:
         return len(self._records)
 
 
+class _EmptyBook:
+    """"This organization has no pool", as a cacheable answer.
+
+    Without it, :func:`sellable_pool_for` cached only a pool it actually built,
+    so an organization with nothing decorated missed on every request and paid a
+    full scan of its product table to be told None again — forever, and for
+    **every** organization until decoration coverage exists at all. A negative
+    that is expensive to recompute and cheap to invalidate is exactly the answer
+    worth remembering.
+
+    It carries the version and answers ``fingerprint()`` because that is the one
+    thing the cache read asks of whatever it finds, so the emptiness expires by
+    the same rule a pool does: the moment the book moves, this stops matching
+    and the next call rebuilds. Storing it also *replaces* a real pool that has
+    since emptied, which is the retraction an explicit invalidate used to do.
+    """
+
+    __slots__ = ("_version",)
+
+    def __init__(self, version: str) -> None:
+        self._version = version
+
+    def fingerprint(self) -> str:
+        return self._version
+
+
 def pool_version(session: Session, organization_id: str) -> str:
     """A content version of this organization's book. Two aggregates, no rows.
 
@@ -438,8 +470,8 @@ def pool_version(session: Session, organization_id: str) -> str:
                                     *products, *attributes)
 
 
-def build_pool(session: Session,
-               organization_id: str) -> Optional[SellableCatalogSource]:
+def build_pool(session: Session, organization_id: str,
+               version: Optional[str] = None) -> Optional[SellableCatalogSource]:
     """This organization's pool, built from the database. ``None`` when empty.
 
     **A product is in the pool when this organization holds at least one live
@@ -491,7 +523,15 @@ def build_pool(session: Session,
     # matches. Taken first, the same write leaves the pool stamped older than
     # its content: the next call sees the version move and rebuilds. One of
     # those two orders is wrong forever and the other is wrong for one request.
-    version = pool_version(session, organization_id)
+    # ``version`` is accepted rather than always computed because
+    # :func:`sellable_pool_for` has just taken one to decide whether to call at
+    # all, and taking it twice costs a second pair of aggregates — 11-12 ms on a
+    # 154-164 ms build — to learn something it already knows. A version supplied
+    # by that caller was read BEFORE its cache check and so is, if anything,
+    # older than one taken here: still read before these rows, which is the only
+    # property the ordering below depends on.
+    if version is None:
+        version = pool_version(session, organization_id)
     values = _live_attributes(session, organization_id)
     product = models.Product
     rows = session.execute(
@@ -592,14 +632,16 @@ def sellable_pool_for(session: Session,
         version = pool_version(session, organization_id)
         cached = _pool_cache.get(organization_id)
         if cached is not cache_module.MISS and cached.fingerprint() == version:
-            return cached
-        pool = build_pool(session, organization_id)
-        if pool is not None:
-            _pool_cache.set(organization_id, pool)
-        else:
-            # An organization that had a pool and now has none must not keep
-            # serving the old one. Dropping the entry is the retraction.
-            _pool_cache.invalidate(organization_id)
+            # A hit on :class:`_EmptyBook` is a remembered "nothing to offer",
+            # not a miss. Returning None here is the same answer a build would
+            # have reached, for the cost of the version check alone.
+            return None if isinstance(cached, _EmptyBook) else cached
+        pool = build_pool(session, organization_id, version=version)
+        # Stored either way, and storing REPLACES — so an organization that had
+        # a pool and now has none stops serving the old one, which is what an
+        # explicit invalidate used to do here.
+        _pool_cache.set(organization_id,
+                        pool if pool is not None else _EmptyBook(version))
         return pool
     except Exception:  # noqa: BLE001 — the book is never a reason to fail intake
         log.exception("could not build the sellable pool for %s", organization_id)

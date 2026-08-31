@@ -545,7 +545,12 @@ def test_an_unconfirmed_customer_code_is_its_own_abstention(env, monkeypatch):
         input_text="7781", reqCode="7781", rel="AMBIGUOUS", supplyCode=None,
         outcome="NEEDS_REVIEW",
         candidates=[Candidate(code="2576285", desc="CNMG 120408 - TN2000",
-                              rel="POSSIBLE")]))
+                              rel="POSSIBLE")],
+        # Set explicitly, because only `PieService._map`'s match branch sets it
+        # on a real resolution and a stub shaped like a proposal is not one.
+        # See `test_identity_confirmation_gate.py` for why the shape stopped
+        # being sufficient: a scored suggestion wears it too.
+        identity_candidate="2576285"))
     client = _client(app, _key(session).secret)
 
     response = _post(client, text="7781")

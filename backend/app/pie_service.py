@@ -184,6 +184,24 @@ class Resolution:
     semantics: str                  # IDENTITY | REQUIREMENT | MIXED
     notes: List[str] = field(default_factory=list)
     pie_offline: bool = False
+    #: The record the engine proposed as this line's IDENTITY — "this customer's
+    #: code is probably MM# X, confirm it" — or None, which is the normal case.
+    #:
+    #: **Set by exactly one branch of :meth:`PieService._map`, and that is the
+    #: whole point.** It used to be reconstructed downstream from ``outcome ==
+    #: "NEEDS_REVIEW" and len(candidates) == 1``, and those two fields do not
+    #: carry the distinction the boundary needs: a candidate can be an exact
+    #: catalogue hit the engine declined to assert (branch 1b, read out of
+    #: ``matches``) or a scored equivalence suggestion (branch 3, read out of
+    #: ``suggestions``), and both can arrive carrying that outcome and that
+    #: count. Only ``_map`` knows which, so only ``_map`` may say.
+    #:
+    #: A confirmed mapping is *asserted* identity: afterwards the engine
+    #: resolves that code AUTHORITATIVELY and derives a requirement from the
+    #: record. Letting a scored suggestion become one is how ``tolerance ∘
+    #: tolerance`` gets licensed permanently — see CLAUDE.md §1 and
+    #: ``tests/test_identity_confirmation_gate.py``.
+    identity_candidate: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -193,6 +211,7 @@ class Resolution:
             "candidates": [c.to_dict() for c in self.candidates],
             "outcome": self.outcome, "semantics": self.semantics,
             "notes": self.notes, "pie_offline": self.pie_offline,
+            "identity_candidate": self.identity_candidate,
         }
 
 
@@ -710,7 +729,16 @@ class PieService:
                            attributes=_attributes_of(
                                self.lookup_record(str(m.get("record_id")))))
                  for m in cands_m],
-                outcome, semantics, notes)
+                outcome, semantics, notes,
+                # THE ONLY PLACE A CONFIRMABLE PROPOSAL IS CREATED. These records
+                # come out of `matches`, so each is an exact catalogue hit the
+                # engine declined to assert across namespaces — the one thing a
+                # person may answer "yes, that is what my code means" to. One
+                # only: two candidates is an ambiguity, and there is no single
+                # answer to confirm. Every other branch leaves this None by
+                # omission, which is why the default matters as much as this line.
+                identity_candidate=(str(cands_m[0].get("record_id"))
+                                    if len(cands_m) == 1 else None))
 
         # (2) Ambiguous / conflicting identity -> AMBIGUOUS (abstain, show options).
         if outcome in ("AMBIGUOUS", "CONFLICT"):

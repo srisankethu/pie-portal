@@ -45,6 +45,7 @@ from ..api_keys import ApiCaller, RATE_WINDOW_SECONDS, current_caller
 from ..db import get_session
 from ..identity import service as identity_service
 from ..pie_service import pie_service
+from ..sellable_catalog import sellable_pool_for
 from ..store import _identity_candidate
 
 log = logging.getLogger("pie_portal.resolve")
@@ -155,6 +156,7 @@ def resolve_line(body: ResolveRequest, response: Response,
                                                      body.customer_ref),
         bands=resolution.bands_for(session, org),
         mapping_store=resolution.mapping_store_for(session, org),
+        pool=sellable_pool_for(session, org),
         customer_ref=body.customer_ref,
         quantity=body.quantity,
         proposed_price=body.proposed_price,
@@ -196,9 +198,19 @@ def confirm(body: ConfirmRequest, response: Response,
     response.headers.update(_rate_headers(caller))
 
     scope = resolution.customer_scope_for(session, org, body.customer_ref)
+    # The pool goes in here for the same reason the line is re-resolved at all.
+    # This call recomputes the engine's own proposal to check the caller's
+    # selection against it, and a proposal is only meaningful relative to what
+    # the engine could see — so resolving against a different pool than the
+    # `resolve` call the caller is answering would be checking the answer to a
+    # different question. `sellable_pool_for` is cached on the organization and
+    # its book version, so the two calls get the same pool unless the book
+    # genuinely moved between them, which is the one case where they SHOULD
+    # differ and the confirmation should fail.
     res = pie_service.resolve(
         body.text, scope, resolution.bands_for(session, org),
-        resolution.mapping_store_for(session, org))
+        resolution.mapping_store_for(session, org),
+        sellable_pool_for(session, org))
 
     row = identity_service.confirm_proposed_identity(
         session, org,

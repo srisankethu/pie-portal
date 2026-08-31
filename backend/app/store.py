@@ -217,14 +217,31 @@ def _identity_candidate(res: Resolution) -> Optional[str]:
 
     Narrow on purpose. It is only the unconfirmed cross-namespace proposal —
     "this customer's code is probably MM# X, confirm it" — which pie-parser
-    returns as NEEDS_REVIEW with exactly one candidate. Selecting that code is
-    a person answering the question the engine asked, and worth remembering
+    returns as a single CANDIDATE match under NEEDS_REVIEW. Selecting that code
+    is a person answering the question the engine asked, and worth remembering
     forever. Selecting anything else is a substitution on one quote, which is
     not a fact about what the customer's code means.
+
+    **It reads ``Resolution.identity_candidate`` rather than deciding.** This
+    function used to decide, with ``outcome == "NEEDS_REVIEW" and
+    len(candidates) == 1``, and that predicate was WRONG — not subtly, and not
+    only once the sellable pool existed. ``PieService._map`` reaches its
+    suggestion branch with the engine's outcome carried through verbatim, so a
+    *scored equivalence suggestion*, alone in the list, arrives here as
+    NEEDS_REVIEW with one candidate and was returned as confirmable. Reproduced
+    before it was fixed: a single suggestion at ``rel="POSSIBLE"`` came back
+    from this function as a proposal, and ``confirm_proposed_identity`` checks
+    only that the selection equals the proposal — so it would have been written
+    into ``ConfirmedCodeMapping`` as asserted identity, which is precisely the
+    ``tolerance ∘ tolerance`` licence CLAUDE.md §1 says this gate prevents.
+
+    The distinction — ``matches`` or ``suggestions`` — exists only inside
+    ``_map``'s branch structure and appears in none of its output fields. So
+    ``_map`` sets it and this reads it. Kept as a function rather than inlined
+    at its three call sites because it is the documented boundary and the one
+    place a test can pin; see ``tests/test_identity_confirmation_gate.py``.
     """
-    if res.outcome != "NEEDS_REVIEW" or len(res.candidates) != 1:
-        return None
-    return res.candidates[0].code
+    return res.identity_candidate
 
 
 @dataclass
@@ -636,11 +653,25 @@ class QuoteStore:
     def build_lines(self, rows: List[Dict[str, Any]], zoho: ZohoService,
                     customer_scope: Optional[str] = None,
                     bands: Optional[Bands] = None,
-                    mapping_store: Any = None) -> List[Line]:
+                    mapping_store: Any = None,
+                    pool: Any = None) -> List[Line]:
+        """``pool`` is this organization's sellable book as candidate records.
+
+        A **built** pool, never a session — the same rule ``mapping_store``
+        follows and for the same reason: this store imports pricing, the engine
+        and Zoho, and nothing else. ``sellable_catalog.SellableCatalogSource``
+        snapshots its records at construction and holds no session, so passing
+        one keeps that property exactly as it is.
+
+        Built once by the caller and reused for every row, which is the whole
+        of why it is a parameter rather than something obtained per line: an
+        RFQ is many lines, and building the pool costs 154-164 ms against the
+        18-23 ms a line spends searching it.
+        """
         lines: List[Line] = []
         for row in rows:
             res: Resolution = pie_service.resolve(row["code"], customer_scope, bands,
-                                                  mapping_store)
+                                                  mapping_store, pool)
             ln = Line(
                 id=f"l{next(_ids)}",
                 proposed=bool(row.get("proposed")),
@@ -667,7 +698,8 @@ class QuoteStore:
                 customer_scope: Optional[str] = None,
                 bands: Optional[Bands] = None,
                 mapping_store: Any = None,
-                rows: Optional[List[Dict[str, Any]]] = None) -> List[Line]:
+                rows: Optional[List[Dict[str, Any]]] = None,
+                pool: Any = None) -> List[Line]:
         """``customer_scope`` is the customer's cross-connector identity.
 
         It arrives as an opaque string rather than being looked up here: this
@@ -680,7 +712,7 @@ class QuoteStore:
         # site keeps the store's behaviour identical with no reader present,
         # which is what makes the whole feature removable.
         new = self.build_lines(rows or _split_rfq(text), zoho, customer_scope,
-                               bands, mapping_store)
+                               bands, mapping_store, pool)
         with self._lock:
             quote.lines.extend(new)
         return new

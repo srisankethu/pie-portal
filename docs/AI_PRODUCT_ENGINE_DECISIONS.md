@@ -90,7 +90,7 @@ a real export.
 ---
 
 ## 003 — Candidate generation moves into PostgreSQL
-**Status:** ACCEPTED IN PART — 2026-08-30, first slice only · **Phase:** 2 · **Report §:** 22, 34
+**Status:** ACCEPTED IN PART — first slice DONE 2026-08-31 (see 031); the lexical ladder stays PROPOSED · **Phase:** 2 · **Report §:** 22, 34
 
 **Decision.** Retrieval becomes staged and database-resident: exact →
 normalized part number → lexical (`tsvector` + `pg_trgm`) → structured
@@ -1222,3 +1222,110 @@ under the count that refuted it. Both are `absence of evidence is not a pass`
 arriving inside the instrument rather than the product. A finding that cannot be
 wrong is not a finding: (a) is now derived from its own number, and the shadow
 count reports both routes and says which one is the weaker, louder claim.
+
+---
+
+## 031 — The book reaches the engine, and the identity gate that had to be fixed first
+**Status:** ACCEPTED — 2026-08-31 · **Phase:** 2 · **Report §:** 22, 34
+
+**Decision.** Decision 003's first slice is complete: `sellable_pool_for` is
+obtained once per request and passed to every path that resolves a line. The
+pool is threaded, never rebuilt at the callee, and `store.py` still receives a
+built pool rather than a session.
+
+| Path | Where the pool is obtained |
+|---|---|
+| `POST /api/v1/resolve` | `routers.resolve.resolve_line` → `resolution.resolve(pool=…)` |
+| `POST /api/v1/resolve/confirm` | `routers.resolve.confirm` → `pie_service.resolve(…, pool)` |
+| `POST /api/v1/quotes/{id}/intake` | `routers.quote.intake` → `store.add_rfq(pool=…)` → `build_lines` |
+
+`confirm` is the one that carries weight. It re-resolves rather than trusting a
+proposal echoed back by the caller, so resolving against a *different* pool
+would check the caller's selection against an answer they were never shown.
+
+### The defect this had to wait for
+
+**A scored equivalence suggestion could be confirmed as asserted identity.**
+CLAUDE.md §1 said two conditions held that line. The first did not.
+`store._identity_candidate` re-derived the question downstream, from `outcome ==
+"NEEDS_REVIEW" and len(candidates) == 1`. Those two fields cannot answer it:
+`PieService._map` carries the engine's outcome through its *suggestion* branch
+verbatim, so a payload with no match and one scored suggestion arrives wearing
+exactly that shape.
+
+Reproduced against the real `_map` before the fix — a `POSSIBLE` at 0.93 came
+back as `identity_proposal.confirmable: true`. `confirm_proposed_identity` checks
+only that the selection equals the proposal and adds no check that the record is
+even a catalogue record, so it would have been written into
+`ConfirmedCodeMapping`. That is the `tolerance ∘ tolerance` licence the whole
+non-transitivity argument rests on: the engine derives a requirement from an
+asserted record, so the next "same as their 7781 but 12 mm" composes two bands
+into a wrong part with a defensible explanation attached.
+
+**It is a pre-existing defect, not one the pool created** — the leaking candidate
+could already be a catalogue suggestion. But the pool takes the reachable master
+from ~9% to ~98% and makes book records eligible, so shipping the wiring first
+would have widened a live hole. Hence the order.
+
+**The fix.** The `matches`-or-`suggestions` distinction exists only inside
+`_map`'s branch structure and in none of its output fields, so `_map` now sets
+`Resolution.identity_candidate` in the single branch entitled to, and
+`_identity_candidate` reads it. Everything else defaults to `None` — including
+every hand-built `Resolution` in the test suite, which is why several stubs now
+have to say `identity_candidate=` on purpose.
+
+**Rejected: a second gate inside `confirm_proposed_identity`** that verifies the
+record is in the authoritative index. It is real defence in depth, and it fails
+closed when the engine is absent — which would make the gate depend on submodule
+availability and force ~25 tests engine-backed, into the CI job that only runs
+when a credential is present. The source-level fix already guarantees the
+property: branch (1b)'s candidates come from `matches`, which are catalogue
+records by construction.
+
+### Two things that were fixed because they were in code this change owns
+
+- **A `None` pool was never cached**, so an organization with nothing decorated
+  paid a full product-table scan on every request, forever — and that is *every*
+  organization until decoration coverage exists. `_EmptyBook` is now stored
+  under the same version rule a pool is, so the emptiness expires when the book
+  moves.
+- **`pool_version` ran twice on every cache miss** — 11-12 ms of a 154-164 ms
+  build spent learning something the caller had just computed. `build_pool` now
+  accepts it. The read-before-rows ordering is preserved: a version from the
+  caller was taken even earlier, so the pool is stamped older than its content,
+  which is the safe direction.
+
+### What proves the wiring, and what does not
+
+The existing suite **cannot** distinguish a correct wiring from an inert one.
+No test seeds `product_attribute_values` in an organization that also resolves,
+so `sellable_pool_for` returns `None` at all three sites for every existing test
+— a green suite after this change is evidence the wiring is inert. Worse, all
+thirteen engine stubs were `lambda *a, **k: <fixed Resolution>` and recorded
+nothing, so none could tell a pool that was passed from one built and dropped.
+
+`tests/test_the_pool_reaches_every_resolving_path.py` is the answer, and it is
+deliberately **engine-free**: it asserts object identity between what
+`sellable_pool_for` returned and what `pie_service.resolve` received, with a
+recording stub. A real pool would need `CanonicalRecord` from pie-parser, and an
+engine-backed test runs in neither `make verify` without the submodule nor a
+credential-less CI job — which are exactly the places a wiring regression has to
+be caught. **Five mutants were run against it** — each of the three sites
+dropping the pool, the store dropping it between `add_rfq` and `build_lines`,
+and the intake passing another organization's — and each is caught by the
+assertion that names it.
+
+### Still open, unchanged from 030
+
+The double-listing (15 of 62 lines), the abstention guards rather than the pool
+carrying safety, and nobody having yet judged whether a new candidate is one this
+business would have offered. Wiring the pool does not touch any of the three.
+
+**And one this change adds.** `frontend/src/components/SupplyDrawer.tsx` renders
+a candidate's `brand` only inside a `{c.grade && …}` guard, so a book candidate
+whose grade did not decode shows nothing distinguishing it from a catalogue one.
+`SELLABLE_LABEL = "book"` exists precisely to be that word. It matters more now
+that the pool is live, and more again because of the double-listing: two entries
+for one product, neither marked, read as two unrelated products. Not fixed here
+— this change is backend wiring and the fix is a UI pass under
+`docs/ui-standards.md`.

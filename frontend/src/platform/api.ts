@@ -186,6 +186,11 @@ interface SignUpBody {
   /** Which plan this business wants. Recorded for the operator, granted by
    *  nothing — every sign-up lands on the free plan whatever this says. */
   plan?: string;
+  /** What this organization trades in. Unlike `plan`, this one is *kept*: it
+   *  denominates every figure the organization will ever see, and nothing in
+   *  the product changes it afterwards. Omitting it is how every self-serve
+   *  tenant ended up on the API's INR default. */
+  currency?: string;
 }
 
 interface LoginResp {

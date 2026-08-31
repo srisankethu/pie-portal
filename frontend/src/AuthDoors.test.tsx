@@ -152,6 +152,53 @@ describe("the sign-up card", () => {
     })));
   });
 
+  it("carries the currency to the server, because nothing can change it later", async () => {
+    // The defect this pins was an omission, not a wrong value: the form asked
+    // no currency question and sent no currency field, so the API's default
+    // applied and every self-serve organization in the world was created in
+    // rupees — including the US distributors the landing page quotes in
+    // dollars. There is no admin endpoint and no screen that moves an
+    // organization's currency afterwards, so the omission was permanent.
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<SignUpCard onSubmit={onSubmit} onSignIn={vi.fn()} offer={OFFER} />);
+
+    type(/company name/i, "Ohio Fastener Co.");
+    type(/your name/i, "D. Reyes");
+    type(/work email/i, "dana@ohiofastener.example");
+    type(/^password$/i, "a-long-enough-password");
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+
+    // USD without touching the field: the suite's clock is America/New_York
+    // (pinned in vite.config.ts), and the default follows the same region
+    // signal the pricing panels read.
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      currency: "USD",
+    })));
+  });
+
+  it("sends the currency the visitor actually picked", async () => {
+    const onSubmit = vi.fn().mockResolvedValue(undefined);
+    render(<SignUpCard onSubmit={onSubmit} onSignIn={vi.fn()} offer={OFFER} />);
+
+    type(/company name/i, "Hyderabad Tools");
+    type(/your name/i, "S. Kumar");
+    type(/work email/i, "s@hyderabadtools.example");
+    type(/^password$/i, "a-long-enough-password");
+    fireEvent.change(screen.getByLabelText(/currency/i), { target: { value: "INR" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create account" }));
+
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({
+      currency: "INR",
+    })));
+  });
+
+  it("says the currency is permanent, because it is", () => {
+    // The one answer on this form nothing in the product can undo. A field
+    // that does not say so is a trap for the person filling it in.
+    render(<SignUpCard onSubmit={async () => {}} onSignIn={vi.fn()} offer={OFFER} />);
+    expect(screen.getByText(/cannot be changed later/i)).toBeInTheDocument();
+  });
+
   it("drops the picker entirely against a backend that sends no ladder", () => {
     // An older server answers the offer without `plans`. A radio group with no
     // options is worse than no radio group.

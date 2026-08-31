@@ -294,14 +294,42 @@ budget and sandbox §1.2 describes.
 
 ---
 
-## 9. What I need decided before PR 1
+## 9. The four open questions, answered
 
-1. **Corpus in the database** — agreed, or is object storage preferred despite
-   being new infrastructure?
-2. **Pack chosen from the shipped set** in phase 1 — agreed, or is uploading
-   pack YAML required now, accepting the regex-execution surface and the design
-   work it needs?
-3. **`QuoteDraft`** — confirm it is dead and can be deleted rather than carried.
-4. **The resolution API's refusal** when an org has several companies and the
-   caller named none — a refusal, or should it answer from a company the
-   organization marks primary?
+Settled before PR 1 rather than during it. Recorded here because a decision that
+lives only in a chat log is a decision the next person re-litigates.
+
+1. **Where an uploaded corpus lives → database rows.** Durable across the
+   redeploys §1.1 describes, inside the backup and restore drill that already
+   runs in the gate, RLS-scoped, and carrying its own provenance. Object storage
+   was declined as new infrastructure for a few megabytes; a mounted volume was
+   declined because `railway.json` declares none, which would make durability
+   differ by environment — the worst of the three outcomes.
+
+2. **How a company gets its pack → chosen from the packs the pinned engine
+   ships.** Phase 1 stores an identifier, not a bundle. This is the decision
+   that keeps PR 1 free of the regex-execution surface in §1.2: no tenant-
+   supplied pattern is compiled or run. Uploaded bundles remain possible later,
+   with the validation, complexity budget and killable build they require.
+
+3. **`QuoteDraft` → left alone.** No `connection_id` column: a migration for a
+   table nothing writes is pure cost. Not deleted here either — dropping a table
+   is its own decision with its own migration, and folding it into a tenancy
+   change would muddy both diffs. Wiring it up so quotes actually persist is a
+   real and separate project; `store.py` already says "a real deployment
+   persists quotes".
+
+4. **The resolution API with no company named → refuse, listing the valid
+   company ids.** A 422, not a guess. An answer from an unspecified catalogue is
+   not a provenanced answer, and silently choosing one is the benign default §1
+   forbids. An organization with exactly one company still answers with no
+   argument, so single-entity callers see no change.
+
+## 10. Still to decide, but not blocking PR 1
+
+- The **index cache bound** (§4) — pick it from a measurement of eviction rate,
+  not in advance.
+- Whether `commercial/policy` validating family names against the **union** of an
+  org's packs (§5) is right, or whether an org editing policy should name a
+  company for that too. The union is the conservative choice: it rejects only
+  names no company declares.

@@ -282,8 +282,9 @@ argument against enumerating punctuation at all.
 The rule that replaced it flags **0** of the 6,717 rows in three shapes where
 the bare search flagged 10, holds every quantity-bearing shape four adversarial
 lenses could construct, and leaves nothing unflagged-but-stated across the
-repository's own 14-case inbound seed set. Thirty parametrised cases pin the
-directions.
+repository's own 14-case inbound seed set. `test_rfq_splitting.py` goes from 28
+collected cases to 55; against the original rule 6 of them fail, and against the
+anchored attempt 21 do.
 
 ### F2 · MINOR · A failed workspace switch told the user nothing — **FIXED**
 

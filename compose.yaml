@@ -87,6 +87,27 @@ x-backend-env: &backend-env
   # So one worker is 40 and `--scale worker=6` is 65, against stock
   # max_connections=100 — with room for psql and a replica. Redo this
   # arithmetic before raising anything here or scaling workers past ~10.
+  # ── Self-serve sign-up ───────────────────────────────────────────────────
+  # `deploy/production.env.example` has told operators to set SELF_SERVE_SIGNUP=1
+  # since it was written, and this file never passed it into the container — so
+  # setting it did exactly nothing, and the deployment kept answering
+  # `GET /api/v1/signup` with `enabled: false`. The landing page then hid its own
+  # sign-up button, correctly, because the API said there was no door. The
+  # feature was complete the whole time; the stack could not be told to switch
+  # it on.
+  #
+  # Off by default here, exactly as `config.py` is: an existing single-tenant
+  # install that pulls new code must not silently begin accepting strangers.
+  # That default is the point, not caution.
+  SELF_SERVE_SIGNUP: ${SELF_SERVE_SIGNUP:-0}
+  SIGNUP_RATE_LIMIT_PER_HOUR: ${SIGNUP_RATE_LIMIT_PER_HOUR:-5}
+  # Mirrors the code default rather than choosing one, so adding this line
+  # changes nothing for a stack that never set it. It does *not* decide what a
+  # sign-up gets: `onboarding.SIGNUP_PLAN` pins every self-serve tenant to free
+  # whatever this says, which is why turning sign-up on cannot hand a stranger
+  # the top tier.
+  DEFAULT_PLAN: ${DEFAULT_PLAN:-platform}
+
   DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
   DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
   DB_POOL_TIMEOUT: ${DB_POOL_TIMEOUT:-30}

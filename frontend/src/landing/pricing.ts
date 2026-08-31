@@ -33,12 +33,15 @@
  */
 
 import { filled } from "./content";
+// One definition of "where is this visitor", shared with the sign-up form —
+// see `src/region.ts`. Re-exported because this module's callers have always
+// imported it from here, and because a page that shows dollars must not sign
+// somebody up into a rupee tenant.
+import { detectRegion, type Region } from "../region";
 
-/** Which price list a visitor sees. INTL is the default and the one baked into
- *  the prerendered HTML: the repositioning is aimed at US and European
- *  mid-market distributors, and a visitor who is served the Indian list by
- *  accident anchors on a number that is not the offer being made to them. */
-export type Region = "IN" | "INTL";
+export { detectRegion, type Region };
+
+
 
 /** The margin floor the worked example is drawn against — 15%, the figure the
  *  card's own numbers were chosen from. A policy in the product, a constant
@@ -124,40 +127,6 @@ const PRICING: Record<Region, RegionPricing> = {
 
 export function pricingFor(region: Region): RegionPricing {
   return PRICING[region];
-}
-
-/** Where the visitor is, as far as a browser can honestly say.
- *
- * The clock, not the language: `navigator.language` is what somebody chose to
- * read in and travels with them, while the IANA zone is set from the machine's
- * own location and is the closest thing a static page gets to "which price
- * list is this person actually being sold". A US buyer who reads in `en-IN`
- * must not be shown rupees, which is why the zone wins outright and the
- * language is consulted only where there is no zone at all.
- *
- * Never throws and never returns a maybe: any failure is INTL, which is also
- * what the prerendered HTML already says, so the worst case is that the page
- * does not change after it loads.
- */
-export function detectRegion(): Region {
-  try {
-    const zone = Intl.DateTimeFormat().resolvedOptions().timeZone;
-    // Asia/Calcutta is the older alias and is still what some browsers report.
-    if (zone === "Asia/Kolkata" || zone === "Asia/Calcutta") return "IN";
-    if (zone) return "INTL";
-  } catch {
-    /* no Intl, or a locked-down environment: fall through to the language */
-  }
-  try {
-    const tags = [
-      ...(navigator.languages ?? []),
-      navigator.language,
-    ].filter(Boolean) as string[];
-    if (tags.some((tag) => /-IN\b/i.test(tag))) return "IN";
-  } catch {
-    /* no navigator (server render): INTL, which is what is baked in */
-  }
-  return "INTL";
 }
 
 function format(p: RegionPricing, amount: number, decimals: number): string {

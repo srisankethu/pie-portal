@@ -36,6 +36,8 @@
  * marketing copy and live in exactly one place, the landing page.
  */
 import { useState } from "react";
+
+import { SIGNUP_CURRENCIES, defaultCurrency } from "./region";
 import Box from "@mui/material/Box";
 import FormControl from "@mui/material/FormControl";
 import FormControlLabel from "@mui/material/FormControlLabel";
@@ -54,6 +56,8 @@ const MIN_PASSWORD = 10;
 
 export interface SignUpDetails {
   company: string;
+  /** What the organization trades in. See the field's comment below. */
+  currency: string;
   name: string;
   email: string;
   password: string;
@@ -80,6 +84,19 @@ export function SignUpCard({
   defaultPlan?: string;
 }) {
   const [company, setCompany] = useState("");
+  /** The one answer on this form that cannot be changed later.
+   *
+   *  There is no admin endpoint and no screen that moves an organization's
+   *  currency, so this decides how every figure that business ever sees is
+   *  denominated. The form did not ask at all until now and sent nothing, so
+   *  the API's default applied and *every* self-serve tenant was INR — while
+   *  the site it signed up from was quoting the same visitor in dollars.
+   *
+   *  Preselected from the visitor's own clock, by the same function the
+   *  pricing panels use, so the two cannot disagree. Preselected, not decided:
+   *  a currency is a durable property of a business and guessing one silently
+   *  is worse than asking. */
+  const [currency, setCurrency] = useState(defaultCurrency);
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -120,6 +137,7 @@ export function SignUpCard({
         }
         await onSubmit({
           company: company.trim(), name: name.trim(), email, password, plan,
+          currency,
         });
       }}
       footer={
@@ -142,6 +160,26 @@ export function SignUpCard({
         onChange={(e) => setCompany(e.target.value)}
         sx={{ mb: 2 }}
       />
+      {/* MUI's own `select` on a TextField, so it carries the same label,
+          spacing and focus ring as every other field here rather than a
+          second styling of a form control (docs/ui-standards.md). It sits
+          under the company name because it is a fact about the company, and
+          above the person for the same reason. */}
+      <TextField
+        name="currency"
+        select
+        label="Currency"
+        fullWidth
+        value={currency}
+        onChange={(e) => setCurrency(e.target.value)}
+        helperText="Every figure in your account is shown in this. It cannot be changed later."
+        slotProps={{ select: { native: true } }}
+        sx={{ mb: 2 }}
+      >
+        {SIGNUP_CURRENCIES.map((c) => (
+          <option key={c.code} value={c.code}>{c.label}</option>
+        ))}
+      </TextField>
       <TextField
         name="name"
         label="Your name"

@@ -36,6 +36,15 @@ import "./landing.css";
  * invented customers, no testimonials and no logos. The connectors are named in
  * plain type for the same reason.
  *
+ * Section F is where that rule is under the most pressure, and it does not
+ * bend: the customer names, the case-study figures and the compliance statuses
+ * are `{{PLACEHOLDER}}` tokens, visible as tokens, until somebody has real
+ * ones with permission to print them. `prerender.test.tsx` refuses any token
+ * that is not on the known list, and `scripts/prerender.mjs` prints every one
+ * still in the built page at the end of a build. Filling a slot here with
+ * something plausible is not a shortcut — it is the one edit that would make
+ * every other claim on the page worthless.
+ *
  * That rule was audited against the backend in Aug 2026 and had drifted in six
  * places, so the specifics are worth keeping — every one of them read as good
  * news, which is why none had been noticed:
@@ -265,6 +274,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
               <a href="#product" onClick={closeMenu}>Product</a>
               <a href="#how" onClick={closeMenu}>How it works</a>
               <a href="#worth" onClick={closeMenu}>What it&rsquo;s worth</a>
+              <a href="#proof" onClick={closeMenu}>Proof</a>
               <a href="#trust" onClick={closeMenu}>Trust</a>
               <a href="#pricing" onClick={closeMenu}>Pricing</a>
               <a className="lp-btn solid lp-nav-cta" href="#signin" onClick={enter}>Sign in</a>
@@ -691,7 +701,147 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           </div>
         </section>
 
-        <div className="lp-dim"><b>Section F — Pricing</b></div>
+        {/* ── Section F — Proof ──────────────────────────────────────────
+            EVERY FIGURE AND EVERY MARK IN THIS SECTION IS A PLACEHOLDER, and
+            the section must not be deployed while any of them is still here.
+            `scripts/prerender.mjs` lists every `{{…}}` token left in the built
+            page at the end of a build, so a deploy cannot ship one quietly.
+
+            What must replace them:
+              {{CUSTOMER_LOGO_1..4}}   the names of four real customers who
+                                       have given written permission to be
+                                       named. Names in plain type, as the
+                                       systems row is — not image marks, which
+                                       this stylesheet has no rule for and
+                                       which would be the only images on the
+                                       site.
+              {{CASE_STUDY_*}}         one real customer's figures, read off
+                                       their own value ledger and quoted with
+                                       their permission.
+              the compliance statuses  whatever is actually true on the day
+                                       this ships. "In progress" is a fine
+                                       answer; a certification that does not
+                                       exist is not.
+
+            This page's standing honesty rule was "no invented customers, no
+            testimonials and no logos", and it is unchanged in the only sense
+            that matters: nothing here may be invented. What changed is that
+            the page now has a place to put the real ones, because a
+            mid-market buyer being asked for an annual contract looks for
+            exactly this section and reads its absence as an answer. A slot
+            that is visibly empty is honest. A slot filled with a
+            plausible-sounding customer is the single thing that would destroy
+            the argument the rest of this page makes. */}
+        <div className="lp-dim"><b>Section F — Proof</b></div>
+        <section id="proof">
+          <div className="lp-wrap">
+            <div className="lp-sec-head">
+              <h2>What it was worth, on somebody else&rsquo;s book</h2>
+              <p>
+                One distributor, one ERP, one figure — and the ledger entry
+                behind it. The number below is not a case-study estimate: it is
+                what PIE&rsquo;s own value ledger computed from rows that
+                customer&rsquo;s quote desk had already written, carrying the
+                operands it was computed from, so it opens into the lines that
+                produced it. The same screen is in the product, reporting on
+                your book, from the day you start.
+              </p>
+            </div>
+
+            {/* The systems row's shape, reused: a labelled band of plates in
+                plain type. Not `<img>` — the stylesheet has no image rule, the
+                page has never carried a logo, and a wall of grey marks says
+                less to this reader than four names they recognise. */}
+            <div className="lp-sched">
+              <div className="lp-sched-row">
+                <span className="lp-sched-label">Running PIE today</span>
+                <span className="lp-sys">{"{{CUSTOMER_LOGO_1}}"}</span>
+                <span className="lp-sys">{"{{CUSTOMER_LOGO_2}}"}</span>
+                <span className="lp-sys">{"{{CUSTOMER_LOGO_3}}"}</span>
+                <span className="lp-sys">{"{{CUSTOMER_LOGO_4}}"}</span>
+                <span className="lp-sched-note">
+                  — named with written permission, or not named at all
+                </span>
+              </div>
+            </div>
+
+            <div className="lp-panel lp-case">
+              <div className="lp-card-top">
+                <span className="lp-chip kind">Value ledger · first 90 days</span>
+                <span className="lp-chip kind">{"{{CASE_STUDY_ERP}}"}</span>
+              </div>
+              <h3>{"{{CASE_STUDY_DISTRIBUTOR_PROFILE}}"}</h3>
+              <p>
+                {"{{CASE_STUDY_NARRATIVE}}"} — what the desk was doing before,
+                what the floor caught, and what the owner did about it. Two or
+                three sentences, in their words where possible.
+              </p>
+              <div className="lp-facts">
+                <div className="lp-fact">
+                  <div className="k">Margin recovered</div>
+                  <div className="v lp-num">{"{{CASE_STUDY_MARGIN_RECOVERED}}"}</div>
+                </div>
+                <div className="lp-fact">
+                  <div className="k">Quote lines checked</div>
+                  <div className="v lp-num">{"{{CASE_STUDY_LINES_CHECKED}}"}</div>
+                </div>
+                <div className="lp-fact">
+                  <div className="k">Below floor, held</div>
+                  <div className="v lp-num">{"{{CASE_STUDY_LINES_HELD}}"}</div>
+                </div>
+              </div>
+              {/* The provenance strip, exactly as the hero card signs itself.
+                  It is the difference between a case study and a claim: the
+                  figure names the ledger that produced it and the policy
+                  version in force while it did, and both are re-derivable from
+                  that customer's own rows. */}
+              <div className="lp-tblock lp-num">
+                <div><span className="k">Source</span>PIE value ledger</div>
+                <div><span className="k">Thresholds</span>{"{{CASE_STUDY_POLICY_VERSION}}"}</div>
+                <div><span className="k">Window</span>{"{{CASE_STUDY_WINDOW}}"}</div>
+                <div><span className="k">Re-derivable</span>yes</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Compliance, as three statuses rather than three assertions. The
+              band is the proof strip's own grid, narrowed to three columns.
+
+              Nothing here claims a certification. A distributor's IT or
+              finance function asks these three questions in the first meeting,
+              and a page that does not answer them at all reads worse than one
+              answering "in progress" — but only a page that answers them
+              *truthfully* survives the diligence that follows. */}
+          <div className="lp-proof lp-compliance">
+            <div className="lp-wrap lp-proof-grid lp-cols-3">
+              <div>
+                <div className="v">SOC 2 Type II</div>
+                <div className="k">
+                  {"{{SOC2_TYPE_II_STATUS}}"} — this line states the real status
+                  and nothing more. No certification is claimed until it says
+                  one exists.
+                </div>
+              </div>
+              <div>
+                <div className="v">Data residency</div>
+                <div className="k">
+                  {"{{DATA_RESIDENCY}}"} — where this deployment stores your
+                  rows, named as a region rather than as a promise.
+                </div>
+              </div>
+              <div>
+                <div className="v">GDPR DPA</div>
+                <div className="k">
+                  {"{{GDPR_DPA_STATUS}}"} — the processing agreement, and how to
+                  get a copy. Erasure is already a mechanism rather than a
+                  clause: see Section E.
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <div className="lp-dim"><b>Section G — Pricing</b></div>
         <section id="pricing">
           <div className="lp-wrap">
             <div className="lp-sec-head">

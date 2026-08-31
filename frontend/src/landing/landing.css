@@ -264,8 +264,13 @@
 }
 .pie-landing .lp-proof-grid .v { font-size: 22px; font-weight: 700; font-family: var(--font-heading); }
 .pie-landing .lp-proof-grid .k { font-size: 12.5px; color: var(--color-neutral-700); }
+/* Three claims rather than four — the compliance band. Same grid, one fewer
+   column, so a three-item row fills its width instead of leaving a fourth cell
+   open. Below 900px both counts fall back to the rules underneath. */
+.pie-landing .lp-proof-grid.lp-cols-3 { grid-template-columns: repeat(3, 1fr); }
 @media (max-width: 900px) {
   .pie-landing .lp-proof-grid { grid-template-columns: 1fr 1fr; gap: 18px 28px; }
+  .pie-landing .lp-proof-grid.lp-cols-3 { grid-template-columns: 1fr 1fr; }
 }
 @media (max-width: 520px) {
   .pie-landing .lp-proof-grid { grid-template-columns: 1fr; gap: 16px; padding: 20px 24px; }
@@ -420,6 +425,22 @@
   width: 12px; height: 4px; background: var(--color-accent-300);
 }
 .pie-landing .lp-invariant li b { color: var(--color-neutral-100); }
+
+/* ── the case study ──
+   A panel, not the hero's shadowed detail card: this is evidence in the body
+   of the page rather than an illustration beside a headline. It borrows the
+   card's two furniture pieces — the three-figure grid and the title block that
+   signs them — because those are what make a figure a ledger entry rather than
+   a claim. Both are styled at the top level and need no card ancestor;
+   `.lp-card-body` is the one piece that does, so the narrative here is a plain
+   `<p>` and takes `.lp-panel p`. */
+.pie-landing .lp-case { margin-top: 22px; }
+.pie-landing .lp-case h3 { margin: 12px 0 10px; }
+.pie-landing .lp-case .lp-facts { margin-top: 18px; }
+
+/* The compliance band closes the section, so it needs the air a `.lp-dim`
+   divider would otherwise have put there. */
+.pie-landing .lp-compliance { margin-top: 40px; }
 
 /* pricing teaser */
 .pie-landing .lp-plan { text-align: left; }

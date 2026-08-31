@@ -513,8 +513,9 @@ export default function PlatformApp() {
       return;
     }
     // Read the current session through the ref rather than a `setSession`
-    // updater's `prev`. The toast below is a side effect, and a state updater
-    // that fires one runs it twice under StrictMode — while the effect itself
+    // updater's `prev`. The toast below is a side effect, and an updater is a
+    // place React is entitled to run twice — it does so in development under
+    // StrictMode, which `main.tsx` enables — while the effect itself
     // is registered once and closes over the session it saw then, which is why
     // the updater was reached for in the first place.
     const prev = sessionRef.current;

@@ -106,14 +106,22 @@ status code tells a caller which half of the guess was right.
 
 ### pie-parser
 
-`make verify` green: **406 tests, 6,717 corpus rows, 0 quarantined, no family
+`make verify` green: **476 tests, 6,717 corpus rows, 0 quarantined, no family
 below 100%, byte-identical reruns.** `eval_identity`: 13/13 cases, **0
 false-positive identity** (the cardinal error). CLI exit codes as documented
 (2 on bad arguments / missing source / unknown record id; 0 on a clean lint).
-pie-portal's own suite: **3,553 passed, 0 failed**, and the full gate
-(`make verify`) green end to end — frontend build, migrations from nothing
+pie-portal's own suite: **3,538 passed, 141 skipped, 0 failed**, and the full
+gate (`make verify`) green end to end — frontend build, migrations from nothing
 on SQLite *and* PostgreSQL, row-level security, the queue's concurrent
-claim, and the `pg_dump` → restore drill.
+claim, and the `pg_dump` → restore drill. The engine-backed (`requires_pie`)
+tests are most of that skip count and are not covered by a bare `make verify`,
+which is what the gate's own "but narrowed" note says; run separately against a
+pie-parser checkout they are **100 passed**.
+
+Both figures are from a re-run after this branch merged its base in, which is
+why the parser count is 476 rather than the 406 of the branch alone — master's
+PR #20 brought its own tests. A stale engine checkout is not a neutral
+condition here: run against the pre-#20 parser, twelve pie-portal tests fail.
 
 ---
 
@@ -170,21 +178,50 @@ be attributed. Verified end to end through the live app:
 
 | Pasted | Before | After |
 |---|---|---|
-| `2001174 nos` | code `s`, qty 2,001,174 | code `2001174`, **CONFIRM READING** |
+| `2001174 nos` | code `s`, qty 2,001,174 | code `2001174 nos`, **CONFIRM READING** |
 | `CNMG 120408 nos` | code `CNMG`, qty 120,408 | code intact, **CONFIRM READING** |
 | `2001174 - 250000 nos` | qty 250,000 | qty 250,000 — unchanged |
 | `100 nos 2001174` | qty 100 | qty 100 — unchanged |
+| `CNMG 120408 10000 nos` | qty 10,000 | qty 1, **CONFIRM READING** — narrowed |
 
-`tests/test_rfq_splitting.py` gained three cases (11 assertions). All seven
-new parametrisations fail against the old patterns and pass against the new
-ones, so they are regression tests rather than descriptions.
+`tests/test_rfq_splitting.py` gained three tests (11 assertions) and one
+assertion on an existing one. All seven new parametrisations fail against the
+old patterns and pass against the new ones, so they are regression tests
+rather than descriptions.
+
+**The last row is the cost of the fix, and it is a real one.** Space-separated
+is now the *only* shape a unit word cannot rescue, so a genuinely stated
+five-digit order written `CNMG 120408 10000 nos` stops being read — four digits
+is the ceiling for that shape, and `CNMG 120408 1000 nos` still reads 1,000.
+That is the trade this defect forces: the same shape carries both `DNMG 150608
+nos` (a code, no quantity) and `CNMG 120408 10000 nos` (a code and a quantity),
+and nothing after the number says which. The line travels `proposed` rather
+than defaulted, so the estimate is blocked until a person confirms it — a
+five-digit order becomes one extra confirmation, where the alternative was a
+quotation for a hundred and fifty thousand pieces nobody ordered. A tab counts
+as an explicit separator, not as this shape, so `CNMG 120408<TAB>12345 nos`
+still reads 12,345.
 
 Deliberately **not** changed: the fallback still leaves the unit word in the
 code (`CNMG 120408 nos` keeps its `nos`). Stripping it there would make the
 line resolvable as well as flagged, but `_UNIT_WORDS` includes `ea` and
 `each`, so a description legitimately ending in one of those would be
 truncated — a wider change than this defect justifies, and the line is blocked
-either way.
+either way. Two consequences that follow from it, stated because they are not
+obvious: that string is what reaches the resolver (`build_lines` passes
+`row["code"]` to `pie_service.resolve`) and what shows as the requested code on
+an AMBIGUOUS line; and `confirm_reading` clears `proposed` and nothing else, so
+confirming the reading does not clean the code.
+
+**One residual, recorded rather than fixed.** The flag comes from a
+`\b`-bounded search for a unit word in the leftover code, so it needs a
+boundary before the word. Written with no space — `2001174nos` — there is none
+between `4` and `n`, and the line comes back qty 1 **unflagged**: better than
+the 2,001,174 it used to return, but still a silent default of exactly the kind
+§1 says is not a pass. The narrow fix is to also match a unit word glued to a
+digit; it is left out of this change because every edit to `_QTY_PATTERNS` in
+this finding's history created the next defect, and this one is not reachable
+from the shapes the corpus or the review actually produced.
 
 ### F2 · MINOR · A failed workspace switch told the user nothing — **FIXED**
 
@@ -206,8 +243,10 @@ signed *out* elsewhere — did display, because there the session becomes null
 and the sign-in card renders.)
 
 Now a toast, and raised *outside* the `setSession` updater. The message used to
-sit inside it, and React may call an updater twice under `StrictMode` — which
-`main.tsx` enables — so a toast fired from there would have been shown twice.
+sit inside it, and an updater is a place React is entitled to call twice — it
+does so in development under `StrictMode`, which `main.tsx` enables — so a
+toast fired from there was liable to appear twice. Development-only as a
+*symptom*; the rule that a state updater must be free of side effects is not.
 The handler reads the current session through a ref instead, which also removes
 the reason the updater was reached for: the listener is registered once and
 would otherwise compare against the session that existed when it was registered.

@@ -599,7 +599,7 @@ RESTRICTED types excluded.
    filter (only with ≥2 companies); grid sorted by priority: band, type,
    subject, Why (rationale or AI explanation), worth/confidence, status.
 2. Row click → `#/decision/:id`; if the decision is OPEN a `VIEW` action fires
-   once per open period (`POST /api/v1/decisions/{id}/action`).
+   once per open period (`POST /api/v1/decisions/{decision_id}/action`).
 3. Detail: back button, type + priority + status; STATE decisions show
    impact / why / **trace** / actions / ranking panels and a "no model was
    involved" note; signal decisions show the facts table (or "No numeric facts
@@ -609,7 +609,7 @@ RESTRICTED types excluded.
    (only when the AI state is ok), **Do something different**, **Dismiss with
    reason**, **Escalate to management**, and "Open the account →".
 5. The action modal requires a note for modify and dismiss; "Log decision" →
-   `POST /api/v1/decisions/{id}/action {ACT|OVERRIDE|DISMISS|ESCALATE}`.
+   `POST /api/v1/decisions/{decision_id}/action {ACT|OVERRIDE|DISMISS|ESCALATE}`.
 6. A snackbar offers **Undo for 9 seconds** → `REOPEN` (itself audited).
 
 **Branches.** Filters match nothing → empty state with "clear a chip" · id not
@@ -626,7 +626,7 @@ the approvals queue · undone back to OPEN · cancelled · not-found states.
 ### 5.3 Trace a state decision to its ERP source
 
 **Trigger.** "Trace it to the source →" on a STATE-origin decision's detail.
-**Path.** `GET /api/v1/decisions/{id}/trace` walks the chain: business state
+**Path.** `GET /api/v1/decisions/{decision_id}/trace` walks the chain: business state
 (with its thresholds version) → newest-first state transitions with field
 changes → the bottom-of-chain ERP record (type + id + line), "event no longer
 held", or "counted from the item list" for stock readings. "Show N more"
@@ -982,7 +982,7 @@ from the deterministic facts — the model response was not used") · FAILED
 judgement withheld rather than manufactured). "Accept recommendation" is
 offered **only** on OK with a real recommendation (a card where accepting was
 impossible must not count as declined); Accept → ACT, Modify → OVERRIDE with a
-note, Set aside → DISMISS with a note (`POST /api/v1/decisions/{id}/action`).
+note, Set aside → DISMISS with a note (`POST /api/v1/decisions/{decision_id}/action`).
 None of these change price or product.
 **Ends.** Decision captured · facts read, nothing captured · error state.
 
@@ -1550,7 +1550,10 @@ These hold on every flow above and are easy to miss reading any one of them:
 
 Every HTTP endpoint reachable in the flows above, deduplicated. Guard column:
 the effective server-side gate (plan gates noted as +plan; role projection on
-shared endpoints is described in the flows).
+shared endpoints is described in the flows). Scoped to the flows on purpose, so
+it is smaller than the mounted route table: FastAPI's own `/docs`, `/redoc` and
+`/openapi.json`, and the legacy `/api/quotes` and `/api/attribution` catch-all
+shims, are mounted but are not flows and are not listed here.
 
 | Method | Path | Guard | Purpose |
 |---|---|---|---|
@@ -1609,6 +1612,8 @@ shared endpoints is described in the flows).
 | PUT | `/api/v1/data/connection` | owner | Legacy: connect/replace the org's Zoho credentials in one call; response pings, never echoes secrets |
 | DELETE | `/api/v1/data/connection` | owner | Legacy: unlink the Zoho connection; read-model rows untouched |
 | POST | `/api/v1/data/connection/use-credential` | owner | Legacy: point this org at a Zoho company using an existing grant |
+| GET | `/api/v1/data/catalog` | signed-in | The decoded catalogue's state and provenance — pack, version, ruleset checksum; nomenclature only, so nothing is withheld by role |
+| POST | `/api/v1/data/catalog/build` | owner | Build or rebuild the deployment's decoded catalogue, synchronously — owner-only because it replaces what every organization resolves against |
 | GET | `/api/v1/data/credentials` | owner | Every Zoho grant this org may connect through, with used_by and sharing info |
 | GET | `/api/v1/data/credentials/{credential_id}/organizations` | owner | Live list of Zoho companies one grant reaches, marked already_connected (502 if Zoho rejects it) |
 | POST | `/api/v1/data/credentials/{credential_id}/share` | owner | Full-replace which other organizations may connect through this grant |
@@ -1620,10 +1625,10 @@ shared endpoints is described in the flows).
 | GET | `/api/v1/data/sync-runs/{sync_run_id}/skipped` | manager/owner | Every skipped row of one run (org-scoped; 404 across tenants) with completeness note |
 | GET | `/api/v1/data/sync-runs/{sync_run_id}/skipped.csv` | manager/owner | Same rows as a server-built CSV (BOM'd; caveat row when incomplete) |
 | GET | `/api/v1/decisions` | signed-in | Scoped decision queue; ?include_detail=true folds each card's role-projected detail in (detail failures marked detail_unavailable, never silently… |
-| GET | `/api/v1/decisions/{id}` | signed-in | One decision summary |
-| POST | `/api/v1/decisions/{id}/action` | signed-in | Record a human action: VIEW, ACT, OVERRIDE(+reason), DISMISS(+reason), ESCALATE (raises an approval request when policy says so), REOPEN (the undo) |
-| GET | `/api/v1/decisions/{id}/detail` | signed-in | Card detail: facts/impact/interpretation/actions/ranking |
-| GET | `/api/v1/decisions/{id}/trace` | signed-in | Decision → state → transitions → business event → ERP record chain; offset-paged newest-first; signal decisions return 'unavailable' text |
+| GET | `/api/v1/decisions/{decision_id}` | signed-in | One decision summary |
+| POST | `/api/v1/decisions/{decision_id}/action` | signed-in | Record a human action: VIEW, ACT, OVERRIDE(+reason), DISMISS(+reason), ESCALATE (raises an approval request when policy says so), REOPEN (the undo) |
+| GET | `/api/v1/decisions/{decision_id}/detail` | signed-in | Card detail: facts/impact/interpretation/actions/ranking |
+| GET | `/api/v1/decisions/{decision_id}/trace` | signed-in | Decision → state → transitions → business event → ERP record chain; offset-paged newest-first; signal decisions return 'unavailable' text |
 | GET | `/api/v1/demo` | public | Whether a demonstration workspace exists (yes/no only) |
 | POST | `/api/v1/demo` | public | Sign a stranger into the read-only demo workspace (is_demo session; every unsafe method 403s) |
 | GET | `/api/v1/enquiries` | manager/owner | Whole-tenant corpus export, raw text byte-intact with disposition histories; counted before load, 413 past the 50,000-line ceiling rather than… |

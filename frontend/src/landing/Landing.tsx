@@ -777,11 +777,14 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                 <span className="lp-chip kind">{"{{CASE_STUDY_ERP}}"}</span>
               </div>
               <h3>{"{{CASE_STUDY_DISTRIBUTOR_PROFILE}}"}</h3>
-              <p>
-                {"{{CASE_STUDY_NARRATIVE}}"} — what the desk was doing before,
-                what the floor caught, and what the owner did about it. Two or
-                three sentences, in their words where possible.
-              </p>
+              {/* The whole paragraph is the token. It was written as
+                  "{{CASE_STUDY_NARRATIVE}} — what the desk was doing before,
+                  …", which put the brief for the copy *on the page*: replacing
+                  the token would have left the instructions behind it running
+                  on in public. What belongs there: two or three sentences on
+                  what the desk was doing before, what the floor caught, and
+                  what the owner did about it — in their words where possible. */}
+              <p>{"{{CASE_STUDY_NARRATIVE}}"}</p>
               <div className="lp-facts">
                 <div className="lp-fact">
                   <div className="k">Margin recovered</div>
@@ -820,27 +823,29 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
               *truthfully* survives the diligence that follows. */}
           <div className="lp-proof lp-compliance">
             <div className="lp-wrap lp-proof-grid lp-cols-3">
+              {/* Each `.k` is the status itself and one durable clause — no
+                  instructions to whoever fills it in, because those would
+                  survive the replacement and end up on the page. The rule they
+                  carry is here instead: state what is true on the day this
+                  ships. "In progress" is a good answer to all three and reads
+                  better than silence; a certification that does not exist is
+                  the claim a diligence process takes apart. */}
               <div>
                 <div className="v">SOC 2 Type II</div>
-                <div className="k">
-                  {"{{SOC2_TYPE_II_STATUS}}"} — this line states the real status
-                  and nothing more. No certification is claimed until it says
-                  one exists.
-                </div>
+                <div className="k">{"{{SOC2_TYPE_II_STATUS}}"}</div>
               </div>
               <div>
                 <div className="v">Data residency</div>
                 <div className="k">
-                  {"{{DATA_RESIDENCY}}"} — where this deployment stores your
+                  {"{{DATA_RESIDENCY}}"} — where this deployment keeps your
                   rows, named as a region rather than as a promise.
                 </div>
               </div>
               <div>
                 <div className="v">GDPR DPA</div>
                 <div className="k">
-                  {"{{GDPR_DPA_STATUS}}"} — the processing agreement, and how to
-                  get a copy. Erasure is already a mechanism rather than a
-                  clause: see Section E.
+                  {"{{GDPR_DPA_STATUS}}"}. Erasure is a mechanism here rather
+                  than a clause — see Section E.
                 </div>
               </div>
             </div>

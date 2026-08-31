@@ -1612,8 +1612,10 @@ shims, are mounted but are not flows and are not listed here.
 | PUT | `/api/v1/data/connection` | owner | Legacy: connect/replace the org's Zoho credentials in one call; response pings, never echoes secrets |
 | DELETE | `/api/v1/data/connection` | owner | Legacy: unlink the Zoho connection; read-model rows untouched |
 | POST | `/api/v1/data/connection/use-credential` | owner | Legacy: point this org at a Zoho company using an existing grant |
-| GET | `/api/v1/data/catalog` | signed-in | The decoded catalogue's state and provenance — pack, version, ruleset checksum; nomenclature only, so nothing is withheld by role |
-| POST | `/api/v1/data/catalog/build` | owner | Build or rebuild the deployment's decoded catalogue, synchronously — owner-only because it replaces what every organization resolves against |
+| GET | `/api/v1/data/catalog/companies` | signed-in | Every connected company, its chosen pack and its catalogue's state, plus the packs a company may choose from; readable by any signed-in user, because which catalogue answered a resolution is the same entitlement as knowing when the books last arrived |
+| POST | `/api/v1/data/catalog/companies/{connection_id}/corpus` | owner | Store this company's item-master export, kept as a row rather than a file because the container filesystem is ephemeral; append-only, so a new upload supersedes the previous one and a catalogue already built keeps a real referent |
+| PUT | `/api/v1/data/catalog/companies/{connection_id}/pack` | owner | Choose the pack this company decodes through; validated against what the pinned engine ships, and refused rather than stored when it names nothing |
+| POST | `/api/v1/data/catalog/companies/{connection_id}/build` | owner | Decode this company's stored corpus through its chosen pack, synchronously — the response carries the finished result, so there is no job to poll |
 | GET | `/api/v1/data/credentials` | owner | Every Zoho grant this org may connect through, with used_by and sharing info |
 | GET | `/api/v1/data/credentials/{credential_id}/organizations` | owner | Live list of Zoho companies one grant reaches, marked already_connected (502 if Zoho rejects it) |
 | POST | `/api/v1/data/credentials/{credential_id}/share` | owner | Full-replace which other organizations may connect through this grant |

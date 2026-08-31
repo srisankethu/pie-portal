@@ -32,8 +32,9 @@ The build ends with every empty slot and what a visitor is not seeing because
 of it — for example:
 
 ```
-prerender: 11 content slots are still empty, and the pages hide what depends on them:
+prerender: 9 content slots are still empty, and the pages hide what depends on them:
     DEMO_BOOKING_URL          → every "Book a demo" button falls back to the trial door
+    PRICE_CATALOG_BUILD_USD   → the catalog-build sentence is omitted for non-Indian visitors
     CUSTOMER_LOGO_1..4        → no customer strip
     CASE_STUDY_*              → no case study
     — all three above —       → the Proof section is hidden entirely
@@ -49,24 +50,22 @@ test loop, along with the section's navigation link and the lettering.
 ## 1 · Prices — `frontend/src/landing/pricing.ts`
 
 The landing page is the **only** place a price lives; `backend/app/entitlements.py`
-deliberately holds none. Indian visitors already see real rupee prices; these
-three are the dollar list every other visitor sees.
+deliberately holds none. Both monthly lists are now real: Indian visitors see
+the rupee prices, everyone else sees the dollar ones.
 
-| Token | What it is | Intended, per the repositioning |
+| Slot | What it is | Set to |
 |---|---|---|
-| `{{PRICE_TIER_1_USD}}` | Commercial Intelligence, per month | $1,500–$2,500 |
-| `{{PRICE_TIER_2_USD}}` | Platform, per month | $3,500+ |
-| `{{PRICE_CATALOG_BUILD_USD}}` | One-time catalog build | No dollar figure exists. The rupee price is ₹4,999; a converted price would be a guess dressed as a decision |
+| `tierIntelligence` (INTL) | Commercial Intelligence, per month | **$1,950** |
+| `tierPlatform` (INTL) | Platform, per month | **$3,950** |
+| `{{PRICE_CATALOG_BUILD_USD}}` | One-time catalog build | **Still unset.** No dollar figure exists. The rupee price is ₹4,999; a converted price would be a guess dressed as a decision, so the sentence carrying it is dropped whole for a dollar visitor |
 
-Write them as they should read, symbol included — `"$1,950"` — and keep the
-`/month` suffix in the markup rather than in the string. The page displays
-these unchanged.
+To change a price, write it as it should read, symbol included — `"$1,950"` —
+and keep the `/month` suffix in the markup rather than in the string. The page
+displays the string unchanged.
 
-The intended ranges above are also written in the comment on `PRICING.INTL` in
-that file, deliberately: this list is for a person deciding the numbers and
-that comment is for whoever next opens the code. They are the only two places
-either range appears, and both should be edited to the real figure at the same
-time — after which neither is a range any more.
+The dollar tiers are the founder's own figures, not conversions of the rupee
+ones; the two lists are not expected to track each other and editing one is not
+a reason to edit the other.
 
 ## 2 · The demo booking link — `frontend/src/landing/cta.ts`
 

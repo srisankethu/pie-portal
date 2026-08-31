@@ -91,11 +91,106 @@ def test_a_two_token_code_ending_in_digits_is_a_code_not_a_quantity(line):
 
 
 def test_an_explicit_separator_still_lifts_the_digit_bound():
-    """The bound is on *bare* whitespace only. A comma, an `x` or a unit word is
+    """The bound is on *bare* whitespace only. A comma, an `x` or a dash is
     somebody saying "this is a quantity", and a large order is allowed."""
     assert _one("2001174, 250000")["qty"] == 250000
     assert _one("2001174 x250000")["qty"] == 250000
     assert _one("2001174 - 250000 nos")["qty"] == 250000
+    assert _one("2001174 qty 250000 nos")["qty"] == 250000
+
+
+# ── the unit word must not lift the bound, nor eat the code ──────────────────
+@pytest.mark.parametrize("line,code", [
+    ("DNMG 150608 nos", "DNMG 150608"),
+    ("CNMG 120408 nos", "CNMG 120408"),
+    ("TNMG 160404 pcs", "TNMG 160404"),
+])
+def test_a_unit_word_after_a_numeric_code_does_not_make_it_a_quantity(line, code):
+    """`_BARE_QTY_DIGITS` exists because `DNMG 150608` was read as 150,608 of a
+    code called `DNMG`. Lifting that bound whenever a unit word appeared let the
+    same defect back in through the other door: the unit sits *after* the
+    number, so it says nothing about which digits were meant.
+
+    The line still carries a unit word nobody could attribute, so it travels
+    flagged — the estimate is blocked until a person confirms the reading,
+    rather than a quotation going out for a hundred and fifty thousand.
+    """
+    row = _one(line)
+    assert row["qty"] == 1, f"{line!r} states no quantity"
+    assert row["code"].startswith(code), "the code must survive intact"
+    assert row.get("proposed") is True, "a stated-but-unread unit word is flagged"
+
+
+@pytest.mark.parametrize("line", [
+    "2001174 nos",
+    "2001174 pcs",
+    "6739214 units",
+    "2001174 NOS",
+])
+def test_a_unit_word_is_never_matched_as_a_prefix_of_the_next_token(line):
+    """The leading rule read `no` out of `nos` and kept the leftover `s` as the
+    product code, so `2001174 nos` became two million of a code one character
+    long. The number in these lines is the part, not the quantity."""
+    row = _one(line)
+    assert row["qty"] == 1, f"{line!r} names a part, not a quantity"
+    assert row["code"].startswith(line.split()[0]), "the part number must survive"
+    assert len(row["code"]) > 1, "the code is not the tail of a chopped unit word"
+
+
+def test_the_shapes_that_do_state_a_quantity_still_read_it():
+    """The guard above must not cost the readings it was put in to protect."""
+    assert _one("100 nos 2001174")["qty"] == 100
+    assert _one("100 nos of CNMG 120408")["qty"] == 100
+    assert _one("50 pieces DNMG 150608")["qty"] == 50
+    assert _one("100 no. CNMG 120408")["qty"] == 100
+    assert _one("CNMG 120408 100 nos")["qty"] == 100
+
+
+# ── a dimension is not a quantity ────────────────────────────────────────────
+@pytest.mark.parametrize("line,code", [
+    ("ENDMILL HARL 5FL 8x8x40x87 R0,5", "ENDMILL HARL 5FL 8x8x40x87 R0,5"),
+    ("ENDMILL 5777 12x12x26x83 RAD 0,75", "ENDMILL 5777 12x12x26x83 RAD 0,75"),
+    ("KSSM 8+ MILL. INSERT IC=10 x 4,45", "KSSM 8+ MILL. INSERT IC=10 x 4,45"),
+    ("END MILL W4N1 12x12x26x83 R2,0", "END MILL W4N1 12x12x26x83 R2,0"),
+    ("SC-Machine-Reamer, spiral, \u00d84,0", "SC-Machine-Reamer, spiral, \u00d84,0"),
+])
+def test_a_european_decimal_comma_is_not_a_quantity(line, code):
+    """`R0,5` is a 0.5 mm corner radius. The comma rule read `,5` as an order of
+    five and handed on `...R0` — a different product, and one that collides with
+    a genuine `R0`. Both halves of the line wrong from one character.
+
+    790 of the 6,717 catalogue rows carry a decimal comma, and this rule
+    truncated every one that ended in it. A comma separates a quantity when it
+    is followed by whitespace (`2001174, 20`) or when what precedes it is not a
+    digit (`CNMG 120408-MP, 10`); `digit,digit` with nothing between is a
+    decimal.
+    """
+    row = _one(line)
+    assert row["code"] == code, "the dimension must survive intact"
+    assert row["qty"] == 1, "a decimal fraction is not an order quantity"
+
+
+@pytest.mark.parametrize("line,code", [
+    ("END MILL W4N1 12x12x26x83 R2,0", "END MILL W4N1 12x12x26x83 R2,0"),
+    ("DEFINED SURFACE FINISH PCD CARTRIDGE R 0", "DEFINED SURFACE FINISH PCD CARTRIDGE R 0"),
+])
+def test_zero_is_never_read_as_a_quantity(line, code):
+    """Nobody orders none of something. A matched quantity of zero was clamped
+    to one and the code truncated to pay for it, and because a pattern had
+    *matched*, a real quantity earlier in the line never reached the rules that
+    would have read it: `250000 nos ENDMILL ... Rad 1,0` travelled as one piece.
+    """
+    row = _one(line)
+    assert row["code"] == code
+    assert row["qty"] == 1
+
+
+def test_a_quantity_before_a_decimal_dimension_still_reads():
+    """The zero and decimal guards exist so the *right* rule gets the line, not
+    so the line stops being read."""
+    row = _one("250000 nos ENDMILL 57N8 10x10x22-30x76 Rad 1,0")
+    assert row["qty"] == 250000
+    assert row["code"] == "ENDMILL 57N8 10x10x22-30x76 Rad 1,0"
 
 
 # ── the part that must not default silently ──────────────────────────────────
@@ -108,6 +203,117 @@ def test_a_unit_word_we_could_not_attribute_is_flagged_not_defaulted():
     assert row["qty"] == 1
     assert row.get("proposed") is True
     assert "quantity" in row["reading"].lower()
+
+
+@pytest.mark.parametrize("line", [
+    "2001174nos",
+    "2001174NOS",
+    "6739214pcs",
+])
+def test_a_unit_word_glued_to_the_part_number_is_still_flagged(line):
+    """The flag used to need a word boundary before the unit word, and there is
+    none between a digit and a letter. So `2001174nos` came back quantity 1 and
+    *unflagged* — the benign default §1 says is never the answer, hiding in the
+    one shape nobody writes deliberately."""
+    row = _one(line)
+    assert row["qty"] == 1
+    assert row.get("proposed") is True, f"{line!r} states a unit and no quantity"
+
+
+@pytest.mark.parametrize("line", [
+    "CNMG 120408 TN2000 - 100 nos urgent",
+    "CNMG 120408 (100 nos)",
+    "CNMG 120408 - 100 nos TN2000",
+    "DNMG 150608 - 250 nos, need by friday",
+    "Pls quote 100 nos CNMG 120408 TN2000",
+    "Need 20 nos of TCMT 110204",
+    "TPG 321 K68 - 50 nos?",
+    "WNMG 080408 100 nos @ 250/-",
+    "CNMG 120408 100 nos, delivery 2 weeks",
+    "M760 WIPER INSERT - 50 pcs balance",
+    "TCMT 110204 HP - 20 pcs & 10 pcs of CNMG",
+])
+def test_a_quantity_no_pattern_could_read_is_flagged_wherever_it_sits(line):
+    """Every one of these states a quantity that `_QTY_PATTERNS` does not read,
+    because something follows it — a courtesy word, a grade, a delivery clause,
+    a bracket, a rate. The line must not travel as one unit in silence.
+
+    This is the class an earlier version of the flag lost. It had been anchored
+    to the end of the line to stop a grade token being read as a unit, and the
+    anchor took this with it: `- 100 nos urgent` is a hundred pieces quoted as
+    one, with nothing on screen to say so. The rule tests adjacency to a number
+    instead, so where the unit sits stopped mattering.
+    """
+    row = _one(line)
+    assert row.get("proposed") is True, (
+        f"{line!r} states a quantity nothing read — it must be flagged")
+
+
+@pytest.mark.parametrize("line", [
+    "CNMG 120408 TN2000 (nos)",
+    "CNMG 120408 TN2000 - nos?",
+    "CNMG 120408 TN2000 - nos \u2014",
+    "*CNMG 120408 TN2000 - nos*",
+    "CNMG 120408 TN2000 - 100-nos urgent",
+    "CNMG 120408 - nos 100 required",
+    "need cnmg120408, 20 pcs urgent",
+])
+def test_the_punctuation_around_a_unit_word_does_not_decide_whether_it_counts(line):
+    """Each of these lost the flag to one character.
+
+    An enumerated trailing class — `[\\s.,:;-]*$` — kept being wrong by exactly
+    the punctuation the writer happened to use: a closing bracket, a question
+    mark, an em dash, WhatsApp's bold asterisk. A hyphen between the number and
+    its unit (`100-nos`) defeated the adjacency arm the same way, and a unit
+    written *before* its number (`nos 100`) had no arm at all.
+
+    None of that is a distinction a customer is making. The last case is the
+    repository's own inbound seed set — `underspec-wa-no-grade`, channel
+    WhatsApp — so it is what a real enquiry looks like, not a construction.
+    """
+    row = _one(line)
+    assert row.get("proposed") is True, f"{line!r} lost its flag to punctuation"
+
+
+@pytest.mark.parametrize("line", [
+    "CNMG 120408-MP - qty to be confirmed",
+    "CNMG 120408 - qty TBC",
+    "DNMG 150608 quantity to follow",
+])
+def test_an_explicit_qty_keyword_counts_wherever_it_appears(line):
+    """"Qty to be confirmed" is the customer saying the number is not settled —
+    the strongest evidence there is that a person has to supply it, and the one
+    shape with no digit for an adjacency test to find.
+
+    `qty` and `quantity` are carved out of the adjacency rule because, unlike
+    `nos` or `pc` or `ea`, they never appear inside product prose: 0 of the
+    6,717 corpus rows contain either. So they may be matched anywhere without
+    reintroducing the false flags the adjacency rule exists to stop.
+    """
+    row = _one(line)
+    assert row["qty"] == 1
+    assert row.get("proposed") is True, f"{line!r} says the quantity is unsettled"
+
+
+@pytest.mark.parametrize("line", [
+    "WMT PC 805M MOULDED INSERTS",
+    "WMT PC 400M PRECISION PROFILING",
+    "DOV-LOK PCD MINI TIP INSERT NO WIPER",
+])
+def test_a_unit_word_inside_a_description_is_not_read_as_one(line):
+    """These are real catalogue descriptions, and all three used to travel
+    flagged: `PC` read as `pcs` and the English `NO` in "NO WIPER" read as a
+    count. Ten rows of the 6,717-row corpus were blocked for a unit word that
+    was a grade token or a preposition.
+
+    A quantity marker nobody could attribute sits at the *end* of the line —
+    `CNMG 120408-MP insert, nos` — which is what the anchor tests for. `PC` in
+    front of a dimension is not a unit, and a flag that fires on it is a flag
+    people learn to click through.
+    """
+    row = _one(line)
+    assert row["qty"] == 1
+    assert not row.get("proposed"), f"{line!r} is a description, not a quantity"
 
 
 def test_a_bare_code_is_one_unit_and_is_not_flagged():

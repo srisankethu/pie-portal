@@ -658,6 +658,74 @@ export interface DataStatus {
   can_manage_connection: boolean;
 }
 
+// ── the decoded product catalogue ───────────────────────────────────────────
+
+/** The parser's own run report, stored beside the catalogue at build time and
+ *  served verbatim — the portal never recomputes a census or a parse rate. */
+export interface CatalogReport {
+  total: number;
+  by_family: Record<string, number>;
+  by_grammar: Record<string, number>;
+  by_flag: Record<string, number>;
+  /** Per family, as a ratio; null where the family had no rows. */
+  parse_rates: Record<string, number | null>;
+  unresolved_family: number;
+  new_tokens_top: Record<string, number>;
+}
+
+export interface CatalogStatus {
+  path: string;
+  /** Always "deployment" today: one catalogue serves every organization on
+   *  this server. Shown, not hidden — per-tenant catalogues are a separate,
+   *  unbuilt feature. */
+  scope: string;
+  source: {
+    available: boolean;
+    /** Exactly why a build is impossible, when it is — submodule not
+     *  initialised vs corpus file missing are different fixes. */
+    reason: string | null;
+    pie_parser_root: string;
+    corpus: string;
+    pack: string;
+  };
+  exists: boolean;
+  records: number | null;
+  built_at: string | null;
+  size_bytes: number | null;
+  /** Provenance stamped on every record: which pack, which version, which
+   *  ruleset checksum — the facts that say WHICH catalogue answered a
+   *  resolution. */
+  stamp: {
+    pack_id?: string;
+    pack_version?: string;
+    org_id?: string;
+    org_version?: string;
+    ruleset_checksum?: string;
+    run_id?: string;
+    engine_version?: string;
+    schema_version?: string;
+  };
+  build: {
+    built_at?: string;
+    duration_s?: number;
+    rows_read?: number;
+    emitted?: number;
+    quarantined?: number;
+    corpus?: string;
+    corpus_fingerprint?: string;
+    pack?: string;
+  } | null;
+  report: CatalogReport | null;
+  /** Why the report is absent when it is — a catalogue built before the
+   *  report was kept beside it. */
+  report_missing: string | null;
+  auto_build: boolean;
+  /** What this process is currently resolving with (loaded lazily, so
+   *  index_loaded=false beside an existing file means "not asked yet"). */
+  loaded: { index_loaded: boolean; ruleset_checksum: string | null };
+  can_rebuild: boolean;
+}
+
 // ── Customer × Item commercial intelligence ─────────────────────────────────
 // All of it is cost/margin, so every one of these surfaces is manager/owner
 // only — there is no salesperson-safe projection of a margin analysis.

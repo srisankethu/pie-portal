@@ -97,6 +97,25 @@ def sales_tax_label() -> str:
 #: wrong is one people learn to click through.
 _UNIT_WORDS = r"(?:nos?|no\.|pcs?|pieces?|units?|ea|each|qty|quantity)"
 
+#: The two unit words that are *only* ever quantity keywords.
+#:
+#: `pc`, `no` and `ea` all appear inside ordinary product prose — `WMT PC
+#: 805M`, `INSERT NO WIPER` — so they are only evidence of a quantity when
+#: they sit against a number or end the line. `qty` and `quantity` carry no
+#: such risk: they occur in 0 of the 6,717 corpus rows, and a person who
+#: types one is talking about a count and nothing else.
+_QTY_KEYWORD = r"(?:qty|quantity)"
+
+#: The unit words long enough that they are never a token in a description.
+#:
+#: This is `_UNIT_WORDS` minus the abbreviations that collide with product
+#: prose: bare `pc` (`WMT PC 805M`), bare `no` and `no.` (`INSERT NO WIPER`),
+#: bare `ea`, and the singulars. Only these may be read as a unit when they
+#: come *before* the number — `- nos 100 required` — because that position is
+#: exactly where `PC 805M` would otherwise be misread. Measured: 0 of the
+#: 6,717 corpus rows match in that position.
+_UNIT_STRONG = r"(?:nos|pcs|pieces|units|each|qty|quantity)"
+
 #: A list marker a person typed to number their enquiry — "1." or "2)".
 #:
 #: Stripped before anything reads a quantity, and it must never be read *as* one:
@@ -113,8 +132,17 @@ _LIST_MARKER = re.compile(r"^\(?\d{1,2}[.)]\s+")
 #: rule matched any trailing number after whitespace, so `DNMG 150608` came back
 #: as code `DNMG` at a quantity of a hundred and fifty thousand: the code mangled
 #: and the quantity invented, from a line a buyer would call perfectly ordinary.
-#: A comma, an `x` or a unit word is explicit enough to lift the bound; bare
-#: whitespace is not.
+#: A comma, an `x`, a dash or a `qty` keyword is explicit enough to lift the
+#: bound; bare whitespace is not.
+#:
+#: A *unit word* is not, either, and that correction is the point of this note.
+#: The bound used to be lifted by the mere presence of one, on the reasoning
+#: that a unit word makes the number unambiguous — but the unit sits *after* the
+#: number, so it says nothing about which digits were meant. `DNMG 150608 nos`
+#: therefore came back as code `DNMG` at 150,608: exactly the defect this
+#: constant was introduced to stop, re-entering through the door held open for
+#: it. The bound now travels with the separator, and only an explicit one lifts
+#: it — `DNMG 150608 - 250000 nos` is still a quarter-million pieces.
 _BARE_QTY_DIGITS = 4
 
 #: Tried in order, strongest evidence first, and the bare-number rule last
@@ -122,21 +150,42 @@ _BARE_QTY_DIGITS = 4
 #: rest of the line `code`.
 _QTY_PATTERNS = (
     # "<code>, 100"  ·  "<code>, x100" — a comma is a deliberate separator.
-    re.compile(r"^(?P<code>.*?)\s*,\s*x?\s*(?P<qty>\d+)\s*$", re.IGNORECASE),
+    # The comma is a separator when it is followed by whitespace, or when what
+    # precedes it is not a digit. `digit,digit` with nothing between them is a
+    # European decimal, and reading it as a quantity cost both halves of the
+    # line: `ENDMILL HARL 5FL 8x8x40x87 R0,5` came back as code `...R0` at a
+    # quantity of 5 — a 0.5 mm corner radius turned into an order for five of a
+    # product that is not the one asked for, and one that collides with a
+    # genuine `R0`. 790 catalogue rows carry a decimal comma; this rule was
+    # truncating every one that ended in it.
+    re.compile(r"^(?P<code>.*?)\s*,(?:\s+|(?<=\D,))\s*x?\s*(?P<qty>\d+)\s*$",
+               re.IGNORECASE),
     # "<code> x100"  ·  "<code>x100"
     re.compile(r"^(?P<code>.*?)\s*\bx\s*(?P<qty>\d+)\s*$", re.IGNORECASE),
-    # "<code> - 100 nos"  ·  "<code> 100 pcs"  ·  "<code> qty 100 nos"
-    # A unit word has to be present — that is what makes this safe on a code
-    # whose own tail is numeric.
-    re.compile(rf"^(?P<code>.*?)[\s,\t:\u2013\u2014-]+"
-               rf"(?:(?:qty|quantity)[\s.:-]*)?(?P<qty>\d+)\s*{_UNIT_WORDS}\s*[.]?$",
+    # "<code> - 100 nos"  ·  "<code> qty 100 nos" — an explicit separator or the
+    # keyword is somebody saying "a quantity starts here", so it is unbounded.
+    re.compile(rf"^(?P<code>.*?)(?:[,\t:\u2013\u2014-]\s*|[\s,\t:\u2013\u2014-]+(?:qty|quantity)[\s.:-]*)"
+               rf"(?P<qty>\d+)\s*{_UNIT_WORDS}(?![A-Za-z])\s*[.]?$",
+               re.IGNORECASE),
+    # "<code> 100 pcs" — the same shape with nothing but whitespace between the
+    # code and the number, so `_BARE_QTY_DIGITS` still applies. The unit word
+    # cannot lift that bound: it sits after the number and says nothing about
+    # which digits were meant, which is how `DNMG 150608 nos` was read as
+    # 150,608 of a code called `DNMG`.
+    re.compile(rf"^(?P<code>.*?)[\s\t]+(?P<qty>\d{{1,{_BARE_QTY_DIGITS}}})"
+               rf"\s*{_UNIT_WORDS}(?![A-Za-z])\s*[.]?$",
                re.IGNORECASE),
     # "<code> qty 100" — the keyword standing in for the unit word.
     re.compile(r"^(?P<code>.*?)[\s,\t:\u2013\u2014-]+(?:qty|quantity)[\s.:-]*"
                r"(?P<qty>\d+)\s*[.]?$", re.IGNORECASE),
     # "100 nos <code>"  ·  "100 nos of <code>" — leading, and it needs a unit
     # word to be told apart from a code that starts with digits.
-    re.compile(rf"^(?P<qty>\d+)\s*{_UNIT_WORDS}[\s.:]*(?:of\s+)?(?P<code>.+)$",
+    #
+    # The lookahead is load-bearing: without it the alternation matches a
+    # *prefix* of the next token, so `2001174 nos` read `no` as the unit and
+    # left `s` as the product code — a quantity of two million of a code one
+    # character long, out of a line naming one part.
+    re.compile(rf"^(?P<qty>\d+)\s*{_UNIT_WORDS}(?![A-Za-z])[\s.:]*(?:of\s+)?(?P<code>.+)$",
                re.IGNORECASE),
     # "qty 25 <code>"  ·  "qty: 25 nos <code>"
     re.compile(rf"^(?:qty|quantity)[\s.:-]*(?P<qty>\d+)\s*(?:{_UNIT_WORDS})?"
@@ -190,6 +239,20 @@ def _split_rfq(text: str) -> List[Dict[str, Any]]:
         for pattern in _QTY_PATTERNS:
             m = pattern.match(body)
             if m and any(ch.isalnum() for ch in m.group("code")):
+                # Zero is not a quantity, and reading one costs the code.
+                # `END MILL W4N1 12x12x26x83 R2,0` is a 2.0 mm corner radius
+                # written with a European decimal comma; the comma rule read
+                # `,0` as an order of zero, clamped it to one, and handed on
+                # `…R2` — a *different product*, and one that collides with a
+                # genuine `R2`. Twenty catalogue rows are written that way.
+                #
+                # It also silently discarded a real quantity: because a pattern
+                # had matched, `250000 nos ENDMILL … Rad 1,0` never reached the
+                # leading-quantity rule or the flag below, so a quarter-million
+                # piece line travelled as one. Falling through instead lets the
+                # right rule have it.
+                if int(m.group("qty")) == 0:
+                    continue
                 code = m.group("code").strip().rstrip(",").strip()
                 code = re.sub(r"\s*x$", "", code, flags=re.IGNORECASE).strip()
                 code = re.sub(rf"[\s,:–—-]*{_UNIT_WORDS}[\s.]*$", "", code,
@@ -198,8 +261,60 @@ def _split_rfq(text: str) -> List[Dict[str, Any]]:
                 break
         else:
             code = body.rstrip(",").strip()
-            # No quantity found. A unit word left in the line says one was meant.
-            if re.search(rf"\b{_UNIT_WORDS}\b", code, re.IGNORECASE):
+            # No quantity found. A unit word left in the line says one was
+            # meant — but only where it is *doing the work of a unit*, and the
+            # test for that is adjacency to a number, not position in the line.
+            #
+            # `\d\s*{unit}\b` — the unit sits against a number, anywhere in the
+            # line: `- 100 nos urgent`, `(100 nos)`, `100 nos TN2000`, and
+            # `2001174nos` with no space at all. The last of those is why the
+            # digit is inside the pattern rather than a `\b` in front of it: a
+            # `\b` needs a boundary before the word and there is none between a
+            # digit and a letter, so that shape used to default silently to 1.
+            #
+            # The separator between number and unit is `[\s.-]*`, not a space:
+            # `100-nos` is how plenty of people write it, and a hyphen there
+            # cost the flag entirely.
+            #
+            # `\b{strong}[\s.-]*\d` — the unit can also come *first*:
+            # `- nos 100 required`. Only the long forms are allowed to, because
+            # that position is precisely where `WMT PC 805M` sits, so bare `pc`,
+            # `no` and `ea` are excluded from this arm and only this one.
+            #
+            # `\b{unit}\W*$` — or the unit stands at the end with no number at
+            # all: `insert, nos`. A marker with nothing to attach to is exactly
+            # the case a human has to read. The trailing run is `\W*` rather
+            # than an enumerated punctuation class, because the enumeration kept
+            # being wrong by one character — `(nos)`, `nos?`, `nos —` and
+            # WhatsApp's `*nos*` each defeated a list that did not name them,
+            # and `\W*` cannot swallow a digit, so it stays specific.
+            #
+            # `\bqty|quantity\b` — and the explicit keyword counts wherever it
+            # appears, because unlike `nos` or `pc` it is never a grade token or
+            # an English word in a description: it occurs in 0 of the 6,717
+            # corpus rows. `CNMG 120408-MP - qty to be confirmed` is the
+            # customer saying the number is not settled, which is the strongest
+            # evidence there is that a person must supply it — and adjacency
+            # alone would miss it, since there is no digit to be adjacent to.
+            #
+            # What neither arm matches is a unit word that is merely *present*,
+            # which the previous rule (a bare search) treated as evidence. It
+            # read the grade token in `WMT PC 805M MOULDED INSERTS` as `pcs` and
+            # the English in `DOV-LOK PCD MINI TIP INSERT NO WIPER` as a count —
+            # ten real catalogue rows blocked for a unit that was not one, and a
+            # flag that fires on ordinary descriptions is one people learn to
+            # click through.
+            #
+            # Measured, not reasoned about: over all 6,717 corpus rows in three
+            # shapes this flags none where the bare search flagged ten, and it
+            # holds every quantity-bearing shape an adversarial pass could
+            # construct. An earlier attempt anchored to the end of the line
+            # alone; it cleared the false flags and lost the flag on `- 100 nos
+            # urgent`, which is a hundred pieces quoted as one, in silence.
+            if re.search(rf"(?:\b{_QTY_KEYWORD}\b"
+                         rf"|\d[\s.-]*{_UNIT_WORDS}\b"
+                         rf"|\b{_UNIT_STRONG}[\s.-]*\d"
+                         rf"|\b{_UNIT_WORDS}\W*$)", code, re.IGNORECASE):
                 read = ("quantity not read from this line — assumed 1. "
                         "Check it against what the customer wrote.")
 

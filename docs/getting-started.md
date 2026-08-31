@@ -131,6 +131,12 @@ python scripts/build_catalog.py
 This writes `backend/data/products.jsonl`. You can skip it — the backend builds
 it lazily on first use — but doing it now makes the first quote much faster.
 
+There is no need to remember this command later: **Setup → Decoded catalogue**
+reports whether a catalogue exists, which pack, version and ruleset checksum
+built it, and rebuilds it on a button. That screen is the one to use once the
+app is running; this script is here because step 6 happens before there is an
+app to click in.
+
 ---
 
 ## 7. Configure (optional)
@@ -286,9 +292,13 @@ rm backend/data/platform.db && python -m app.bootstrap
 
 **Every quote line shows `PIE OFFLINE`**
 
-pie-parser is missing or the catalogue could not be built. Re-run step 4, then
-`python scripts/build_catalog.py`. Confirm `PIE_PARSER_ROOT` points at a real
-checkout. The Decision Platform is unaffected by this.
+pie-parser is missing or the catalogue could not be built. **Setup → Decoded
+catalogue** says which of the two it is — an uninitialised submodule and a
+missing corpus file are different fixes, and the screen names the one you have,
+with the path it looked at. Re-run step 4 if the engine is absent, then rebuild
+from that screen (or `python scripts/build_catalog.py`). Confirm
+`PIE_PARSER_ROOT` points at a real checkout. The Decision Platform is
+unaffected by this.
 
 **Backend starts slowly**
 

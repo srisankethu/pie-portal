@@ -40,6 +40,8 @@ nothing, macOS/Linux and Windows, in about 15 minutes.
 | [Zoho setup](docs/zoho-setup.md) | Connecting a live Zoho Books account (read-only) |
 | [Resolution API](docs/resolution-api.md) | `POST /api/v1/resolve` — the key-authenticated endpoint an ERP or CPQ calls to resolve a line of enquiry text, and the four ways it says no |
 | [Role reviews](docs/reviews/) | What each role actually experienced, end to end, and the disposition of every finding |
+| [User flow paths](docs/user-flows.md) | Every path a person or machine can walk — screens, branches, refusals and terminal states, per role, traced from the code |
+| [User flow audit](docs/user-flow-audit.md) | Whether those flows actually behave that way — the same paths executed against a live app, with what held, what did not, and what only looked broken |
 | [Application engineering](docs/concepts/01-application-engineering.md) | How much of the item master reaches the PIE catalogue, measured — and what that does and does not justify building |
 | [Confidence and input completeness](docs/concepts/13-confidence-and-input-completeness.md) | Whether `row_confidence 0.00` over the item master is the engine failing or the engine abstaining, settled by suppressing one column |
 | [Machine learning](docs/concepts/14-machine-learning.md) | Which grain this book can be learned at, why a fitted model discloses cost more freely than a rule, and how to route a job between a model, an LLM and arithmetic |
@@ -56,7 +58,7 @@ cd pie-portal
 
 ./scripts/setup_pie_parser.sh                        # PIE engine (private submodule)
 python -m pip install -r backend/requirements.txt
-python scripts/build_catalog.py
+python scripts/build_catalog.py                      # or later from Setup → Decoded catalogue
 (cd frontend && npm install)
 
 # terminal 1

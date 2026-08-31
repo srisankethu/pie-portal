@@ -30,12 +30,24 @@ import { Landing } from "./Landing";
  * `onEnter` is a required prop but serialises to nothing — static markup keeps
  * the `href="#signin"` anchors and drops the handlers, which is right: without
  * JavaScript the sign-in card cannot open anyway, and with it React owns the
- * page before anybody clicks. `onSignUp` is omitted because whether this
- * deployment accepts sign-ups is a runtime answer (`useSignupOffer`); the
- * markup is identical either way.
+ * page before anybody clicks.
+ *
+ * `onSignUp` is passed, and it is the one prop here that changes what the
+ * document *says*. Whether a deployment accepts sign-ups is a runtime answer
+ * (`useSignupOffer`), and the page now labels its own primary action for the
+ * door that will actually open — "Start free" where sign-up is offered, "Sign
+ * in" where it is not. A static render has to assume one, so it assumes the
+ * one a marketing deployment exists for: this document is the crawlable
+ * surface of a page whose whole job is to get sign-ups, and baking "Sign in"
+ * as its call to action would sell the product to nobody.
+ *
+ * Where a deployment does not accept them, the mounted app corrects the label
+ * within a paint — the same swap it already makes for the rupee price list.
+ * That is the right way round: the common case is served statically and the
+ * exception is corrected, rather than every visitor being shown the exception.
  */
 export function renderLandingMarkup(): string {
-  return renderToStaticMarkup(<Landing onEnter={() => {}} />);
+  return renderToStaticMarkup(<Landing onEnter={() => {}} onSignUp={() => {}} />);
 }
 
 /** The theme's design tokens as one `:root` rule.

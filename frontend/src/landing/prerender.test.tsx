@@ -7,7 +7,10 @@
  * build would also fail, but at the end of `vite build` and without naming
  * the property that broke.
  */
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+
+import { Landing } from "./Landing";
 // The server's own constant, inlined by Vite at transform time (`?raw`) —
 // the same idiom `platform/route.test.ts` uses to read the destination list
 // rather than restate it.
@@ -242,5 +245,43 @@ describe("every prerendered page", () => {
       const h1 = html.match(/<h1[^>]*>(.*?)<\/h1>/s)?.[1] ?? "";
       expect(h1, `${slug} h1`).toContain(short);
     }
+  });
+});
+
+describe("the page's own call to action", () => {
+  /** The landing rendered as each kind of deployment sees it. */
+  const offered = renderToStaticMarkup(<Landing onEnter={() => {}} onSignUp={() => {}} />);
+  const notOffered = renderToStaticMarkup(<Landing onEnter={() => {}} />);
+
+  it("says 'Start free' where the deployment accepts sign-ups", () => {
+    expect(offered).toContain(">Start free<");
+    expect(offered).toContain(">Start your trial<");
+  });
+
+  it("never says 'Start free' where it does not", () => {
+    // The defect: `onSignUp` is absent wherever SELF_SERVE_SIGNUP is off, the
+    // handler fell back to the sign-in card, and the label did not follow — so
+    // a button reading "Start free" opened a form asking for a password the
+    // visitor had never set. The same shape as the demo button pointing at a
+    // placeholder, and it survived that fix because it lives elsewhere.
+    expect(notOffered).not.toContain(">Start free<");
+    expect(notOffered).not.toContain(">Start your trial<");
+  });
+
+  it("promises no free trial it cannot let anyone start", () => {
+    // "Commercial Intelligence free for 30 days — no card" over a sign-in form
+    // is the same sentence pointing at the same closed door.
+    expect(offered).toContain("free for 30 days");
+    expect(notOffered).not.toContain("free for 30 days");
+  });
+
+  it("bakes the offered case, because that is what a marketing page is for", () => {
+    // A static render has to assume one. It assumes the door a deployment
+    // running this page wants open; the mounted app corrects the label within
+    // a paint where it is not, which is the same swap the rupee price list
+    // already makes. The reverse — baking "Sign in" for everyone — would sell
+    // the product to nobody, and to a crawler it is the page's headline action.
+    const landing = documents.find((d) => d.page.slug === "")!.html;
+    expect(landing).toContain(">Start free<");
   });
 });

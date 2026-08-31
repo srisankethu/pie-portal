@@ -120,22 +120,28 @@ python -m pip install -r backend/requirements.txt
 
 ## 6. Build the product catalogue
 
-pie-parser ships a corpus of 6,717 real Kennametal/WIDIA nomenclature rows. The
-decoded catalogue is deterministic and large (~13 MB), so it is gitignored and
-built locally:
+Each connected company decodes its own item-master export, into its own
+catalogue at `backend/data/catalogues/<connection_id>/products.jsonl`. They are
+deterministic and large (~13 MB each), so they are gitignored and built locally.
+
+pie-parser ships a corpus of 6,717 real Kennametal/WIDIA nomenclature rows, and
+that corpus is the **seed**: your first connected company inherits it, once, so
+a fresh install resolves without uploading anything. After that a company
+uploads its own export and the seed is never read for it again.
 
 ```bash
 python scripts/build_catalog.py
 ```
 
-This writes `backend/data/products.jsonl`. You can skip it — the backend builds
-it lazily on first use — but doing it now makes the first quote much faster.
+That seeds each organization's first company and builds what is missing. You
+can skip it — the app does both at start-up — but doing it now makes the first
+quote much faster.
 
 There is no need to remember this command later: **Setup → Decoded catalogue**
-reports whether a catalogue exists, which pack, version and ruleset checksum
-built it, and rebuilds it on a button. That screen is the one to use once the
-app is running; this script is here because step 6 happens before there is an
-app to click in.
+reports, per company, whether a catalogue exists, which pack, version and
+ruleset checksum built it, and rebuilds it on a button. That screen is the one
+to use once the app is running; this script is here because step 6 happens
+before there is an app to click in.
 
 ---
 
@@ -292,11 +298,14 @@ rm backend/data/platform.db && python -m app.bootstrap
 
 **Every quote line shows `PIE OFFLINE`**
 
-pie-parser is missing or the catalogue could not be built. **Setup → Decoded
-catalogue** says which of the two it is — an uninitialised submodule and a
-missing corpus file are different fixes, and the screen names the one you have,
-with the path it looked at. Re-run step 4 if the engine is absent, then rebuild
-from that screen (or `python scripts/build_catalog.py`). Confirm
+pie-parser is missing, or this quote's company has no catalogue. **Setup →
+Decoded catalogue** says which of the two it is, per company — an uninitialised
+submodule, a missing corpus file and a company that has uploaded nothing are
+three different fixes, and the screen names the one you have. Note that a quote
+resolves against the catalogue of the company it was raised from and never
+another's, so one company can be fine while another is empty. Re-run step 4 if
+the engine is absent, then rebuild from that screen (or
+`python scripts/build_catalog.py`). Confirm
 `PIE_PARSER_ROOT` points at a real checkout. The Decision Platform is
 unaffected by this.
 

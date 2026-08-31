@@ -103,6 +103,7 @@ two handles.
 | field | required | meaning |
 |---|---|---|
 | `text` | yes | One enquiry line, up to 512 characters. Send one line per request — a splitter that guessed line boundaries would be making a decision this endpoint could not explain afterwards. |
+| `company_id` | when the organization has several | Which connected company's catalogue answers. Each company decodes its own item master, so this decides what the text is resolved *against*. With one company it is optional and ignored; with several, omitting it is a **422** listing the ids (below). |
 | `customer_ref` | no | The customer, as your system names them. Used to read this organization's confirmed code mappings, and — when a price is supplied — to price against that relationship's history. An unknown name resolves the text alone. |
 | `quantity` | no | For the quantity band. Ignored without `proposed_price`. |
 | `proposed_price` | no | Unit price you intend to quote. Supplying it adds the `commercial` block; omitting it keeps this a pure nomenclature call. |
@@ -146,6 +147,7 @@ two handles.
   "engine": {
     "catalogue_available": true,
     "ruleset_checksum": "f67131512eb97513",
+    "company": "cn_7f21a9",
     "input_semantics": "IDENTITY",
     "outcome": "AUTO_MATCH"
   },
@@ -240,7 +242,7 @@ This is the part worth reading twice. `status: "ABSTAINED"` is an answer, and
 | `NO_MATCH` | 200 | `true` | The catalogue was searched and holds nothing like this. | Record the gap. |
 | `AMBIGUOUS` | 200 | `true` | Several records answer it and the text does not choose. They are in `alternatives`, ranked. | Choose one. |
 | `NEEDS_CONFIRMATION` | 200 | `true` | The catalogue holds this exact code, but nobody has confirmed that *this customer's* code means it. | Confirm it — see below. |
-| `CATALOGUE_UNAVAILABLE` | 503 | `false` | This deployment has no catalogue loaded. **Nothing was asked.** | Retry; do not record anything. |
+| `CATALOGUE_UNAVAILABLE` | 503 | `false` | This company has no catalogue built. **Nothing was asked.** | Retry; do not record anything. Have an owner build it on Setup → Decoded catalogue. |
 | `ENGINE_ERROR` | 503 | `false` | The engine was asked and the ask failed. | Retry; do not record anything. |
 
 Each of the three `200` reasons has a *different* next move, which is the test
@@ -258,6 +260,34 @@ The platform draws it internally too: `pie_service.catalog_available` exists
 precisely to separate "the pack does not cover this item" from "nobody asked the
 pack", and this endpoint carries that separation to the wire rather than
 collapsing both into a null.
+
+### The sixth answer: naming the company
+
+Not an abstention, because nothing was asked and the caller can fix it: an
+organization reading several companies' books gets a **422** when the request
+names none.
+
+```json
+{
+  "detail": {
+    "message": "This organization reads more than one company's books, and each has its own product catalogue. Name the company this line is for (company_id): cn_7f21a9 (SLS Engineers), cn_b40c12 (4U Precision)",
+    "companies": [
+      { "connection_id": "cn_7f21a9", "label": "SLS Engineers" },
+      { "connection_id": "cn_b40c12", "label": "4U Precision" }
+    ]
+  }
+}
+```
+
+Send `company_id` and retry. The refusal exists because each company decodes its
+own item master: answering from an unspecified catalogue would be a provenanced
+answer about possibly the wrong company's product, which is worse than no answer
+and looks exactly like a right one. An id that is not this key's organization's
+gets the same 422, listing only the companies that are — a company you may not
+see is a company this endpoint will not confirm exists.
+
+An organization with **one** company answers with no `company_id` at all, so a
+single-entity integration needs no change.
 
 ---
 

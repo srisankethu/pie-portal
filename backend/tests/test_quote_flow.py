@@ -19,6 +19,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 import dbsupport
+import piesupport
 from app.db import get_session
 from app.domain import models  # noqa: F401  (populate metadata)
 from app.ingestion.zoho_books_service import ZohoBooksService
@@ -34,6 +35,13 @@ OWNER = "s.menon@pie.example"
 SALES = "r.nair@pie.example"
 
 
+#: The one company this organization reads books from, and therefore the
+#: catalogue its quotes resolve against. One rather than three on purpose: with
+#: a single company nobody has to name it, which is the path every existing
+#: single-entity deployment takes. The several-company refusal has its own test.
+COMPANY = piesupport.company_id("cx_quote_flow")
+
+
 @pytest.fixture()
 def client():
     """The quote endpoints on their own database.
@@ -42,6 +50,11 @@ def client():
     in-memory schema, the seeded org and users, and `get_session` overridden.
     These tests used to run against whatever `data/platform.db` happened to hold
     because the login they used consulted no database at all.
+
+    The company and its catalogue are part of the fixture because they are part
+    of resolving anything at all: a quote is raised from a company and reads
+    that company's decoded item master. Without one every line here would come
+    back UNRESOLVED — correctly, and uselessly for these tests.
     """
     engine = dbsupport.fresh_engine()
     Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
@@ -49,8 +62,11 @@ def client():
 
     s = Maker()
     ensure_org_and_users(s)
+    s.add(models.ZohoConnection(connection_id=COMPANY, organization_id="org_pie",
+                                label="SLS Engineers", zoho_organization_id="z1"))
     s.commit()
     s.close()
+    piesupport.give_company_a_catalogue(COMPANY)
 
     api = FastAPI()
     api.include_router(platform_auth.router)

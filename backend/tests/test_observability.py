@@ -584,28 +584,31 @@ class TestRegisteredHealthChecks:
         health._components.clear()
         health._components.update(saved)
 
-    def test_the_pie_parser_check_can_report_ready(self, checks, monkeypatch):
-        import app.pie_service as pie_module
+    def test_the_pie_parser_check_can_report_ready(self, checks):
+        """The engine, not a catalogue.
 
-        class _Loaded:
-            catalog_available = True
-
-        monkeypatch.setattr(pie_module, "pie_service", _Loaded())
+        This used to assert on ``catalog_available``, which was a process-wide
+        fact while one deployment-wide catalogue answered every organization.
+        Catalogues are per company now, so a process probe has no single
+        catalogue to report and no session to enumerate companies with — and a
+        probe that loaded several tenants' indexes to answer a liveness check
+        would be a worse thing than the one it replaced.
+        """
         status, message = checks["pie_parser"]()
         assert status is HealthStatus.HEALTHY, message
+        # It says where the per-company answer lives, rather than implying that
+        # a healthy process means every company can resolve.
+        assert "catalogue" in message.lower()
 
-    def test_the_pie_parser_check_names_a_missing_catalogue(self, checks, monkeypatch):
-        import app.pie_service as pie_module
+    def test_the_pie_parser_check_names_a_missing_engine(self, checks, monkeypatch, tmp_path):
+        from app.config import settings
 
-        class _Unloaded:
-            catalog_available = False
-
-        monkeypatch.setattr(pie_module, "pie_service", _Unloaded())
+        monkeypatch.setattr(settings, "PIE_PARSER_ROOT", tmp_path)
         status, message = checks["pie_parser"]()
         assert status is HealthStatus.DEGRADED, message
         assert "no attribute" not in message, (
-            "the check must report the catalogue, not its own broken read")
-        assert "catalogue" in message.lower()
+            "the check must report the engine, not its own broken read")
+        assert "pie-parser is not present" in message
 
     def test_the_scheduler_check_is_quiet_where_nothing_is_scheduled(self, checks, monkeypatch):
         """`start_scheduler` declines a fixture source by design — not a fault."""

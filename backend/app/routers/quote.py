@@ -190,7 +190,23 @@ def _get_line(quote: Quote, line_id: str) -> Line:
 def create_quote(body: CreateQuoteRequest,
                  principal: Principal = Depends(current_principal),
                  session: Session = Depends(get_session)):
-    q = store.create(body.customer, body.customer_id, principal.organization_id)
+    """Start a quote against one company's catalogue.
+
+    The company is decided here, once, rather than per line: a quote's lines
+    are compared against each other on screen, and two of them decoded by
+    different companies' packs would look comparable and not be. Which company
+    answers is ``resolution.company_for``'s decision, not this router's — the
+    same function the resolution API refuses through, so both surfaces agree on
+    what an unnamed company means when the org reads several books.
+    """
+    try:
+        company = resolution.company_for(session, principal.organization_id,
+                                         body.connection_id)
+    except resolution.CompanyNotNamed as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            {"message": str(e), "companies": e.companies})
+    q = store.create(body.customer, body.customer_id, principal.organization_id,
+                     connection_id=company)
     return _view(session, principal, q)
 
 
@@ -547,6 +563,9 @@ def create_estimate(quote_id: str,
     # omit was an approval gate the caller could skip.
     quote_service.assess_and_record(
         session, org, quote_id=quote_id, customer_ref=q.customer_ref,
+        # Which company's catalogue resolved these lines, so the frozen row
+        # says what it was judging as well as what it decided.
+        connection_id=q.connectionId,
         lines=[quote_service.QuoteLineInput(
             line_id=ln.id,
             # The code, matching what the screen's own assessment sends. The

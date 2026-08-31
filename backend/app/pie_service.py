@@ -19,12 +19,14 @@ import importlib.util
 import logging
 import sys
 import threading
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from . import cache as cache_module
-from .catalog import catalog_stamp, ensure_catalog
+from . import catalog as catalog_module
+from .catalog import catalog_stamp
 from .config import settings
 
 log = logging.getLogger("pie_portal.pie")
@@ -201,16 +203,16 @@ def _read_catalog_version(path: Optional[Path]) -> str:
     return str(catalog_stamp(Path(path)).get("ruleset_checksum") or "")
 
 
-#: ``pack_families``' memo. A sentinel rather than ``None`` because ``None``
-#: is a real answer ("no pack readable") — and deliberately not a cached one:
-#: a pack fetched after boot must be seen on the next call, or every family
-#: edit stays refused until a restart for a failure that has been fixed.
-_FAMILIES_UNREAD = object()
-_families_memo: Any = _FAMILIES_UNREAD
+#: ``pack_families``' memo, keyed by pack path. Kept per path because packs
+#: are per company now and an organization may read several. A *failed* read is
+#: deliberately not cached: a pack fetched after boot must be seen on the next
+#: call, or every family edit stays refused until a restart for a failure that
+#: has been fixed.
+_families_memo: Dict[str, tuple] = {}
 
 
-def pack_families() -> Optional[tuple]:
-    """The family vocabulary the configured pack declares, or None without a pack.
+def pack_families(pack_path: Optional[Path] = None) -> Optional[tuple]:
+    """The family vocabulary one pack declares, or None if it cannot be read.
 
     Read from the manifest alone: resolving a code needs the whole engine, but
     the vocabulary is one YAML list, and a policy save must not pay for grammar
@@ -219,47 +221,29 @@ def pack_families() -> Optional[tuple]:
     "what counts as a declared family" keeps exactly one definition — the one
     ``load_pack`` itself uses.
 
-    ``None`` means *no pack is readable here* — a checkout without the private
-    submodule — which is a different answer from an empty vocabulary. The
-    caller must treat it as "there is nothing to validate against", never as
-    "every name is fine"; ``commercial.policy.save_for_org`` refuses a family
-    edit outright in that state rather than waving it through.
+    ``None`` means *this pack is not readable here* — a checkout without the
+    private submodule, or a pack id this engine no longer ships — which is a
+    different answer from an empty vocabulary. The caller must treat it as
+    "there is nothing to validate against", never as "every name is fine";
+    ``commercial.policy.save_for_org`` refuses a family edit outright in that
+    state rather than waving it through.
 
-    A successful read is cached for the life of the process, like the
-    catalogue: the pack is loaded once and never reloaded, so re-reading the
-    manifest could only ever disagree with the engine already running. A
-    *failed* read is not cached — the pack may be fetched after boot, and a
-    memoized failure would keep refusing family edits until a restart.
-
-    **One pack per deployment, not per organisation, and that is a stated limit
-    rather than an oversight.** ``settings.PIE_PACK`` is a deployment-wide
-    setting, so a deployment serves one organisation layer. pie-parser's packs
-    are layered precisely so a second distributor can have its own
-    (``packs/org/<source>/`` over a shared ``packs/nomenclature/``), and the
-    obvious next step — an ``Organization.config["pie_pack"]`` resolved per
-    request — was deliberately **not** taken here.
-
-    The reason is the catalogue. ``app/catalog.py`` builds one JSONL index by
-    running the corpus through *one* pack, and ``PieService._ensure_index``
-    loads exactly that file into one process-wide index; every identity lookup
-    and every line resolution reads it. Making the *vocabulary* per
-    organisation while the index stayed deployment-wide would leave two
-    organisations validating family names against different packs and resolving
-    products against the same one — a half-measure that is less coherent than
-    the single-pack state it replaced, and the kind of thing §1 means by not
-    weakening a rule to make output appear.
-
-    Doing it properly is a design question with an answer this function cannot
-    supply: whether the index is built per organisation and held per
-    organisation (memory, and a build step per tenant), or resolution becomes
-    index-per-request (a load on the hot path), or the deployment stays
-    single-pack and a second distributor gets a second deployment — which is
-    what happens today and is a legitimate answer for three legal entities
-    selling the same manufacturer's product.
+    **A pack per company, so a pack argument.** This used to read
+    ``settings.PIE_PACK`` and document at length why one deployment meant one
+    organisation layer: the catalogue was built from one pack into one
+    process-wide index, so making the *vocabulary* per organisation while the
+    index stayed shared would have left two organisations validating names
+    against different packs and resolving products against the same one. That
+    reasoning was sound and its premise is gone — each company now builds its
+    own catalogue through its own pack — so the vocabulary follows the pack
+    that actually decoded the rows. ``commercial.policy`` unions the packs of
+    the organization's companies, which is the honest vocabulary for a policy
+    that applies to all of them.
     """
-    global _families_memo
-    if _families_memo is not _FAMILIES_UNREAD:
-        return _families_memo
+    pack_path = pack_path or settings.PIE_PACK
+    cached = _families_memo.get(str(pack_path))
+    if cached is not None:
+        return cached
     try:
         root = str(settings.PIE_PARSER_ROOT)
         if root not in sys.path:
@@ -275,34 +259,76 @@ def pack_families() -> Optional[tuple]:
         # is the drift CLAUDE.md §2 is about: load_pack already owns it.
         from engine.pack import load_pack  # noqa: PLC0415
 
-        _families_memo = list(load_pack(settings.PIE_PACK).families)
-        return _families_memo
+        families = tuple(load_pack(pack_path).families)
+        _families_memo[str(pack_path)] = families
+        return families
     except Exception:  # noqa: BLE001 — an absent pack must not 500 a policy save
         log.warning("PIE pack manifest unreadable; no family vocabulary to "
                     "validate against", exc_info=True)
         return None
 
 
+#: How many companies' catalogues stay resident at once.
+#:
+#: Each is a decoded index over roughly 6,700 records plus the resolver's
+#: sources, so "one per company, forever" is a memory profile nobody measured.
+#: Three is chosen against the shape of the business this serves — a group runs
+#: two or three legal entities and a person works one at a time — not against a
+#: benchmark. The number to watch is the eviction rate: if a deployment thrashes
+#: here, raise it deliberately with that measurement in hand rather than because
+#: a larger number feels safer.
+MAX_RESIDENT_CATALOGUES = 3
+
+
+@dataclass
+class _View:
+    """One company's loaded catalogue.
+
+    ``sources`` is built lazily and separately from ``index``: a sync asks only
+    "is this SKU a catalogue record?", and making every item pull construct the
+    RFQ resolver's equivalence sources to answer it would charge it for
+    machinery it never calls. That split is the old ``_ensure_index`` versus
+    ``_ensure_loaded`` distinction, kept — it is now per company rather than
+    per process.
+    """
+
+    path: Path
+    version: str
+    index: Any
+    sources: Any = None
+
+
 class PieService:
-    """Loads pie-parser once and resolves RFQ lines through it."""
+    """Loads pie-parser once, and each company's catalogue on demand.
+
+    The engine module is process-wide — it is code, and every company runs the
+    same code. What is per company is the *data*: the decoded catalogue, the
+    index built from it, and the sources the resolver searches. Those live in a
+    small bounded cache keyed by connection id.
+    """
 
     def __init__(self) -> None:
         self._mod = None
-        self._sources = None
         self._lock = threading.Lock()
-        self._catalog_path: Optional[Path] = None
-        self._catalog_version: str = ""
-        self._index = None
-        self._index_lock = threading.Lock()
-        self._index_tried = False
+        # connection_id -> loaded view, or None meaning "tried, and there is
+        # nothing there". The None entries are the memo that keeps a missing
+        # catalogue from being re-attempted once per row of a 15,000-item sync.
+        self._views: "OrderedDict[str, Optional[_View]]" = OrderedDict()
+        self._view_lock = threading.Lock()
 
     # ── lifecycle ────────────────────────────────────────────────────────────
-    def _ensure_loaded(self) -> None:
+    def _ensure_module(self):
+        """The engine itself, loaded once for the process.
+
+        Raises when pie-parser is absent, because a caller asking to resolve
+        has no useful degraded answer — :meth:`resolve` catches it and returns
+        PIE_DOWN for that line.
+        """
         if self._mod is not None:
-            return
+            return self._mod
         with self._lock:
             if self._mod is not None:
-                return
+                return self._mod
             root = str(settings.PIE_PARSER_ROOT)
             if not (settings.PIE_PARSER_ROOT / "tools" / "resolve_rfq.py").exists():
                 raise RuntimeError(
@@ -317,86 +343,87 @@ class PieService:
             mod = importlib.util.module_from_spec(spec)
             assert spec and spec.loader
             spec.loader.exec_module(mod)
-            self._catalog_path = ensure_catalog()
-            self._catalog_version = _read_catalog_version(self._catalog_path)
-            args = self._make_args("")
-            self._sources = mod._build_sources(args)
             self._mod = mod
-            log.info("pie-parser loaded; catalogue=%s ruleset=%s",
-                     self._catalog_path, self._catalog_version or "unknown")
+            log.info("pie-parser engine loaded from %s", root)
+            return self._mod
 
     def warm(self) -> None:
-        """Eagerly load the engine + catalogue (called on app startup)."""
-        self._ensure_loaded()
+        """Eagerly load the engine (called on app startup).
 
-    def reload(self) -> None:
-        """Forget everything derived from the catalogue file, so the next use
-        re-reads it from disk. Called after a rebuild.
+        The *engine* only. Which companies exist is a database question this
+        object has no session for, and warming every company's catalogue at
+        boot would trade a slow first quote for a slow start and a memory
+        spike — on a deployment where most of those companies may not be
+        quoted against today at all.
+        """
+        try:
+            self._ensure_module()
+        except RuntimeError:
+            log.warning("pie-parser is not present; resolution will report the "
+                        "engine as unavailable", exc_info=True)
 
-        Everything cleared here is downstream of that one file: the resolver's
-        sources load it, the authoritative index is built from it, and the
-        version is read off its first record. The remembered *failure* is
-        cleared too — that memo exists so a missing catalogue is not re-tried
-        per row, and a rebuild is precisely the event that makes retrying
-        right again. The resolution cache is left alone: its keys carry the
+    def reload(self, connection_id: Optional[str] = None) -> None:
+        """Forget what was loaded for one company, so the next use re-reads it.
+
+        Called after that company's catalogue is rebuilt. Everything dropped is
+        downstream of its one file: the index, the resolver's sources, and the
+        version read off its first record. The remembered *failure* goes with
+        it — that memo exists so a missing catalogue is not re-tried per row,
+        and a rebuild is precisely the event that makes retrying right again.
+
+        **One company, not all of them.** A rebuild for one must not cost every
+        other company its warm index; that was the whole reason for keying the
+        cache. ``connection_id=None`` clears everything, which is what a test
+        or an engine-level change wants and what a rebuild must not do.
+
+        The resolution cache is left alone either way: its keys carry the
         catalogue version, so entries from a superseded build are unreachable
         and entries from an identical rebuild stay valid.
 
-        A request mid-resolution when this runs may find ``_mod`` gone and
+        A request mid-resolution when this runs may find its view gone and
         degrade to PIE_DOWN for that one line — the same isolation any engine
         failure gets, and an accepted cost of a rare administrative action.
         """
-        global _families_memo
-        with self._lock, self._index_lock:
-            self._mod = None
-            self._sources = None
-            self._catalog_path = None
-            self._catalog_version = ""
-            self._index = None
-            self._index_tried = False
-        _families_memo = _FAMILIES_UNREAD
-
-    def loaded_state(self) -> Dict[str, Any]:
-        """What this process is answering resolutions with right now — without
-        loading anything to find out.
-
-        Deliberately not :attr:`catalog_available`: that property loads the
-        index (and, with AUTO_BUILD_CATALOG on, builds the catalogue) to
-        answer, which would make a status read a mutation. A status surface
-        reports; ``index_loaded: False`` beside an existing file means only
-        "not asked yet", and the screen says so rather than reading it as
-        down.
-        """
-        return {
-            "index_loaded": self._index is not None,
-            "ruleset_checksum": self._catalog_version or None,
-        }
+        with self._view_lock:
+            if connection_id is None:
+                self._views.clear()
+            else:
+                self._views.pop(connection_id, None)
+        # The family vocabulary too: a company that has just rebuilt may have
+        # done so through a different pack, and a memo from the previous one
+        # would validate its policy against a vocabulary nothing decodes with.
+        _families_memo.clear()
 
     # ── exact catalogue identity ─────────────────────────────────────────────
-    def _ensure_index(self):
-        """The authoritative index alone, without the RFQ resolver behind it.
+    def _view(self, connection_id: Optional[str]):
+        """This company's loaded catalogue, or None if it has none.
 
-        A sync needs to ask one question — "is this SKU a catalogue record?" —
-        and loading ``resolve_rfq`` and its equivalence sources to answer it
-        would make every item pull pay for machinery it never calls. This is
-        deliberately the *narrow* half of :meth:`_ensure_loaded`.
+        Loads on first use and keeps at most :data:`MAX_RESIDENT_CATALOGUES`
+        resident, evicting least-recently-used. Failure is remembered *per
+        company*, not retried per row: a company without a catalogue would
+        otherwise re-attempt once for each of 15,000 items in one sync.
 
-        Failure is remembered, not retried per row: a missing submodule would
-        otherwise re-raise and re-log 15,000 times in one sync.
+        ``connection_id=None`` is not a company and never resolves to one. It
+        returns None rather than falling back to anything — a resolution that
+        cannot say which company it is for has no catalogue it may honestly
+        answer from, and the deployment-wide default this used to reach for is
+        exactly what the per-company design removed.
         """
-        if self._index is not None or self._index_tried:
-            return self._index
-        with self._index_lock:
-            if self._index is not None or self._index_tried:
-                return self._index
-            self._index_tried = True
+        if connection_id is None:
+            return None
+        with self._view_lock:
+            if connection_id in self._views:
+                view = self._views[connection_id]
+                if view is not None:
+                    self._views.move_to_end(connection_id)
+                return view
+
             # Absent and broken are different facts, and only one of them is a
             # defect. A deployment built without the private pie-parser
             # submodule reported `ModuleNotFoundError: No module named
             # 'identity'` with a traceback, which reads as a bug in this file;
             # it is a build that shipped without an optional engine, exactly as
-            # `deploy/backend.Dockerfile` says it may. Say which one it is, in
-            # the words `_ensure_loaded` already uses.
+            # `deploy/backend.Dockerfile` says it may. Say which one it is.
             root_path = settings.PIE_PARSER_ROOT
             if not (root_path / "identity").is_dir():
                 log.warning(
@@ -405,35 +432,85 @@ class PieService:
                     "(see deploy/backend.Dockerfile); nothing else is affected. "
                     "Fetch it with ./scripts/setup_pie_parser.sh, or set "
                     "PIE_PARSER_ROOT.", root_path)
-                self._index = None
-                return self._index
+                self._views[connection_id] = None
+                return None
+
+            view: Optional[_View] = None
             try:
                 root = str(root_path)
                 if root not in sys.path:
                     sys.path.insert(0, root)
                 from identity.store import AuthoritativeIndex  # noqa: PLC0415
-                path = ensure_catalog()
-                self._index = AuthoritativeIndex.from_jsonl(path)
-                if not self._catalog_version:
-                    self._catalog_version = _read_catalog_version(path)
-                log.info("PIE authoritative index loaded from %s", path)
-            except Exception:  # noqa: BLE001 — a sync must not fail on this
-                log.warning("PIE catalogue unavailable; item links will be left "
-                            "unresolved", exc_info=True)
-                self._index = None
-            return self._index
 
-    @property
-    def catalog_available(self) -> bool:
-        """Whether a catalogue was actually loaded to answer lookups against.
+                path = catalog_module.company_catalog_path(connection_id)
+                if not path.exists():
+                    # Not an error and not a warning: a company that has not
+                    # built its catalogue yet is an ordinary state the screens
+                    # report. Logging it per row would bury the real failures.
+                    log.info("no catalogue built for connection %s", connection_id)
+                    self._views[connection_id] = None
+                    return None
+                view = _View(path=path,
+                             version=_read_catalog_version(path),
+                             index=AuthoritativeIndex.from_jsonl(path))
+                log.info("catalogue loaded for connection %s from %s (ruleset %s)",
+                         connection_id, path, view.version or "unknown")
+            except Exception:  # noqa: BLE001 — a sync must not fail on this
+                log.warning("catalogue for connection %s could not be loaded; "
+                            "item links will be left unresolved",
+                            connection_id, exc_info=True)
+                view = None
+
+            self._views[connection_id] = view
+            # Evict only *loaded* views: the None entries are the memo, they
+            # cost nothing to keep, and dropping them would reinstate the
+            # per-row retry this cache exists to prevent.
+            resident = [cid for cid, v in self._views.items() if v is not None]
+            while len(resident) > MAX_RESIDENT_CATALOGUES:
+                oldest = resident.pop(0)
+                self._views.pop(oldest, None)
+                log.info("evicted the catalogue for connection %s", oldest)
+            return view
+
+    @staticmethod
+    def _record(view: Optional["_View"], identifier: str) -> Optional[Dict[str, Any]]:
+        """A decoded row from a view already in hand.
+
+        Separate from :meth:`lookup_record` so ``_map`` cannot re-enter the
+        cache while holding a view — and, more importantly, so the decode shown
+        beside a match always comes from the *same* catalogue that produced the
+        match. Reaching back through the connection id would let an eviction
+        between the two answer from a freshly reloaded one.
+
+        No view is no record. It cannot be reached from :meth:`resolve`, which
+        holds one by then, and it is the honest answer for a caller mapping a
+        result without a catalogue in hand: attributes are *absent*, not empty.
+        """
+        if view is None:
+            return None
+        try:
+            rec = view.index.lookup_material(str(identifier))
+        except Exception:  # noqa: BLE001 — provenance must not break a quote
+            log.exception("PIE index lookup failed for %r", identifier)
+            return None
+        return rec if isinstance(rec, dict) else None
+
+    def catalog_available(self, connection_id: Optional[str]) -> bool:
+        """Whether this company has a catalogue loaded to answer lookups against.
 
         Callers need this to tell "the pack does not cover this item" from
         "nobody asked the pack" — both return None from
         :meth:`lookup_record`, and only the first is evidence about the item.
-        """
-        return self._ensure_index() is not None
 
-    def lookup_record(self, identifier: Optional[str]) -> Optional[Dict[str, Any]]:
+        **A method taking a company, where it used to be a property.** That is
+        the change PR 2 is: there is no longer one answer for the process, and
+        a property could only have given one by picking a company on the
+        caller's behalf.
+        """
+        return self._view(connection_id) is not None
+
+    def lookup_record(self, identifier: Optional[str],
+                      connection_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """The decoded catalogue row this identifier *is*, or None.
 
         Exact only, and exact in pie-parser's sense rather than ours — the
@@ -445,11 +522,11 @@ class PieService:
         """
         if not identifier or not str(identifier).strip():
             return None
-        index = self._ensure_index()
-        if index is None:
+        view = self._view(connection_id)
+        if view is None:
             return None
         try:
-            rec = index.lookup_material(str(identifier))
+            rec = view.index.lookup_material(str(identifier))
         except Exception:  # noqa: BLE001 — provenance must not break a sync
             log.exception("PIE index lookup failed for %r", identifier)
             return None
@@ -460,32 +537,32 @@ class PieService:
         # contract above the caller records nothing.
         return rec if isinstance(rec, dict) else None
 
-    @property
-    def catalog_version(self) -> str:
-        """The ruleset checksum of the catalogue this process resolves against.
+    def catalog_version(self, connection_id: Optional[str] = None) -> str:
+        """The ruleset checksum of the catalogue this company resolves against.
 
         pie-parser derives it from the input bytes plus the pack's own checksum,
         which is what makes a rerun reproducible — and it is the one fact that
         explains, months later, why the same RFQ text resolved to a different
-        product than it does today. It is uniform across a build, and the
-        catalogue is loaded once and never reloaded, so reading it from the
-        first record is exact rather than a sample.
+        product than it does today. It is uniform across a build, so reading it
+        from the first record is exact rather than a sample.
 
-        Empty when the engine has not loaded. Never raises: provenance must not
-        be the thing that fails a quote.
+        Empty when this company has no catalogue. Never raises: provenance must
+        not be the thing that fails a quote.
         """
-        try:
-            self._ensure_loaded()
-        except Exception:  # noqa: BLE001 — matches resolve()'s degrade-not-raise
-            return ""
-        return self._catalog_version
+        view = self._view(connection_id)
+        return view.version if view else ""
 
     def _make_args(self, text: str,
                    customer_scope: Optional[str] = None,
-                   mapping_store: Any = None) -> argparse.Namespace:
+                   mapping_store: Any = None,
+                   catalog_path: Optional[Path] = None) -> argparse.Namespace:
         return argparse.Namespace(
             text=text,
-            pie_data=self._catalog_path or settings.PIE_CATALOG,
+            # This company's decoded catalogue, and nothing else. There is no
+            # fallback path here on purpose: an argument that quietly named
+            # another catalogue would produce a confidently provenanced answer
+            # about the wrong company's product.
+            pie_data=catalog_path,
             zoho_fixture=None,
             brands="all",
             top_n=settings.TOP_N,
@@ -528,17 +605,30 @@ class PieService:
             return None
 
     def _cache_key(self, text: str, customer_scope: Optional[str],
-                   mapping_store: Any) -> Optional[str]:
+                   mapping_store: Any, version: str) -> Optional[str]:
         """The key this resolution is stored under, or None if it may not be
-        cached at all."""
-        if _resolution_cache.maxsize == 0:
+        cached at all.
+
+        ``version`` is the company's ruleset checksum, and it is what keeps two
+        companies apart here — deliberately *instead of* the connection id.
+        Two companies that uploaded the same export and chose the same pack
+        have byte-identical catalogues, so they have identical answers, and a
+        key carrying the connection would miss a hit that is genuinely correct.
+
+        **An empty version is never cached.** It means the checksum could not
+        be read, and every company whose checksum is unreadable would otherwise
+        share one key — the one way this scheme could serve one company's
+        answer to another. Refusing to cache costs a scan; guessing costs the
+        customer a wrong product with a confident explanation attached, which
+        is the same trade ``_mapping_fingerprint`` makes just below.
+        """
+        if _resolution_cache.maxsize == 0 or not version:
             return None
         mappings = self._mapping_fingerprint(mapping_store)
         if mappings is None:
             return None
         return cache_module.fingerprint(
-            "pie_resolution", self._catalog_version, text, customer_scope,
-            mappings)
+            "pie_resolution", version, text, customer_scope, mappings)
 
     @staticmethod
     def _cached_result(key: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -557,8 +647,14 @@ class PieService:
     # ── resolution ───────────────────────────────────────────────────────────
     def resolve(self, text: str, customer_scope: Optional[str] = None,
                 bands: Optional[Bands] = None,
-                mapping_store: Any = None) -> Resolution:
-        """Resolve one RFQ line's text into a portal Resolution.
+                mapping_store: Any = None,
+                connection_id: Optional[str] = None) -> Resolution:
+        """Resolve one RFQ line's text against one company's catalogue.
+
+        ``connection_id`` names the company this line is quoted from, and its
+        catalogue is the only one searched. A line with no company resolves
+        against nothing and comes back UNRESOLVED — never against some other
+        company's products, which would be a wrong part carrying a real stamp.
 
         ``customer_scope`` is the customer's cross-connector identity when the
         quote is for a linked customer. Passing it lets the engine prefer a
@@ -573,12 +669,35 @@ class PieService:
         """
         text = (text or "").strip()
         try:
-            self._ensure_loaded()
-            key = self._cache_key(text, customer_scope, mapping_store)
+            mod = self._ensure_module()
+            view = self._view(connection_id)
+            if view is None:
+                # No catalogue for this company. Distinct from the engine being
+                # down, and reported as such: nothing was searched, so nothing
+                # is known about this text. `resolution.py` asks
+                # `catalog_available` first and says so in the caller's own
+                # words; this is the floor under that.
+                return Resolution(
+                    input_text=text, reqCode=text, reqDesc="No catalogue",
+                    rel="UNRESOLVED", supplyCode=None, candidates=[],
+                    outcome="UNRESOLVED", semantics="UNKNOWN",
+                    notes=["This company has no decoded catalogue, so nothing "
+                           "was searched for this line."],
+                )
+            if view.sources is None:
+                # Built on first resolution rather than at load: an item sync
+                # only needs the index, and paying for the equivalence sources
+                # on every catalogue that is merely looked up would be the cost
+                # the index/sources split exists to avoid.
+                view.sources = mod._build_sources(
+                    self._make_args("", catalog_path=view.path))
+
+            key = self._cache_key(text, customer_scope, mapping_store, view.version)
             result = self._cached_result(key)
             if result is None:
-                args = self._make_args(text, customer_scope, mapping_store)
-                result, _human = self._mod.run(args, self._sources)
+                args = self._make_args(text, customer_scope, mapping_store,
+                                       catalog_path=view.path)
+                result, _human = mod.run(args, view.sources)
                 if key is not None:
                     # A copy, so the object handed to ``_map`` below — and to
                     # every Candidate that keeps a reference into it — cannot
@@ -586,7 +705,7 @@ class PieService:
                     # resolution that shared its ``attributes`` dict would let
                     # one quote's edit change another's.
                     _resolution_cache.set(key, copy.deepcopy(result))
-            return self._map(text, result, bands or Bands.default())
+            return self._map(text, result, bands or Bands.default(), view)
         except Exception:  # noqa: BLE001 — deliberate: isolate engine failures
             log.exception("pie-parser resolution failed for %r", text)
             return Resolution(
@@ -597,7 +716,8 @@ class PieService:
             )
 
     # ── mapping: engine output -> portal Resolution ──────────────────────────
-    def _map(self, text: str, result: Dict[str, Any], bands: Bands) -> Resolution:
+    def _map(self, text: str, result: Dict[str, Any], bands: Bands,
+             view: Optional["_View"] = None) -> Resolution:
         res = result.get("resolution", {}) or {}
         outcome = res.get("outcome", "UNRESOLVED")
         semantics = res.get("input_semantics", "REQUIREMENT")
@@ -639,7 +759,7 @@ class PieService:
             cands = [Candidate(code=code, desc=desc, rel="EXACT",
                                grade=m.get("grade"), brand=m.get("brand"),
                                reason="Exact manufacturer identity.",
-                               attributes=_attributes_of(self.lookup_record(code)))]
+                               attributes=_attributes_of(self._record(view, code)))]
             cands += self._candidates_from_suggestions(suggestions, bands, exclude=code)
             return Resolution(text, code, desc, "EXACT", code, cands,
                               outcome, semantics, notes)
@@ -660,7 +780,7 @@ class PieService:
                 grade=m.get("grade"), brand=m.get("brand"),
                 reason=("The reference you named, not a match for the change you "
                         "asked for. Offer it only as a deliberate substitution."),
-                attributes=_attributes_of(self.lookup_record(code)))
+                attributes=_attributes_of(self._record(view, code)))
 
         # (1b) A candidate identity the engine will not assert: the quote names a
         #      customer, the catalogue holds this exact code, but nobody has
@@ -693,7 +813,7 @@ class PieService:
                            rel="POSSIBLE", grade=m.get("grade"), brand=m.get("brand"),
                            reason=m.get("note") or "Candidate identity — needs review.",
                            attributes=_attributes_of(
-                               self.lookup_record(str(m.get("record_id")))))
+                               self._record(view, str(m.get("record_id")))))
                  for m in cands_m],
                 outcome, semantics, notes)
 

@@ -503,16 +503,29 @@ def test_a_decision_records_which_catalogue_resolved_it(client):
     the answer: thresholds decide the price, the catalogue decides the product.
     A quote whose product resolution cannot be reproduced is as unexplainable
     as one whose margin cannot be.
-    """
-    from app.pie_service import pie_service
 
-    _snapshot(client, MANAGER, [_line("L1")], quote_id="q-catalog")
+    The catalogue is a *company's* now, so the quote has to name one — and the
+    row must carry that company's checksum rather than whichever catalogue this
+    process happens to hold. An empty stamp is the honest answer for a quote
+    that names no company; it is not the answer for one that does.
+    """
+    import piesupport
+    from app.pie_service import pie_service
+    from app.store import store
+
+    company = piesupport.company_id("cx_qi_catalogue")
+    piesupport.give_company_a_catalogue(company)
+    quote = store.create("Acme Engineering", organization_id=ORG,
+                         connection_id=company)
+
+    _snapshot(client, MANAGER, [_line("L1")], quote_id=quote.id)
     s = client.Maker()
-    row = s.query(models.QuoteDecision).filter_by(quote_id="q-catalog").one()
+    row = s.query(models.QuoteDecision).filter_by(quote_id=quote.id).one()
 
     # It is the parser's own checksum, not the quote-intelligence version —
     # those are different concepts and used to be conflated in one column.
-    assert row.catalog_version == pie_service.catalog_version
+    assert row.catalog_version == pie_service.catalog_version(company)
+    assert row.catalog_version, "the row must name the catalogue that resolved it"
     assert row.catalog_version != row.engine_version
     assert row.thresholds_version, "thresholds provenance must still be stamped"
     s.close()

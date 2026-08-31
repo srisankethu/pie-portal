@@ -17,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 import dbsupport
 from app.commercial import policy
 from app.commercial.config import load_commercial_thresholds
+from app.config import settings
 from app.db import get_session
 from app.domain import models
 from app.ingestion import connections as conn
@@ -55,6 +56,22 @@ def client():
     tc = TestClient(app)
     tc.Maker = Maker
     return tc
+
+
+def _connect_a_company(c, pack: str = ""):
+    """Give this organization one company decoding through a shipped pack.
+
+    The family vocabulary a policy is validated against is the union of the
+    organization's companies' packs — so a family edit needs a company, and the
+    connection tests further down need an organization with none. Set up per
+    test rather than in the fixture for that reason.
+    """
+    s = c.Maker()
+    s.add(models.ZohoConnection(connection_id="cx_policy", organization_id="org_pie",
+                                label="SLS Engineers", zoho_organization_id="zpack",
+                                config={"pie_pack": pack or settings.PIE_PACK.name}))
+    s.commit()
+    s.close()
 
 
 def _hdr(c, email):
@@ -147,6 +164,7 @@ def test_a_family_the_pack_does_not_declare_is_refused_naming_the_vocabulary(cli
     would leave the map looking set while every line priced at the blended
     default — and the 400 names the valid vocabulary, because "invalid" on its
     own is a puzzle, not an error an owner can act on."""
+    _connect_a_company(client)
     r = _patch(client, OWNER, {"target_margin_by_family": {"widgets": 0.30}})
     assert r.status_code == 400
     detail = r.json()["detail"]
@@ -156,6 +174,7 @@ def test_a_family_the_pack_does_not_declare_is_refused_naming_the_vocabulary(cli
 
 @pytest.mark.requires_pie
 def test_a_family_the_pack_does_declare_is_accepted(client):
+    _connect_a_company(client)
     r = _patch(client, OWNER, {"target_margin_by_family": {"milling_insert": 0.32}})
     assert r.status_code == 200, r.text
     fields = {f["field"]: f for f in r.json()["margin_policy"]["fields"]}
@@ -168,7 +187,8 @@ def test_without_a_readable_pack_a_family_edit_is_refused_not_waved_through(
     must not read as "looked and found nothing wrong" (CLAUDE.md §1). The rest
     of the policy stays editable — only the vocabulary-bound map is held."""
     import app.pie_service as pie_service
-    monkeypatch.setattr(pie_service, "pack_families", lambda: None)
+    _connect_a_company(client)
+    monkeypatch.setattr(pie_service, "pack_families", lambda _pack=None: None)
 
     r = _patch(client, OWNER, {"target_margin_by_family": {"reamer": 0.30}})
     assert r.status_code == 400

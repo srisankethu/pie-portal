@@ -38,6 +38,8 @@ from .profile import (
 from .render import render_text
 from .source import SourceError, read_export
 
+log = logging.getLogger("pie_portal.master_health")
+
 
 def _build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
@@ -56,6 +58,17 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="worksheet name for an .xlsx export (default: the first)")
     ap.add_argument("--policy", type=Path, default=None,
                     help="remediation policy YAML (default: the shipped one)")
+    ap.add_argument("--company", default=None, metavar="CONNECTION_ID",
+                    help="the connected company whose decoded catalogue this "
+                         "export is measured against (its connection id). "
+                         "Without it nothing is looked up and the identity "
+                         "section reports UNKNOWN rather than zero")
+    ap.add_argument("--pack", default=None, metavar="ID_OR_PATH",
+                    help="the org-layer pack the names are decoded through — a "
+                         "shipped pack id or a path (default: the shipped "
+                         "pack). Named separately from --company because this "
+                         "tool reads no database, and which pack a company "
+                         "decodes through is stored against that company")
     ap.add_argument("--json", type=Path, default=None,
                     help="also write the full report as JSON to this path")
     ap.add_argument("--out", type=Path, default=None,
@@ -83,6 +96,31 @@ def _resolve_profile(args: argparse.Namespace) -> ColumnProfile:
             "report does not know what any particular ERP's export looks like, "
             "which is the property that lets it read one it has never seen.")
     return profile_from_columns(given)
+
+
+def _pack_path(given: Optional[str]) -> Optional[Path]:
+    """Resolve ``--pack`` to a directory: a shipped pack id, or a path.
+
+    An id rather than only a path because that is what a company's stored
+    choice is, so the two arguments read the same way. Returns None for
+    "unspecified", which decodes through the shipped pack — and an id this
+    engine does not ship is an error rather than a silent fallback, since the
+    coverage numbers would then belong to a pack nobody asked for.
+    """
+    if not given:
+        return None
+    candidate = Path(given)
+    if candidate.is_dir():
+        return candidate
+
+    from .. import catalog  # noqa: PLC0415
+
+    for pack in catalog.available_packs():
+        if pack["id"] == given:
+            return Path(pack["path"])
+    raise ProfileError(
+        f"{given!r} is neither a directory nor a pack this engine ships. "
+        f"Shipped packs: {', '.join(p['id'] for p in catalog.available_packs()) or 'none'}.")
 
 
 def _print_profiles() -> None:
@@ -116,6 +154,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         profile = _resolve_profile(args)
+        pack = _pack_path(args.pack)
         policy = load_policy(args.policy)
         rows, _headers = read_export(args.export, profile, sheet=args.sheet)
     except (ProfileError, PolicyError, SourceError) as exc:
@@ -131,11 +170,19 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # must not pay for it.
     from ..pie_service import pie_service  # noqa: PLC0415
 
-    decode = decode_names(rows)
+    # One company's catalogue, and the pack its names are decoded through.
+    #
+    # Both are per company now, and either one borrowed from another company is
+    # worse than having neither: another company's item master reports every
+    # SKU as unknown, and another company's org layer reports every name as
+    # unparsed. Where no company is named nothing is looked up and the identity
+    # section says UNKNOWN rather than zero, which is what
+    # `catalogue_available=False` already means downstream.
+    decode = decode_names(rows, pack)
     report = build_report(
         rows=rows, profile=profile, decode=decode, policy=policy,
-        lookup=pie_service.lookup_record,
-        catalogue_available=pie_service.catalog_available,
+        lookup=lambda identifier: pie_service.lookup_record(identifier, args.company),
+        catalogue_available=pie_service.catalog_available(args.company),
         source_file=str(args.export),
         source_digest=hashlib.sha256(Path(args.export).read_bytes()).hexdigest(),
     )

@@ -3,15 +3,30 @@ from __future__ import annotations
 
 import pytest
 
+import piesupport
 from app.pie_service import pie_service
 
 # Every test here resolves through the real engine against the real catalogue.
 pytestmark = pytest.mark.requires_pie
 
+#: The company these tests resolve for. There is no catalogue that is not a
+#: company's now, so a test that wants a real answer has to name one — passing
+#: nothing is a resolution that cannot say which item master it read, and the
+#: engine answers UNRESOLVED to exactly that.
+COMPANY = piesupport.company_id("test-pie-service")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _company_catalogue():
+    """Give COMPANY the shipped catalogue, decoded once for this worker."""
+    piesupport.give_company_a_catalogue(COMPANY)
+    yield
+    piesupport.forget_company_catalogue(COMPANY)
+
 
 def test_exact_identity_resolves_to_exact():
     # A real MM# from the Kennametal/WIDIA corpus resolves authoritatively.
-    res = pie_service.resolve("2001174")
+    res = pie_service.resolve("2001174", connection_id=COMPANY)
     assert res.rel == "EXACT"
     assert res.supplyCode == "2001174"
     assert res.semantics == "IDENTITY"
@@ -26,7 +41,7 @@ def test_requirement_surfaces_candidates_and_only_picks_when_ranking_separates()
     ordering, not a technical equivalent — auto-selecting and pricing it would
     put a fabricated match on a customer quote.
     """
-    res = pie_service.resolve("CNMG 120408 KCP25")
+    res = pie_service.resolve("CNMG 120408 KCP25", connection_id=COMPANY)
     assert res.semantics == "REQUIREMENT"
     assert res.candidates, "a requirement should surface ranked supply candidates"
 
@@ -57,7 +72,7 @@ def test_non_discriminating_scores_never_auto_select():
 
 
 def test_unknown_code_is_unresolved():
-    res = pie_service.resolve("XZ-CUSTOM-778-NOTREAL")
+    res = pie_service.resolve("XZ-CUSTOM-778-NOTREAL", connection_id=COMPANY)
     assert res.rel == "UNRESOLVED"
     assert res.supplyCode is None
 
@@ -123,8 +138,8 @@ def test_naming_a_customer_proposes_rather_than_asserts():
     A quote line that silently stopped resolving the moment we knew who sent it
     was the reason the context was never wired up.
     """
-    plain = pie_service.resolve("2001174")
-    scoped = pie_service.resolve("2001174", "identity-abc")
+    plain = pie_service.resolve("2001174", connection_id=COMPANY)
+    scoped = pie_service.resolve("2001174", "identity-abc", connection_id=COMPANY)
 
     assert plain.rel == "EXACT" and plain.supplyCode == "2001174"
 
@@ -139,14 +154,14 @@ def test_naming_a_customer_proposes_rather_than_asserts():
 
 def test_a_customer_scope_never_loses_a_requirement():
     # A requirement is not an identity, so the scope changes nothing about it.
-    plain = pie_service.resolve("CNMG 120408 KCP25")
-    scoped = pie_service.resolve("CNMG 120408 KCP25", "identity-abc")
+    plain = pie_service.resolve("CNMG 120408 KCP25", connection_id=COMPANY)
+    scoped = pie_service.resolve("CNMG 120408 KCP25", "identity-abc", connection_id=COMPANY)
     assert [c.code for c in scoped.candidates] == [c.code for c in plain.candidates]
 
 
 def test_an_unknown_code_stays_unresolved_under_a_scope():
     # The fall-through consults the catalogue; it does not invent a match.
-    res = pie_service.resolve("XZ-CUSTOM-778-NOTREAL", "identity-abc")
+    res = pie_service.resolve("XZ-CUSTOM-778-NOTREAL", "identity-abc", connection_id=COMPANY)
     assert res.rel == "UNRESOLVED"
     assert res.supplyCode is None
 
@@ -161,7 +176,7 @@ def test_an_exact_identity_carries_its_decoded_geometry():
     lower-confidence suggestion path carried it all along — a salesperson got
     *more* about a guess than about a certainty.
     """
-    res = pie_service.resolve("2001174")
+    res = pie_service.resolve("2001174", connection_id=COMPANY)
     assert res.rel == "EXACT"
     attrs = res.candidates[0].attributes
     assert attrs, "an exact identity must carry the decode, not just a code"
@@ -176,17 +191,17 @@ def test_attributes_are_shaped_the_same_on_both_paths():
     """One product, described one way, however it was found."""
     from app.pie_service import ATTRIBUTE_FIELDS
 
-    exact = pie_service.resolve("2001174").candidates[0]
+    exact = pie_service.resolve("2001174", connection_id=COMPANY).candidates[0]
     assert set(exact.attributes) <= set(ATTRIBUTE_FIELDS)
 
 
 def test_lookup_record_is_exact_and_never_guesses():
-    assert pie_service.lookup_record("2001174")["record_id"] == "2001174"
+    assert pie_service.lookup_record("2001174", COMPANY)["record_id"] == "2001174"
     # Not a prefix, not a fuzzy neighbour, not an empty string.
-    assert pie_service.lookup_record("200117") is None
-    assert pie_service.lookup_record("XZ-NOTREAL-778") is None
-    assert pie_service.lookup_record("") is None
-    assert pie_service.lookup_record(None) is None
+    assert pie_service.lookup_record("200117", COMPANY) is None
+    assert pie_service.lookup_record("XZ-NOTREAL-778", COMPANY) is None
+    assert pie_service.lookup_record("", COMPANY) is None
+    assert pie_service.lookup_record(None, COMPANY) is None
 
 
 def test_a_cross_namespace_ambiguity_is_not_an_exact_record(monkeypatch):
@@ -195,14 +210,15 @@ def test_a_cross_namespace_ambiguity_is_not_an_exact_record(monkeypatch):
     identifier exists in several namespaces. An ambiguity is short of an exact
     hit, so ``lookup_record`` must answer None rather than hand a resolution
     object to callers expecting a decoded catalogue row."""
-    index = pie_service._ensure_index()
-    assert index is not None, "catalogue must be loaded for this test"
+    view = pie_service._view(COMPANY)
+    assert view is not None, "this company's catalogue must be loaded for this test"
+    index = view.index
 
     class _Ambiguity:  # duck-shape of the store's resolution — deliberately not a dict
         outcome = "AMBIGUOUS"
 
     monkeypatch.setattr(index, "lookup_material", lambda _key: _Ambiguity())
-    assert pie_service.lookup_record("2001174") is None
+    assert pie_service.lookup_record("2001174", COMPANY) is None
 
 
 def test_a_failed_pack_read_is_not_memoized(monkeypatch, tmp_path):
@@ -212,13 +228,14 @@ def test_a_failed_pack_read_is_not_memoized(monkeypatch, tmp_path):
     import app.pie_service as ps
 
     real_pack = ps.settings.PIE_PACK
-    monkeypatch.setattr(ps, "_families_memo", ps._FAMILIES_UNREAD)
-    monkeypatch.setattr(ps.settings, "PIE_PACK", tmp_path / "nowhere")
-    assert ps.pack_families() is None          # unreadable → the honest answer…
+    monkeypatch.setattr(ps, "_families_memo", {})
+    assert ps.pack_families(tmp_path / "nowhere") is None   # the honest answer…
 
-    monkeypatch.setattr(ps.settings, "PIE_PACK", real_pack)
-    families = ps.pack_families()              # …and not a remembered one
+    families = ps.pack_families(real_pack)     # …and not a remembered one
     assert families, "the pack became readable and the next call must see it"
+    # The memo is per pack: a second company's pack is read on its own terms
+    # rather than answered from the first one's vocabulary.
+    assert ps.pack_families(tmp_path / "nowhere") is None
 
 
 # --- an unverified comparison is not an equivalence -------------------------
@@ -314,7 +331,7 @@ def test_a_real_leader_is_still_selected():
 def test_a_bearing_is_not_a_carbide_insert():
     """The report's reproduction, against the real catalogue. The engine has no
     bearing pack, so it must decline rather than rank cutting tools."""
-    res = pie_service.resolve("6205 2RS C3 bearing")
+    res = pie_service.resolve("6205 2RS C3 bearing", connection_id=COMPANY)
 
     assert res.supplyCode is None
     assert not any(c.rel in ("TECH", "COMPAT") for c in res.candidates), (

@@ -1,4 +1,4 @@
-import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CatalogStatus, ConnectionCheck, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -715,13 +715,35 @@ export const papi = {
 
   dataStatus: (t: string) => req<DataStatus>("/api/v1/data/status", {}, t),
 
-  /** The decoded catalogue's state and provenance. Deployment-wide. */
-  catalogStatus: (t: string) => req<CatalogStatus>("/api/v1/data/catalog", {}, t),
+  /** Every connected company's catalogue, and the packs one may be built with. */
+  companyCatalogues: (t: string) =>
+    req<CompanyCatalogues>("/api/v1/data/catalog/companies", {}, t),
 
-  /** Build (or rebuild) the decoded catalogue. Synchronous — the response is
-   *  the finished state, run report included. Owner-only server-side. */
-  buildCatalog: (t: string) =>
-    req<CatalogStatus>("/api/v1/data/catalog/build", { method: "POST" }, t),
+  /** Store a company's item-master export.
+   *
+   *  Sent as a raw body rather than a multipart form: the server takes the
+   *  bytes directly, so this needs no `python-multipart` on the backend — the
+   *  dependency `master_health/__init__.py` refuses stays refused. `File` is
+   *  a `Blob`, so `body: file` streams it without reading it into a string. */
+  uploadCompanyCorpus: (t: string, connectionId: string, file: File) =>
+    req<CompanyCatalogue>(
+      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/corpus`
+      + `?filename=${encodeURIComponent(file.name)}`,
+      { method: "POST", body: file,
+        headers: { "Content-Type": file.type || "text/csv" } }, t),
+
+  /** Choose which shipped pack decodes this company's export. */
+  setCompanyPack: (t: string, connectionId: string, packId: string) =>
+    req<CompanyCatalogue>(
+      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/pack`,
+      { method: "PUT", body: JSON.stringify({ pack_id: packId }) }, t),
+
+  /** Decode this company's stored corpus. Synchronous; the response is the
+   *  finished state. */
+  buildCompanyCatalog: (t: string, connectionId: string) =>
+    req<CompanyCatalogue>(
+      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/build`,
+      { method: "POST" }, t),
 
   /** Choose the automatic pull's cadence, in hours; 0 switches it off. */
   setAutoSync: (t: string, hours: number) =>

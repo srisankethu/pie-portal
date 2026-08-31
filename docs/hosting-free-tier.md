@@ -104,7 +104,15 @@ into two containers instead.
 
    `UVICORN_WORKERS=1` rather than the Compose default of 2: free-tier Railway
    gives you far less RAM than the 4 GB `hosting.md` recommends, and each
-   worker warms its own ~13 MB catalogue copy.
+   worker holds its own copy of every company catalogue it has answered from —
+   ~13 MB each, up to three resident.
+
+   `AUTO_BUILD_CATALOG=0` above is why the first quote will report NOT BUILT
+   rather than pausing: with it off, nothing is decoded at start-up and an
+   owner builds each company from **Setup → Decoded catalogue** when they are
+   ready. On a container this small that is the right trade — a build is ~2
+   seconds of CPU per company and a boot that does several is a boot the
+   health check may time out.
 
    **Put the Railway service in the same region as the Neon project.** This is
    not a tuning nicety. Every DDL statement and every query is a round trip, so

@@ -673,57 +673,80 @@ export interface CatalogReport {
   new_tokens_top: Record<string, number>;
 }
 
-export interface CatalogStatus {
-  path: string;
-  /** Always "deployment" today: one catalogue serves every organization on
-   *  this server. Shown, not hidden — per-tenant catalogues are a separate,
-   *  unbuilt feature. */
+/** Provenance stamped on every decoded record: which pack, which version,
+ *  which ruleset checksum — the facts that say WHICH catalogue answered a
+ *  resolution. */
+export interface CatalogStamp {
+  pack_id?: string;
+  pack_version?: string;
+  org_id?: string;
+  org_version?: string;
+  ruleset_checksum?: string;
+  run_id?: string;
+  engine_version?: string;
+  schema_version?: string;
+}
+
+/** Whether the corpus that ships in the pinned engine is present. It is the
+ *  SEED a first company inherits, not something resolution reads: once a
+ *  company has uploaded its own export, nothing here is consulted. */
+export interface CatalogSource {
+  available: boolean;
+  /** Exactly why a seed is unavailable, when it is — submodule not
+   *  initialised vs corpus file missing are different fixes. */
+  reason: string | null;
+  pie_parser_root: string;
+  corpus: string;
+  pack: string;
+}
+
+export interface CompanyCatalogue {
+  connection_id: string;
+  label: string;
+  enabled: boolean;
   scope: string;
-  source: {
-    available: boolean;
-    /** Exactly why a build is impossible, when it is — submodule not
-     *  initialised vs corpus file missing are different fixes. */
-    reason: string | null;
-    pie_parser_root: string;
-    corpus: string;
-    pack: string;
-  };
+  /** The pack id stored against this company, and whether the pinned engine
+   *  still ships it. A stored id the engine no longer has resolves to nothing
+   *  rather than to a guess. */
+  pack_id: string | null;
+  pack_resolved: boolean;
+  pack: string | null;
   exists: boolean;
+  /** A catalogue row whose file is gone: a rebuild waiting to happen, not an
+   *  absent catalogue. Different fix, so it is its own field. */
+  built_but_missing_on_disk: boolean;
+  /** null, never 0, when nothing is built — a company with no catalogue says
+   *  nothing about coverage. */
   records: number | null;
+  rows_read: number | null;
+  quarantined: number | null;
+  duration_s: number | null;
   built_at: string | null;
-  size_bytes: number | null;
-  /** Provenance stamped on every record: which pack, which version, which
-   *  ruleset checksum — the facts that say WHICH catalogue answered a
-   *  resolution. */
-  stamp: {
-    pack_id?: string;
-    pack_version?: string;
-    org_id?: string;
-    org_version?: string;
-    ruleset_checksum?: string;
-    run_id?: string;
-    engine_version?: string;
-    schema_version?: string;
-  };
-  build: {
-    built_at?: string;
-    duration_s?: number;
-    rows_read?: number;
-    emitted?: number;
-    quarantined?: number;
-    corpus?: string;
-    corpus_fingerprint?: string;
-    pack?: string;
-  } | null;
+  built_by: string | null;
   report: CatalogReport | null;
-  /** Why the report is absent when it is — a catalogue built before the
-   *  report was kept beside it. */
-  report_missing: string | null;
-  auto_build: boolean;
-  /** What this process is currently resolving with (loaded lazily, so
-   *  index_loaded=false beside an existing file means "not asked yet"). */
-  loaded: { index_loaded: boolean; ruleset_checksum: string | null };
-  can_rebuild: boolean;
+  stamp: CatalogStamp;
+  corpus: {
+    corpus_id: string;
+    filename: string;
+    size_bytes: number;
+    sha256: string;
+    uploaded_at: string;
+    uploaded_by: string | null;
+  } | null;
+  /** Built from a corpus that has since been superseded. Still a real
+   *  catalogue with a real stamp — just not built from what was last
+   *  uploaded. Out of date, not wrong. */
+  stale: boolean;
+}
+
+export interface CompanyCatalogues {
+  scope: string;
+  companies: CompanyCatalogue[];
+  /** The org-layer packs the pinned engine ships. Chosen, never uploaded. */
+  packs: { id: string; path: string }[];
+  source: CatalogSource;
+  max_corpus_bytes: number;
+  can_manage: boolean;
 }
 
 // ── Customer × Item commercial intelligence ─────────────────────────────────

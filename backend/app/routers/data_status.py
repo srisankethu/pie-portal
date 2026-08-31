@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import csv
 import errno
+import hashlib
 import io
 import logging
 from datetime import date
 from typing import Any, Optional
 
-from fastapi import APIRouter, Body, Depends, HTTPException, Response, status
+from fastapi import (APIRouter, Body, Depends, HTTPException, Request,
+                     Response, status)
 from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -925,102 +927,231 @@ def sync_run_log_text(
         headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
-# ── the decoded product catalogue ────────────────────────────────────────────
+# ── the catalogue, per connected company ─────────────────────────────────────
 #
-# The nomenclature side of the data this platform runs on. Until this existed,
-# the catalogue was visible only to whoever knew to run
-# `python scripts/build_catalog.py` — nothing in the product could say whether
-# one existed, what built it, or rebuild it. It lives in this router because it
-# is the same question the rest of the file answers ("what data is this
-# deployment running on, and how fresh") — a `catalog.py` router would be a
-# second home for the data-status concern.
+# The nomenclature side of the data this platform runs on, one catalogue per
+# connected company. Until this existed the catalogue was visible only to
+# whoever knew to run `python scripts/build_catalog.py` — nothing in the
+# product could say whether one existed, what built it, or rebuild it. It lives
+# in this router because it is the same question the rest of the file answers
+# ("what data is this deployment running on, and how fresh"); a `catalog.py`
+# router would be a second home for the data-status concern.
 #
-# One honest difference from everything above: the catalogue is
-# **deployment-wide**, not per-organization. `settings.PIE_CATALOG` is one
-# path and `pie_service` builds one index per process, so the response says
-# `scope: "deployment"` and nothing here filters by the caller's org. See
-# `app/catalog.py` for where an organization would enter when that changes.
+# The setup path it gives: a company uploads its item master, picks the pack
+# that decodes it, and builds. There is no deployment-wide catalogue behind
+# these any more — a company with no corpus resolves nothing, which is the
+# honest answer (see `docs/per-company-catalogues.md` §6).
+#
+# **No `python-multipart`.** The corpus arrives as a raw request body rather
+# than a multipart form, so the dependency `master_health/__init__.py` refuses
+# stays refused. Only the "no upload endpoint" half of that refusal is
+# overturned, and only because its own justification does not transfer: it
+# reasons that a path argument already serves a person running a diagnostic,
+# and an owner in a browser has no shell to supply one from.
 
 
-def _catalog_dict(principal: Principal) -> dict[str, Any]:
-    """The catalogue state as the screen reads it: the file on disk (from
-    ``catalog_state``), what this process has loaded, and what the caller may
-    do about it. Assembled in one place so the GET and the state returned
-    after a build cannot drift."""
-    from ..catalog import catalog_state
-    from ..pie_service import pie_service
+def _company_dict(session: Session, connection: models.ZohoConnection,
+                  principal: Principal) -> dict[str, Any]:
+    """One connected company and the state of its catalogue."""
+    from .. import catalog
 
+    pack = catalog.pack_for(connection)
     return {
-        **catalog_state(),
-        # What is answering resolutions right now — read without loading,
-        # because a status endpoint must not build a catalogue as a side
-        # effect (which is what touching `catalog_available` here would do
-        # with AUTO_BUILD_CATALOG on).
-        "loaded": pie_service.loaded_state(),
-        "auto_build": settings.AUTO_BUILD_CATALOG,
-        "can_rebuild": principal.role is Role.OWNER,
+        "connection_id": connection.connection_id,
+        "label": connection.label or "",
+        "enabled": connection.enabled,
+        "pack_id": (connection.config or {}).get("pie_pack") or None,
+        # A pack id stored against a pack this engine no longer ships resolves
+        # to None rather than to a guess — the pin can move under a stored
+        # choice, and answering from a different pack would make the stamp lie.
+        "pack_resolved": bool(pack),
+        **catalog.company_catalog_state(
+            session, principal.organization_id, connection.connection_id),
     }
 
 
-@router.get("/catalog")
-def catalog_status(
+@router.get("/catalog/companies")
+def catalog_companies(
     principal: Principal = Depends(current_principal),
+    session: Session = Depends(get_session),
 ) -> dict:
-    """The decoded catalogue's state and provenance.
+    """Every connected company, its chosen pack, and its catalogue's state.
 
-    Readable by any signed-in user, like ``/status``: knowing which catalogue
-    (pack, version, ruleset checksum) answered a resolution is the same
-    entitlement as knowing when the books last arrived. A catalogue carries
-    nomenclature only — the emitter excludes the corpus's commercial payload —
-    so there is nothing here to withhold by role.
-    """
-    return _catalog_dict(principal)
-
-
-@router.post("/catalog/build")
-def build_catalog_now(
-    principal: Principal = Depends(require_owner),
-) -> dict:
-    """Build — or rebuild — the deployment's decoded catalogue, synchronously.
-
-    Owner-only, and deliberately stricter than the manager-or-owner sync: a
-    sync refreshes the caller's own organization, while this replaces the
-    catalogue every organization on the deployment resolves against.
-
-    Synchronous because it is measured, not assumed, to be fast: the full
-    6,717-row corpus parses and writes in under two seconds in-process. There
-    is no job to poll and no long-running database write to phase-commit —
-    the response carries the finished result.
+    Readable by any signed-in user, like `/catalog` and `/status`: which
+    catalogue answered a resolution is the same entitlement as knowing when the
+    books last arrived. Only the setup actions below are owner-scoped.
     """
     from .. import catalog
-    from ..pie_service import pie_service
+    from ..ingestion.connections import list_connections
+
+    return {
+        "scope": "company",
+        "companies": [_company_dict(session, c, principal)
+                      for c in list_connections(session, principal.organization_id)],
+        # What a company may choose from. Chosen, never uploaded — a pack is
+        # regexes the engine runs over every row, and accepting one from a
+        # tenant is accepting arbitrary patterns to execute.
+        "packs": catalog.available_packs(),
+        "source": catalog.source_state(),
+        "max_corpus_bytes": catalog.MAX_CORPUS_BYTES,
+        "can_manage": principal.role is Role.OWNER,
+    }
+
+
+def _company(session: Session, principal: Principal, connection_id: str):
+    """The caller's own connection, or a 404 that does not confirm it exists."""
+    from ..ingestion.connections import ConnectionNotFound, get_connection
 
     try:
-        catalog.build_catalog(force=True)
+        return get_connection(session, principal.organization_id, connection_id)
+    except ConnectionNotFound as e:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "No such company in this organization.") from e
+
+
+@router.post("/catalog/companies/{connection_id}/corpus")
+def upload_company_corpus(
+    connection_id: str,
+    request: Request,
+    filename: str = "",
+    payload: bytes = Body(default=b""),
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Store this company's item-master export.
+
+    The bytes are kept as a row rather than a file. The container filesystem is
+    ephemeral — `railway.json` declares no volume — and today that costs
+    nothing because the shipped corpus lives in the image and the catalogue is
+    derived from it. An uploaded corpus has no such source: on container disk it
+    is gone on the next deploy, and the catalogue could then never be rebuilt.
+
+    Append-only: a new upload supersedes the previous one rather than
+    overwriting it, so a catalogue already built keeps a real referent for the
+    corpus its stamp names.
+    """
+    from .. import catalog
+
+    connection = _company(session, principal, connection_id)
+
+    # The declared length first, so an oversize body is refused by its header
+    # rather than after it has been read. The real ceiling belongs at the proxy;
+    # this is the honest answer from the application, not the only defence.
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > catalog.MAX_CORPUS_BYTES:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"That file is larger than the {catalog.MAX_CORPUS_BYTES // (1024 * 1024)} MB "
+            f"limit for an item-master export.")
+    if len(payload) > catalog.MAX_CORPUS_BYTES:
+        raise HTTPException(
+            status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            f"That file is larger than the {catalog.MAX_CORPUS_BYTES // (1024 * 1024)} MB "
+            f"limit for an item-master export.")
+
+    problem = catalog.validate_corpus(payload, catalog.pack_for(connection))
+    if problem:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, problem)
+
+    digest = hashlib.sha256(payload).hexdigest()
+    now = clock.now()
+    for previous in session.scalars(
+            select(models.CompanyCorpus).where(
+                models.CompanyCorpus.organization_id == principal.organization_id,
+                models.CompanyCorpus.connection_id == connection_id,
+                models.CompanyCorpus.superseded_at.is_(None))):
+        previous.superseded_at = now
+    session.add(models.CompanyCorpus(
+        organization_id=principal.organization_id,
+        connection_id=connection_id,
+        filename=(filename or "item-master.csv")[:255],
+        content_type=(request.headers.get("content-type") or "")[:128],
+        size_bytes=len(payload),
+        sha256=digest,
+        content=payload,
+        uploaded_by=principal.user_id,
+        uploaded_at=now,
+    ))
+    session.flush()
+    return _company_dict(session, connection, principal)
+
+
+class CompanyPackRequest(BaseModel):
+    """Which of the shipped org-layer packs decodes this company's export."""
+
+    pack_id: str
+
+
+@router.put("/catalog/companies/{connection_id}/pack")
+def set_company_pack(
+    connection_id: str,
+    body: CompanyPackRequest,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Choose the pack this company decodes through.
+
+    An id, validated against what the pinned engine ships. Refused rather than
+    stored when it names nothing: a stored choice that resolves to no pack
+    would leave the company unable to build with no statement of why.
+    """
+    from .. import catalog
+
+    connection = _company(session, principal, connection_id)
+    known = {p["id"] for p in catalog.available_packs()}
+    if body.pack_id not in known:
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            f"No pack called {body.pack_id!r} ships with this engine. "
+            f"Available: {', '.join(sorted(known)) or 'none'}.")
+    # Assigned, not mutated: SQLAlchemy only sees a JSON column change when the
+    # dict identity changes.
+    connection.config = {**(connection.config or {}), "pie_pack": body.pack_id}
+    session.flush()
+    return _company_dict(session, connection, principal)
+
+
+@router.post("/catalog/companies/{connection_id}/build")
+def build_company_catalog(
+    connection_id: str,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Decode this company's stored corpus through its chosen pack.
+
+    Synchronous, on a measurement rather than an assumption: the shipped
+    6,717-row corpus parses and writes in under two seconds in-process, so
+    there is no job to poll and no long-running database write to phase-commit
+    — the response carries the finished result.
+    """
+    from .. import catalog
+
+    connection = _company(session, principal, connection_id)
+    pack = catalog.pack_for(connection)
+    if pack is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This company has no pack chosen, so there is nothing to decode "
+            "its export with. Choose one first.")
+    try:
+        catalog.build_for_company(session, principal.organization_id,
+                                  connection_id, pack, actor=principal.user_id)
     except FileNotFoundError as e:
-        # The named, actionable absences — submodule uninitialised, corpus
-        # missing — with the fix in the message (see catalog.source_state).
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     except OSError as e:
         if e.errno == errno.ENOSPC:
             raise HTTPException(
                 status.HTTP_507_INSUFFICIENT_STORAGE,
                 f"The catalogue could not be written: the disk is full ({e}).",
             ) from e
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"The catalogue could not be written: {e}") from e
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR,
+                            f"The catalogue could not be written: {e}") from e
     except Exception as e:  # noqa: BLE001 — a parse failure is reported, not a bare 500
         raise HTTPException(
             status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"The parser failed to build the catalogue: {type(e).__name__}: {e}",
+            f"The parser failed to build this catalogue: {type(e).__name__}: {e}",
         ) from e
-
-    # The running engine holds the old index (or a remembered failure) until
-    # told otherwise — without this, a catalogue built here would not answer
-    # a single resolution until the process restarted.
-    pie_service.reload()
-    return _catalog_dict(principal)
+    return _company_dict(session, connection, principal)
 
 
 @router.post("/sync", status_code=status.HTTP_202_ACCEPTED)

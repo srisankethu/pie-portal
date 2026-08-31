@@ -153,7 +153,8 @@ def _attributes(record: Optional[dict]) -> list[dict]:
     return out
 
 
-def _product(cand: Candidate, *, with_provenance: bool) -> dict:
+def _product(cand: Candidate, *, with_provenance: bool,
+             connection_id: Optional[str] = None) -> dict:
     """One candidate as the wire sees it.
 
     Two confidence-shaped numbers, kept apart on purpose. ``equivalence_score``
@@ -164,7 +165,11 @@ def _product(cand: Candidate, *, with_provenance: bool) -> dict:
     would produce a number that means neither, which is the kind of figure a
     downstream system rounds and then quotes back at somebody.
     """
-    record = pie_service.lookup_record(cand.code) if with_provenance else None
+    # The same company's catalogue that produced the candidate. Reading the
+    # record back from anywhere else would attach one company's provenance to
+    # another's answer, which is the one thing provenance must not do.
+    record = (pie_service.lookup_record(cand.code, connection_id)
+              if with_provenance else None)
     out: dict[str, Any] = {
         "record_id": cand.code,
         "description": cand.desc,
@@ -207,23 +212,26 @@ def _abstention(reason: str, detail: str, questions: list[str]) -> dict:
     }
 
 
-def _catalogue_unavailable(text: str) -> dict:
+def _catalogue_unavailable(text: str, connection_id: Optional[str] = None) -> dict:
     return _document(
         text, status="ABSTAINED", resolution=None, alternatives=[],
         abstention=_abstention(
             "CATALOGUE_UNAVAILABLE",
-            "This deployment has no product catalogue loaded, so nothing was "
-            "asked about this text. This is not a statement that the product "
-            "does not exist.",
+            "This company has no decoded catalogue, so nothing was asked about "
+            "this text. This is not a statement that the product does not "
+            "exist — build the company's catalogue on Setup → Decoded "
+            "catalogue and ask again.",
             []),
-        semantics="UNKNOWN", outcome="NOT_ASKED", notes=[])
+        semantics="UNKNOWN", outcome="NOT_ASKED", notes=[],
+        connection_id=connection_id)
 
 
 def _document(text: str, *, status: str, resolution: Optional[dict],
               alternatives: list[dict], abstention: Optional[dict],
               semantics: str, outcome: str, notes: list[str],
               identity_proposal: Optional[dict] = None,
-              commercial: Optional[dict] = None) -> dict:
+              commercial: Optional[dict] = None,
+              connection_id: Optional[str] = None) -> dict:
     """The one shape every answer takes, resolved or not.
 
     Same keys in every case, including the abstentions: a caller should be able
@@ -241,8 +249,12 @@ def _document(text: str, *, status: str, resolution: Optional[dict],
         "identity_proposal": identity_proposal,
         "commercial": commercial,
         "engine": {
-            "catalogue_available": pie_service.catalog_available,
-            "ruleset_checksum": pie_service.catalog_version or None,
+            # Of the company this line was resolved for. There is no
+            # deployment-wide answer any more, which is the point: a stamp that
+            # could not say *which* catalogue answered was never provenance.
+            "catalogue_available": pie_service.catalog_available(connection_id),
+            "ruleset_checksum": pie_service.catalog_version(connection_id) or None,
+            "company": connection_id,
             "input_semantics": semantics,
             "outcome": outcome,
         },
@@ -427,11 +439,61 @@ def customer_scope_for(session: Session, organization_id: str,
         return None
 
 
+class CompanyNotNamed(ValueError):
+    """The organization has several companies and the caller named none.
+
+    Carries the valid ids so the caller is told what to pick rather than left
+    to discover them. A refusal rather than a default: catalogues are per
+    company now, so answering from one the caller did not choose would be a
+    confidently provenanced answer about possibly the wrong company's product
+    — the benign default §1 forbids, wearing a real stamp.
+    """
+
+    def __init__(self, companies: list[dict]):
+        self.companies = companies
+        super().__init__(
+            "This organization reads more than one company's books, and each "
+            "has its own product catalogue. Name the company this line is for "
+            "(company_id): "
+            + ", ".join(f"{c['connection_id']} ({c['label']})" if c["label"]
+                        else c["connection_id"] for c in companies))
+
+
+def company_for(session: Session, organization_id: str,
+                connection_id: Optional[str] = None) -> Optional[str]:
+    """Which company's catalogue answers, or a refusal naming the choices.
+
+    One company: it answers, named or not — a picker with one option is a
+    question with one answer, and every existing single-entity caller keeps
+    working unchanged. Several: the caller must say, or this raises.
+
+    A named company is checked against this organization's own, so an id from
+    another tenant reads as "no such company" rather than resolving.
+    """
+    from .ingestion.connections import list_connections
+
+    companies = [{"connection_id": c.connection_id, "label": c.label or ""}
+                 for c in list_connections(session, organization_id,
+                                           enabled_only=True)]
+    if connection_id:
+        if any(c["connection_id"] == connection_id for c in companies):
+            return connection_id
+        raise CompanyNotNamed(companies)
+    if len(companies) == 1:
+        return companies[0]["connection_id"]
+    if not companies:
+        # No company at all is not ambiguity — it is a deployment with nothing
+        # connected, which resolves to no catalogue and abstains below.
+        return None
+    raise CompanyNotNamed(companies)
+
+
 def resolve(session: Session, principal: Principal, *, text: str,
             customer_scope: Optional[str] = None,
             bands: Optional[Bands] = None,
             mapping_store: Any = None,
             customer_ref: str = "",
+            connection_id: Optional[str] = None,
             quantity: Optional[Decimal] = None,
             proposed_price: Optional[Decimal] = None) -> dict:
     """Resolve one line of text into the public document.
@@ -448,10 +510,12 @@ def resolve(session: Session, principal: Principal, *, text: str,
     # `resolve` degrades a missing engine to PIE_DOWN, which would arrive here
     # as ENGINE_ERROR — true but less useful than the specific fact that this
     # deployment never loaded a pack at all.
-    if not pie_service.catalog_available:
-        return _catalogue_unavailable(text)
+    company = company_for(session, principal.organization_id, connection_id)
+    if not pie_service.catalog_available(company):
+        return _catalogue_unavailable(text, company)
 
-    res = pie_service.resolve(text, customer_scope, bands, mapping_store)
+    res = pie_service.resolve(text, customer_scope, bands, mapping_store,
+                              connection_id=company)
 
     if res.pie_offline:
         return _document(
@@ -460,7 +524,8 @@ def resolve(session: Session, principal: Principal, *, text: str,
                 "ENGINE_ERROR",
                 "The resolution engine failed on this input. This is not a "
                 "statement about the product.", []),
-            semantics=res.semantics, outcome=res.outcome, notes=res.notes)
+            semantics=res.semantics, outcome=res.outcome, notes=res.notes,
+            connection_id=company)
 
     alternatives = [_product(c, with_provenance=False)
                     for c in res.candidates
@@ -470,7 +535,8 @@ def resolve(session: Session, principal: Principal, *, text: str,
                   None) if res.supplyCode else None
 
     if chosen is not None:
-        resolution = _product(chosen, with_provenance=True)
+        resolution = _product(chosen, with_provenance=True,
+                              connection_id=company)
         # Where in the caller's own text the answer was found — null unless the
         # code is literally there. See `_span_of`.
         resolution["input_span"] = _span_of(
@@ -488,6 +554,7 @@ def resolve(session: Session, principal: Principal, *, text: str,
             text, status="RESOLVED", resolution=resolution,
             alternatives=alternatives, abstention=None,
             semantics=res.semantics, outcome=res.outcome, notes=res.notes,
+            connection_id=company,
             identity_proposal=_identity_proposal(res), commercial=commercial)
 
     if res.supplyCode:
@@ -507,7 +574,8 @@ def resolve(session: Session, principal: Principal, *, text: str,
                 "ENGINE_ERROR",
                 "The resolution engine returned an answer this server could "
                 "not describe. This is not a statement about the product.", []),
-            semantics=res.semantics, outcome=res.outcome, notes=res.notes)
+            semantics=res.semantics, outcome=res.outcome, notes=res.notes,
+            connection_id=company)
 
     # No ``supplyCode``, so the engine itself abstained. Every candidate is an
     # alternative here — ``alternatives`` excluded the chosen record and there
@@ -532,6 +600,7 @@ def resolve(session: Session, principal: Principal, *, text: str,
                 "quote alone.",
                 list(res.notes)),
             semantics=res.semantics, outcome=res.outcome, notes=res.notes,
+            connection_id=company,
             identity_proposal=proposal)
 
     if alternatives:
@@ -543,7 +612,8 @@ def resolve(session: Session, principal: Principal, *, text: str,
                 "Several catalogue records answer this text and it does not "
                 "choose between them. They are returned ranked; pick one.",
                 list(res.notes)),
-            semantics=res.semantics, outcome=res.outcome, notes=res.notes)
+            semantics=res.semantics, outcome=res.outcome, notes=res.notes,
+            connection_id=company)
 
     return _document(
         text, status="ABSTAINED", resolution=None, alternatives=[],
@@ -551,4 +621,5 @@ def resolve(session: Session, principal: Principal, *, text: str,
             "NO_MATCH",
             "The catalogue was searched and holds nothing matching this text.",
             list(res.notes)),
-        semantics=res.semantics, outcome=res.outcome, notes=res.notes)
+        semantics=res.semantics, outcome=res.outcome, notes=res.notes,
+            connection_id=company)

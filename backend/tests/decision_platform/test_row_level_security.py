@@ -367,6 +367,12 @@ EXPECTED_POLICIED = {
     "sync_skipped_rows", "tenant_keys", "tender_results",
     "vendor_msme_statuses", "vendor_payment_terms", "vendor_payments",
     "vendor_scheme_slabs", "vendor_targets", "vendors",
+    # h2rls — the per-company decoded catalogue. A cross-tenant read of
+    # `company_corpora` is a competitor's item master wholesale; of
+    # `company_catalogues`, the shape of their master data and which pack
+    # decodes it. Both are written by an owner, so neither needs d3rls's
+    # SECURITY DEFINER path.
+    "company_corpora", "company_catalogues",
     # d3rls — each behind one narrow SECURITY DEFINER lookup for the
     # unauthenticated path that reaches it.
     "organizations", "users", "user_sessions",

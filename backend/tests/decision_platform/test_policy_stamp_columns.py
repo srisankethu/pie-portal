@@ -53,6 +53,27 @@ NOT_A_POLICY_STAMP: dict[str, str] = {
         "the registry's own primary key — the stamp being dereferenced, not a "
         "stamp on a computed row. Marking it would make the recorder try to "
         "record the recording.",
+    # The per-company catalogue's stamp. All four are pie-parser's own identity
+    # for the decode — which pack, which engine, which record shape — carried so
+    # a resolution can say *which* catalogue answered it. None of them is a
+    # threshold: no margin floor, target or band goes into any of them, and the
+    # commercial policy that judges a scored equivalence is applied long after,
+    # per request, from `CommercialThresholds`. Same class as
+    # `products.pie_catalog_version` above, which is the same fact stored on the
+    # item it resolved.
+    "company_catalogues.pack_version":
+        "the version of the manufacturer nomenclature pack that decoded this "
+        "company's export. Pack identity, not policy.",
+    "company_catalogues.org_version":
+        "the version of the organisation layer that routed it — how one "
+        "export phrases a description. Also pack identity.",
+    "company_catalogues.engine_version":
+        "which build of pie-parser ran, on the reasoning "
+        "quote_decisions.engine_version already gives: two engine versions can "
+        "apply identical rules.",
+    "company_catalogues.schema_version":
+        "the shape of the emitted record, so a reader knows which fields to "
+        "expect. A serialization format, not a threshold.",
 }
 
 #: Tables the flush recorder must be the only writer of a stamp on.

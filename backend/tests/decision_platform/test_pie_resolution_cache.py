@@ -7,11 +7,17 @@ never hands two quotes the same mutable object.
 """
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Dict
 
 import pytest
 
 from app import pie_service as pie_module
+
+#: The company whose catalogue answers here. A cache key that did not include
+#: it would let one company's answer be served to another — the reason the
+#: cache is keyed on the *view's* version rather than on a process-wide one.
+COMPANY = "cx-cache"
 
 
 class _StubEngine:
@@ -34,6 +40,15 @@ class _StubEngine:
         }, "human text")
 
 
+class _Index:
+    """Stands in for the loaded catalogue index. Nothing here looks a record up
+    — the stub's suggestions carry their own attributes — so this only has to
+    exist and answer nothing."""
+
+    def lookup_material(self, _identifier):
+        return None
+
+
 class _Mappings:
     """A mapping store whose content — and so whose fingerprint — can change."""
 
@@ -46,15 +61,21 @@ class _Mappings:
 
 @pytest.fixture()
 def service(monkeypatch):
+    """A service with one company's catalogue already resident.
+
+    The view is installed rather than loaded: these tests are about the cache
+    around the engine, and reading 13 MB of JSONL to exercise a dictionary key
+    would make them slow for nothing.
+    """
     svc = pie_module.PieService()
     engine = _StubEngine()
-    monkeypatch.setattr(svc, "_ensure_loaded", lambda: None)
-    monkeypatch.setattr(svc, "_ensure_index", lambda: None)
+    monkeypatch.setattr(svc, "_ensure_module", lambda: engine)
     svc._mod = engine
-    svc._sources = []
-    svc._catalog_version = "ruleset-1"
+    view = pie_module._View(path=Path("/nowhere/products.jsonl"),
+                            version="ruleset-1", index=_Index(), sources=[])
+    svc._views[COMPANY] = view
     pie_module._resolution_cache.clear()
-    yield svc, engine
+    yield svc, engine, view
     pie_module._resolution_cache.clear()
 
 
@@ -65,9 +86,9 @@ def _bands() -> Any:
 # ── the win ──────────────────────────────────────────────────────────────────
 
 def test_the_same_line_resolved_twice_asks_the_engine_once(service):
-    svc, engine = service
-    first = svc.resolve("CNMG 120408", bands=_bands())
-    second = svc.resolve("CNMG 120408", bands=_bands())
+    svc, engine, _view = service
+    first = svc.resolve("CNMG 120408", bands=_bands(), connection_id=COMPANY)
+    second = svc.resolve("CNMG 120408", bands=_bands(), connection_id=COMPANY)
     assert engine.calls == ["CNMG 120408"]
     assert first.supplyCode == second.supplyCode == "MM1"
 
@@ -78,10 +99,10 @@ def test_a_rebuilt_catalogue_is_not_answered_from_the_old_one(service):
     """The ruleset version is what explains why the same text resolved to a
     different product last March. An answer from the previous one is a wrong
     answer with a confident provenance attached."""
-    svc, engine = service
-    svc.resolve("CNMG 120408", bands=_bands())
-    svc._catalog_version = "ruleset-2"
-    svc.resolve("CNMG 120408", bands=_bands())
+    svc, engine, _view = service
+    svc.resolve("CNMG 120408", bands=_bands(), connection_id=COMPANY)
+    _view.version = "ruleset-2"
+    svc.resolve("CNMG 120408", bands=_bands(), connection_id=COMPANY)
     assert len(engine.calls) == 2
 
 
@@ -89,30 +110,30 @@ def test_confirming_a_mapping_changes_the_answer_immediately(service):
     """A person has just taught the system that this customer's code means that
     product. A cache that outlived the confirmation would keep telling them it
     had not been recorded."""
-    svc, engine = service
+    svc, engine, _view = service
     store = _Mappings("no-mappings")
     svc.resolve("THEIR-77", customer_scope="cust-1", bands=_bands(),
-                mapping_store=store)
+                mapping_store=store, connection_id=COMPANY)
     store.value = "one-mapping"
     svc.resolve("THEIR-77", customer_scope="cust-1", bands=_bands(),
-                mapping_store=store)
+                mapping_store=store, connection_id=COMPANY)
     assert len(engine.calls) == 2
 
 
 def test_a_different_customer_is_a_different_question(service):
-    svc, engine = service
-    svc.resolve("THEIR-77", customer_scope="cust-1", bands=_bands())
-    svc.resolve("THEIR-77", customer_scope="cust-2", bands=_bands())
+    svc, engine, _view = service
+    svc.resolve("THEIR-77", customer_scope="cust-1", bands=_bands(), connection_id=COMPANY)
+    svc.resolve("THEIR-77", customer_scope="cust-2", bands=_bands(), connection_id=COMPANY)
     assert len(engine.calls) == 2
 
 
 def test_a_store_that_cannot_be_fingerprinted_is_never_cached(service):
     """Refusing to cache costs a scan; caching against an input nothing can see
     costs the customer a stale answer that looks authoritative."""
-    svc, engine = service
+    svc, engine, _view = service
     opaque = object()
-    svc.resolve("CNMG 120408", bands=_bands(), mapping_store=opaque)
-    svc.resolve("CNMG 120408", bands=_bands(), mapping_store=opaque)
+    svc.resolve("CNMG 120408", bands=_bands(), mapping_store=opaque, connection_id=COMPANY)
+    svc.resolve("CNMG 120408", bands=_bands(), mapping_store=opaque, connection_id=COMPANY)
     assert len(engine.calls) == 2
 
 
@@ -122,9 +143,11 @@ def test_the_bands_are_policy_applied_after_the_engine_not_a_cache_key(service):
     """Two organizations with different equivalence bands read one engine
     result differently. That is the correct relationship between a fact and the
     policy judging it (§1) — and it means the bands do not belong in the key."""
-    svc, engine = service
-    strict = svc.resolve("CNMG 120408", bands=pie_module.Bands(tech=0.95, compat=0.5))
-    loose = svc.resolve("CNMG 120408", bands=pie_module.Bands(tech=0.85, compat=0.5))
+    svc, engine, _view = service
+    strict = svc.resolve("CNMG 120408", bands=pie_module.Bands(tech=0.95, compat=0.5),
+                          connection_id=COMPANY)
+    loose = svc.resolve("CNMG 120408", bands=pie_module.Bands(tech=0.85, compat=0.5),
+                         connection_id=COMPANY)
     assert len(engine.calls) == 1
     assert strict.rel == "COMPAT"          # 0.9 is below a 0.95 tech band
     assert loose.rel == "TECH"             # and above a 0.85 one
@@ -135,17 +158,17 @@ def test_the_bands_are_policy_applied_after_the_engine_not_a_cache_key(service):
 def test_two_quotes_do_not_share_one_mutable_result(service):
     """A Line keeps a reference into the engine's result. If the cache handed
     out the object it stored, one quote's edit would change another's."""
-    svc, _engine = service
-    first = svc.resolve("CNMG 120408", bands=_bands())
+    svc, _engine, _view = service
+    first = svc.resolve("CNMG 120408", bands=_bands(), connection_id=COMPANY)
     first.candidates[0].attributes["corner_radius_mm"] = 999
-    second = svc.resolve("CNMG 120408", bands=_bands())
+    second = svc.resolve("CNMG 120408", bands=_bands(), connection_id=COMPANY)
     assert second.candidates[0].attributes["corner_radius_mm"] == 0.8
 
 
 def test_an_engine_failure_is_not_remembered(service):
     """PIE_DOWN is a transient state, and pinning it would keep a recovered
     engine offline for everyone until the entry expired."""
-    svc, engine = service
+    svc, engine, _view = service
 
     def explode(_args, _sources):
         raise RuntimeError("engine gone")
@@ -159,17 +182,17 @@ def test_an_engine_failure_is_not_remembered(service):
         return _StubEngine().run(args, sources)
 
     svc._mod.run = counted
-    down = svc.resolve("CNMG 120408", bands=_bands())
+    down = svc.resolve("CNMG 120408", bands=_bands(), connection_id=COMPANY)
     assert down.rel == "PIE_DOWN" and down.pie_offline
 
-    recovered = svc.resolve("CNMG 120408", bands=_bands())
+    recovered = svc.resolve("CNMG 120408", bands=_bands(), connection_id=COMPANY)
     assert recovered.rel != "PIE_DOWN"
     assert engine_calls["n"] == 2
 
 
 def test_the_cache_can_be_switched_off_without_a_code_change(service, monkeypatch):
-    svc, engine = service
+    svc, engine, _view = service
     monkeypatch.setattr(pie_module._resolution_cache, "maxsize", 0)
-    svc.resolve("CNMG 120408", bands=_bands())
-    svc.resolve("CNMG 120408", bands=_bands())
+    svc.resolve("CNMG 120408", bands=_bands(), connection_id=COMPANY)
+    svc.resolve("CNMG 120408", bands=_bands(), connection_id=COMPANY)
     assert len(engine.calls) == 2

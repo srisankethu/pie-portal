@@ -142,10 +142,19 @@ def test_the_pack_validator_inventory_is_unchanged() -> None:
 def test_the_portal_scores_the_catalogue_with_the_default_configuration() -> None:
     """The pins above are worth nothing if the portal passes its own config.
 
-    ``app.catalog.build_catalog`` constructs a bare ``RunProfile()``. If that
-    ever grows a tuned ``ConfidenceConfig``, the catalogue in the database stops
+    ``app.catalog.run_parse`` constructs a bare ``RunProfile()``. If that ever
+    grows a tuned ``ConfidenceConfig``, the catalogue in the database stops
     being scored by the rules this file pins, and the measurement stops
     describing the product.
+
+    **This read ``build_catalog`` until the per-company catalogue landed**, and
+    the move is why it is worth restating rather than just repointing. There
+    are two build paths now — the deployment-wide one and one per connected
+    company — and inspecting either alone would leave the other free to tune
+    its own scoring. ``run_parse`` is the single place the pipeline is
+    constructed, which both go through, so pinning it covers strictly more than
+    the old assertion did. If a third path ever appears that does not call it,
+    that is the thing to fix, not this test.
     """
     import inspect
 
@@ -155,11 +164,18 @@ def test_the_portal_scores_the_catalogue_with_the_default_configuration() -> Non
     from app import catalog
 
     assert RunProfile().confidence == ConfidenceConfig()
-    source = inspect.getsource(catalog.build_catalog)
+    source = inspect.getsource(catalog.run_parse)
     assert "RunProfile()" in source, "the portal must build with the default profile"
     assert "ConfidenceConfig" not in source, (
         "the portal must not supply its own confidence configuration"
     )
+    # The parse belongs to `run_parse` alone. A build path that constructs its
+    # own pipeline is a second scoring configuration waiting to happen, which
+    # is exactly what this file exists to prevent.
+    for name in ("build_for_company", "ensure_company_catalogues"):
+        body = inspect.getsource(getattr(catalog, name))
+        assert "ParserPipeline" not in body, (
+            f"{name} must reach the pipeline through run_parse, not build its own")
 
 
 def test_the_config_is_frozen_so_a_caller_cannot_retune_it_in_place() -> None:

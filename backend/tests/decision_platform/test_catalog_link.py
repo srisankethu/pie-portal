@@ -32,15 +32,28 @@ class _Source:
 
 
 class _Catalog:
-    """Stands in for pie_service: a tiny catalogue, or none at all."""
+    """Stands in for pie_service: a tiny catalogue, or none at all.
+
+    All three take the company whose catalogue is being asked about, because
+    the real ones do: there is no process-wide catalogue any more, and a stub
+    that answered without being told which company would let a sync link an
+    item against nothing in particular and still stamp it.
+    """
 
     def __init__(self, records=None, available=True):
         self._records = records or {}
-        self.catalog_available = available
-        self.catalog_version = "ck_test_v1"
+        self._available = available
+        self.asked_about = []
 
-    def lookup_record(self, identifier):
-        if not identifier or not self.catalog_available:
+    def catalog_available(self, connection_id=None):
+        self.asked_about.append(connection_id)
+        return self._available
+
+    def catalog_version(self, connection_id=None):
+        return "ck_test_v1"
+
+    def lookup_record(self, identifier, connection_id=None):
+        if not identifier or not self._available:
             return None
         return self._records.get(str(identifier).strip().upper())
 
@@ -78,6 +91,24 @@ def test_an_exact_sku_links_the_item_to_its_catalogue_record(session, catalog):
     # carries a thresholds_version.
     assert p.pie_catalog_version == "ck_test_v1"
     assert report.catalog_links == 1
+
+
+def test_the_link_is_made_against_this_connections_own_catalogue(session, catalog):
+    """A sync links its items against the catalogue of the company it is
+    pulling from, and names it when it asks.
+
+    Catalogues are per company: a sync that asked without saying which company
+    would link one company's items against whichever catalogue happened to be
+    resident, stamp the row with that catalogue's checksum, and be wrong in a
+    way only a rebuild would ever surface.
+    """
+    stub = catalog(_Catalog({"2001174": RECORD}))
+    SyncService(session, _Source([ITEM]), "org_a", connection_id="cx_a").run()
+    session.commit()
+
+    assert stub.asked_about == ["cx_a"], (
+        "the sync must ask about its own connection, not about no company")
+    assert _product(session).pie_record_id == "2001174"
 
 
 def test_an_unmatched_sku_stays_null_and_is_not_counted(session, catalog):

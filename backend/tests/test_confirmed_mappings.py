@@ -20,12 +20,18 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "pie-parser"))
 from sqlalchemy.orm import sessionmaker
 
 import dbsupport
+import piesupport
 from app.domain import models
 from app.identity import service as identity_service
 from app.identity.mapping_store import OrgMappingStore
 
 ORG = "org_test"
 IDENTITY = "identity-pitti"
+#: The company whose catalogue the two end-to-end tests resolve against. A
+#: mapping is the organization's; the catalogue it resolves into is a
+#: company's, and both have to be present for the confirmation to mean
+#: anything.
+COMPANY = piesupport.company_id("cx_confirmed_mappings")
 
 
 @pytest.fixture()
@@ -146,16 +152,19 @@ def test_a_confirmed_mapping_changes_what_the_engine_resolves(session):
     """
     from app.pie_service import pie_service
 
+    piesupport.give_company_a_catalogue(COMPANY)
     CODE = "PITTI-77-XY"          # the customer's own code; not in the catalogue
 
     # Before: the customer's code means nothing to anyone.
-    before = pie_service.resolve(CODE, IDENTITY, None, OrgMappingStore(session, ORG))
+    before = pie_service.resolve(CODE, IDENTITY, None, OrgMappingStore(session, ORG),
+                                 connection_id=COMPANY)
     assert before.rel == "UNRESOLVED"
     assert before.supplyCode is None
 
     _confirm(session, code=CODE, target="2001174")
 
-    after = pie_service.resolve(CODE, IDENTITY, None, OrgMappingStore(session, ORG))
+    after = pie_service.resolve(CODE, IDENTITY, None, OrgMappingStore(session, ORG),
+                                 connection_id=COMPANY)
     assert after.rel == "EXACT", "a confirmed mapping must resolve authoritatively"
     assert after.supplyCode == "2001174"
     assert after.outcome == "AUTO_MATCH"
@@ -166,13 +175,16 @@ def test_one_customer_s_confirmation_does_not_answer_for_another(session):
     """The namespace rule, proven end to end rather than by construction."""
     from app.pie_service import pie_service
 
+    piesupport.give_company_a_catalogue(COMPANY)
     CODE = "PITTI-77-XY"
     _confirm(session, code=CODE, target="2001174")
     store = OrgMappingStore(session, ORG)
 
-    assert pie_service.resolve(CODE, IDENTITY, None, store).supplyCode == "2001174"
+    assert pie_service.resolve(CODE, IDENTITY, None, store,
+                               connection_id=COMPANY).supplyCode == "2001174"
     # Same code, a different real-world customer: still unknown.
-    assert pie_service.resolve(CODE, "identity-someone-else", None, store).rel == "UNRESOLVED"
+    assert pie_service.resolve(CODE, "identity-someone-else", None, store,
+                               connection_id=COMPANY).rel == "UNRESOLVED"
 
 
 @pytest.mark.requires_pie

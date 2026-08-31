@@ -127,18 +127,12 @@ def register_health_checks(engine: Any, session_factory: Any) -> None:
             return HealthStatus.UNHEALTHY, f"Database error: {str(e)}"
 
     def check_pie_parser() -> tuple[HealthStatus, Optional[str]]:
-        """Whether the catalogue pie-parser resolves against actually loaded.
-
-        ``catalog_available`` is the fact worth reporting and the only cheap one:
-        it is memoised (failure included, so a broken index is not re-tried per
-        request), it never raises by contract, and it is true of the thing that
-        matters — with no index every identity lookup returns None and every
-        quote line resolves PIE OFFLINE.
+        """Whether the engine every company's resolution runs through is here.
 
         Absent is a *supported* build (``deploy/backend.Dockerfile`` ships
-        without the engine, and ``PieService._ensure_index`` says so in as many
-        words), so it is DEGRADED and named rather than UNHEALTHY. It is never
-        reported as ready: a missing catalogue is evidence, not a benign default.
+        without the engine, and ``PieService._view`` says so in as many words),
+        so it is DEGRADED and named rather than UNHEALTHY. It is never reported
+        as ready: a missing engine is evidence, not a benign default.
 
         No local ``except`` on purpose. This check used to read
         ``pie_service.engine``, an attribute ``PieService`` has never defined, and
@@ -148,14 +142,29 @@ def register_health_checks(engine: Any, session_factory: Any) -> None:
         traceback and marks the component UNHEALTHY, which is the loud outcome
         that gets a broken check fixed instead of scrolled past.
         """
-        from ..pie_service import pie_service
+        from ..config import settings
 
-        if not pie_service.catalog_available:
+        # **The engine, not a catalogue.** This used to ask
+        # `catalog_available`, which was a process-wide fact while one
+        # deployment-wide catalogue answered everything. Catalogues are per
+        # company now, so there is no single answer — and this check has no
+        # database session to enumerate companies with, nor any business
+        # asking a *process* health probe to load several tenants' indexes to
+        # answer it.
+        #
+        # So it reports the half that is genuinely about this process: whether
+        # the engine is present at all. Whether a given company has built its
+        # catalogue is a per-tenant fact, and `Setup → Decoded catalogue`
+        # reports it per company, with the corpus and pack that explain it.
+        if not (settings.PIE_PARSER_ROOT / "tools" / "resolve_rfq.py").exists():
             return HealthStatus.DEGRADED, (
-                "PIE catalogue not loaded: identity lookups and line resolution "
-                "are unavailable"
+                "pie-parser is not present, so identity lookups and line "
+                "resolution are unavailable for every company"
             )
-        return HealthStatus.HEALTHY, "PIE catalogue loaded"
+        return HealthStatus.HEALTHY, (
+            "pie-parser engine present; each company's catalogue is reported "
+            "on Setup → Decoded catalogue"
+        )
 
     def check_scheduler() -> tuple[HealthStatus, Optional[str]]:
         """Whether the auto-sync scheduler is in the state this deployment asked for.

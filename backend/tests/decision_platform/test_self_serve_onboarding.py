@@ -4,8 +4,16 @@ Four claims get pinned, and three of them are about refusing rather than about
 creating — which is the right ratio for the only unauthenticated write in this
 application.
 
-**Sign-up is off unless a deployment turns it on**, and when it is off the
+**Sign-up is on unless a deployment turns it off**, and when it is off the
 endpoint is not a door somebody lacks a key to: it is absent.
+
+That default is itself pinned below, because the wrong one is silent. While it
+was ``0``, every deployment that did not set the variable answered
+``enabled: false``; the landing page believed it, fell back to a sign-in card,
+and shipped a public marketing site whose largest button offered a door that
+did not exist — no error, no failing test, nothing broken. A default whose
+wrong value produces working software that does the wrong thing is a default
+that needs a test of its own.
 
 **A stranger who signs up lands on the free plan**, whatever ``DEFAULT_PLAN``
 says. That setting defaults to *platform* so an existing single-tenant install
@@ -95,6 +103,66 @@ def client(monkeypatch):
 
 
 # ── the door is only there when the deployment opens it ──────────────────────
+def _settings_with(env: dict[str, str | None]) -> object:
+    """`config.Settings` as a deployment with this environment would get it.
+
+    `Settings` is a plain class whose attributes are `os.environ.get(...)` calls
+    evaluated once, when `app.config` is first imported. So neither
+    `Settings()` nor `settings` re-reads the environment, and a test that
+    changed `os.environ` and constructed one would assert on the environment
+    the *test process* started with while looking like it had set something.
+
+    Loading the file again under a throwaway name is what actually re-runs
+    those calls. It is safe to do because `config.py` has no module-level side
+    effects — it reads environment variables and builds `Path` objects, touches
+    no file, opens no connection — and the copy is discarded here rather than
+    installed in `sys.modules`, so the live `app.config.settings` every other
+    module holds is untouched.
+    """
+    import importlib.util
+    import os
+
+    from app import config as live
+
+    before = {k: os.environ.get(k) for k in env}
+    try:
+        for k, v in env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        spec = importlib.util.spec_from_file_location("_config_probe", live.__file__)
+        probe = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(probe)
+        return probe.Settings()
+    finally:
+        for k, v in before.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+def test_a_deployment_that_configures_nothing_offers_signup():
+    """The shipped default, read the way a deployment that set nothing gets it.
+
+    Pinned because the wrong value here is *silent*. At `0` the API answered
+    `enabled: false`, the landing page believed it and correctly hid its own
+    sign-up door, and the result was a public marketing site whose largest
+    button led to a sign-in form for accounts nobody could create — with every
+    other test in this file green, because every one of them turns the flag on
+    first. Nothing in the suite could see the state the site was actually in.
+    """
+    assert _settings_with({"SELF_SERVE_SIGNUP": None}).SELF_SERVE_SIGNUP is True
+
+
+def test_a_deployment_can_still_turn_signup_off():
+    """The opt-out is the whole basis on which that default was allowed to
+    flip: an install that does not want strangers creating their own tenants
+    says so and gets the previous behaviour exactly."""
+    assert _settings_with({"SELF_SERVE_SIGNUP": "0"}).SELF_SERVE_SIGNUP is False
+
+
 def test_signup_is_absent_unless_the_deployment_offers_it(client, monkeypatch):
     monkeypatch.setattr(settings, "SELF_SERVE_SIGNUP", False)
 

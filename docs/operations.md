@@ -61,7 +61,7 @@ always wins over it**. All values have defaults that work for local development.
 |---|---|---|
 | `DEFAULT_PLAN` | `platform` | The plan an organization is on when its own row does not say. Defaults to the widest so an existing single-tenant deployment keeps every feature it has; a hosted deployment sets `free` and upgrades explicitly with `python -m app.entitlements set-plan`. An unrecognised value resolves to `free` and logs. |
 | `INTELLIGENCE_TRIAL_DAYS` | `30` | Length of the free Commercial Intelligence month. Keyed to the **connected Zoho books**, not to the platform organization, so a second sign-up with a second address does not buy a second trial. |
-| `SELF_SERVE_SIGNUP` | `0` | Whether anyone who can reach this deployment may create a tenant for themselves (`POST /api/v1/signup`). **Off by default, deliberately** — it is the only unauthenticated endpoint here that writes, so an existing install that pulls new code must not silently start accepting strangers. Turning it on also makes the landing page's "Get started free" lead to a sign-up form instead of the sign-in card. |
+| `SELF_SERVE_SIGNUP` | `1` | Whether anyone who can reach this deployment may create a tenant for themselves (`POST /api/v1/signup`). **On by default**, reversed from `0` in 2026-08: the landing page's "Start free" button asks this endpoint and honours the answer, so an unconfigured deployment served a public marketing site whose largest button fell back to a sign-in card, with nothing broken and no error to say so. A sign-up gets a new isolated tenant on the free plan with a trial and reaches no existing organization's rows. Set `0` on an install that should not accept strangers; the sign-in card then offers no way to create an organization, exactly as before. |
 | `SIGNUP_RATE_LIMIT_PER_HOUR` | `5` | Sign-ups accepted per client address per hour. A speed bump, not a control: the counter is in one process's memory, does not survive a restart, is not shared between workers, and behind the reverse proxy in `deploy/` it sees the proxy rather than the client — so it limits globally there. What it buys is that hashing a password (240,000 PBKDF2 rounds, by design) cannot be used as a CPU amplifier. `0` disables it. Put a real limiter in front of the app if you expect real abuse. |
 
 A self-serve sign-up lands on **free**, whatever `DEFAULT_PLAN` says — pinned in
@@ -84,12 +84,15 @@ The form says as much where it is asked: an account starts on the free Quote
 Desk the same day whichever plan is selected, and nothing is charged at sign-up.
 There is no billing in this product.
 
-**Turning sign-up on is what makes registration reachable at all.** With
-`SELF_SERVE_SIGNUP=0` the sign-in card offers no way to create an organization,
-and that is correct for a single-tenant install — the only accounts are the ones
-an owner creates from Settings. With it on, the card carries a "Create your
-organization" link and the landing page's pricing panels open the sign-up form
-on the plan that was being read about.
+**This flag is what makes registration reachable at all.** On — the default —
+the sign-in card carries a "Create your organization" link, the landing page's
+"Start free" button opens the sign-up form, and its pricing panels open it on
+the plan that was being read about. With `SELF_SERVE_SIGNUP=0` none of that is
+offered: the card has no way to create an organization and the landing page's
+buttons say "Sign in", which is correct for a single-tenant install where the
+only accounts are the ones an owner creates from Settings. The page never shows
+a door that is not there, in either direction — which is why the default is
+load-bearing rather than a preference.
 
 ### Zoho
 
@@ -253,7 +256,7 @@ getting one wrong is silent.
 |  | **Installed** (one distributor, an operator on the box) | **Hosted** (strangers sign themselves up) |
 |---|---|---|
 | `DEFAULT_PLAN` | `platform` *(default)* — the one tenant has every feature | `free` — a tenant gets what it is licensed for |
-| `SELF_SERVE_SIGNUP` | `0` *(default)* — accounts are made by the operator | `1` |
+| `SELF_SERVE_SIGNUP` | `0` — accounts are made by the operator | `1` *(default)* |
 | `PUBLIC_DEMO_ORG_ID` / `PUBLIC_DEMO_EMAIL` | unset — no public door | set, pointing at a tenant built by `python -m app.demo --org … --email …` |
 | The landing page's pricing section | Not applicable. Three tiers and locked rates describe a thing this shape does not do — remove the section or do not serve the landing publicly. | Applicable, and see the plan queue below. |
 

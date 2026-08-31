@@ -50,9 +50,9 @@ export function SignInCard({
    *  the landing page, so arriving here any other way — a shared link, an
    *  expired session, the "Sign in" in the nav — was a dead end.
    *
-   *  Absent where sign-up is off (`SELF_SERVE_SIGNUP`, the default), and then
-   *  the caller's footer stands alone: on a single-tenant install "ask whoever
-   *  runs this" is the whole truth. */
+   *  Absent where a deployment has turned sign-up off (`SELF_SERVE_SIGNUP=0`,
+   *  against a default of on), and then the caller's footer stands alone: on a
+   *  single-tenant install "ask whoever runs this" is the whole truth. */
   onSignUp?: () => void;
   defaultEmail?: string;
 }) {

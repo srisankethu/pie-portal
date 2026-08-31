@@ -392,16 +392,31 @@ class Settings:
 
     # ── Self-serve sign-up (app/onboarding.py) ───────────────────────────────
     # Whether anyone who can reach this deployment may create a tenant for
-    # themselves. **Off unless a deployment says otherwise**, and that default
-    # is the whole point rather than caution: this is the one endpoint here that
-    # writes rows without a token, so an existing single-tenant install that
-    # pulls new code must not silently start accepting strangers. A hosted
-    # deployment sets SELF_SERVE_SIGNUP=1 (and, almost certainly, DEFAULT_PLAN=free).
+    # themselves. **On unless a deployment turns it off**, which is a reversal:
+    # it defaulted off, on the reasoning that an existing single-tenant install
+    # pulling new code must not silently begin accepting strangers.
+    #
+    # That reasoning was sound and the default it produced was still wrong,
+    # because of what it did to the deployment nobody had to configure. The
+    # landing page's largest button says **Start free**; it asks the API whether
+    # sign-up is offered and honours the answer, so an unconfigured deployment
+    # answered "no" and the page fell back to a sign-in card — a public
+    # marketing site whose whole call to action was a door that did not exist,
+    # with nothing broken and no error anywhere to say so. A default that is
+    # safe on an install nobody visits, and wrong on the one every visitor
+    # reaches, is not a safe default.
+    #
+    # What a sign-up actually gets is why this is affordable and not merely
+    # wanted: a brand-new isolated tenant on `SIGNUP_PLAN` (free) with a trial,
+    # rate-limited per address, reaching no existing organization's rows. A
+    # stranger signing up costs an empty org and a trial, which is what a free
+    # trial is. An install that does not want that sets SELF_SERVE_SIGNUP=0 and
+    # gets the previous behaviour exactly, landing-page button and all.
     #
     # It does not decide the *plan* a sign-up lands on — `onboarding.SIGNUP_PLAN`
     # pins that to free explicitly, because DEFAULT_PLAN defaults to "platform"
     # and inheriting it here would hand every stranger the top tier.
-    SELF_SERVE_SIGNUP: bool = os.environ.get("SELF_SERVE_SIGNUP", "0") == "1"
+    SELF_SERVE_SIGNUP: bool = os.environ.get("SELF_SERVE_SIGNUP", "1") == "1"
     # Sign-ups accepted from one address per hour, across the process. A speed
     # bump, not a control — see `routers/onboarding.py`, which says plainly what
     # it does and does not stop.

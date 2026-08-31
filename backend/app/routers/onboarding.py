@@ -22,9 +22,12 @@ the endpoint from being the cheapest way to spend the server's CPU in the
 meantime. Stating that is the point: a limiter that looks like a control while
 being a speed bump is worse than one that says which it is.
 
-**Sign-up is off unless the deployment turns it on** (``SELF_SERVE_SIGNUP``).
+**Sign-up is on unless the deployment turns it off** (``SELF_SERVE_SIGNUP=0``).
 The GET exists so the landing page can offer the button only where pressing it
-would work, rather than leading to a form that always refuses.
+would work, rather than leading to a form that always refuses — which is also
+why the default matters rather than being a preference: the page believes this
+endpoint, so a deployment answering "no" by accident is a marketing site whose
+largest button is a door that is not there.
 """
 from __future__ import annotations
 

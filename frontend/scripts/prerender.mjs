@@ -79,11 +79,12 @@ const vite = await createServer({
   appType: "custom",
   logLevel: "error",
 });
-let pages, tokenCss;
+let pages, tokenCss, gaps;
 try {
   const mod = await vite.ssrLoadModule("/src/landing/prerender.tsx");
   pages = mod.PAGES;
   tokenCss = mod.landingTokenCss();
+  gaps = mod.contentGaps();
 } finally {
   await vite.close();
 }
@@ -282,26 +283,38 @@ console.log(
     `; robots.txt + sitemap.xml written`,
 );
 
-// Unreplaced placeholders, named out loud.
+// What the site is still waiting for.
 //
-// The repositioned page carries `{{…}}` tokens on purpose — a price the owner
-// has not fixed yet, a scheduling link, a customer logo that must be real and
-// permissioned before it can appear. Deliberate, and each one is a thing that
-// must not reach a visitor. A checklist in a commit message is read once; this
-// is read on every build, and it prints what is actually in the artefact rather
-// than what somebody remembered to write down.
-//
-// A warning, not a failure: the branch has to be buildable and deployable to a
-// preview while the real values are still being decided, and a build that
-// refuses would only teach somebody to delete the check.
-const placeholders = [...new Set(
+// A `{{…}}` token no longer reaches a page: the block that would have shown
+// one is not rendered at all, which is what makes the site deployable while
+// its content is incomplete. That removed the old signal along with the
+// defect — a build that says nothing is a build nobody learns anything from —
+// so the report is now over the *source*: which slots are empty, and what a
+// visitor is not seeing because of it.
+if (gaps.length) {
+  console.warn(
+    `prerender: ${gaps.length} content slot${gaps.length === 1 ? " is" : "s are"} ` +
+      "still empty, and the pages hide what depends on them:",
+  );
+  for (const { slot, effect } of gaps) {
+    console.warn(`    ${slot.padEnd(38)} → ${effect}`);
+  }
+  console.warn(
+    "  Nothing here is broken and nothing shows a placeholder; these are " +
+      "sections a visitor is not seeing.\n" +
+      "  docs/marketing-placeholders.md says what each one needs.",
+  );
+}
+
+// And the backstop the above replaces: a token reaching a built page is now a
+// defect rather than a reminder, because something rendered one instead of
+// hiding its block. It should never fire.
+const leaked = [...new Set(
   written.flatMap(({ document }) => document.match(/\{\{[A-Z0-9_]+\}\}/g) ?? []),
 )].sort();
-if (placeholders.length) {
-  console.warn(
-    `prerender: WARNING — ${placeholders.length} unreplaced placeholder` +
-      `${placeholders.length === 1 ? "" : "s"} in the built page: ` +
-      `${placeholders.join(", ")}. These are visible to visitors. ` +
-      "Replace them before this build is promoted to production.",
+if (leaked.length) {
+  fail(
+    `a placeholder reached a built page: ${leaked.join(", ")}. ` +
+      "Content that is not filled in must hide its block, never render its token.",
   );
 }

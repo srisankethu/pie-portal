@@ -17,7 +17,11 @@
  */
 import { renderToStaticMarkup } from "react-dom/server";
 import { CSS_VARS } from "../theme";
+import { isPlaceholder } from "./content";
+import { DEMO_BOOKING_URL } from "./cta";
 import { ERP_PAGES } from "./erp";
+import { pricingFor } from "./pricing";
+import { caseStudy, complianceRows, namedCustomers } from "./proof";
 import { ErpPage } from "./ErpPage";
 import { Landing } from "./Landing";
 
@@ -94,3 +98,67 @@ export const PAGES: PrerenderPage[] = [
     render: () => renderToStaticMarkup(<ErpPage page={page} />),
   })),
 ];
+
+/** What the site is still waiting for, and what is hidden for want of it.
+ *
+ * The build used to report this by scanning the built HTML for `{{TOKEN}}`
+ * strings. That check is still in `scripts/prerender.mjs` and should now never
+ * fire, because a token no longer reaches a page — which is the whole point of
+ * the change, and which would have left the founder with no signal at all.
+ *
+ * So the signal moves here, to the source rather than the artefact: what has
+ * no content yet, and what a visitor is therefore not seeing. Reported at the
+ * end of every build.
+ */
+export function contentGaps(): { slot: string; effect: string }[] {
+  const gaps: { slot: string; effect: string }[] = [];
+
+  if (isPlaceholder(DEMO_BOOKING_URL)) {
+    gaps.push({
+      slot: "DEMO_BOOKING_URL",
+      effect: "every \"Book a demo\" button falls back to the trial door",
+    });
+  }
+
+  const usd = pricingFor("INTL");
+  for (const [name, value] of [
+    ["PRICE_TIER_1_USD", usd.tierIntelligence],
+    ["PRICE_TIER_2_USD", usd.tierPlatform],
+  ] as const) {
+    if (isPlaceholder(value)) {
+      gaps.push({ slot: name, effect: 'the panel reads "Priced per organization"' });
+    }
+  }
+  if (isPlaceholder(usd.catalogBuild)) {
+    gaps.push({
+      slot: "PRICE_CATALOG_BUILD_USD",
+      effect: "the catalog-build sentence is omitted for non-Indian visitors",
+    });
+  }
+
+  if (namedCustomers().length === 0) {
+    gaps.push({ slot: "CUSTOMER_LOGO_1..4", effect: "no customer strip" });
+  }
+  if (caseStudy() === null) {
+    gaps.push({ slot: "CASE_STUDY_*", effect: "no case study" });
+  }
+  if (complianceRows().length === 0) {
+    gaps.push({ slot: "SOC2_TYPE_II_STATUS, DATA_RESIDENCY, GDPR_DPA_STATUS",
+                effect: "no compliance row" });
+  }
+  if (namedCustomers().length === 0 && caseStudy() === null
+      && complianceRows().length === 0) {
+    gaps.push({ slot: "— all three above —", effect: "the Proof section is hidden entirely" });
+  }
+
+  for (const page of ERP_PAGES) {
+    if (isPlaceholder(page.evidence)) {
+      gaps.push({
+        slot: page.evidence.replace(/[{}]/g, ""),
+        effect: `no "what ${page.short} distributors tell us" panel on /erp/${page.slug}`,
+      });
+    }
+  }
+
+  return gaps;
+}

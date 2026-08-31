@@ -32,6 +32,8 @@
  * nothing outside this file.
  */
 
+import { filled } from "./content";
+
 /** Which price list a visitor sees. INTL is the default and the one baked into
  *  the prerendered HTML: the repositioning is aimed at US and European
  *  mid-market distributors, and a visitor who is served the Indian list by
@@ -191,4 +193,42 @@ export function heldToFloor(p: RegionPricing): number {
 
 export function heldToRecommended(p: RegionPricing): number {
   return (p.line.recommended - p.line.asked) * p.line.units;
+}
+
+/** A tier's price, or what to say instead.
+ *
+ * A price is the one slot on this site that cannot simply disappear when it is
+ * unset: a pricing panel with no price where a price belongs is a worse page
+ * than one that says how pricing works. So this is the single exception to
+ * "hide the block" — the panel stays and the figure is replaced by the thing
+ * that is true of it either way.
+ *
+ * "Priced per organization" is not a hedge invented for the gap. It is what
+ * the section standfirst already says, what `entitlements.py` describes (a
+ * plan is requested and a person confirms it — there is no checkout), and it
+ * is followed on every panel by a button that starts exactly that
+ * conversation. A visitor who reads it knows what to do next, which is all a
+ * price was going to tell them here.
+ */
+export function tierPrice(p: RegionPricing, tier: "intelligence" | "platform"): {
+  amount: string | null;
+  label: string;
+  period: string | null;
+} {
+  const raw = tier === "intelligence" ? p.tierIntelligence : p.tierPlatform;
+  const amount = filled(raw);
+  if (amount === null) {
+    return { amount: null, label: "Priced per organization", period: null };
+  }
+  return {
+    amount,
+    label: amount,
+    period: tier === "platform" ? " /month +" : " /month",
+  };
+}
+
+/** The one-time catalog build price, or `null` where there is none to state.
+ *  The sentence that carries it is dropped rather than half-written. */
+export function catalogBuildPrice(p: RegionPricing): string | null {
+  return filled(p.catalogBuild);
 }

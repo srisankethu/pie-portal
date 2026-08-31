@@ -163,6 +163,26 @@ const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
 };
 
 // ── sign in ──────────────────────────────────────────────────────────────────
+/** Which door a visitor arriving from outside the application asked for.
+ *
+ * The marketing pages at `/erp/{system}` are static documents that ship no
+ * bundle, so their only way to ask for the sign-in card is the address they
+ * link to — `/#signin`. Nothing read it: the door was always "landing", so a
+ * buyer who pressed "Sign in" on an ERP page was shown the marketing page and
+ * had to press the same button a second time.
+ *
+ * Read once, at mount, and only consulted while signed out. A signed-in
+ * visitor never reaches the door at all, and `#signin` is not a route
+ * (`route.screenAt` answers "home" for it), so nothing else competes for the
+ * fragment. "signup" falls through to the sign-in card where a deployment does
+ * not offer sign-ups, which is the same behaviour the buttons already have.
+ */
+function doorFromHash(): "landing" | "signin" | "signup" {
+  if (typeof window === "undefined") return "landing";
+  const asked = window.location.hash.replace(/^#\/?/, "");
+  return asked === "signin" || asked === "signup" ? asked : "landing";
+}
+
 /** The platform's door. The card itself is `src/SignInCard.tsx`, shared with
  *  the Quote Builder — the two forms had drifted, and the copy that drifted was
  *  the one still telling people any password worked. */
@@ -400,7 +420,7 @@ export default function PlatformApp() {
   // — the sign-up card. State rather than a route on purpose: a person
   // deep-linked to any screen should land on the landing page, not on a bare
   // form, and the URL they wanted is preserved for after sign-in.
-  const [door, setDoor] = useState<"landing" | "signin" | "signup">("landing");
+  const [door, setDoor] = useState<"landing" | "signin" | "signup">(doorFromHash);
   // Which pricing panel they came through, so the sign-up form opens on the
   // plan they were reading about. Only a preselection: the account it creates
   // is the free one whatever this says, which is `SignUpCard`'s whole header.

@@ -8,23 +8,37 @@
          cannot reach fonts.gstatic.com. -->
     <meta name="theme-color" content="#f2f2f3" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <title>PIE · Commercial intelligence for distributors</title>
+    <title>PIE · Margin control for B2B distributors</title>
     <!-- What a crawler that runs no JavaScript gets to read. The description
          mirrors the landing page's audited copy (src/landing/Landing.tsx keeps
          the honesty rule; every claim below is a checkable product property).
          Origin-dependent head tags — canonical, og:url, JSON-LD — are injected
          at build time by scripts/prerender.mjs from one SITE_ORIGIN setting,
-         so a future custom domain is a one-line change, not an edit here. -->
+         so a future custom domain is a one-line change, not an edit here.
+
+         These are the *landing page's* strings, and only its. Each ERP page
+         carries its own title and description from its entry in
+         src/landing/prerender.tsx, and the prerenderer substitutes them into
+         a copy of this document — so the tags below must stay exactly one of
+         each, in a shape the regexes there can find. They live here rather
+         than in TypeScript because this is also the document `npm run dev`
+         serves and the shell an un-prerendered deployment would show; moving
+         them would leave that document untitled.
+
+         Both say "margin control" and neither says "commercial intelligence
+         layer" any more. The old title described a category the buyer does not
+         search for; the new one leads with the outcome the page now leads with,
+         and the page still names the category in its own eyebrow and footer. -->
     <meta
       name="description"
-      content="The commercial intelligence layer for B2B distributors: PIE reads the ERP books you already keep, shows what your own trading history holds and how much of it could be judged, then checks every quote line against your own margin policy and routes breaches for approval."
+      content="Margin control for B2B distributors. PIE checks every quote line against your own floor before it goes out, routes what breaches it for approval, and reports the margin that held — on the ERP you already run."
     />
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="PIE" />
-    <meta property="og:title" content="PIE · Commercial intelligence for distributors" />
+    <meta property="og:title" content="PIE · Margin control for B2B distributors" />
     <meta
       property="og:description"
-      content="The commercial intelligence layer for B2B distributors: PIE reads the ERP books you already keep, shows what your own trading history holds and how much of it could be judged, then checks every quote line against your own margin policy and routes breaches for approval."
+      content="Margin control for B2B distributors. PIE checks every quote line against your own floor before it goes out, routes what breaches it for approval, and reports the margin that held — on the ERP you already run."
     />
     <!-- summary, not summary_large_image: no social image exists, and the tag
          must not promise one. X falls back to og:title/og:description. -->

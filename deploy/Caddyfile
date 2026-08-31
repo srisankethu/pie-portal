@@ -46,14 +46,35 @@
 		@assets path /assets/*
 		header @assets Cache-Control "public, max-age=31536000, immutable"
 
-		# index.html is the opposite: it is the file that names the current
-		# hashes, so caching it is how a browser ends up loading last week's
-		# app against this week's API.
-		header /index.html Cache-Control "no-cache"
+		# The HTML documents are the opposite: index.html names the current
+		# asset hashes, so caching it is how a browser ends up loading last
+		# week's app against this week's API, and the marketing pages are
+		# edited far more often than they are hashed.
+		#
+		# Matched on the request paths, which is what a path matcher actually
+		# sees. The rule this replaces named `/index.html`, an address no
+		# browser ever asks for here — `try_files` resolves `/` to that file
+		# internally — so it had never once fired.
+		@html path / /erp/*
+		header @html Cache-Control "no-cache"
 
-		# React Router owns the paths. A reload on /decisions or a pasted deep
-		# link has to be served the shell, not a 404 from the file server.
-		try_files {path} /index.html
+		# One address per page. Without this, /erp/prophet-21/ misses every
+		# candidate below and falls through to the shell, which answers the
+		# landing page at HTTP 200 — a soft 404, and a second URL for a page
+		# whose canonical tag names the first.
+		@erp_slash path_regexp erpslash ^/erp/([^/]+)/$
+		redir @erp_slash /erp/{re.erpslash.1} 308
+
+		# The ERP pages are real documents at /erp/{system}, baked by
+		# scripts/prerender.mjs as flat .html files. `{path}.html` is what
+		# resolves an extensionless address to one of them; without it the
+		# fallback below would answer /erp/prophet-21 with the landing page at
+		# HTTP 200, which is a soft 404 nothing would ever notice.
+		#
+		# After that, React Router owns the paths: a reload on /decisions or a
+		# pasted deep link has to be served the shell, not a 404 from the file
+		# server.
+		try_files {path} {path}.html /index.html
 		file_server
 	}
 

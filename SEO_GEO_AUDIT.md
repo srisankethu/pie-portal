@@ -87,13 +87,26 @@ record).
 - **Image alt text / formats**: there are no `<img>` elements anywhere in the
   frontend; the hero mock is a styled `div` with `role="img"` and a full
   `aria-label`. Nothing to fix.
-- **BreadcrumbList**: one public page; there is no trail to describe.
+- **BreadcrumbList**: was *not applicable* — one public page, no trail to
+  describe. Since the ERP pages landed there is a real two-level trail
+  (`/` → `/erp/{system}`), so the schema is now *earnable* rather than
+  inapplicable: it may be emitted the day a page renders a visible breadcrumb,
+  and not before. Schema may only restate what is on the page, which is the
+  rule that excluded it in the first place. No page renders one today.
 - **FAQPage**: no visible FAQ content exists on the page, so none is claimed.
 - **Organization schema**: the repository states no public legal-entity facts
   (vendor name, logo, address) that could populate it truthfully;
   `WebSite`/`SoftwareApplication` carry the entity instead.
-- **Per-route titles/descriptions**: only one server-addressable route exists
-  (hash routing); there is nothing for per-route metadata to attach to.
+- **Per-route titles/descriptions**: was *not applicable* — one
+  server-addressable route existed (hash routing), so there was nothing for
+  per-route metadata to attach to. **No longer true as of the Aug 2026
+  repositioning**: `/erp/prophet-21`, `/erp/netsuite` and `/erp/acumatica` are
+  real documents, each baked by the same prerender with its own `<title>`,
+  description, `og:title`/`og:description`, canonical, per-page `WebPage`
+  JSON-LD node and sitemap entry. They ship without the module script, so they
+  carry no bundle at all. `frontend/src/landing/prerender.tsx` holds the page
+  registry; `vercel.json` and `deploy/Caddyfile` resolve the extensionless
+  addresses on both hosts.
 - **`noindex` on private routes**: private screens have no server URLs to
   noindex — they are hash fragments behind the session check, and the API is
   token-gated. Robots' `/api/` disallow is hygiene, not the control.
@@ -105,9 +118,12 @@ record).
 
 1. **No social preview image.** Link shares render text-only cards. Needs a real
    designed asset; nothing was invented to fill the slot.
-2. **One public URL by design.** Hash routing means the landing's sections
-   cannot be individually indexed or deep-linked as URLs. Accepted: changing the
-   routing model has product-wide consequences far beyond SEO.
+2. **One public URL by design, for the application.** Hash routing means the
+   landing's *sections* still cannot be individually indexed or deep-linked as
+   URLs, and changing the routing model has product-wide consequences far
+   beyond SEO. Partially addressed since: the three ERP pages are separate
+   server-addressable documents (see §4), which required no change to the
+   application's routing — they are static pages that never load it.
 3. **Signed-in flash.** A signed-in user briefly sees the prerendered landing
    before React swaps in the shell (previously: a blank white page). Cosmetic.
 4. **Bundle weight unchanged.** The prerender fixes what crawlers and first

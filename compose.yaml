@@ -191,6 +191,19 @@ services:
     build:
       context: .
       dockerfile: deploy/web.Dockerfile
+      args:
+        # Every canonical URL, og:url and sitemap entry the build bakes comes
+        # from this one value (frontend/scripts/prerender.mjs). The build arg
+        # existed and this file never passed it, so a self-host published its
+        # pages pointing a crawler at the hosted deployment's domain — which
+        # mattered once, and matters four times now that there are four pages.
+        #
+        # Deliberately not defaulted from SITE_ADDRESS: that value is allowed
+        # to be ":80" for a local run, and "https://:80" is a worse canonical
+        # URL than the documented fallback. Set SITE_ORIGIN in .env.production
+        # when this deployment has a real name; empty is handled — the
+        # prerender uses `||`, not `??`, for exactly this case.
+        SITE_ORIGIN: ${SITE_ORIGIN:-}
     image: pie-portal-web:latest
     environment:
       SITE_ADDRESS: ${SITE_ADDRESS:?set SITE_ADDRESS in .env.production — a hostname for automatic HTTPS, or :80 for local}

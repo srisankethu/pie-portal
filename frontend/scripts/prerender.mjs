@@ -26,7 +26,7 @@
  * the default is the current public home. Fails loudly — a broken prerender
  * must fail the build, not ship an empty page quietly.
  */
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { createServer } from "vite";
@@ -69,95 +69,239 @@ if (html.split(EMPTY_ROOT).length !== 2) {
 // Vite's SSR transform compiles the TSX and tolerates the CSS side-effect
 // import; middlewareMode means no port is opened. This is the documented
 // low-level SSR path, used here as a build step rather than a server.
+//
+// Loaded once, for every page. The module exports a registry (`PAGES`) rather
+// than one render function, so adding a document is an entry in a type-checked
+// list — not a second call to this script, and not a second Vite server, which
+// is the expensive way to get this wrong.
 const vite = await createServer({
   server: { middlewareMode: true },
   appType: "custom",
   logLevel: "error",
 });
-let markup, tokenCss;
+let pages, tokenCss;
 try {
   const mod = await vite.ssrLoadModule("/src/landing/prerender.tsx");
-  markup = mod.renderLandingMarkup();
+  pages = mod.PAGES;
   tokenCss = mod.landingTokenCss();
 } finally {
   await vite.close();
 }
 
-if (!markup || !markup.includes("<h1")) {
-  fail("rendered landing markup has no <h1> — refusing to bake it");
+if (!Array.isArray(pages) || pages.length === 0) {
+  fail("src/landing/prerender.tsx exported no PAGES to render");
 }
 
-const title = extract(html, /<title>([^<]+)<\/title>/, "<title>");
-const description = extract(
+// The landing's own title and description live in index.html, because that is
+// also the document `npm run dev` serves and the shell an un-prerendered
+// deployment would show. Read back rather than restated. Every other page's
+// single source is its own registry entry.
+const landingTitle = extract(html, /<title>([^<]+)<\/title>/, "<title>");
+const landingDescription = extract(
   html,
   /<meta\s+name="description"\s+content="([^"]+)"/,
   'the <meta name="description">',
 );
 
-// WebSite + WebPage + SoftwareApplication, every value true of the product
-// and already stated on the page. Deliberately absent: offers, ratings,
-// reviews, FAQPage — schema the audit's ground rules exclude, and values
-// (a rating, an award) the product simply does not have.
-const jsonLd = {
-  "@context": "https://schema.org",
-  "@graph": [
-    {
-      "@type": "WebSite",
-      "@id": `${SITE_ORIGIN}/#website`,
-      url: `${SITE_ORIGIN}/`,
-      name: "PIE",
-    },
-    {
-      "@type": "WebPage",
-      "@id": `${SITE_ORIGIN}/#webpage`,
-      url: `${SITE_ORIGIN}/`,
-      name: title,
-      description,
-      isPartOf: { "@id": `${SITE_ORIGIN}/#website` },
-      about: { "@id": `${SITE_ORIGIN}/#software` },
-    },
-    {
-      "@type": "SoftwareApplication",
-      "@id": `${SITE_ORIGIN}/#software`,
-      name: "PIE",
-      url: `${SITE_ORIGIN}/`,
-      description,
-      applicationCategory: "BusinessApplication",
-      operatingSystem: "Web browser",
-    },
-  ],
-};
+/** Replace exactly one occurrence, or fail the build.
+ *
+ *  A blind `String.replace` in a per-page loop no-ops silently when the tag
+ *  shape changes, and the symptom is three sub-pages quietly sharing the
+ *  landing page's title — which is precisely the soft-duplicate problem these
+ *  pages exist to fix. */
+function replaceOnce(source, pattern, replacement, what) {
+  const matches = source.match(pattern);
+  if (!matches) fail(`could not find ${what} to replace`);
+  // Flags deduplicated: `new RegExp(src, "gg")` is a SyntaxError, and a
+  // guard that throws one instead of naming the tag it could not replace is
+  // a guard that has stopped helping.
+  const global = new RegExp(pattern.source, [...new Set(`${pattern.flags}g`)].join(""));
+  if ((source.match(global) ?? []).length !== 1) {
+    fail(`expected exactly one ${what}; the entry document changed`);
+  }
+  return source.replace(pattern, replacement);
+}
 
-const headInjection =
-  `    <style id="pie-tokens">${tokenCss}</style>\n` +
-  `    <link rel="canonical" href="${SITE_ORIGIN}/" />\n` +
-  `    <meta property="og:url" content="${SITE_ORIGIN}/" />\n` +
-  `    <script type="application/ld+json">${JSON.stringify(jsonLd)}</script>\n`;
+/** Attribute-safe: these strings end up inside double-quoted attributes. */
+function attr(value) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
 
-const out = html
-  .replace("</head>", `${headInjection}  </head>`)
-  .replace(EMPTY_ROOT, `<div id="root">${markup}</div>`);
-await writeFile(INDEX, out);
+/** The document for one registry entry, built from the untouched template.
+ *
+ *  Every page is derived from `html` as read off disk — never from an already
+ *  injected document — because the `#root` guard above holds for the template
+ *  and would not hold for a page that had been filled in once already. */
+function documentFor(page) {
+  const markup = page.render();
+  if (!markup || !markup.includes("<h1")) {
+    fail(`rendered markup for /${page.slug} has no <h1> — refusing to bake it`);
+  }
+
+  const title = page.title ?? landingTitle;
+  const description = page.description ?? landingDescription;
+  const url = `${SITE_ORIGIN}/${page.slug}`;
+
+  let out = html;
+  // Each tag follows its own field. Gating all four on `page.title` alone let a
+  // page with a description and no title keep the landing's description in the
+  // head while its JSON-LD, built from the same `description` variable below,
+  // stated its own — two answers to one question in one document.
+  if (page.title !== null) {
+    out = replaceOnce(out, /<title>[^<]*<\/title>/,
+                      `<title>${attr(title)}</title>`, "<title>");
+    out = replaceOnce(out, /<meta\s+property="og:title"\s+content="[^"]*"\s*\/?>/,
+                      `<meta property="og:title" content="${attr(title)}" />`,
+                      'the <meta property="og:title">');
+  }
+  if (page.description !== null) {
+    out = replaceOnce(out, /<meta\s+name="description"\s+content="[^"]*"\s*\/?>/,
+                      `<meta name="description" content="${attr(description)}" />`,
+                      'the <meta name="description">');
+    out = replaceOnce(out, /<meta\s+property="og:description"\s+content="[^"]*"\s*\/?>/,
+                      `<meta property="og:description" content="${attr(description)}" />`,
+                      'the <meta property="og:description">');
+  }
+
+  // A standalone document ships without the application bundle. It is not an
+  // optimisation: `main.tsx` mounts a HashRouter and `createRoot().render()`
+  // replaces whatever is in `#root`, so a sub-page that loaded the bundle
+  // would have its content thrown away and the landing drawn over it. The
+  // stylesheet link stays — that is the same one file every page reads.
+  if (page.standalone) {
+    out = replaceOnce(out, /\s*<script type="module"[^>]*><\/script>/,
+                      "", "the module script tag");
+  }
+
+  // WebSite + WebPage + SoftwareApplication, every value true of the product
+  // and already stated on the page. Deliberately absent: offers, ratings,
+  // reviews, FAQPage — schema the audit's ground rules exclude, and values
+  // (a rating, an award) the product simply does not have. BreadcrumbList is
+  // absent for the same reason it always was: no page here renders a visible
+  // breadcrumb, and schema may only restate what is on the page.
+  //
+  // The WebPage node is per-page — its own @id and url — while WebSite and
+  // SoftwareApplication are one node each, referenced rather than re-declared.
+  // Four documents all claiming to be `${SITE_ORIGIN}/#webpage` would describe
+  // one page four times, which is worse than describing none.
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "WebSite",
+        "@id": `${SITE_ORIGIN}/#website`,
+        url: `${SITE_ORIGIN}/`,
+        name: "PIE",
+      },
+      {
+        "@type": "WebPage",
+        "@id": `${url}#webpage`,
+        url,
+        name: title,
+        description,
+        isPartOf: { "@id": `${SITE_ORIGIN}/#website` },
+        about: { "@id": `${SITE_ORIGIN}/#software` },
+      },
+      {
+        "@type": "SoftwareApplication",
+        "@id": `${SITE_ORIGIN}/#software`,
+        name: "PIE",
+        url: `${SITE_ORIGIN}/`,
+        description: landingDescription,
+        applicationCategory: "BusinessApplication",
+        operatingSystem: "Web browser",
+      },
+    ],
+  };
+
+  const headInjection =
+    `    <style id="pie-tokens">${tokenCss}</style>\n` +
+    `    <link rel="canonical" href="${url}" />\n` +
+    `    <meta property="og:url" content="${url}" />\n` +
+    `    <script type="application/ld+json">${JSON.stringify(jsonLd)}</script>\n`;
+
+  return out
+    .replace("</head>", `${headInjection}  </head>`)
+    .replace(EMPTY_ROOT, `<div id="root">${markup}</div>`);
+}
+
+/** Where a page's document goes. `""` is dist/index.html; every other slug is
+ *  a flat `<slug>.html`, which is what `vercel.json`'s `/erp/([^/]+)` rewrite
+ *  and the Caddyfile's `try_files … {path}.html` both resolve `/{slug}` to. Flat rather than
+ *  `<slug>/index.html` so the canonical URL carries no trailing slash and
+ *  there is exactly one form of every address — on the page, in the sitemap
+ *  and in the canonical tag. */
+function fileFor(slug) {
+  return slug === "" ? INDEX : path.join(DIST, `${slug}.html`);
+}
+
+const written = [];
+for (const page of pages) {
+  const file = fileFor(page.slug);
+  await mkdir(path.dirname(file), { recursive: true });
+  const document = documentFor(page);
+  await writeFile(file, document);
+  written.push({ page, file, document, size: document.length });
+}
 
 // Crawl files. /api/ is the backend proxy — token-gated anyway, but nothing
-// there is a page. Assets and the one public page stay allowed.
+// there is a page. Assets and the public pages stay allowed.
 await writeFile(
   path.join(DIST, "robots.txt"),
   `User-agent: *\nDisallow: /api/\n\nSitemap: ${SITE_ORIGIN}/sitemap.xml\n`,
 );
 
-// One canonical public URL is the honest sitemap: every other route is a
-// hash fragment on this document or sits behind sign-in.
+// Generated from the same registry the documents are, so a page cannot exist
+// without a sitemap entry or a sitemap entry without a page. Every other route
+// in this application is a hash fragment on the landing document or sits
+// behind sign-in, and neither is a URL a crawler can be given.
 const lastmod = new Date().toISOString().slice(0, 10);
 await writeFile(
   path.join(DIST, "sitemap.xml"),
   `<?xml version="1.0" encoding="UTF-8"?>\n` +
     `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n` +
-    `  <url>\n    <loc>${SITE_ORIGIN}/</loc>\n    <lastmod>${lastmod}</lastmod>\n  </url>\n` +
+    pages
+      .map((page) =>
+        `  <url>\n    <loc>${SITE_ORIGIN}/${page.slug}</loc>\n` +
+        `    <lastmod>${lastmod}</lastmod>\n  </url>\n`)
+      .join("") +
     `</urlset>\n`,
 );
 
 console.log(
-  `prerender: landing baked into dist/index.html (${(out.length / 1024).toFixed(1)} kB), ` +
-    `robots.txt + sitemap.xml written for ${SITE_ORIGIN}`,
+  `prerender: ${written.length} page${written.length === 1 ? "" : "s"} baked for ` +
+    `${SITE_ORIGIN} — ` +
+    written
+      .map(({ page, size }) =>
+        `/${page.slug} (${(size / 1024).toFixed(1)} kB${page.standalone ? ", no bundle" : ""})`)
+      .join(", ") +
+    `; robots.txt + sitemap.xml written`,
 );
+
+// Unreplaced placeholders, named out loud.
+//
+// The repositioned page carries `{{…}}` tokens on purpose — a price the owner
+// has not fixed yet, a scheduling link, a customer logo that must be real and
+// permissioned before it can appear. Deliberate, and each one is a thing that
+// must not reach a visitor. A checklist in a commit message is read once; this
+// is read on every build, and it prints what is actually in the artefact rather
+// than what somebody remembered to write down.
+//
+// A warning, not a failure: the branch has to be buildable and deployable to a
+// preview while the real values are still being decided, and a build that
+// refuses would only teach somebody to delete the check.
+const placeholders = [...new Set(
+  written.flatMap(({ document }) => document.match(/\{\{[A-Z0-9_]+\}\}/g) ?? []),
+)].sort();
+if (placeholders.length) {
+  console.warn(
+    `prerender: WARNING — ${placeholders.length} unreplaced placeholder` +
+      `${placeholders.length === 1 ? "" : "s"} in the built page: ` +
+      `${placeholders.join(", ")}. These are visible to visitors. ` +
+      "Replace them before this build is promoted to production.",
+  );
+}

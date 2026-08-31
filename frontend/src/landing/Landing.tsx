@@ -181,9 +181,16 @@ import "./landing.css";
  * account was an operator running `python -m app.provision_org` — so the one
  * promise the page made twice, in its largest type, was the one thing a visitor
  * could not do. `onSignUp` is that path. It is optional because sign-up is a
- * deployment's choice (`SELF_SERVE_SIGNUP`, off by default): where it is absent
- * the CTAs fall back to sign-in, which is honest for a single-tenant install
- * and was the whole behaviour before.
+ * deployment's choice (`SELF_SERVE_SIGNUP`): where it is absent the CTAs fall
+ * back to sign-in, which is honest for a single-tenant install and was the
+ * whole behaviour before.
+ *
+ * That flag now defaults to **on**, and the default is the load-bearing half.
+ * While it defaulted off, every unconfigured deployment — the hosted marketing
+ * site included — took the fallback, so this page's largest button read "Sign
+ * in" and the product it was selling had no visible way in. The fallback was
+ * right and the thing it was falling back *from* was missing. Nothing in this
+ * file changed to fix that; `config.py` did.
  */
 export function Landing({ onEnter, onSignUp, onDemo }: {
   onEnter: () => void;

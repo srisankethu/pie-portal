@@ -96,10 +96,10 @@ x-backend-env: &backend-env
   # feature was complete the whole time; the stack could not be told to switch
   # it on.
   #
-  # Off by default here, exactly as `config.py` is: an existing single-tenant
-  # install that pulls new code must not silently begin accepting strangers.
-  # That default is the point, not caution.
-  SELF_SERVE_SIGNUP: ${SELF_SERVE_SIGNUP:-0}
+  # On by default here, exactly as `config.py` is — the reversal is argued
+  # there. An install that does not want strangers creating their own tenants
+  # sets SELF_SERVE_SIGNUP=0 and gets the previous behaviour, button and all.
+  SELF_SERVE_SIGNUP: ${SELF_SERVE_SIGNUP:-1}
   SIGNUP_RATE_LIMIT_PER_HOUR: ${SIGNUP_RATE_LIMIT_PER_HOUR:-5}
   # Mirrors the code default rather than choosing one, so adding this line
   # changes nothing for a stack that never set it. It does *not* decide what a

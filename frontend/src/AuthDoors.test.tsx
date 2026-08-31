@@ -81,9 +81,9 @@ describe("the sign-in card", () => {
   });
 
   it("says nothing about signing up where the deployment does not offer it", () => {
-    // `SELF_SERVE_SIGNUP` is off by default, and on a single-tenant install
-    // "ask whoever runs this" is the whole truth. A link to a form that always
-    // 404s is worse than no link.
+    // A deployment can turn `SELF_SERVE_SIGNUP` off — it defaults to on now,
+    // but on a single-tenant install that opts out "ask whoever runs this" is
+    // the whole truth. A link to a form that always 404s is worse than no link.
     signIn();
     expect(screen.queryByRole("button", { name: /create your organization/i }))
       .not.toBeInTheDocument();

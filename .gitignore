@@ -31,6 +31,9 @@ backend/data/*.jsonl.tmp
 # globs above are single-level and do not reach these — the durable copy is the
 # corpus row in the database, and everything under here is derived from it.
 backend/data/catalogues/
+# The suite's own copy: the shipped corpus decoded once per xdist worker and
+# hard-linked into each test company's directory (backend/tests/piesupport.py).
+backend/data/test-catalogues/
 
 # Node / frontend
 node_modules/

@@ -578,8 +578,13 @@ def snapshot(
 
     org = principal.organization_id
     customer_ref = _visible_customer_ref(session, principal, body.customer.strip())
+    quote = store.get(body.quote_id.strip())
     result, rows = assess_and_record(
         session, org, quote_id=body.quote_id.strip(), customer_ref=customer_ref,
+        # The company whose catalogue resolved these lines, read off the quote
+        # this assessment is about. None where the quote is not in this
+        # process's store — an honest "not recorded" rather than a guess.
+        connection_id=quote.connectionId if quote is not None else None,
         lines=[QuoteLineInput(line_id=ln.line_id, product_ref=ln.product, qty=ln.qty,
                               proposed_price=ln.proposed_price, family=ln.family,
                               item_master_cost=store.line_cost(body.quote_id,

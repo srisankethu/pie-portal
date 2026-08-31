@@ -13,6 +13,13 @@ class CreateQuoteRequest(BaseModel):
     #: downstream resolution is an exact lookup instead of a tolerant name
     #: match, which is what keeps two books' identically-named customers apart.
     customer_id: Optional[str] = None
+    #: Which company this quote is raised from. Each connected company has its
+    #: own decoded catalogue, so this decides what every line on the quote is
+    #: resolved against — and a quote that never names one resolves nothing.
+    #: Optional on the wire because an organization reading one company's books
+    #: has no choice to make; with several, the server refuses rather than
+    #: picking (see ``resolution.company_for``).
+    connection_id: Optional[str] = None
 
 
 class IntakeRequest(BaseModel):

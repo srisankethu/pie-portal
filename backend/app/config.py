@@ -94,15 +94,21 @@ class Settings:
     # Location of the pie-parser package (the ./pie-parser submodule by default).
     PIE_PARSER_ROOT: Path = _path_env("PIE_PARSER_ROOT", REPO_ROOT / "pie-parser")
 
-    # Decoded PIE product catalogue (products.jsonl) the resolver searches.
-    # Built from the pie-parser corpus by scripts/build_catalog.py; gitignored.
+    # Where decoded catalogues live. Each connected company's is
+    # `catalogues/<connection_id>/products.jsonl` beside this path; nothing
+    # resolves against the file this names, which is kept as the anchor rather
+    # than renamed because it is an environment variable deployments already
+    # set. Gitignored — a catalogue is rebuilt from its company's corpus row.
     PIE_CATALOG: Path = _path_env("PIE_CATALOG", REPO_ROOT / "backend" / "data" / "products.jsonl")
 
-    # When the catalogue is missing, build it lazily on first use from the
-    # pie-parser corpus. Disable in constrained deploys and build it out-of-band.
+    # At start-up, build any company whose corpus is on record but whose
+    # decoded file is not — a redeploy loses the file and never the corpus.
+    # Disable in constrained deploys and build from the screen instead.
     AUTO_BUILD_CATALOG: bool = os.environ.get("AUTO_BUILD_CATALOG", "1") != "0"
 
-    # Corpus + pack used to build the catalogue when AUTO_BUILD_CATALOG is on.
+    # The corpus a *first* company inherits as its seed, and the pack it is
+    # decoded through. Not a runtime fallback: once a company has uploaded its
+    # own export, neither of these is read for it again.
     PIE_CORPUS: Path = _path_env(
         "PIE_CORPUS",
         PIE_PARSER_ROOT / "corpora" / "kmt_zcnc_2026-07_nomenclature.csv",
@@ -114,10 +120,11 @@ class Settings:
     # directory; the nomenclature layer is reached through the manifest and is
     # never named here.
     #
-    # This is a per-organisation choice by construction, so a deployment serving
-    # a second distributor overrides PIE_PACK for it rather than sharing this
-    # one. The default names the only org layer that exists in the pinned
-    # engine.
+    # This is a per-*company* choice, and it is stored per company:
+    # `zoho_connections.config["pie_pack"]` holds the id, resolved against what
+    # the engine ships by `catalog.pack_for`. What is left here is the default
+    # the seed uses and the fallback `master_health --pack` takes, naming the
+    # only org layer the pinned engine has.
     PIE_PACK: Path = _path_env("PIE_PACK",
                                PIE_PARSER_ROOT / "packs" / "org" / "zcnc")
 

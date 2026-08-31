@@ -557,6 +557,39 @@ def load_for_org(session: Session, organization_id: str) -> CommercialThresholds
     return replace(base, **changes) if changes else base
 
 
+def _family_vocabulary(session: Session,
+                       organization_id: str) -> Optional[tuple]:
+    """Every family name this organization's companies can actually decode.
+
+    The union, not one company's, because a margin policy is the
+    organization's: a family that only the second company sells is still a
+    family this policy prices, and validating against a single pack would
+    refuse a name that decodes perfectly well for the company that uses it.
+    Narrower than "accept anything": a name no company's pack declares still
+    cannot be saved, which is the whole point of checking.
+
+    ``None`` — not an empty tuple — when no company has a readable pack, so the
+    caller can tell "nothing to validate against" from "nothing is valid" and
+    refuse rather than wave the edit through.
+    """
+    from .. import catalog
+    from ..ingestion.connections import list_connections
+    from ..pie_service import pack_families
+
+    names: set = set()
+    read_any = False
+    for connection in list_connections(session, organization_id):
+        pack = catalog.pack_for(connection)
+        if pack is None:
+            continue
+        families = pack_families(pack)
+        if families is None:
+            continue
+        read_any = True
+        names |= set(families)
+    return tuple(sorted(names)) if read_any else None
+
+
 def save_for_org(session: Session, organization_id: str, updates: dict,
                  user_id: Optional[str] = None) -> CommercialThresholds:
     """Apply and persist overrides. Validates the resulting policy, not the diff.
@@ -597,16 +630,14 @@ def save_for_org(session: Session, organization_id: str, updates: dict,
     # other field's validity owes nothing to the pack, and a missing engine
     # must not lock an owner out of the rest of their margin policy.
     if updates.get("target_margin_by_family") is not None:
-        from ..pie_service import pack_families
-        vocabulary = pack_families()
+        vocabulary = _family_vocabulary(session, organization_id)
         if vocabulary is None:
-            from ..config import settings
             raise PolicyError(
-                "Family targets cannot be edited right now: the PIE pack at "
-                f"{settings.PIE_PACK} is not readable, so there is no family "
-                "vocabulary to check these names against. Fetch pie-parser "
-                "(scripts/setup_pie_parser.sh) or point PIE_PACK at a pack, "
-                "then retry.")
+                "Family targets cannot be edited right now: none of this "
+                "organization's companies has a readable PIE pack, so there is "
+                "no family vocabulary to check these names against. Choose a "
+                "pack for a company on Setup → Decoded catalogue (or fetch "
+                "pie-parser with scripts/setup_pie_parser.sh), then retry.")
         # The edit replaces the whole map, so the candidate's map *is* the
         # incoming one — checking it checks exactly what this save asserts,
         # and a stale key in some *other* field's save never gets here.

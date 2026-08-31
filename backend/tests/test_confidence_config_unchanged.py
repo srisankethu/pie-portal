@@ -172,7 +172,7 @@ def test_the_portal_scores_the_catalogue_with_the_default_configuration() -> Non
     # The parse belongs to `run_parse` alone. A build path that constructs its
     # own pipeline is a second scoring configuration waiting to happen, which
     # is exactly what this file exists to prevent.
-    for name in ("build_catalog", "build_for_company"):
+    for name in ("build_for_company", "ensure_company_catalogues"):
         body = inspect.getsource(getattr(catalog, name))
         assert "ParserPipeline" not in body, (
             f"{name} must reach the pipeline through run_parse, not build its own")

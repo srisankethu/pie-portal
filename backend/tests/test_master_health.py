@@ -493,10 +493,12 @@ def test_the_real_engine_gates_an_insert_and_refuses_a_screw():
 @pytest.mark.requires_pie
 def test_a_real_catalogue_record_links_by_identity_and_an_invented_one_does_not(
         tmp_path: Path):
-    from app.catalog import ensure_catalog
+    import piesupport
     from app.pie_service import pie_service
 
-    with Path(ensure_catalog()).open(encoding="utf-8") as fh:
+    company = piesupport.company_id("cx_master_health")
+    piesupport.give_company_a_catalogue(company)
+    with piesupport.shared_catalogue().open(encoding="utf-8") as fh:
         record_id = json.loads(fh.readline())["record_id"]
     export = _write_csv(tmp_path / "z.csv", ZOHO_HEADERS, rows=[
         (record_id, "CNMG 120408", "KENNAMETAL", "100", "1", "82090010", "pcs"),
@@ -505,8 +507,11 @@ def test_a_real_catalogue_record_links_by_identity_and_an_invented_one_does_not(
     rows, _ = read_export(export, load_profile("zoho"))
     report = analysis.build_report(
         rows=rows, profile=load_profile("zoho"), decode=decode_names(rows),
-        policy=policy_module.load_policy(), lookup=pie_service.lookup_record,
-        catalogue_available=pie_service.catalog_available,
+        policy=policy_module.load_policy(),
+        # Bound to the company being measured, the way the CLI binds them:
+        # a lookup that did not name a company would answer from nothing.
+        lookup=lambda identifier: pie_service.lookup_record(identifier, company),
+        catalogue_available=pie_service.catalog_available(company),
         source_file="f", source_digest="d")
     assert report.coverage["identity"]["rows"] == 1
 

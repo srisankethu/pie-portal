@@ -1,22 +1,29 @@
 # Per-company decoded catalogues
 
-**Status: PR 1 is built** — tables, upload, pack selection, per-company build
-and the screen. The deployment-wide catalogue still answers every resolution;
-PR 2 is the cutover (§8). Two things landed differently from the plan below and
-are marked where they occur: the corpus arrives as a **raw request body**, so
-`python-multipart` was never added and `master_health`'s dependency refusal
-still stands; and the **index cache moved to PR 2**, because nothing in PR 1
-reads a per-company catalogue and a cache with no caller cannot be measured.
+**Status: built, both parts.** PR 1 brought the tables, upload, pack selection,
+per-company build and the screen; PR 2 was the cutover — the quote names its
+company, the resolution API gained its argument and its refusal, the shipped
+corpus became a *seed*, and the deployment-wide catalogue was removed. Read the
+plan below as the record of why it is shaped this way; where the build differs
+from the plan, it is marked at the point it differs.
 
-The decoded catalogue is deployment-wide today: one `PIE_CATALOG` path, one
-`PIE_PACK`, one index per process, and `Setup → Decoded catalogue` says so in
-words. This plans the move to **one catalogue per connected company**, each
-with its own pack and its own uploaded corpus, and the removal of the shared
-default.
+Four things landed differently from the plan and are marked where they occur:
+the corpus arrives as a **raw request body**, so `python-multipart` was never
+added and `master_health`'s dependency refusal still stands; the **index cache
+moved to PR 2**, because nothing in PR 1 read a per-company catalogue and a
+cache with no caller cannot be measured; the **seed is a start-up step rather
+than a data migration** (§6); and `master_health` takes a **`--pack` flag
+rather than reading the company's stored choice**, because reading it would
+have needed the database that module refuses.
 
-Nothing here is implemented. It is written first because three of the decisions
-below overturn something the codebase has already decided on purpose, and one
-of them breaks on the deployment we actually run.
+Before this, the decoded catalogue was deployment-wide: one `PIE_CATALOG` path,
+one `PIE_PACK`, one index per process. This planned the move to **one catalogue
+per connected company**, each with its own pack and its own uploaded corpus,
+and the removal of the shared default.
+
+It was written first because three of the decisions below overturn something
+the codebase had already decided on purpose, and one of them breaks on the
+deployment we actually run.
 
 **Decided already** (the answers this plan is built on):
 
@@ -254,17 +261,33 @@ a regression that looks exactly like the engine being down.
 
 So:
 
-1. **Seed, then remove.** A data migration assigns the existing default
-   catalogue to each organization's first enabled connection, recording the
-   shipped corpus's checksum as its `corpus_id` provenance. An org with no
-   connection gets nothing and correctly reports NOT BUILT.
+1. **Seed, then remove.** Each organization's first enabled connection is given
+   the shipped corpus as its own, and its catalogue is built from it. An org
+   with no connection gets nothing and correctly reports NOT BUILT.
+
+   **Not a data migration, which is where this departs from the plan.** The
+   corpus lives inside the pie-parser submodule, which `deploy/backend.Dockerfile`
+   says an image may be built without, and `railway.json` runs
+   `alembic upgrade head` as a *pre-deploy* command. A migration would therefore
+   either fail that deploy or seed nothing exactly once, permanently — while a
+   start-up step retries on the next boot, when the submodule or the
+   organization's first connection has arrived. It is also the only form that
+   can read `settings.PIE_CORPUS` and `catalog.pack_for` rather than restating
+   both, which §4's rule against migrations importing application code would
+   otherwise have forced. `catalog.seed_company_catalogues` and
+   `catalog.ensure_company_catalogues` are the two functions; `app/main.py`
+   calls them at start-up and `scripts/build_catalog.py` is the same pair for a
+   machine where the app is not running yet.
 2. `PIE_CORPUS` and `PIE_PACK` survive as the **seed** for that migration and
    for local development, not as a runtime fallback. `PIE_CATALOG` goes.
-3. `AUTO_BUILD_CATALOG` becomes per company: build on first use from that
-   company's stored corpus, or report NOT BUILT. It must never fall back to
-   another company's catalogue — that is the one outcome worse than an empty
-   screen, because it answers with the wrong manufacturer's product and stamps
-   it as provenanced.
+3. `AUTO_BUILD_CATALOG` becomes per company: `ensure_company_catalogues` builds
+   any company whose corpus is on record and whose decoded file is not, at
+   start-up rather than on first use — `pie_service` holds no session and
+   giving it one to rebuild mid-resolution would put a two-second parse on the
+   hot path. With it off, a company reports NOT BUILT and somebody builds it
+   from the screen. It never falls back to another company's catalogue — that
+   is the one outcome worse than an empty screen, because it answers with the
+   wrong manufacturer's product and stamps it as provenanced.
 
 The screen this branch shipped already renders NOT BUILT as its own state
 rather than zero coverage, so the honest end state is already drawn. It gains a
@@ -350,11 +373,22 @@ lives only in a chat log is a decision the next person re-litigates.
    forbids. An organization with exactly one company still answers with no
    argument, so single-entity callers see no change.
 
-## 10. Still to decide, but not blocking PR 1
+## 10. Still open, now that both parts are built
 
-- The **index cache bound** (§4) — pick it from a measurement of eviction rate,
-  not in advance.
-- Whether `commercial/policy` validating family names against the **union** of an
-  org's packs (§5) is right, or whether an org editing policy should name a
-  company for that too. The union is the conservative choice: it rejects only
-  names no company declares.
+- The **index cache bound** (§4) is three, chosen against the shape of the
+  business rather than a benchmark. Revisit it from a measurement of the
+  eviction rate, not in advance.
+- `commercial/policy` validates family names against the **union** of the
+  organization's companies' packs (§5), which is the conservative choice: it
+  rejects only names no company declares. Whether an org editing policy should
+  name a company for that too is still open — it would be a narrower check and
+  a longer question to answer at the screen.
+- `master_health` takes `--company` for the catalogue and `--pack` for the
+  pack, separately, because that module reads no database and the pairing lives
+  in `zoho_connections.config`. Passing mismatched ones is possible and nothing
+  stops it; the report names both. Closing that would mean either giving the
+  module a session (overturning a refusal its `__init__` argues for at length)
+  or a portal-side entry point that resolves the pair — the second is the
+  better shape if it is ever worth doing.
+- Uploaded **pack bundles** remain phase 2, with the regex budget and sandbox
+  §1.2 describes.

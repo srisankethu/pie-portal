@@ -927,111 +927,20 @@ def sync_run_log_text(
         headers={"Content-Disposition": f'attachment; filename="{name}"'})
 
 
-# ── the decoded product catalogue ────────────────────────────────────────────
-#
-# The nomenclature side of the data this platform runs on. Until this existed,
-# the catalogue was visible only to whoever knew to run
-# `python scripts/build_catalog.py` — nothing in the product could say whether
-# one existed, what built it, or rebuild it. It lives in this router because it
-# is the same question the rest of the file answers ("what data is this
-# deployment running on, and how fresh") — a `catalog.py` router would be a
-# second home for the data-status concern.
-#
-# One honest difference from everything above: the catalogue is
-# **deployment-wide**, not per-organization. `settings.PIE_CATALOG` is one
-# path and `pie_service` builds one index per process, so the response says
-# `scope: "deployment"` and nothing here filters by the caller's org. See
-# `app/catalog.py` for where an organization would enter when that changes.
-
-
-def _catalog_dict(principal: Principal) -> dict[str, Any]:
-    """The catalogue state as the screen reads it: the file on disk (from
-    ``catalog_state``), what this process has loaded, and what the caller may
-    do about it. Assembled in one place so the GET and the state returned
-    after a build cannot drift."""
-    from ..catalog import catalog_state
-    from ..pie_service import pie_service
-
-    return {
-        **catalog_state(),
-        # What is answering resolutions right now — read without loading,
-        # because a status endpoint must not build a catalogue as a side
-        # effect (which is what touching `catalog_available` here would do
-        # with AUTO_BUILD_CATALOG on).
-        "loaded": pie_service.loaded_state(),
-        "auto_build": settings.AUTO_BUILD_CATALOG,
-        "can_rebuild": principal.role is Role.OWNER,
-    }
-
-
-@router.get("/catalog")
-def catalog_status(
-    principal: Principal = Depends(current_principal),
-) -> dict:
-    """The decoded catalogue's state and provenance.
-
-    Readable by any signed-in user, like ``/status``: knowing which catalogue
-    (pack, version, ruleset checksum) answered a resolution is the same
-    entitlement as knowing when the books last arrived. A catalogue carries
-    nomenclature only — the emitter excludes the corpus's commercial payload —
-    so there is nothing here to withhold by role.
-    """
-    return _catalog_dict(principal)
-
-
-@router.post("/catalog/build")
-def build_catalog_now(
-    principal: Principal = Depends(require_owner),
-) -> dict:
-    """Build — or rebuild — the deployment's decoded catalogue, synchronously.
-
-    Owner-only, and deliberately stricter than the manager-or-owner sync: a
-    sync refreshes the caller's own organization, while this replaces the
-    catalogue every organization on the deployment resolves against.
-
-    Synchronous because it is measured, not assumed, to be fast: the full
-    6,717-row corpus parses and writes in under two seconds in-process. There
-    is no job to poll and no long-running database write to phase-commit —
-    the response carries the finished result.
-    """
-    from .. import catalog
-    from ..pie_service import pie_service
-
-    try:
-        catalog.build_catalog(force=True)
-    except FileNotFoundError as e:
-        # The named, actionable absences — submodule uninitialised, corpus
-        # missing — with the fix in the message (see catalog.source_state).
-        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, str(e)) from e
-    except OSError as e:
-        if e.errno == errno.ENOSPC:
-            raise HTTPException(
-                status.HTTP_507_INSUFFICIENT_STORAGE,
-                f"The catalogue could not be written: the disk is full ({e}).",
-            ) from e
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"The catalogue could not be written: {e}") from e
-    except Exception as e:  # noqa: BLE001 — a parse failure is reported, not a bare 500
-        raise HTTPException(
-            status.HTTP_500_INTERNAL_SERVER_ERROR,
-            f"The parser failed to build the catalogue: {type(e).__name__}: {e}",
-        ) from e
-
-    # The running engine holds the old index (or a remembered failure) until
-    # told otherwise — without this, a catalogue built here would not answer
-    # a single resolution until the process restarted.
-    pie_service.reload()
-    return _catalog_dict(principal)
-
-
 # ── the catalogue, per connected company ─────────────────────────────────────
 #
-# The half that will replace the deployment-wide one above. Nothing resolves
-# against these yet — the cutover is its own change (see
-# `docs/per-company-catalogues.md` §8), so this cannot regress a live
-# deployment. What it does give is the setup path: a company uploads its item
-# master, picks the pack that decodes it, and builds.
+# The nomenclature side of the data this platform runs on, one catalogue per
+# connected company. Until this existed the catalogue was visible only to
+# whoever knew to run `python scripts/build_catalog.py` — nothing in the
+# product could say whether one existed, what built it, or rebuild it. It lives
+# in this router because it is the same question the rest of the file answers
+# ("what data is this deployment running on, and how fresh"); a `catalog.py`
+# router would be a second home for the data-status concern.
+#
+# The setup path it gives: a company uploads its item master, picks the pack
+# that decodes it, and builds. There is no deployment-wide catalogue behind
+# these any more — a company with no corpus resolves nothing, which is the
+# honest answer (see `docs/per-company-catalogues.md` §6).
 #
 # **No `python-multipart`.** The corpus arrives as a raw request body rather
 # than a multipart form, so the dependency `master_health/__init__.py` refuses
@@ -1210,8 +1119,10 @@ def build_company_catalog(
 ) -> dict:
     """Decode this company's stored corpus through its chosen pack.
 
-    Synchronous, on the same measurement the deployment-wide build rests on:
-    6,717 rows parse and write in under two seconds in-process.
+    Synchronous, on a measurement rather than an assumption: the shipped
+    6,717-row corpus parses and writes in under two seconds in-process, so
+    there is no job to poll and no long-running database write to phase-commit
+    — the response carries the finished result.
     """
     from .. import catalog
 

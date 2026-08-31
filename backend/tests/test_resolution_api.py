@@ -114,16 +114,22 @@ def env(monkeypatch):
     tests may have no catalogue, and a fixture that let that decide would make
     every assertion below pass for the wrong reason. The one test that wants it
     False sets it False and says so.
+
+    It is a *method* taking a company, not a property, since catalogues became
+    per company: there is no longer one answer for the process, and a property
+    could only have given one by picking a company on the caller's behalf. The
+    stubs ignore the argument because this fixture's organization has exactly
+    one company, which is the case that answers with no company named.
     """
     engine = dbsupport.fresh_engine()
     maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
                          future=True)
 
     svc = resolve_router.pie_service
-    monkeypatch.setattr(type(svc), "catalog_available", property(lambda self: True))
-    monkeypatch.setattr(type(svc), "catalog_version", property(lambda self: "abc123"))
+    monkeypatch.setattr(svc, "catalog_available", lambda *a, **k: True)
+    monkeypatch.setattr(svc, "catalog_version", lambda *a, **k: "abc123")
     monkeypatch.setattr(svc, "resolve", lambda *a, **k: _resolution())
-    monkeypatch.setattr(svc, "lookup_record", lambda code: dict(_RECORD))
+    monkeypatch.setattr(svc, "lookup_record", lambda *a, **k: dict(_RECORD))
     monkeypatch.setattr(resolution, "customer_scope_for", lambda *a, **k: None)
     monkeypatch.setattr(resolution, "bands_for", lambda *a, **k: None)
     monkeypatch.setattr(resolution, "mapping_store_for", lambda *a, **k: None)
@@ -462,8 +468,7 @@ def test_no_catalogue_is_not_a_statement_about_the_product(env, monkeypatch):
     ``is_evidence_about_the_input``, and a 503 — three chances to notice.
     """
     app, maker, session, svc = env
-    monkeypatch.setattr(type(svc), "catalog_available",
-                        property(lambda self: False))
+    monkeypatch.setattr(svc, "catalog_available", lambda *a, **k: False)
     client = _client(app, _key(session).secret)
 
     response = _post(client)
@@ -474,6 +479,83 @@ def test_no_catalogue_is_not_a_statement_about_the_product(env, monkeypatch):
     assert body["abstention"]["reason"] == "CATALOGUE_UNAVAILABLE"
     assert body["abstention"]["is_evidence_about_the_input"] is False
     assert body["resolution"] is None
+
+
+def test_a_caller_that_names_no_company_is_refused_rather_than_answered(
+        env, monkeypatch):
+    """Several companies, none named: a 422 listing the ids, never a guess.
+
+    Each company decodes its own item master, so an answer from an unspecified
+    catalogue is not a provenanced answer — and silently choosing one is the
+    benign default §1 forbids, wearing a real stamp. The refusal carries the
+    valid ids so a machine caller can fix its request without reading a
+    changelog.
+    """
+    app, maker, session, _svc = env
+    session.add(models.Organization(organization_id=ORG, name="PIE",
+                                    currency="INR", config={}))
+    session.add(models.ZohoConnection(connection_id="cx_sls", organization_id=ORG,
+                                      label="SLS Engineers",
+                                      zoho_organization_id="z1"))
+    session.add(models.ZohoConnection(connection_id="cx_4u", organization_id=ORG,
+                                      label="4U Precision",
+                                      zoho_organization_id="z2"))
+    session.commit()
+    client = _client(app, _key(session).secret)
+
+    response = _post(client)
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert {c["connection_id"] for c in detail["companies"]} == {"cx_sls", "cx_4u"}
+
+
+def test_naming_the_company_answers_and_the_document_says_which(env, monkeypatch):
+    """The same request with a company id resolves, and the engine block on the
+    document names the company — so a caller storing the answer can say which
+    item master it came from a year later."""
+    app, maker, session, _svc = env
+    session.add(models.Organization(organization_id=ORG, name="PIE",
+                                    currency="INR", config={}))
+    session.add(models.ZohoConnection(connection_id="cx_sls", organization_id=ORG,
+                                      label="SLS Engineers",
+                                      zoho_organization_id="z1"))
+    session.add(models.ZohoConnection(connection_id="cx_4u", organization_id=ORG,
+                                      label="4U Precision",
+                                      zoho_organization_id="z2"))
+    session.commit()
+    client = _client(app, _key(session).secret)
+
+    response = _post(client, company_id="cx_4u")
+
+    assert response.status_code == 200, response.text
+    assert response.json()["engine"]["company"] == "cx_4u"
+
+
+def test_another_tenants_company_id_reads_as_no_such_company(env, monkeypatch):
+    """A named company that is not this key's organization's. It must not
+    resolve, and the refusal must not confirm the id exists anywhere — it lists
+    this organization's own companies and nothing else."""
+    app, maker, session, _svc = env
+    session.add(models.Organization(organization_id=ORG, name="PIE",
+                                    currency="INR", config={}))
+    session.add(models.Organization(organization_id="org_rival", name="Rival",
+                                    currency="INR", config={}))
+    session.add(models.ZohoConnection(connection_id="cx_sls", organization_id=ORG,
+                                      label="SLS Engineers",
+                                      zoho_organization_id="z1"))
+    session.add(models.ZohoConnection(connection_id="cx_theirs",
+                                      organization_id="org_rival",
+                                      label="Rival Co", zoho_organization_id="z9"))
+    session.commit()
+    client = _client(app, _key(session).secret)
+
+    response = _post(client, company_id="cx_theirs")
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert {c["connection_id"] for c in detail["companies"]} == {"cx_sls"}
+    assert "cx_theirs" not in detail["message"]
 
 
 def test_a_searched_catalogue_that_holds_nothing_is_evidence(env, monkeypatch):

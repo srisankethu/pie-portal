@@ -1,34 +1,33 @@
-"""Locate, build and describe the decoded PIE product catalogue.
+"""Locate, build and describe each company's decoded PIE product catalogue.
 
-The catalogue is ``products.jsonl`` produced by pie-parser's ``run_parser`` over
-the Kennametal/WIDIA nomenclature corpus. It is large (~13 MB) and deterministic,
-so it is gitignored and (re)built from the pinned pie-parser submodule instead
-of being committed.
+A catalogue is ``products.jsonl`` produced by pie-parser's ``run_parser`` over
+one company's item-master export. It is large (~13 MB) and deterministic, so it
+is gitignored and rebuilt from the corpus rather than committed.
 
-**Two catalogues live here, and only one of them answers resolution today.**
+**One catalogue per connected company, and no deployment-wide default.** Each
+company decodes its own uploaded export through its own chosen org-layer pack,
+into ``data/catalogues/<connection_id>/``. A company that has uploaded nothing
+has no catalogue and resolves nothing — which is the honest answer, and the one
+thing that could be worse is answering from another company's.
 
-The *deployment-wide* one — ``settings.PIE_CATALOG``, built from the corpus that
-ships in the pinned submodule — is what every organization still resolves
-against. It is unchanged.
-
-The *per-company* one is the half below the divider: each connected company
-decodes its own uploaded item-master export through its own chosen org-layer
-pack, into ``data/catalogues/<connection_id>/``. Nothing resolves against it
-yet. The cutover — a quote naming its company, the resolution API gaining its
-refusal, and the deployment default being removed — is a separate change, so
-that this one cannot regress a running deployment.
+The corpus that ships inside the pinned submodule (``settings.PIE_CORPUS``,
+``settings.PIE_PACK``) is the **seed**, not a runtime fallback: on start-up
+:func:`seed_company_catalogues` gives it to each organization's first company
+where that company has no export of its own, so a deployment that has been
+resolving against the old shared catalogue keeps resolving after the cutover.
+Nothing reads it once a company has its own.
 
 ``docs/per-company-catalogues.md`` is the design and the sequencing.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
 import sys
 import threading
 import time
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -49,11 +48,6 @@ STAMP_FIELDS = (
     "pack_id", "pack_version", "org_id", "org_version",
     "ruleset_checksum", "run_id", "engine_version", "schema_version",
 )
-
-
-def report_path(catalog: Optional[Path] = None) -> Path:
-    """Where a build's run report lives, beside the catalogue it describes."""
-    return (catalog or settings.PIE_CATALOG).with_suffix(".run_report.json")
 
 
 def catalog_stamp(path: Path) -> Dict[str, Any]:
@@ -77,7 +71,12 @@ def catalog_stamp(path: Path) -> Dict[str, Any]:
 
 
 def source_state() -> Dict[str, Any]:
-    """Whether a catalogue *could* be built here, and if not, exactly why.
+    """Whether the shipped seed corpus is here, and if not, exactly why.
+
+    This is the corpus a *first* company inherits (see
+    :func:`seed_company_catalogues`), not a catalogue anything resolves
+    against. Its absence costs a deployment nothing once every company has
+    uploaded its own export; it costs an existing deployment its seed.
 
     The two absences are different fixes and must not share one message: an
     uninitialised private submodule needs credentials and a fetch, a missing
@@ -104,115 +103,15 @@ def source_state() -> Dict[str, Any]:
     }
 
 
-def catalog_state() -> Dict[str, Any]:
-    """The catalogue as it sits on disk — existence, provenance, and the
-    parser's own run report. Everything here is read, never computed: the
-    censuses and parse rates come from the report ``build_catalog`` stored,
-    and the stamp from the records themselves.
-
-    ``exists: False`` is its own state, not a zero — a missing catalogue says
-    nothing about coverage, which is the distinction
-    ``pie_service.catalog_available`` exists to keep.
-    """
-    out = settings.PIE_CATALOG
-    state: Dict[str, Any] = {
-        "path": str(out),
-        "scope": "deployment",
-        "source": source_state(),
-        "exists": out.exists(),
-        "records": None,
-        "built_at": None,
-        "size_bytes": None,
-        "stamp": {},
-        "build": None,
-        "report": None,
-        "report_missing": None,
-    }
-    if not state["exists"]:
-        return state
-
-    state["size_bytes"] = out.stat().st_size
-    state["stamp"] = catalog_stamp(out)
-
-    sidecar = report_path(out)
-    meta: Optional[Dict[str, Any]] = None
-    if sidecar.exists():
-        try:
-            meta = json.loads(sidecar.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            log.warning("run report at %s is unreadable", sidecar)
-    if meta:
-        build = meta.get("build") or {}
-        state["build"] = build
-        state["report"] = meta.get("report")
-        state["records"] = build.get("emitted")
-        state["built_at"] = build.get("built_at")
-    else:
-        # A catalogue from before the report was kept beside it. The counters
-        # cannot be reconstructed without re-parsing — which would be a second
-        # parse-rate calculation — so say what is missing instead of guessing.
-        state["report_missing"] = (
-            "This catalogue was built before its run report was kept beside "
-            "it, so rows read, parse rates and new tokens are not available. "
-            "Rebuild to produce them."
-        )
-        with out.open("r", encoding="utf-8") as fh:
-            state["records"] = sum(1 for line in fh if line.strip())
-        state["built_at"] = clock.iso(
-            datetime.fromtimestamp(out.stat().st_mtime, tz=timezone.utc))
-    return state
-
-
-def build_catalog(force: bool = False) -> Path:
-    """Build products.jsonl from the pie-parser corpus. Returns its path.
-
-    Also writes the parser's ``RunReport`` (censuses, parse rates, flags, new
-    tokens) plus build metadata to :func:`report_path` — surfaced, never
-    recomputed, by :func:`catalog_state`. The catalogue itself is written to a
-    temporary file and renamed into place, so a process reading it mid-rebuild
-    sees the old complete file, never a truncated one.
-
-    Synchronous by measurement, not assumption: the full 6,717-row corpus
-    parses and writes in under two seconds in-process, so there is no job to
-    watch and no database transaction to keep short (§4 concerns writes the
-    database serves during; this writes one file).
-    """
-    out = settings.PIE_CATALOG
-    with _build_lock:
-        if out.exists() and not force:
-            return out
-        source = source_state()
-        if not source["available"]:
-            raise FileNotFoundError(source["reason"])
-
-        result = run_parse(settings.PIE_CORPUS, settings.PIE_PACK, out)
-        sidecar = {
-            "report": result["report"],
-            "stamp": result["stamp"],
-            "build": {
-                "built_at": clock.iso(clock.now()),
-                "duration_s": result["duration_s"],
-                "rows_read": result["rows_read"],
-                "emitted": result["records"],
-                "quarantined": result["quarantined"],
-                "corpus": str(settings.PIE_CORPUS),
-                "corpus_fingerprint": result["corpus_fingerprint"],
-                "pack": str(settings.PIE_PACK),
-            },
-        }
-        report_path(out).write_text(
-            json.dumps(sidecar, indent=2, sort_keys=True), encoding="utf-8")
-        return out
-
-
 def run_parse(corpus: Path, pack_path: Path, out: Path) -> Dict[str, Any]:
     """Decode one corpus through one pack into one JSONL. The single parse.
 
-    Both callers reach the pipeline through here — the deployment-wide
-    :func:`build_catalog` and the per-company :func:`build_for_company` — for
-    the reason CLAUDE.md §2 gives: a second invocation of the same pipeline is
-    the semantic duplication that drifts, and the two would eventually disagree
-    about the payload gate or the atomic write.
+    Every build reaches the pipeline through here, for the reason CLAUDE.md §2
+    gives: a second invocation of the same pipeline is the semantic duplication
+    that drifts, and the two would eventually disagree about the payload gate
+    or the atomic write. It is deliberately company-blind — it takes paths, not
+    a connection — so the one place that knows about companies is
+    :func:`build_for_company`.
 
     Returns the counts, the parser's own report and the stamp taken off an
     emitted record. Never returns a parse rate it computed itself.
@@ -290,25 +189,10 @@ def run_parse(corpus: Path, pack_path: Path, out: Path) -> Dict[str, Any]:
     }
 
 
-def ensure_catalog() -> Path:
-    """Return the catalogue path, building it if allowed and missing."""
-    out = settings.PIE_CATALOG
-    if out.exists():
-        return out
-    if settings.AUTO_BUILD_CATALOG:
-        return build_catalog()
-    raise FileNotFoundError(
-        f"PIE catalogue not found at {out} and AUTO_BUILD_CATALOG is off. "
-        "Run scripts/build_catalog.py."
-    )
-
-
 # ── per connected company ────────────────────────────────────────────────────
 #
-# Everything above this line is the deployment-wide catalogue, which still
-# answers resolution. Everything below is the per-company one, which does not
-# yet — the cutover is its own change, so nothing here can regress a running
-# deployment. `docs/per-company-catalogues.md` §8 is the sequencing.
+# Everything above this line is generic: a parse, a stamp, and whether the
+# seed corpus is present. Everything below belongs to one connected company.
 
 
 #: What an uploaded corpus may weigh. The shipped corpus is 6,717 rows and a
@@ -394,8 +278,7 @@ def company_catalog_state(session: Any, org: str, connection_id: str) -> Dict[st
 
     ``exists: False`` is its own state and ``records`` stays ``None`` — a
     company with no catalogue says nothing about coverage, and rendering that
-    as a zero is the benign default §1 forbids. The same rule the
-    deployment-wide state already follows, per company.
+    as a zero is the benign default §1 forbids.
 
     ``stale`` is the one genuinely new fact: a catalogue built from a corpus
     that has since been superseded is still a real catalogue with a real stamp,
@@ -555,3 +438,137 @@ def validate_corpus(raw: bytes, pack_path: Optional[Path]) -> Optional[str]:
                     f"column called {wanted!r}, which this file does not have. "
                     f"Its columns are: {', '.join(h for h in header if h)}.")
     return None
+
+
+# ── the seed: what a deployment that predates per-company catalogues gets ────
+
+
+def seed_company_catalogues(session: Any,
+                            actor: str = "shipped-corpus") -> List[Dict[str, Any]]:
+    """Give each organization's first company the corpus that ships in the image.
+
+    Every deployment that ran before this change resolved against one shared
+    catalogue built from ``settings.PIE_CORPUS``. Removing that default without
+    putting it somewhere turns every quote line UNRESOLVED on deploy — a
+    regression that looks exactly like the engine being down. So the corpus
+    becomes the first company's corpus, once, and the pack it was decoded
+    through becomes that company's pack.
+
+    Deliberately conservative, because it writes on somebody's behalf:
+
+    * only an organization that has **no corpus row at all** is seeded, so a
+      company that has uploaded its own export is never handed a different
+      manufacturer's item master;
+    * only its **first enabled** company — ``list_connections`` orders oldest
+      first — because which of three legal entities sells this catalogue's
+      product is a question this function cannot answer, and guessing three
+      times is worse than guessing once;
+    * an existing ``pie_pack`` choice is left alone;
+    * a missing corpus file seeds nothing and is not an error. The engine is
+      optional in ``deploy/backend.Dockerfile``, so an image built without it
+      has no seed to give — and that deployment was not resolving before this
+      change either.
+
+    Idempotent, and re-runnable: it is called on every boot rather than once in
+    a migration, so a deployment that later gains the submodule (or its first
+    connection) is seeded on the next start rather than never.
+    """
+    from .ingestion.connections import list_connections
+    from .domain import models
+
+    from sqlalchemy import select
+
+    source = source_state()
+    if not source["available"]:
+        log.info("no shipped corpus to seed from: %s", source["reason"])
+        return []
+
+    seeded_orgs = set(session.scalars(
+        select(models.CompanyCorpus.organization_id).distinct()))
+    out: List[Dict[str, Any]] = []
+    for org in session.scalars(select(models.Organization.organization_id)):
+        if org in seeded_orgs:
+            continue
+        companies = list_connections(session, org, enabled_only=True)
+        if not companies:
+            continue
+        first = companies[0]
+        raw = settings.PIE_CORPUS.read_bytes()
+        session.add(models.CompanyCorpus(
+            organization_id=org,
+            connection_id=first.connection_id,
+            filename=settings.PIE_CORPUS.name,
+            content_type="text/csv",
+            size_bytes=len(raw),
+            sha256=hashlib.sha256(raw).hexdigest(),
+            content=raw,
+            uploaded_by=actor,
+        ))
+        # The pack the shipped corpus is decoded through, and only where the
+        # company has not chosen one. `pack_for` resolves an *identifier*
+        # against what this engine ships, so the id is what is stored.
+        if pack_for(first) is None:
+            config = dict(first.config or {})
+            config["pie_pack"] = settings.PIE_PACK.name
+            first.config = config
+        session.flush()
+        log.info("seeded the shipped corpus to company %s of organization %s",
+                 first.connection_id, org)
+        out.append({"organization_id": org, "connection_id": first.connection_id})
+    return out
+
+
+def ensure_company_catalogues(session: Any,
+                              actor: str = "auto-build") -> List[Dict[str, Any]]:
+    """Build any company catalogue whose corpus is on record but whose file is not.
+
+    The catalogue is derived: the corpus row is durable and the JSONL is not,
+    so a redeploy onto a container with a fresh disk arrives with every company
+    holding a corpus and no catalogue. Rebuilding here is what makes that a
+    two-second start-up cost rather than an administrator noticing, days later,
+    that resolution has quietly stopped.
+
+    Honours ``AUTO_BUILD_CATALOG``: with it off, a company reports NOT BUILT
+    and somebody builds it from the screen. Never falls back to another
+    company's catalogue — that is the one outcome worse than an empty screen.
+
+    **Commits per company**, which is unusual for a function taking a session
+    and is CLAUDE.md §4's rule rather than an exception to it: this is a
+    long-running write, a company is its natural boundary, and holding one
+    transaction across several two-second parses is exactly the shape that made
+    ``/api/health`` answer "database is locked" during a sync. It also means a
+    company that fails to build does not roll back the ones that succeeded.
+    """
+    from .domain import models
+
+    from sqlalchemy import select
+
+    if not settings.AUTO_BUILD_CATALOG:
+        return []
+
+    out: List[Dict[str, Any]] = []
+    for org, connection_id in session.execute(
+            select(models.CompanyCorpus.organization_id,
+                   models.CompanyCorpus.connection_id)
+            .where(models.CompanyCorpus.superseded_at.is_(None))
+            .distinct()):
+        if company_catalog_path(connection_id).exists():
+            continue
+        connection = session.get(models.ZohoConnection, connection_id)
+        pack = pack_for(connection) if connection is not None else None
+        if pack is None:
+            log.info("company %s has a corpus but no pack this engine ships; "
+                     "its catalogue is NOT BUILT until one is chosen",
+                     connection_id)
+            continue
+        try:
+            build_for_company(session, org, connection_id, pack, actor=actor)
+            session.commit()
+        except Exception:  # noqa: BLE001 — one company must not stop the boot
+            log.exception("could not build the catalogue for company %s",
+                          connection_id)
+            session.rollback()
+            continue
+        log.info("built the catalogue for company %s", connection_id)
+        out.append({"organization_id": org, "connection_id": connection_id})
+    return out

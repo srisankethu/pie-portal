@@ -169,6 +169,42 @@ async def lifespan(_app: FastAPI):
         except Exception:  # noqa: BLE001
             log.exception("pie-parser warm-up failed; lines show PIE OFFLINE until fixed.")
 
+    # Every company's catalogue, seeded where it has none and rebuilt where the
+    # container's disk has forgotten it.
+    #
+    # Here rather than in a data migration, and the reason is the deployment
+    # rather than taste: the corpus lives inside the pie-parser submodule, which
+    # `deploy/backend.Dockerfile` says an image may be built without, and
+    # `railway.json` runs migrations as a pre-deploy step. A migration would
+    # therefore either fail that deploy or seed nothing *once*, permanently —
+    # while a start-up step retries on the next boot, when the submodule or the
+    # organization's first connection has arrived. Skipped when the schema is
+    # behind, for the reason the threshold backfill above gives.
+    try:
+        from . import catalog
+        from .db import SessionLocal as _SessionLocal
+
+        migration = SCHEMA_GAP.get("migration") or {}
+        if SCHEMA_GAP.get("message") or not migration.get("healthy", True):
+            log.warning("catalogues: skipping the seed and rebuild because the "
+                        "schema is behind; they run on the next boot after the "
+                        "migration.")
+        else:
+            with _SessionLocal() as session:
+                seeded = catalog.seed_company_catalogues(session)
+                # Committed before the builds rather than with them: the seed is
+                # a handful of row inserts and the builds are seconds of parsing
+                # each, and §4 asks a long write to commit at natural
+                # boundaries rather than hold one transaction across all of it.
+                session.commit()
+                built = catalog.ensure_company_catalogues(session)
+            log.info("catalogues: %d company(ies) seeded, %d built.",
+                     len(seeded), len(built))
+    except Exception:  # noqa: BLE001
+        log.exception("catalogue start-up step failed; companies whose "
+                      "catalogue is missing report NOT BUILT and can be built "
+                      "from Setup → Decoded catalogue.")
+
     # The automatic sync. Non-fatal like everything above it: a platform that
     # cannot schedule is degraded, and one that will not start over it is down.
     # The function itself declines on a fixture source, so this is safe to call

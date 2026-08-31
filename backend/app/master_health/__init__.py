@@ -31,8 +31,16 @@ so it is not re-added by someone who assumes it was an oversight:
   diagnostic nobody runs on a prospect's data.
 
 * **No database.** Nothing here reads or writes a session. The report is a pure
-  function of (export bytes, profile, catalogue) and says so: two runs over the
-  same file produce the same report.
+  function of (export bytes, profile, pack, catalogue) and says so: two runs
+  over the same file produce the same report.
+
+  This is why ``--company`` and ``--pack`` are two arguments rather than one.
+  Catalogues and packs are per connected company now, and which pack a company
+  decodes through is stored against that company — so resolving one from the
+  other would need exactly the session this paragraph declines. The pair is
+  named by the caller and the report prints both; nothing here stops somebody
+  pairing a company with the wrong pack, and the portal is where that pairing
+  belongs.
 
 The offline shape is not a compromise, and the value-weighted number is the
 proof. Coverage weighted by stock value at *selling* price cannot be computed

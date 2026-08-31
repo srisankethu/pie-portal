@@ -6,10 +6,12 @@ matter most are the ones about *not* sharing: a company must never answer from
 another company's catalogue, and an absent catalogue must never read as zero
 coverage.
 
-Nothing resolves against these yet — the deployment-wide catalogue still
-answers every quote line, and the cutover is a separate change. So there is no
-test here asserting a quote used a company's catalogue; asserting it would be
-asserting something this branch deliberately does not do.
+There is no deployment-wide catalogue behind these any more: a company with no
+export resolves nothing, and the shipped corpus reaches a company only as a
+seed it then owns. The tests that used to pin the shared surface
+(``test_catalog_surface.py``) live here now, per company, because that is where
+the same honesty rules land — a build reports the parser's own numbers, and a
+missing seed names which of its two absences it is.
 """
 from __future__ import annotations
 
@@ -308,3 +310,73 @@ def test_no_cost_or_margin_crosses_the_per_company_surface(client, tmp_path, mon
         low = key.lower()
         for word in ("cost", "margin", "price"):
             assert word not in low, f"{where} names {word!r} on a nomenclature surface"
+
+
+# ── the parser's own numbers, and the seed that produced them ────────────────
+
+@requires_pie
+def test_a_built_catalogue_reports_its_provenance_and_the_parsers_numbers(
+        client, tmp_path, monkeypatch):
+    """The stamp shown is the stamp on the records, and the counts are the
+    parser's own — pack id, version and ruleset checksum are what say WHICH
+    catalogue answered a resolution, and a recomputed census would be a second
+    answer to a question the parser has already answered."""
+    import json as jsonlib
+
+    monkeypatch.setattr(settings, "PIE_CATALOG", tmp_path / "products.jsonl")
+    hdr = _hdr(client, "s.menon@pie.example")
+    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
+               json={"pack_id": "zcnc"}, headers=hdr)
+    _upload(client, hdr, "cx_sls", _corpus())
+    body = client.post("/api/v1/data/catalog/companies/cx_sls/build",
+                       headers=hdr).json()
+
+    assert body["exists"] is True
+    assert body["records"] == 6717
+    assert body["quarantined"] == 0
+    for field in ("pack_id", "pack_version", "org_id", "ruleset_checksum", "run_id"):
+        assert body["stamp"].get(field), f"stamp is missing {field}"
+
+    # The displayed stamp must match what the records themselves carry.
+    with catalog.company_catalog_path("cx_sls").open(encoding="utf-8") as fh:
+        first = jsonlib.loads(fh.readline())
+    for field in ("ruleset_checksum", "pack_id", "run_id"):
+        assert body["stamp"][field] == first[field]
+
+    report = body["report"]
+    assert report["total"] == 6717
+    families = [f for f in report["by_family"] if f != "(unresolved)"]
+    assert len(families) == 11
+    assert report["unresolved_family"] == 0
+    # Rates are ratios in [0, 1], never percentages.
+    for family, rate in report["parse_rates"].items():
+        assert rate is None or 0.0 <= rate <= 1.0, (family, rate)
+
+
+def test_an_uninitialised_submodule_is_named_as_the_cause(client, monkeypatch, tmp_path):
+    """The two absences of the *seed* corpus are different fixes: no engine at
+    all points at the setup script, not at a generic error.
+
+    The seed is what a first company inherits, so its absence is worth naming
+    even though nothing resolves against it: without it an existing deployment
+    has no catalogue to carry across, and the screen would otherwise say only
+    that nothing is built.
+    """
+    monkeypatch.setattr(settings, "PIE_PARSER_ROOT", tmp_path / "nowhere")
+    body = client.get("/api/v1/data/catalog/companies",
+                      headers=_hdr(client, "s.menon@pie.example")).json()
+    assert body["source"]["available"] is False
+    assert "submodule is not initialised" in body["source"]["reason"]
+    assert "setup_pie_parser.sh" in body["source"]["reason"]
+
+
+@requires_pie
+def test_a_missing_seed_corpus_is_named_as_the_cause(client, monkeypatch, tmp_path):
+    """Engine present, corpus gone: the reason names PIE_CORPUS, not the
+    submodule — sending someone to fetch what they already have wastes a day."""
+    monkeypatch.setattr(settings, "PIE_CORPUS", tmp_path / "gone.csv")
+    body = client.get("/api/v1/data/catalog/companies",
+                      headers=_hdr(client, "s.menon@pie.example")).json()
+    assert body["source"]["available"] is False
+    assert "PIE_CORPUS" in body["source"]["reason"]
+    assert "setup_pie_parser" not in body["source"]["reason"]

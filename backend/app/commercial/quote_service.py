@@ -470,15 +470,20 @@ def summarize(assessment: QuoteAssessment, role: Role) -> dict:
     return out
 
 
-def _catalog_version() -> str:
+def _catalog_version(connection_id: Optional[str] = None) -> str:
     """The resolving catalogue's ruleset checksum, or "" if it cannot be read.
+
+    Takes the company whose catalogue answered, because there is no longer one
+    per deployment. Absent a company this is "" rather than some other
+    company's checksum — a stamp naming the wrong catalogue is worse than no
+    stamp, since only the first is believed.
 
     Provenance is worth recording and never worth failing a quote for, so this
     swallows a missing engine the same way ``pie_service.resolve`` does.
     """
     try:
         from ..pie_service import pie_service
-        return pie_service.catalog_version
+        return pie_service.catalog_version(connection_id)
     except Exception:  # noqa: BLE001 — deliberate: never block a decision
         return ""
 
@@ -487,6 +492,7 @@ def _catalog_version() -> str:
 def record_snapshot(
     session: Session, org: str, *,
     quote_id: str,
+    connection_id: Optional[str] = None,
     intel: QuoteLineIntelligence,
     customer_ref: str,
     product_ref: str,
@@ -532,12 +538,14 @@ def record_snapshot(
         overridden_exception_codes=overridden_codes,
         thresholds_version=intel.thresholds_version,
         engine_version=ENGINE_VERSION,
-        # Read here rather than threaded down from intake: the catalogue is
-        # loaded once per process and never reloaded, so its checksum is
-        # constant for the life of every resolution this row could describe.
-        # Imported inside the function for the same reason `resolve_customer`
-        # does — the module-level import would be a cycle.
-        catalog_version=_catalog_version(),
+        # The catalogue of the company this quote was raised from. Threaded
+        # in rather than read from a process-wide value: with one catalogue per
+        # company there is no such value, and stamping a row with whichever
+        # catalogue happened to be resident would name the wrong item master on
+        # an audit row that is believed precisely because it is stamped. A
+        # caller that cannot say leaves it empty, which reads as "not recorded"
+        # rather than as a claim.
+        catalog_version=_catalog_version(connection_id),
         as_of=intel.as_of,
         created_by_user_id=user_id,
     )
@@ -550,6 +558,7 @@ def assess_and_record(
     session: Session, org: str, *,
     quote_id: str,
     customer_ref: str,
+    connection_id: Optional[str] = None,
     lines: list[QuoteLineInput],
     user_id: Optional[str],
     overrides: Optional[dict[str, tuple[Optional[str], Optional[str]]]] = None,
@@ -579,7 +588,8 @@ def assess_and_record(
     for intel in result.lines:
         reason, reason_code = overrides.get(intel.line_id, (None, None))
         rows.append(record_snapshot(
-            session, org, quote_id=quote_id, intel=intel,
+            session, org, quote_id=quote_id, connection_id=connection_id,
+            intel=intel,
             customer_ref=customer_ref, product_ref=refs.get(intel.line_id, ""),
             user_id=user_id,
             override_reason=reason, override_reason_code=reason_code))

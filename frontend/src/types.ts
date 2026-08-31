@@ -183,6 +183,11 @@ export interface Quote {
   /** The platform's id for the customer, when one was picked rather than typed.
    *  Null on a quote started before the picker existed, or from a draft. */
   customerId: string | null;
+  /** Which connected company this quote is raised from, and therefore whose
+   *  decoded catalogue every line on it resolved against. Null where the
+   *  organization has no company connected — then nothing resolves, which the
+   *  lines say for themselves. */
+  connectionId: string | null;
   number: string;
   /** The key any Zoho estimate for this quote is written under. It is what
    *  makes sending twice return the first estimate rather than create a second,

@@ -31,14 +31,45 @@ export function clearDraftQuote() {
   localStorage.removeItem(DRAFT_KEY);
 }
 
+/** One connected company, as the server names it when it refuses to choose. */
+export interface QuoteCompany {
+  connection_id: string;
+  label: string;
+}
+
+/** The organization reads several companies' books and the request named none.
+ *
+ *  Its own class because the caller must *do* something different — ask which
+ *  company and retry — rather than show a message. Each company decodes its own
+ *  item master, so the server refuses instead of picking one; the ids come back
+ *  with the refusal so the screen can offer exactly the valid answers.
+ */
+export class CompanyRequired extends Error {
+  companies: QuoteCompany[];
+
+  constructor(message: string, companies: QuoteCompany[]) {
+    super(message);
+    this.name = "CompanyRequired";
+    this.companies = companies;
+  }
+}
+
 async function req<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
   const res = await fetch(path, authInit(opts, token));
   if (!res.ok) {
     let detail = res.statusText;
     try {
-      detail = (await res.json()).detail || detail;
-    } catch {
-      /* ignore */
+      const body = (await res.json()).detail;
+      // A structured refusal rather than a sentence: the 422 that names the
+      // companies to choose from. Recognised by shape, so an ordinary string
+      // detail still becomes an ordinary Error below.
+      if (body && typeof body === "object" && Array.isArray(body.companies)) {
+        throw new CompanyRequired(String(body.message ?? detail), body.companies);
+      }
+      detail = body || detail;
+    } catch (e) {
+      if (e instanceof CompanyRequired) throw e;
+      /* an unparseable body leaves the status text */
     }
     throw new Error(detail);
   }
@@ -46,12 +77,18 @@ async function req<T>(path: string, opts: RequestInit = {}, token?: string): Pro
 }
 
 export const api = {
-  createQuote: (t: string, customer: string, customerId?: string) =>
+  /** `connectionId` is the company the quote is raised from, and therefore
+   *  whose decoded catalogue its lines resolve against. Omitted where the
+   *  organization reads one company's books — the server answers without it,
+   *  and refuses with `CompanyRequired` where there is a real choice. */
+  createQuote: (t: string, customer: string, customerId?: string,
+                connectionId?: string) =>
     req<Quote>("/api/v1/quotes", {
       method: "POST",
       // The id travels with the name. Downstream resolution tries it first,
       // which is what keeps two books' identically-named customers apart.
-      body: JSON.stringify({ customer, customer_id: customerId ?? null }),
+      body: JSON.stringify({ customer, customer_id: customerId ?? null,
+                             connection_id: connectionId ?? null }),
     }, t),
 
   getQuote: (t: string, id: string) => req<Quote>(`/api/v1/quotes/${id}`, {}, t),

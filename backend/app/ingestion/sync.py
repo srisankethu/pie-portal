@@ -1325,9 +1325,13 @@ class SyncService:
         """
         from ..pie_service import pie_service
 
-        if not pie_service.catalog_available:
+        # This company's own catalogue, and no other. The sync already runs
+        # per connection, so the id is in hand — and linking an item to a
+        # record decoded from a *different* company's master would be the
+        # wrong manufacturer's product asserted under a real stamp.
+        if not pie_service.catalog_available(self.connection_id):
             return                          # assert nothing
-        record = pie_service.lookup_record(raw.get("sku"))
+        record = pie_service.lookup_record(raw.get("sku"), self.connection_id)
         if record is None:
             row.pie_record_id = None
             row.pie_link_method = None
@@ -1335,7 +1339,7 @@ class SyncService:
             return
         row.pie_record_id = str(record.get("record_id"))
         row.pie_link_method = "SKU_EXACT"
-        row.pie_catalog_version = pie_service.catalog_version or None
+        row.pie_catalog_version = pie_service.catalog_version(self.connection_id) or None
         self.report.catalog_links += 1
 
     def _book_currency(self) -> Optional[str]:

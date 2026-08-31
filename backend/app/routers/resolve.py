@@ -34,7 +34,7 @@ import logging
 from decimal import Decimal
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from fastapi.openapi.utils import get_openapi
 from fastapi.routing import APIRoute
 from pydantic import BaseModel, Field, field_validator
@@ -86,6 +86,14 @@ class ResolveRequest(BaseModel):
                     "Used to read confirmed code mappings and, when a price is "
                     "supplied, to price against that relationship's history. "
                     "Optional; an unknown name resolves the text alone.")
+    company_id: Optional[str] = Field(
+        default=None,
+        description="Which connected company's catalogue answers this line. "
+                    "Each company decodes its own item master, so the same "
+                    "text can resolve differently for two of them. Optional "
+                    "where your organization reads one company's books; "
+                    "required where it reads several, and a 422 names the "
+                    "valid ids when it is missing.")
     quantity: Optional[Decimal] = Field(
         default=None, description="Quantity, for the quantity band. Ignored "
                                   "without proposed_price.")
@@ -113,6 +121,13 @@ class ConfirmRequest(BaseModel):
     record_id: str = Field(
         description="The record you are confirming. It must be exactly the "
                     "`identity_proposal.record_id` the resolve call returned.")
+    company_id: Optional[str] = Field(
+        default=None,
+        description="The company whose catalogue that proposal came from. "
+                    "Same rule as on /resolve, and it matters more here: this "
+                    "call records an asserted identity, so confirming against "
+                    "a catalogue you did not choose would file the mapping "
+                    "under the wrong company's namespace.")
 
     @field_validator("text")
     @classmethod
@@ -148,17 +163,27 @@ def resolve_line(body: ResolveRequest, response: Response,
     """
     principal = caller.principal
     org = principal.organization_id
-    document = resolution.resolve(
-        session, principal,
-        text=body.text,
-        customer_scope=resolution.customer_scope_for(session, org,
-                                                     body.customer_ref),
-        bands=resolution.bands_for(session, org),
-        mapping_store=resolution.mapping_store_for(session, org),
-        customer_ref=body.customer_ref,
-        quantity=body.quantity,
-        proposed_price=body.proposed_price,
-    )
+    try:
+        document = resolution.resolve(
+            session, principal,
+            text=body.text,
+            customer_scope=resolution.customer_scope_for(session, org,
+                                                         body.customer_ref),
+            bands=resolution.bands_for(session, org),
+            mapping_store=resolution.mapping_store_for(session, org),
+            customer_ref=body.customer_ref,
+            connection_id=body.company_id,
+            quantity=body.quantity,
+            proposed_price=body.proposed_price,
+        )
+    except resolution.CompanyNotNamed as e:
+        # 422, not a default. Catalogues are per company, so answering from one
+        # the caller did not choose would be a confidently provenanced answer
+        # about possibly the wrong company's product. The valid ids are in the
+        # body so the caller is told what to pick rather than left to guess.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {"message": str(e), "companies": e.companies}) from e
     response.status_code = resolution.http_status(document)
     response.headers.update(_rate_headers(caller))
     return document
@@ -196,9 +221,19 @@ def confirm(body: ConfirmRequest, response: Response,
     response.headers.update(_rate_headers(caller))
 
     scope = resolution.customer_scope_for(session, org, body.customer_ref)
+    try:
+        company = resolution.company_for(session, org, body.company_id)
+    except resolution.CompanyNotNamed as e:
+        # The same refusal as `/resolve`, and for a stronger reason: this call
+        # *writes* an asserted identity. Confirming a code against a catalogue
+        # the caller did not choose would file "their code means this product"
+        # under the wrong company's namespace.
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            {"message": str(e), "companies": e.companies}) from e
     res = pie_service.resolve(
         body.text, scope, resolution.bands_for(session, org),
-        resolution.mapping_store_for(session, org))
+        resolution.mapping_store_for(session, org), connection_id=company)
 
     row = identity_service.confirm_proposed_identity(
         session, org,

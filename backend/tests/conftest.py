@@ -123,15 +123,20 @@ def pytest_collection_modifyitems(config: pytest.Config, items: list) -> None:
 
 @pytest.fixture(scope="session", autouse=True)
 def _catalog():
-    """Build the catalogue once (idempotent) so resolution tests have data.
+    """Decode the shipped corpus once, so resolution tests have data to link.
+
+    Catalogues are per company: a test gives its own company this file with
+    ``piesupport.give_company_a_catalogue``. Built here rather than lazily so
+    the cost lands in session setup instead of in whichever test happens to
+    resolve first.
 
     A no-op without the engine: the tests that would read it are already
     skipped, and raising here would take the rest of the suite with it.
     """
     if not PIE_AVAILABLE:
         return
-    from app.catalog import ensure_catalog
-    ensure_catalog()
+    import piesupport
+    piesupport.shared_catalogue()
 
 
 @pytest.fixture(scope="session", autouse=True)

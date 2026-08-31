@@ -350,10 +350,14 @@ by `pie_link_method = 'SKU_EXACT'`. Its docstring states the link rate: ~9% of
 items link, so **NULL is the common case** and means "not known here", not "no
 such product".
 
-The decoded catalogue itself is not in the database. `scripts/build_catalog.py`
-runs the parser over the corpus and writes `backend/data/products.jsonl` —
-gitignored, rebuilt from source. I rebuilt it: **6,717 products, 13,264,167
-bytes, 1.46 s**. `PieService` loads it into process memory and holds it.
+The decoded catalogue itself is not in the database, but the *corpus* it is
+built from is: one row per company (`company_corpora`), because an uploaded
+export has no other durable home on a container with an ephemeral disk. The
+parser runs over that corpus and writes
+`backend/data/catalogues/<connection_id>/products.jsonl` — gitignored, rebuilt
+from the row. Measured on the shipped corpus: **6,717 products, 13,264,167
+bytes, 1.46 s**. `PieService` holds up to three companies' indexes in memory at
+once, least-recently-used, and answers only from the company a caller names.
 
 **`master_health/` is the closest thing to an attribute pipeline that exists,
 and it persists nothing.** It reads an item-master export through a

@@ -28,7 +28,9 @@ import { useSnackbar } from "notistack";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { api, clearDraftQuote, loadDraftQuote, saveDraftQuote } from "./api";
+import { CompanyRequired, api, clearDraftQuote, loadDraftQuote, saveDraftQuote } from "./api";
+import type { QuoteCompany } from "./api";
+import { CompanyPicker } from "./components/CompanyPicker";
 import { CustomerPicker } from "./components/CustomerPicker";
 import type { Line, Quote } from "./types";
 import { IntakeModal } from "./components/IntakeModal";
@@ -122,6 +124,11 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   const [busy, setBusy] = useState(false);
   // Open when there is no quote to work on, and on demand from the header.
   const [pickerOpen, setPickerOpen] = useState(false);
+  /** The company question, open only when the server refused to choose one —
+   *  so an organization reading a single company's books never meets it. Holds
+   *  the customer as well, because the retry is the same action continued. */
+  const [companyChoice, setCompanyChoice] = useState<
+    { companies: QuoteCompany[]; customer: { id: string; name: string } } | null>(null);
   const [draftStatus, setDraftStatus] = useState<string | null>(null);
   // Why the last attempt to send was refused. Held on the screen rather than
   // flashed, and cleared by the next change to the quote — which is exactly
@@ -272,14 +279,29 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
    *
    *  The dialog closes when the quote *lands*, not on the press, so the rule
    *  has no race in it: open exactly while there is no quote to work on. */
-  const startQuote = (c: { id: string; name: string }) =>
+  const startQuote = (c: { id: string; name: string },
+                      connectionId?: string) =>
     guard(async () => {
-      const q = await api.createQuote(t, c.name, c.id);
+      let q: Quote;
+      try {
+        q = await api.createQuote(t, c.name, c.id, connectionId);
+      } catch (e) {
+        // Not an error to report: the organization reads several companies'
+        // books, each with its own decoded item master, and the server refuses
+        // to choose. Ask, then retry with the answer — the customer picker
+        // stays up underneath so cancelling returns to where they were.
+        if (e instanceof CompanyRequired) {
+          setCompanyChoice({ companies: e.companies, customer: c });
+          return;
+        }
+        throw e;
+      }
       clearDraftQuote();
       setQuote(q);
       setSelectedIds([]);
       setDraftStatus(null);
       setPickerOpen(false);
+      setCompanyChoice(null);
       flash(`Quote ${q.number} for ${c.name}`, "success");
     });
 
@@ -320,6 +342,16 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           onPick={startQuote}
           onCancel={() => setPickerOpen(false)}
         />
+        {companyChoice && (
+          <CompanyPicker
+            open
+            busy={busy}
+            companies={companyChoice.companies}
+            customer={companyChoice.customer.name}
+            onPick={(id) => startQuote(companyChoice.customer, id)}
+            onCancel={() => setCompanyChoice(null)}
+          />
+        )}
       </Box>
     );
   }
@@ -748,6 +780,16 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         onPick={startQuote}
         onCancel={() => setPickerOpen(false)}
       />
+      {companyChoice && (
+        <CompanyPicker
+          open
+          busy={busy}
+          companies={companyChoice.companies}
+          customer={companyChoice.customer.name}
+          onPick={(id) => startQuote(companyChoice.customer, id)}
+          onCancel={() => setCompanyChoice(null)}
+        />
+      )}
     </Box>
   );
 }

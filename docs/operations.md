@@ -124,8 +124,10 @@ deployment needs no migration step.
 | Variable | Default | Purpose |
 |---|---|---|
 | `PIE_PARSER_ROOT` | `./pie-parser` | Path to the pie-parser submodule (or your own checkout). |
-| `PIE_CATALOG` | `backend/data/products.jsonl` | Decoded catalogue path. |
-| `AUTO_BUILD_CATALOG` | `1` | Build the catalogue lazily if missing. Set `0` in constrained deploys and build out of band. |
+| `PIE_CATALOG` | `backend/data/products.jsonl` | Where decoded catalogues live: each company's is `catalogues/<connection_id>/products.jsonl` beside it. Nothing resolves against this path itself. |
+| `PIE_CORPUS` | inside the submodule | The item-master export a *first* company inherits as its seed. Not a runtime fallback — once a company has uploaded its own, this is never read for it. |
+| `PIE_PACK` | `packs/org/zcnc` | The pack that seed is decoded through, and the default for `master_health --pack`. A company's own choice is stored against the company. |
+| `AUTO_BUILD_CATALOG` | `1` | At start-up, build any company whose corpus is on record but whose decoded file is not (a redeploy loses the file, never the corpus). `0` leaves them NOT BUILT until somebody builds from the screen. |
 | `PIE_WARM` | `1` | Warm the engine at startup. `0` starts much faster. |
 | `PIE_TOP_N` | `6` | Max ranked alternatives per quote line. |
 

@@ -76,16 +76,23 @@ def test_a_stale_stored_family_key_does_not_block_unrelated_edits(session, monke
     from app.commercial import policy as policy_mod
     from app.domain import models
 
+    from app.config import settings
+
     org = "org_stale_family_key"
     session.add(models.Organization(organization_id=org, name="Stale",
                                     currency="INR", config={}))
+    # The vocabulary is the union of this organization's companies' packs, so
+    # the organization needs a company before any family edit can be judged.
+    session.add(models.ZohoConnection(connection_id="cx_stale", organization_id=org,
+                                      label="Stale Co", zoho_organization_id="zs",
+                                      config={"pie_pack": settings.PIE_PACK.name}))
     session.flush()
 
     # History: the override was saved under an older pack that declared the
     # name — simulated by widening the vocabulary for that one save.
     real = pie_service.pack_families
     vocab_then = tuple(real() or ()) + ("family_the_pack_since_renamed",)
-    monkeypatch.setattr(pie_service, "pack_families", lambda: vocab_then)
+    monkeypatch.setattr(pie_service, "pack_families", lambda _pack=None: vocab_then)
     policy_mod.save_for_org(
         session, org,
         {"target_margin_by_family": {"family_the_pack_since_renamed": 0.30}})

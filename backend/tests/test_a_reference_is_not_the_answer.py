@@ -35,7 +35,17 @@ from __future__ import annotations
 
 import pytest
 
+import piesupport
 from app.pie_service import Bands, pie_service
+
+#: The company these tests resolve for — a catalogue belongs to a company now,
+#: so a test that wants a real answer names one.
+COMPANY = piesupport.company_id("test-reference")
+
+
+@pytest.fixture(autouse=True)
+def _company_catalogue():
+    piesupport.give_company_a_catalogue(COMPANY)
 
 _REF = {
     "record_id": "2001174",
@@ -163,7 +173,8 @@ def test_a_genuine_exact_identity_is_untouched():
 @pytest.mark.requires_pie
 def test_end_to_end_against_the_real_engine():
     """The reproduction from the report, run against the real catalogue."""
-    res = pie_service.resolve("same as 2001174 but 0.4 corner radius")
+    res = pie_service.resolve("same as 2001174 but 0.4 corner radius",
+                             connection_id=COMPANY)
     assert res.supplyCode != "2001174"
     assert res.rel != "EXACT"
     assert any("REFERENCE" in n for n in res.notes), (
@@ -256,7 +267,7 @@ def test_the_derived_winner_is_still_selected_around_it():
     "2001174 for stainless",
 ])
 def test_a_variation_in_any_phrasing_never_quotes_the_unvaried_product(text):
-    res = pie_service.resolve(text)
+    res = pie_service.resolve(text, connection_id=COMPANY)
     assert res.supplyCode != "2001174", (
         f"{text!r} auto-selected the product it asked to change")
 
@@ -270,7 +281,7 @@ def test_a_code_with_a_quantity_still_resolves_exactly(text):
     """The guard keys off "the identifier accounts for the input", so a count
     must not read as residue. Ordering ten of a known part is the most ordinary
     input there is, and losing it would be a worse defect than the one fixed."""
-    res = pie_service.resolve(text)
+    res = pie_service.resolve(text, connection_id=COMPANY)
     assert res.rel == "EXACT"
     assert res.supplyCode == "2001174"
 
@@ -293,7 +304,7 @@ def test_a_variation_is_never_offered_as_a_confirmable_identity():
 
     for text in ("same as 2001174 but 0.4 corner radius",
                  "2001174 but 0.4 corner radius"):
-        res = pie_service.resolve(text, "cust-42")
+        res = pie_service.resolve(text, "cust-42", connection_id=COMPANY)
         assert _identity_candidate(res) is None, (
             f"{text!r} offered a confirmable identity for a product it asked "
             f"to change")
@@ -304,6 +315,7 @@ def test_a_bare_code_is_still_offered_for_confirmation():
     """The gate must keep doing its job — this is what it is *for*."""
     from app.store import _identity_candidate
 
-    assert _identity_candidate(pie_service.resolve("2001174", "cust-42")) == "2001174"
+    assert _identity_candidate(pie_service.resolve("2001174", "cust-42",
+                                            connection_id=COMPANY)) == "2001174"
     assert _identity_candidate(
-        pie_service.resolve("2001174 x 10 nos", "cust-42")) == "2001174"
+        pie_service.resolve("2001174 x 10 nos", "cust-42", connection_id=COMPANY)) == "2001174"

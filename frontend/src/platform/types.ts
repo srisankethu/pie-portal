@@ -673,62 +673,33 @@ export interface CatalogReport {
   new_tokens_top: Record<string, number>;
 }
 
-export interface CatalogStatus {
-  path: string;
-  /** Always "deployment" today: one catalogue serves every organization on
-   *  this server. Shown, not hidden — per-tenant catalogues are a separate,
-   *  unbuilt feature. */
-  scope: string;
-  source: {
-    available: boolean;
-    /** Exactly why a build is impossible, when it is — submodule not
-     *  initialised vs corpus file missing are different fixes. */
-    reason: string | null;
-    pie_parser_root: string;
-    corpus: string;
-    pack: string;
-  };
-  exists: boolean;
-  records: number | null;
-  built_at: string | null;
-  size_bytes: number | null;
-  /** Provenance stamped on every record: which pack, which version, which
-   *  ruleset checksum — the facts that say WHICH catalogue answered a
-   *  resolution. */
-  stamp: {
-    pack_id?: string;
-    pack_version?: string;
-    org_id?: string;
-    org_version?: string;
-    ruleset_checksum?: string;
-    run_id?: string;
-    engine_version?: string;
-    schema_version?: string;
-  };
-  build: {
-    built_at?: string;
-    duration_s?: number;
-    rows_read?: number;
-    emitted?: number;
-    quarantined?: number;
-    corpus?: string;
-    corpus_fingerprint?: string;
-    pack?: string;
-  } | null;
-  report: CatalogReport | null;
-  /** Why the report is absent when it is — a catalogue built before the
-   *  report was kept beside it. */
-  report_missing: string | null;
-  auto_build: boolean;
-  /** What this process is currently resolving with (loaded lazily, so
-   *  index_loaded=false beside an existing file means "not asked yet"). */
-  loaded: { index_loaded: boolean; ruleset_checksum: string | null };
-  can_rebuild: boolean;
+/** Provenance stamped on every decoded record: which pack, which version,
+ *  which ruleset checksum — the facts that say WHICH catalogue answered a
+ *  resolution. */
+export interface CatalogStamp {
+  pack_id?: string;
+  pack_version?: string;
+  org_id?: string;
+  org_version?: string;
+  ruleset_checksum?: string;
+  run_id?: string;
+  engine_version?: string;
+  schema_version?: string;
 }
 
-/** One connected company's catalogue: its own uploaded corpus, its own chosen
- *  pack, its own decoded output. Nothing resolves against these yet — the
- *  cutover is a separate change (docs/per-company-catalogues.md §8). */
+/** Whether the corpus that ships in the pinned engine is present. It is the
+ *  SEED a first company inherits, not something resolution reads: once a
+ *  company has uploaded its own export, nothing here is consulted. */
+export interface CatalogSource {
+  available: boolean;
+  /** Exactly why a seed is unavailable, when it is — submodule not
+   *  initialised vs corpus file missing are different fixes. */
+  reason: string | null;
+  pie_parser_root: string;
+  corpus: string;
+  pack: string;
+}
+
 export interface CompanyCatalogue {
   connection_id: string;
   label: string;
@@ -753,7 +724,7 @@ export interface CompanyCatalogue {
   built_at: string | null;
   built_by: string | null;
   report: CatalogReport | null;
-  stamp: CatalogStatus["stamp"];
+  stamp: CatalogStamp;
   corpus: {
     corpus_id: string;
     filename: string;
@@ -773,7 +744,7 @@ export interface CompanyCatalogues {
   companies: CompanyCatalogue[];
   /** The org-layer packs the pinned engine ships. Chosen, never uploaded. */
   packs: { id: string; path: string }[];
-  source: CatalogStatus["source"];
+  source: CatalogSource;
   max_corpus_bytes: number;
   can_manage: boolean;
 }

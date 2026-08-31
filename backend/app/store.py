@@ -399,6 +399,17 @@ class Quote:
     #: included. Stamped at ``create`` from ``principal.organization_id`` and
     #: checked at every seam (``_get_quote``, ``line_cost``, ``_below_floor_lines``).
     organizationId: str = ""
+    #: Which connected company this quote is raised from, and therefore whose
+    #: decoded catalogue its lines resolve against.
+    #:
+    #: A quote belongs to one legal entity — it is that entity that will
+    #: invoice — and each entity decodes its own item master. Without this a
+    #: line has no catalogue it may honestly search: an organization reading
+    #: three books has three, and picking one on the quote's behalf would put a
+    #: different company's product on a customer's quote under a real stamp.
+    #: Stamped at ``create``; silent where the organization has exactly one
+    #: company, because a picker with one option is a question with one answer.
+    connectionId: Optional[str] = None
     #: The platform's own id for the customer, when one was picked rather than
     #: typed.
     #:
@@ -480,6 +491,11 @@ class Quote:
         return {
             "id": self.id, "customer": self.customer,
             "customerId": self.customerId, "number": self.number,
+            # Which company's catalogue answered every line on this quote. On
+            # the wire because a resolution is only interpretable against the
+            # catalogue that produced it — the screen says which one, rather
+            # than leaving the reader to assume there is only ever one.
+            "connectionId": self.connectionId,
             # Shown so that when a send fails in a way nobody can resolve from
             # here, the person has the string to search for in Zoho.
             "reference": self.reference,
@@ -621,12 +637,14 @@ class QuoteStore:
         return Decimal(str(line.cost))
 
     def create(self, customer: str, customer_id: Optional[str] = None,
-               organization_id: str = "") -> Quote:
+               organization_id: str = "",
+               connection_id: Optional[str] = None) -> Quote:
         with self._lock:
             qid = f"q{_RUN}-{next(_ids)}"
             num = f"QB-{int(time.time()) % 100000:05d}"
             q = Quote(id=qid, customer=customer or "New customer", number=num,
                       organizationId=organization_id,
+                      connectionId=connection_id,
                       customerId=customer_id or None,
                       reference=f"{num}-{uuid.uuid4().hex[:8]}")
             self._quotes[qid] = q
@@ -636,11 +654,17 @@ class QuoteStore:
     def build_lines(self, rows: List[Dict[str, Any]], zoho: ZohoService,
                     customer_scope: Optional[str] = None,
                     bands: Optional[Bands] = None,
-                    mapping_store: Any = None) -> List[Line]:
+                    mapping_store: Any = None,
+                    connection_id: Optional[str] = None) -> List[Line]:
         lines: List[Line] = []
         for row in rows:
+            # This quote's company, and only its catalogue. A line with no
+            # company resolves against nothing and comes back UNRESOLVED,
+            # which is the honest answer — never against whichever catalogue
+            # happened to be loaded.
             res: Resolution = pie_service.resolve(row["code"], customer_scope, bands,
-                                                  mapping_store)
+                                                  mapping_store,
+                                                  connection_id=connection_id)
             ln = Line(
                 id=f"l{next(_ids)}",
                 proposed=bool(row.get("proposed")),
@@ -679,8 +703,14 @@ class QuoteStore:
         # ai/reading.py. Falling back to the regex here rather than at the call
         # site keeps the store's behaviour identical with no reader present,
         # which is what makes the whole feature removable.
+        #
+        # The company is read off the quote rather than taken as an argument:
+        # it was decided once when the quote was created, and a caller able to
+        # supply a different one per intake could put two companies' decodes in
+        # one grid, where the lines are read as comparable.
         new = self.build_lines(rows or _split_rfq(text), zoho, customer_scope,
-                               bands, mapping_store)
+                               bands, mapping_store,
+                               connection_id=quote.connectionId)
         with self._lock:
             quote.lines.extend(new)
         return new

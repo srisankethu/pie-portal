@@ -95,12 +95,12 @@ class DecodeRun:
         return not self.unavailable_reason
 
 
-def _load_pack() -> Any:
+def _load_pack(pack_path: Optional[Path] = None) -> Any:
     root = str(settings.PIE_PARSER_ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
     from engine.pack import load_pack  # noqa: PLC0415
-    return load_pack(settings.PIE_PACK)
+    return load_pack(pack_path or settings.PIE_PACK)
 
 
 def _covered_brands(pack: Any) -> tuple[str, ...]:
@@ -113,8 +113,16 @@ def _covered_brands(pack: Any) -> tuple[str, ...]:
     return tuple(sorted(names))
 
 
-def decode_names(rows: Sequence[MasterRow]) -> DecodeRun:
+def decode_names(rows: Sequence[MasterRow],
+                 pack_path: Optional[Path] = None) -> DecodeRun:
     """Run every row's name through the pack, once, and gate the results.
+
+    ``pack_path`` is the pack of the company whose export this is — packs are
+    per company, so measuring one company's master through another's org layer
+    would report *that* pack's coverage of *this* export and call it a finding.
+    Absent, it falls back to the shipped pack, which is what a person running
+    this on a file with no company in mind gets, and the report names the pack
+    it used either way.
 
     One batch through one ``ParserPipeline``, the same way ``app/catalog.py``
     builds the catalogue — not a per-row call, which would recompile the
@@ -136,14 +144,15 @@ def decode_names(rows: Sequence[MasterRow]) -> DecodeRun:
             f"name was decoded. Fetch it with ./scripts/setup_pie_parser.sh (or set "
             f"PIE_PARSER_ROOT). Geometry coverage is UNKNOWN, not zero."))
     try:
-        pack = _load_pack()
+        pack = _load_pack(pack_path)
         from engine import configio  # noqa: PLC0415
         from engine.model import RawRecord  # noqa: PLC0415
         from engine.pipeline import ParserPipeline, RunProfile  # noqa: PLC0415
     except Exception as exc:  # noqa: BLE001 — an absent pack must not kill a report
         log.warning("master-health: pack unreadable", exc_info=True)
         return DecodeRun({}, unavailable_reason=(
-            f"the pack at {settings.PIE_PACK} could not be loaded ({exc}), so no "
+            f"the pack at {pack_path or settings.PIE_PACK} could not be loaded "
+            f"({exc}), so no "
             f"name was decoded. Geometry coverage is UNKNOWN, not zero."))
 
     records = [

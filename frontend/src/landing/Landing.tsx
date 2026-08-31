@@ -275,8 +275,30 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
   const study = caseStudy();
   const compliance = complianceRows();
 
-  const heroDemo = demoCta({ href: "#signin", label: "Start free", onClick: start });
-  const closingDemo = demoCta({ href: "#signin", label: "Start free", onClick: start });
+  /** What the page's own "start" action is, and what it may call itself.
+   *
+   *  `onSignUp` is absent wherever the deployment does not accept sign-ups
+   *  (`SELF_SERVE_SIGNUP`, and `useSignupOffer` also drops it if the probe
+   *  fails), and the fallback has always been the sign-in card. The label did
+   *  not follow: a button reading **Start free** opened a form asking for a
+   *  password the visitor has never set, which is the same defect the demo
+   *  button had — an action named for something it does not do.
+   *
+   *  Where sign-up is offered this is unchanged and "Start free" opens the
+   *  sign-up card. Where it is not, the button says what it actually is. The
+   *  page then makes no offer a visitor cannot take up, which is also why the
+   *  trial line below is conditional: "free for 30 days, no card" over a
+   *  sign-in form is the same sentence pointing at the same closed door. */
+  const signUpOffered = onSignUp !== undefined;
+  const startCta = signUpOffered
+    ? { label: "Start free", onClick: start }
+    : { label: "Sign in", onClick: enter };
+  const trialCta = signUpOffered
+    ? { label: "Start your trial", onClick: startOn("intelligence") }
+    : { label: "Sign in", onClick: enter };
+
+  const heroDemo = demoCta({ href: "#signin", ...startCta });
+  const closingDemo = demoCta({ href: "#signin", ...startCta });
   const intelligenceDemo = demoCta({
     href: "#signin", label: "Ask for this plan", onClick: startOn("intelligence"),
   });
@@ -363,12 +385,12 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
               <div className="lp-ctas">
                 <a className="lp-btn solid" {...heroDemo.props}>{heroDemo.label}</a>
                 {heroDemo.ready
-                  && <a className="lp-btn" href="#signin" onClick={start}>Start free</a>}
+                  && <a className="lp-btn" href="#signin" onClick={startCta.onClick}>{startCta.label}</a>}
                 {onDemo
                   ? <a className="lp-quiet" href="#demo" onClick={demo}>or see it on sample data</a>
                   : <a className="lp-quiet" href="#pricing">or see the pricing</a>}
               </div>
-              <TrialFinePrint />
+              {signUpOffered && <TrialFinePrint />}
             </div>
 
             <div
@@ -910,8 +932,8 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                   approvals, on one connected company. Your first 30 days
                   include the decision layer beside it.
                 </p>
-                <a className="lp-btn" href="#signin" onClick={startOn("intelligence")}>
-                  Start your trial
+                <a className="lp-btn" href="#signin" onClick={trialCta.onClick}>
+                  {trialCta.label}
                 </a>
               </div>
               <div className="lp-panel lp-plan mid">
@@ -996,7 +1018,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
             <div className="lp-ctas lp-ctas-centred">
               <a className="lp-btn solid" {...closingDemo.props}>{closingDemo.label}</a>
               {closingDemo.ready
-                && <a className="lp-btn" href="#signin" onClick={start}>Start free</a>}
+                && <a className="lp-btn" href="#signin" onClick={startCta.onClick}>{startCta.label}</a>}
             </div>
           </div>
         </div>

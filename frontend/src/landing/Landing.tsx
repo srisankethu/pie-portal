@@ -841,6 +841,32 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           </div>
         </section>
 
+        {/* Who built it — three sentences, and the most credible three on the
+            page. This category is full of software people who interviewed a
+            distributor once, and the buyer knows it; a vendor who runs the
+            business he is selling to does not have to be believed on that
+            point, only checked.
+
+            Every claim here is supplied fact rather than colour: three B2B
+            industrial distribution businesses, in Hyderabad, on Zoho Books —
+            which is also why this repository's own connector, thresholds and
+            approval model were built against that book first (see CLAUDE.md).
+            No photograph, no name, no title: none was given, and a marketing
+            page is the wrong place to invent any of the three. If a name and a
+            link belong here, they are the founder's to add. */}
+        <div className="lp-notwhat">
+          <div className="lp-wrap lp-founder">
+            <b>Built by a distributor, on his own quote desk.</b> PIE was not
+            built by software people who interviewed a distributor once — it is
+            built by one, running three B2B industrial distribution businesses
+            in Hyderabad on Zoho Books, quoting cutting tools every working day.
+            The margin floors, the approval routing and the rule that no model
+            ever computes a number were all answers to problems on that book
+            before they were features on this page, which is why they are
+            specific rather than general.
+          </div>
+        </div>
+
         <div className="lp-dim"><b>Section G — Pricing</b></div>
         <section id="pricing">
           <div className="lp-wrap">

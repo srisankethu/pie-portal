@@ -334,6 +334,21 @@
   font-weight: 600;
 }
 
+/* The founder note. `.lp-notwhat`'s quiet register — it is an aside, not a
+   section — with a drawing's leader line down its left edge and a step up in
+   size, because it is the one aside on this page a reader should not skim. */
+.pie-landing .lp-founder {
+  border-left: 3px solid var(--color-accent-500);
+  font-size: 15px;
+  color: var(--color-neutral-700);
+  /* .lp-wrap's own 24px inset, plus room for the rule. */
+  padding-left: 42px;
+  max-width: calc(1080px);
+}
+@media (max-width: 720px) {
+  .pie-landing .lp-founder { padding-left: 32px; }
+}
+
 /* ── dimension-line dividers: the section names live on these ── */
 .pie-landing .lp-dim {
   display: flex; align-items: center; gap: 12px;

@@ -14,11 +14,11 @@ flows were run directly. The three findings whose subject is UI feedback were
 additionally confirmed in Chromium against a running dev server — §2 F2–F4
 records what was clicked and what appeared.
 
-**Result.** Over 100 behavioural checks across both repositories. **Five
+**Result.** Over 100 behavioural checks across both repositories. **Six
 defects, all now fixed with regression tests**: one genuine functional defect
 (RFQ quantity misreading, contained by the send gate), a second in the flag that
-was supposed to contain it, and three messages the interface set and never
-rendered. Every invariant the business depends on —
+was supposed to contain it, a third reading a dimension as an order quantity,
+and three messages the interface set and never rendered. Every invariant the business depends on —
 cost containment, approval authority, the identity gate, the send gate —
 **holds under direct attack.**
 
@@ -285,6 +285,51 @@ lenses could construct, and leaves nothing unflagged-but-stated across the
 repository's own 14-case inbound seed set. `test_rfq_splitting.py` goes from 28
 collected cases to 55; against the original rule 6 of them fail, and against the
 anchored attempt 21 do.
+
+#### F1c · A dimension read as an order quantity — **FIXED**
+
+Found by replicating the adversarial pass's own sweep — 300 catalogue rows
+across 10 realistic RFQ templates — against the fixed flag. Three of 3,000 lines
+still came back as one piece in silence, and all three were the same catalogue
+row: `ENDMILL 57N8 10x10x22-30x76 Rad 1,0`.
+
+The cause is not the flag at all. It is `_QTY_PATTERNS` reading a **European
+decimal comma** as a quantity separator:
+
+| Catalogue description | Was read as |
+|---|---|
+| `ENDMILL HARL 5FL 8x8x40x87 R0,5` | code `…R0`, qty **5** |
+| `ENDMILL 5777 12x12x26x83 RAD 0,75` | code `…RAD 0`, qty **75** |
+| `KSSM 8+ MILL. INSERT IC=10 x 4,45` | code `…x 4`, qty **45** |
+| `END MILL W4N1 12x12x26x83 R2,0` | code `…R2`, qty 0 → clamped to 1 |
+
+Both halves of the line wrong from one character. `R0,5` is a 0.5 mm corner
+radius; `R0` is a different product, and one that **collides with a genuine
+`R0`** — so this is the F1 defect exactly, through a third door: the code
+mangled and the quantity invented. **790 of the 6,717 rows carry a decimal
+comma**, and the rule truncated every one that ended in it.
+
+It also swallowed real quantities. Because a pattern had *matched*, the earlier
+`250000 nos` in `250000 nos ENDMILL … Rad 1,0` never reached the
+leading-quantity rule or the flag, and a quarter-million-piece line travelled as
+one.
+
+Two guards, both narrow:
+
+- **A comma separates a quantity when it is followed by whitespace**
+  (`2001174, 20`) **or when what precedes it is not a digit**
+  (`CNMG 120408-MP, 10`). `digit,digit` with nothing between is a decimal.
+- **Zero is never a quantity.** A matched zero now falls through to the next
+  rule instead of being clamped to one, which is what lets the line above find
+  its real quantity.
+
+Catalogue rows whose code the splitter truncates: **103 → 34**, and the 3,000-line
+sweep goes to **0**. The 34 that remain are `_BARE_QTY_DIGITS` behaving as
+documented — a trailing number of four digits or fewer *is* read as a quantity,
+which is what makes `CNMG 120408 TN2000  100` work. Pasting a raw description
+that happens to end in a number is genuinely ambiguous, and is left alone rather
+than guessed at. Eight parametrised cases pin both guards; all eight fail
+against the previous rule.
 
 ### F2 · MINOR · A failed workspace switch told the user nothing — **FIXED**
 

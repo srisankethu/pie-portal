@@ -84,26 +84,24 @@ export interface RegionPricing {
 }
 
 const PRICING: Record<Region, RegionPricing> = {
-  /** PLACEHOLDERS — none of these three strings is a real price yet.
+  /** The dollar list. The two monthly tiers are the founder's own figures,
+   *  supplied and confirmed; they are not conversions of the rupee prices and
+   *  the two lists are not expected to track each other.
    *
-   *  `{{PRICE_TIER_1_USD}}` — Commercial Intelligence. Intended range
-   *  $1,500–$2,500 per month; the founder confirms the final number.
-   *  `{{PRICE_TIER_2_USD}}` — Platform. Intended $3,500+ per month.
-   *  `{{PRICE_CATALOG_BUILD_USD}}` — the one-time catalog build, which has an
-   *  Indian price (₹4,999) and no dollar price yet. It is a placeholder rather
-   *  than a conversion, because a converted rupee price is a guess dressed as
-   *  a decision.
-   *
-   *  They are rendered verbatim so an unreplaced one is unmissable on the page
-   *  rather than plausible; `scripts/prerender.mjs` also lists every `{{…}}`
-   *  token it finds in the built HTML at the end of a build. */
+   *  `catalogBuild` is still `{{PRICE_CATALOG_BUILD_USD}}`, and deliberately:
+   *  the one-time catalog build has an Indian price (₹4,999) and no dollar
+   *  price, so the sentence that carries it is dropped whole for a dollar
+   *  visitor rather than filled with a converted rupee figure — a conversion
+   *  is a guess dressed as a decision. A `{{…}}` token is rendered verbatim so
+   *  an unreplaced one is unmissable rather than plausible, and
+   *  `scripts/prerender.mjs` fails the build if one ever reaches a page. */
   INTL: {
     region: "INTL",
     currency: "USD",
     locale: "en-US",
     unitDecimals: 2,
-    tierIntelligence: "{{PRICE_TIER_1_USD}}",
-    tierPlatform: "{{PRICE_TIER_2_USD}}",
+    tierIntelligence: "$1,950",
+    tierPlatform: "$3,950",
     catalogBuild: "{{PRICE_CATALOG_BUILD_USD}}",
     // 38.08 / 0.85 = 44.80 exactly. Chosen that way on purpose: a floor
     // rounded to cents is a floor that has moved, and rounding it *down* — as

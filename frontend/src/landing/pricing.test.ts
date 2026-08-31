@@ -75,16 +75,25 @@ describe("the price list", () => {
     // Not "does not equal ₹9,999" — anything rupee-denominated anchors a
     // dollar buyer to a number that is not the offer being made to them.
     expect(shown).not.toMatch(/₹|INR/);
-    // And no figure at all outside a placeholder token: the only numerals left
-    // are the 1 and 2 in PRICE_TIER_1_USD / PRICE_TIER_2_USD.
-    expect(shown.replace(/\{\{[A-Z0-9_]+\}\}/g, "")).not.toMatch(/\d/);
+    // And every figure outside a placeholder token is dollar-denominated.
+    // Stripping the tokens first matters: PRICE_TIER_1_USD carries a numeral
+    // of its own, and a check that counted it would pass for the wrong reason.
+    const literal = shown.replace(/\{\{[A-Z0-9_]+\}\}/g, " ");
+    expect(literal.replace(/\$[\d,]+/g, "")).not.toMatch(/\d/);
   });
 
-  it("marks every unset international price as a placeholder", () => {
+  it("prices both dollar tiers, and leaves the catalog build unset", () => {
+    // The two monthly tiers are the founder's supplied figures. The one-time
+    // catalog build has no dollar price and is still a token — the sentence
+    // carrying it is dropped for a dollar visitor rather than converted.
     const intl = pricingFor("INTL");
-    for (const price of [intl.tierIntelligence, intl.tierPlatform, intl.catalogBuild]) {
-      expect(price).toMatch(/^\{\{[A-Z0-9_]+\}\}$/);
-    }
+    expect(intl.tierIntelligence).toBe("$1,950");
+    expect(intl.tierPlatform).toBe("$3,950");
+    expect(intl.catalogBuild).toMatch(/^\{\{[A-Z0-9_]+\}\}$/);
+    // Cheaper than the tier above it, which is the only relation between two
+    // tiers the page ever asserts.
+    const money = (s: string) => Number(s.replace(/[^\d.]/g, ""));
+    expect(money(intl.tierIntelligence)).toBeLessThan(money(intl.tierPlatform));
   });
 
   it("has a real price for every Indian tier", () => {
@@ -127,7 +136,13 @@ describe("detectRegion", () => {
 });
 
 describe("a tier whose price nobody has set", () => {
-  const intl = pricingFor("INTL");
+  // No region is in this state today — both dollar tiers and both rupee tiers
+  // carry a figure. The fallback stays tested anyway, because it is what the
+  // page falls back to the moment a price is pulled for a repricing, and a
+  // branch that is only exercised in that moment is a branch that is wrong in
+  // it. Synthesised from the real dollar list so nothing else about the region
+  // is invented alongside the gap.
+  const intl = { ...pricingFor("INTL"), tierIntelligence: "{{X}}", tierPlatform: "{{X}}" };
 
   it("says how pricing works instead of showing a token", () => {
     // The one slot on this site that cannot simply disappear: a pricing panel
@@ -149,8 +164,18 @@ describe("a tier whose price nobody has set", () => {
   });
 });
 
-describe("a tier whose price is set — the Indian list, which is real", () => {
+describe("a tier whose price is set — both lists, which are real", () => {
   const inr = pricingFor("IN");
+
+  it("shows the dollar figure and its period", () => {
+    const intl = pricingFor("INTL");
+    expect(tierPrice(intl, "intelligence")).toEqual({
+      amount: "$1,950", label: "$1,950", period: " /month",
+    });
+    expect(tierPrice(intl, "platform")).toEqual({
+      amount: "$3,950", label: "$3,950", period: " /month +",
+    });
+  });
 
   it("shows the figure and its period", () => {
     expect(tierPrice(inr, "intelligence")).toEqual({

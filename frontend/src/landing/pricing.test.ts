@@ -26,12 +26,12 @@ import {
 const REGIONS: Region[] = ["INTL", "IN"];
 
 describe("the worked line", () => {
-  it.each(REGIONS)("%s: floor is cost / (1 - margin floor)", (region) => {
+  it.each(REGIONS)("%s: floor is exactly cost / (1 - margin floor)", (region) => {
     const p = pricingFor(region);
-    const step = 10 ** -p.unitDecimals;
-    const exact = p.line.cost / (1 - MARGIN_FLOOR);
-    // To the currency's own precision: rupees are whole, dollars carry cents.
-    expect(Math.abs(p.line.floor - exact)).toBeLessThan(step);
+    // Exactly, not "to the currency's precision". A floor rounded down is a
+    // floor that has moved below the policy it came from, and a page whose
+    // whole argument is that its arithmetic closes cannot print one.
+    expect(p.line.floor).toBeCloseTo(p.line.cost / (1 - MARGIN_FLOOR), 9);
   });
 
   it.each(REGIONS)("%s: the line is below its floor, and the recommendation is above it", (region) => {
@@ -53,14 +53,16 @@ describe("the worked line", () => {
     // Round numbers were chosen on purpose: a reader checks these in their
     // head, and 723.99 would read as a rounding error rather than as a figure.
     const intl = pricingFor("INTL");
-    expect(lineTotal(intl, heldToFloor(intl))).toBe("$724");
+    expect(lineTotal(intl, heldToFloor(intl))).toBe("$720");
     expect(lineTotal(intl, heldToRecommended(intl))).toBe("$1,500");
     expect(unitPrice(intl, intl.line.asked)).toBe("$41.20");
+    expect(unitPrice(intl, intl.line.floor)).toBe("$44.80");
 
     const inr = pricingFor("IN");
-    expect(lineTotal(inr, heldToFloor(inr))).toBe("₹7,200");
-    expect(lineTotal(inr, heldToRecommended(inr))).toBe("₹15,000");
+    expect(lineTotal(inr, heldToFloor(inr))).toBe("₹9,600");
+    expect(lineTotal(inr, heldToRecommended(inr))).toBe("₹17,600");
     expect(unitPrice(inr, inr.line.asked)).toBe("₹412");
+    expect(unitPrice(inr, inr.line.floor)).toBe("₹460");
   });
 });
 

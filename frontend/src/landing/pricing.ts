@@ -100,8 +100,12 @@ const PRICING: Record<Region, RegionPricing> = {
     tierIntelligence: "{{PRICE_TIER_1_USD}}",
     tierPlatform: "{{PRICE_TIER_2_USD}}",
     catalogBuild: "{{PRICE_CATALOG_BUILD_USD}}",
-    // 38.10 / 0.85 = 44.8235… → 44.82 at cent precision.
-    line: { units: 200, asked: 41.2, cost: 38.1, floor: 44.82, recommended: 48.7 },
+    // 38.08 / 0.85 = 44.80 exactly. Chosen that way on purpose: a floor
+    // rounded to cents is a floor that has moved, and rounding it *down* — as
+    // 44.8235 → 44.82 did — prints a floor fractionally under the policy it
+    // came from. An illustrative figure may be illustrative; it may not
+    // contradict the rule stated beside it.
+    line: { units: 200, asked: 41.2, cost: 38.08, floor: 44.8, recommended: 48.7 },
   },
   IN: {
     region: "IN",
@@ -111,8 +115,8 @@ const PRICING: Record<Region, RegionPricing> = {
     tierIntelligence: "₹9,999",
     tierPlatform: "₹19,999",
     catalogBuild: "₹4,999",
-    // 381 / 0.85 = 448.2… → 448 at rupee precision.
-    line: { units: 200, asked: 412, cost: 381, floor: 448, recommended: 487 },
+    // 391 / 0.85 = 460 exactly, for the reason given on the dollar line.
+    line: { units: 200, asked: 412, cost: 391, floor: 460, recommended: 500 },
   },
 };
 

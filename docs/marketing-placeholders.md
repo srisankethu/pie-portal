@@ -51,11 +51,17 @@ Write them as they should read, symbol included — `"$1,950"` — and keep the
 `/month` suffix in the markup rather than in the string. The page displays
 these unchanged.
 
+The intended ranges above are also written in the comment on `PRICING.INTL` in
+that file, deliberately: this list is for a person deciding the numbers and
+that comment is for whoever next opens the code. They are the only two places
+either range appears, and both should be edited to the real figure at the same
+time — after which neither is a range any more.
+
 ## 2 · The demo booking link — `frontend/src/landing/cta.ts`
 
 | Token | What it is |
 |---|---|
-| `{{DEMO_BOOKING_URL}}` | The scheduling link behind every **Book a demo** button — five of them, across the landing page and the three ERP pages |
+| `{{DEMO_BOOKING_URL}}` | The scheduling link behind every **Book a demo** button — six of them, across the landing page and the three ERP pages |
 
 Replace the constant with the real URL (Cal.com, Calendly, HubSpot, whatever is
 chosen). The moment it stops looking like a token, the buttons start opening in

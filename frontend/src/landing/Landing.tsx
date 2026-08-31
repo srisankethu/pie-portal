@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { demoLinkProps } from "./cta";
+import { FooterBlurb, TrialFinePrint, TrustBand } from "./shared";
 import {
   detectRegion,
   heldToFloor,
@@ -268,14 +269,20 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
               <a href="#product" onClick={closeMenu}>Product</a>
               <a href="#how" onClick={closeMenu}>How it works</a>
               <a href="#worth" onClick={closeMenu}>What it&rsquo;s worth</a>
-              <a href="#proof" onClick={closeMenu}>Proof</a>
               <a href="#trust" onClick={closeMenu}>Trust</a>
+              <a href="#proof" onClick={closeMenu}>Proof</a>
               <a href="#pricing" onClick={closeMenu}>Pricing</a>
               <a className="lp-btn solid lp-nav-cta" href="#signin" onClick={enter}>Sign in</a>
             </div>
           </div>
         </nav>
 
+        {/* Everything between the bar and the footer is one region. Without
+            it a screen reader's landmark list held a nav, a banner and a
+            footer, and the page itself — every section of it — was outside all
+            three. The hero is inside `main` on purpose: it is this document's
+            content, not a site-wide banner. */}
+        <main>
         <header className="lp-hero" id="top">
           <div className="lp-wrap lp-hero-grid">
             <div className="lp-hero-copy">
@@ -307,16 +314,27 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                   ? <a className="lp-quiet" href="#demo" onClick={demo}>or see it on sample data</a>
                   : <a className="lp-quiet" href="#pricing">or see the pricing</a>}
               </div>
-              <p className="lp-fine">
-                A 30-day trial of the whole platform — no card. The quote desk
-                keeps working whether or not you subscribe.
-              </p>
+              <TrialFinePrint />
             </div>
 
             <div
               className="lp-card"
               role="img"
-              aria-label="An illustrative PIE decision card, drawn like an engineering sheet: a quote priced below the margin floor, showing cost, margin floor and recommended price, with an approval action and a title block naming the policy that computed it."
+              /* The figures are *in* the label. `role="img"` makes every
+                 descendant presentational, so a screen-reader user got "showing
+                 cost, margin floor and recommended price" and none of the three
+                 — on the one worked example the whole page argues from. Built
+                 from the same values the card renders, so the two cannot say
+                 different things. */
+              aria-label={
+                "An illustrative PIE decision card, drawn like an engineering sheet. "
+                + `A customer asked for ${line.units} units at ${unitPrice(price, line.asked)}, `
+                + `below the margin floor of ${unitPrice(price, line.floor)} that this `
+                + `organization's policy sets for the item; it costs ${unitPrice(price, line.cost)} `
+                + `and the recommended price is ${unitPrice(price, line.recommended)}. `
+                + "The line routes for a manager's approval, and a title block names the "
+                + "policy version that computed it."
+              }
             >
               <span className="lp-corner tl" aria-hidden="true" />
               <span className="lp-corner tr" aria-hidden="true" />
@@ -404,41 +422,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           </div>
         </div>
 
-        <div className="lp-invariant">
-          <div className="lp-wrap">
-            <div className="lp-cols">
-              <div>
-                <p className="lp-eyebrow">Why it can be trusted</p>
-                <h2>The AI never computes <em>a single number.</em></h2>
-                <p>
-                  Your business data and rules determine the number. AI explains
-                  it.
-                </p>
-                <p>
-                  Same inputs, same answer, every time — with a paper trail.
-                </p>
-              </div>
-              <ul>
-                <li>
-                  <b>Deterministic calculations</b> — every figure is arithmetic
-                  on your records; turn AI off and every number still works
-                </li>
-                <li>
-                  <b>Auditable decisions</b> — each number names the policy that
-                  produced it, so past decisions stay explainable
-                </li>
-                <li>
-                  <b>Your data</b> — read from your own books, used for you
-                  alone; AI runs on your own account
-                </li>
-                <li>
-                  <b>Your rules</b> — you set the floors and thresholds, and PIE
-                  holds every quote to them
-                </li>
-              </ul>
-            </div>
-          </div>
-        </div>
+        <TrustBand />
 
         {/* The pattern-match is the thing to beat, and it is silent: a
             distributor who has already decided that dashboards are things
@@ -907,8 +891,9 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                   sentence about what we will do rather than among the claims
                   about what the product does. */}
               <p className="lp-pricing-how">
-                Every organization starts on a full 30-day trial of everything —
-                no card, no conversation needed. Buying is a conversation: book
+                Every organization starts on a 30-day trial of Commercial
+                Intelligence — no card, no conversation needed. Buying is a
+                conversation: book
                 a demo, and the plan is then requested from inside the product
                 and confirmed by a person. There is no checkout. If the trial
                 ends without one, the decision layer locks, the quote desk
@@ -932,7 +917,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                   Where everyone starts, and what keeps working when nothing is
                   being paid for: quoting, RFQ reading, margin floors and
                   approvals, on one connected company. Your first 30 days
-                  include everything below.
+                  include the decision layer beside it.
                 </p>
                 <a className="lp-btn" href="#signin" onClick={startOn("intelligence")}>
                   Start your trial
@@ -1011,13 +996,11 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           </div>
         </div>
 
+        </main>
+
         <footer className="lp-footer">
           <div className="lp-wrap">
-            <div>
-              <b>PIE</b> — the commercial intelligence layer for distributors.
-              Deterministic numbers, auditable decisions, your data provably
-              yours.
-            </div>
+            <FooterBlurb />
             <div>
               Already have an account?{" "}
               <a href="#signin" onClick={enter}>Sign in</a>

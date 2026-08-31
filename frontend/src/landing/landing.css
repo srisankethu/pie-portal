@@ -157,7 +157,26 @@
   .pie-landing .lp-nav-links .lp-nav-cta {
     margin: 10px 24px 4px; padding: 11px 18px; text-align: center;
   }
+
+  /* The static variant, for a document that ships no bundle: there is no menu
+     button because nothing could open one, so the links stay in the bar and
+     wrap onto a second line. Without this an ERP page on a phone was a logo
+     and nothing else — the collapse above hides the links until JavaScript
+     adds `.open`, and on those pages JavaScript never arrives. */
+  .pie-landing .lp-nav-links.lp-nav-static {
+    display: flex; position: static;
+    flex-direction: row; flex-wrap: wrap; align-items: center;
+    gap: 8px 16px; margin-left: auto; padding: 0;
+    background: none; border-bottom: 0; box-shadow: none;
+  }
+  .pie-landing .lp-nav-links.lp-nav-static a { padding: 0; font-size: 14px; }
+  .pie-landing .lp-nav-links.lp-nav-static .lp-nav-cta {
+    margin: 0; padding: 8px 14px;
+  }
 }
+/* The bar itself has to be allowed to wrap for the row above to land on a
+   second line rather than squeeze the logo. */
+.pie-landing .lp-nav-inner { flex-wrap: wrap; row-gap: 10px; }
 
 /* ── hero, on grid paper ── */
 .pie-landing .lp-hero {
@@ -238,11 +257,22 @@
   display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 12px;
   border-top: 1px solid var(--color-divider); padding-top: 14px;
 }
+/* Three fixed columns had no small-screen answer. The hero card never showed
+   it, because its values are five characters wide; the case study's are not,
+   and at 375px the row pushed the whole document sideways. Measured in
+   Chromium at 375px: the page had horizontal overflow, and every element past
+   the right edge was one of these three cells. */
+@media (max-width: 520px) {
+  .pie-landing .lp-facts { grid-template-columns: 1fr; gap: 10px; }
+}
 .pie-landing .lp-fact .k {
   font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
   color: var(--color-neutral-700);
 }
-.pie-landing .lp-fact .v { font-size: 17px; font-weight: 600; }
+/* A value is one token and may be a long one — a placeholder now, and later a
+   figure with a currency and a thousands separator. It breaks rather than
+   pushing the page sideways. */
+.pie-landing .lp-fact .v { font-size: 17px; font-weight: 600; overflow-wrap: anywhere; }
 .pie-landing .lp-fact .v.down { color: var(--danger-fg); }
 .pie-landing .lp-actions { display: flex; gap: 10px; margin-top: 14px; }
 .pie-landing .lp-actions span {
@@ -257,7 +287,10 @@
   margin-top: 16px; border: 1px solid var(--color-accent-400);
   font-size: 10.5px; color: var(--color-neutral-700);
 }
-.pie-landing .lp-tblock > div { padding: 5px 8px; border-right: 1px solid var(--color-accent-400); }
+.pie-landing .lp-tblock > div {
+  padding: 5px 8px; border-right: 1px solid var(--color-accent-400);
+  overflow-wrap: anywhere;
+}
 .pie-landing .lp-tblock > div:last-child { border-right: 0; }
 .pie-landing .lp-tblock .k {
   display: block; font-family: var(--font-heading); font-size: 9px;
@@ -316,11 +349,16 @@
   border: 1px solid var(--color-accent-400); background: var(--color-neutral-100);
   color: var(--color-accent-800);
 }
-/* Three of the plates are links to that system's own page. A plate is already
-   a bordered object, so an underline on top of it reads as a mistake; the
-   border darkens on hover instead, and focus keeps the page's usual ring. */
-.pie-landing a.lp-sys { text-decoration: none; }
-.pie-landing a.lp-sys:hover { border-color: var(--color-accent-700); background: var(--color-accent-100); }
+/* Three of the seven plates link to that system's own page, and the first
+   version of this rule made them pixel-identical to the four that do not — a
+   link nobody can see is a page nobody reaches. They carry the accent border
+   at full strength and an underlined label, so the difference is visible
+   without a hover and without colour alone carrying it. */
+.pie-landing a.lp-sys {
+  border-color: var(--color-accent-700);
+  text-decoration: underline; text-underline-offset: 3px;
+}
+.pie-landing a.lp-sys:hover { background: var(--color-accent-100); border-color: var(--color-accent-800); }
 .pie-landing a.lp-sys:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 /* Its own band, at every width. Seven chips already fill the column, so the
    note wrapped anyway — but as a flex item it landed wherever the last chip
@@ -417,8 +455,15 @@
   font-family: var(--font-heading);
 }
 
+/* `min(290px, 100%)` and not a bare 290px. auto-fit's minimum is a floor, not
+   a request: on a 320px phone the track stayed 290px wide inside a column that
+   is 272px after the wrap's inset, and every card in the grid hung 3px past
+   the right edge — measured in Chromium at 320px, on this page and on the ERP
+   pages that inherit the same grid. Pre-existing, and inherited by the new
+   pages, which is why it is fixed here rather than noted. */
 .pie-landing .lp-grid3 {
-  display: grid; grid-template-columns: repeat(auto-fit, minmax(290px, 1fr)); gap: 22px;
+  display: grid; gap: 22px;
+  grid-template-columns: repeat(auto-fit, minmax(min(290px, 100%), 1fr));
 }
 .pie-landing .lp-feat {
   border-top: 3px solid var(--color-accent-500);
@@ -480,7 +525,7 @@
    `.lp-card-body` is the one piece that does, so the narrative here is a plain
    `<p>` and takes `.lp-panel p`. */
 .pie-landing .lp-case { margin-top: 22px; }
-.pie-landing .lp-case h3 { margin: 12px 0 10px; }
+.pie-landing .lp-case h3 { margin: 12px 0 10px; overflow-wrap: anywhere; }
 .pie-landing .lp-case .lp-facts { margin-top: 18px; }
 
 /* The compliance band closes the section, so it needs the air a `.lp-dim`

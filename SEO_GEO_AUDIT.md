@@ -87,7 +87,12 @@ record).
 - **Image alt text / formats**: there are no `<img>` elements anywhere in the
   frontend; the hero mock is a styled `div` with `role="img"` and a full
   `aria-label`. Nothing to fix.
-- **BreadcrumbList**: one public page; there is no trail to describe.
+- **BreadcrumbList**: was *not applicable* — one public page, no trail to
+  describe. Since the ERP pages landed there is a real two-level trail
+  (`/` → `/erp/{system}`), so the schema is now *earnable* rather than
+  inapplicable: it may be emitted the day a page renders a visible breadcrumb,
+  and not before. Schema may only restate what is on the page, which is the
+  rule that excluded it in the first place. No page renders one today.
 - **FAQPage**: no visible FAQ content exists on the page, so none is claimed.
 - **Organization schema**: the repository states no public legal-entity facts
   (vendor name, logo, address) that could populate it truthfully;

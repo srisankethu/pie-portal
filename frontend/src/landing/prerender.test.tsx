@@ -8,6 +8,12 @@
  * the property that broke.
  */
 import { describe, expect, it } from "vitest";
+// The server's own constant, inlined by Vite at transform time (`?raw`) —
+// the same idiom `platform/route.test.ts` uses to read the destination list
+// rather than restate it.
+import connectionsSource from "../../../backend/app/ingestion/connections.py?raw";
+
+import { ERP_PAGES } from "./erp";
 import { PAGES, landingTokenCss, renderLandingMarkup } from "./prerender";
 
 /** Rendered once and read by every block below — the render is the fixture. */
@@ -96,6 +102,60 @@ describe("the placeholders", () => {
   });
 });
 
+describe("the history window", () => {
+  it("states the number DEFAULT_HISTORY_MONTHS actually holds", () => {
+    // Three pages tell a prospective customer how far back their first pull
+    // reads, and the figure is a literal in each of them. The page used to
+    // hedge it as "about 18 months" and the hedge was removed on the grounds
+    // that the number is exact — which makes it a number that has to stay
+    // right. `connections.DEFAULT_HISTORY_MONTHS` is the one that decides, and
+    // the day somebody moves it, this fails instead of the page quietly
+    // telling customers the old figure.
+    const months = connectionsSource.match(/^DEFAULT_HISTORY_MONTHS\s*=\s*(\d+)/m)?.[1];
+    expect(months, "DEFAULT_HISTORY_MONTHS not found in connections.py").toBeTruthy();
+
+    // Anchored on the sentence that describes the window — "the first day of
+    // the month" — rather than on every number followed by "months". The page
+    // also says "rates, locked for 24 months", which is a commitment about
+    // billing and has nothing to do with this constant; a test that fails on
+    // that is a test somebody deletes.
+    let checked = 0;
+    for (const { page, html } of documents) {
+      for (const match of html.matchAll(/first day of/g)) {
+        const sentence = html.slice(Math.max(0, match.index - 160), match.index + 160);
+        expect(sentence, `/${page.slug} states the window without ${months} months`)
+          .toContain(`${months} months`);
+        checked += 1;
+      }
+    }
+    // And every page that makes the claim is actually reached — a loop that
+    // matched nothing would pass in silence, which is the shape of test this
+    // repository has been burned by before (CLAUDE.md §1, "absence of evidence
+    // is not a pass").
+    expect(checked, "no page states the history window at all")
+      .toBeGreaterThanOrEqual(documents.length);
+  });
+});
+
+describe("the currency the prerender bakes", () => {
+  it("puts no rupee figure in any served document", () => {
+    // The repositioning's one hard rule about price: a visitor outside India
+    // must not find ₹9,999 anywhere — "in markup, alt text or structured
+    // data" — because a reader who finds it anchors to it, and it is not the
+    // offer being made to them. The static documents are what a crawler, a
+    // no-JavaScript reader and every visitor's first paint get, so they are
+    // where that rule has to hold; the Indian list is swapped in on mount, by
+    // `detectRegion`, for browsers whose own clock says India.
+    //
+    // This is pinned because the whole invariant otherwise rests on one
+    // `useState` default in Landing.tsx, and a default is a one-character
+    // edit away from being the other one.
+    for (const { page, html } of documents) {
+      expect(html, `/${page.slug} carries a rupee figure`).not.toMatch(/₹|\bINR\b/);
+    }
+  });
+});
+
 describe("landingTokenCss", () => {
   it("emits the theme tokens landing.css reads", () => {
     const css = landingTokenCss();
@@ -147,11 +207,17 @@ describe("every prerendered page", () => {
   it("names its own ERP in the first heading of each sub-page", () => {
     // The whole reason these pages exist: a Prophet 21 distributor has to see
     // "Prophet 21" without reading a paragraph first.
-    for (const { page, html } of documents.filter((d) => d.page.slug !== "")) {
+    //
+    // Checked against `erp.ts`'s own `short` name and against the h1 alone.
+    // The first version of this test derived the system name *from the title*
+    // and then asserted the title contained it, which is true of every string
+    // and could not fail.
+    const pages = ERP_PAGES.map((p) => [`erp/${p.slug}`, p.short] as const);
+    expect(pages.length).toBeGreaterThan(0);
+    for (const [slug, short] of pages) {
+      const html = documents.find((d) => d.page.slug === slug)?.html ?? "";
       const h1 = html.match(/<h1[^>]*>(.*?)<\/h1>/s)?.[1] ?? "";
-      const system = (page.title ?? "").split(" ")[2] ?? "";
-      expect(h1.length).toBeGreaterThan(0);
-      expect(`${h1} ${page.title}`).toContain(system);
+      expect(h1, `${slug} h1`).toContain(short);
     }
   });
 });

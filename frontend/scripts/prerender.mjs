@@ -112,7 +112,10 @@ const landingDescription = extract(
 function replaceOnce(source, pattern, replacement, what) {
   const matches = source.match(pattern);
   if (!matches) fail(`could not find ${what} to replace`);
-  const global = new RegExp(pattern.source, `${pattern.flags}g`);
+  // Flags deduplicated: `new RegExp(src, "gg")` is a SyntaxError, and a
+  // guard that throws one instead of naming the tag it could not replace is
+  // a guard that has stopped helping.
+  const global = new RegExp(pattern.source, [...new Set(`${pattern.flags}g`)].join(""));
   if ((source.match(global) ?? []).length !== 1) {
     fail(`expected exactly one ${what}; the entry document changed`);
   }
@@ -144,15 +147,21 @@ function documentFor(page) {
   const url = `${SITE_ORIGIN}/${page.slug}`;
 
   let out = html;
+  // Each tag follows its own field. Gating all four on `page.title` alone let a
+  // page with a description and no title keep the landing's description in the
+  // head while its JSON-LD, built from the same `description` variable below,
+  // stated its own — two answers to one question in one document.
   if (page.title !== null) {
     out = replaceOnce(out, /<title>[^<]*<\/title>/,
                       `<title>${attr(title)}</title>`, "<title>");
-    out = replaceOnce(out, /<meta\s+name="description"\s+content="[^"]*"\s*\/?>/,
-                      `<meta name="description" content="${attr(description)}" />`,
-                      'the <meta name="description">');
     out = replaceOnce(out, /<meta\s+property="og:title"\s+content="[^"]*"\s*\/?>/,
                       `<meta property="og:title" content="${attr(title)}" />`,
                       'the <meta property="og:title">');
+  }
+  if (page.description !== null) {
+    out = replaceOnce(out, /<meta\s+name="description"\s+content="[^"]*"\s*\/?>/,
+                      `<meta name="description" content="${attr(description)}" />`,
+                      'the <meta name="description">');
     out = replaceOnce(out, /<meta\s+property="og:description"\s+content="[^"]*"\s*\/?>/,
                       `<meta property="og:description" content="${attr(description)}" />`,
                       'the <meta property="og:description">');
@@ -221,8 +230,8 @@ function documentFor(page) {
 }
 
 /** Where a page's document goes. `""` is dist/index.html; every other slug is
- *  a flat `<slug>.html`, which is what `vercel.json`'s explicit rewrites and
- *  the Caddyfile's `try_files` both resolve `/{slug}` to. Flat rather than
+ *  a flat `<slug>.html`, which is what `vercel.json`'s `/erp/([^/]+)` rewrite
+ *  and the Caddyfile's `try_files … {path}.html` both resolve `/{slug}` to. Flat rather than
  *  `<slug>/index.html` so the canonical URL carries no trailing slash and
  *  there is exactly one form of every address — on the page, in the sitemap
  *  and in the canonical tag. */

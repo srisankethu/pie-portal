@@ -75,9 +75,11 @@ VERDICT_DETAIL: dict[str, str] = {
 def _history(snapshot: Snapshot) -> dict[str, Any]:
     """How far back the record actually goes, from the rows rather than a promise.
 
-    The landing page says "about 18 months" and ``DEFAULT_HISTORY_MONTHS`` says
-    18, but what a given book *has* is whatever Zoho held and the sync managed
-    to pull. Reporting the configured intent instead of the observed span is how
+    The landing page says 18 months and ``DEFAULT_HISTORY_MONTHS`` says 18, but
+    what a given book *has* is whatever Zoho held and the sync managed to pull.
+    (The page used to hedge it as "about 18 months"; the hedge is gone and the
+    figure is not, which changes nothing here — a configured intent is no more
+    an observation for being stated precisely.) Reporting the configured intent instead of the observed span is how
     a screen ends up claiming a year and a half of evidence over four months of
     invoices.
     """

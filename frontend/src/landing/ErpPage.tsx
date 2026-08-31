@@ -1,4 +1,5 @@
 import { demoLinkProps } from "./cta";
+import { FooterBlurb, TrialFinePrint, TrustBand } from "./shared";
 import type { ErpPageData } from "./erp";
 import "./landing.css";
 
@@ -6,7 +7,7 @@ import "./landing.css";
  * One ERP's landing page — the same page for all three, from `erp.ts`.
  *
  * These are static documents. `scripts/prerender.mjs` renders this component
- * into `dist/erp/{slug}/index.html` **without** the module script tag, so a
+ * into `dist/erp/{slug}.html` **without** the module script tag, so a
  * sub-page ships as HTML and CSS and nothing else: no bundle, no hydration,
  * no swap. That is not a compromise, it is the whole design — the main page's
  * 261 kB entry exists to run an application, and there is no application here.
@@ -43,8 +44,12 @@ export function ErpPage({ page }: { page: ErpPageData }) {
           <div className="lp-wrap lp-nav-inner">
             <a className="lp-logo" href="/">PIE<span>.</span></a>
             {/* No menu button: a sub-page carries no JavaScript, and a burger
-                that cannot open is worse than four links that wrap. */}
-            <div className="lp-nav-links">
+                that cannot open is worse than four links that wrap. Which is
+                exactly why the row is `lp-nav-static` — the ordinary
+                `.lp-nav-links` is display:none below 640px until a JS toggle
+                adds `.open`, so without this modifier a phone got the logo and
+                nothing else. */}
+            <div className="lp-nav-links lp-nav-static">
               <a href="/#product">Product</a>
               <a href="/#how">How it works</a>
               <a href="/#pricing">Pricing</a>
@@ -53,6 +58,9 @@ export function ErpPage({ page }: { page: ErpPageData }) {
           </div>
         </nav>
 
+        {/* One region for the document's own content — see the note on the
+            same element in Landing.tsx. */}
+        <main>
         <header className="lp-hero" id="top">
           <div className="lp-wrap">
             <div className="lp-hero-copy">
@@ -72,10 +80,7 @@ export function ErpPage({ page }: { page: ErpPageData }) {
                 <a className="lp-btn" href="/#signin">Start free</a>
                 <a className="lp-quiet" href="/#pricing">or see the pricing</a>
               </div>
-              <p className="lp-fine">
-                A 30-day trial of the whole platform — no card. The quote desk
-                keeps working whether or not you subscribe.
-              </p>
+              <TrialFinePrint />
             </div>
           </div>
         </header>
@@ -195,41 +200,7 @@ export function ErpPage({ page }: { page: ErpPageData }) {
           </div>
         </section>
 
-        <div className="lp-invariant">
-          <div className="lp-wrap">
-            <div className="lp-cols">
-              <div>
-                <p className="lp-eyebrow">Why it can be trusted</p>
-                <h2>The AI never computes <em>a single number.</em></h2>
-                <p>
-                  Your {page.short} data and your rules determine the number.
-                  AI explains it.
-                </p>
-                <p>Same inputs, same answer, every time — with a paper trail.</p>
-              </div>
-              <ul>
-                <li>
-                  <b>Deterministic calculations</b> — every figure is arithmetic
-                  on your own records; turn AI off and every number still works
-                </li>
-                <li>
-                  <b>Auditable decisions</b> — each number names the policy that
-                  produced it, so a price you quoted last quarter still explains
-                  itself
-                </li>
-                <li>
-                  <b>Your data</b> — read from your own book, used for you
-                  alone, exportable, and erasable on request
-                </li>
-                <li>
-                  <b>Provenance</b> — every row carries the connector, the
-                  connection and the id it came from, so nothing in PIE claims
-                  a source it did not have
-                </li>
-              </ul>
-            </div>
-          </div>
-        </div>
+        <TrustBand system={page.short} />
 
         <div className="lp-final">
           <div className="lp-wrap">
@@ -245,13 +216,11 @@ export function ErpPage({ page }: { page: ErpPageData }) {
           </div>
         </div>
 
+        </main>
+
         <footer className="lp-footer">
           <div className="lp-wrap">
-            <div>
-              <b>PIE</b> — the commercial intelligence layer for distributors.
-              Deterministic numbers, auditable decisions, your data provably
-              yours.
-            </div>
+            <FooterBlurb />
             <div>
               <a href="/erp/prophet-21">Prophet 21</a>{" · "}
               <a href="/erp/netsuite">NetSuite</a>{" · "}

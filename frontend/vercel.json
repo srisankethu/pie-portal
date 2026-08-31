@@ -1,11 +1,12 @@
 {
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
+  "redirects": [
+    { "source": "/erp/:slug/", "destination": "/erp/:slug", "permanent": true }
+  ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/proxy?__path=$1" },
-    { "source": "/erp/prophet-21", "destination": "/erp/prophet-21.html" },
-    { "source": "/erp/netsuite", "destination": "/erp/netsuite.html" },
-    { "source": "/erp/acumatica", "destination": "/erp/acumatica.html" },
+    { "source": "/erp/([^/]+)", "destination": "/erp/$1.html" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

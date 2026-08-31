@@ -7,10 +7,11 @@
  * HTML rather than plausible; `scripts/prerender.mjs` also lists every `{{…}}`
  * token it finds at the end of a build, so a deploy cannot ship one quietly.
  *
- * One constant rather than a literal per button: the landing page has three
- * "Book a demo" buttons and each ERP page has its own, and a scheduling link
- * that is right in four places and stale in the fifth is the ordinary way this
- * goes wrong.
+ * One constant rather than a literal per button: there are six of these
+ * across the two components — four on the landing page (the hero, both paid
+ * panels and the closing block) and one in each ERP page's hero and closing
+ * block — and a scheduling link that is right in five places and stale in the
+ * sixth is the ordinary way this goes wrong.
  *
  * Not to be confused with the *other* demo on this page. `onDemo` opens a
  * read-only workspace of sample data inside the product ("See it on sample
@@ -29,9 +30,9 @@ export const DEMO_BOOKING_READY = !DEMO_BOOKING_URL.startsWith("{{");
 
 /** The anchor props every "Book a demo" button uses.
  *
- * Written once because there are now five of these buttons across two
- * components, and a link that opens in a new tab on four of them and this one
- * is the kind of inconsistency nobody reports and everybody notices.
+ * Written once because there are six of these buttons across two components,
+ * and a link that opens in a new tab on five of them and not the sixth is the
+ * kind of inconsistency nobody reports and everybody notices.
  *
  * A real scheduling link opens in a new tab — a buyer half-way down a pricing
  * page should not lose it — and says so in its accessible name, because a new

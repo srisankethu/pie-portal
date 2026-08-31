@@ -118,6 +118,10 @@ export const ERP_PAGES: ErpPageData[] = [
       + "screens stay empty on a P21 book.",
       "Quotes are not imported from any ERP, P21 included, so a win rate has no "
       + "denominator until you start quoting here.",
+      "Vendor payments are not read from any ERP, so what has actually been paid out is "
+      + "outside what PIE can see on this book.",
+      "Credit notes are not read from Prophet 21 in this version, so a returned or "
+      + "credited line still counts as sold until you say otherwise.",
       "Salespeople are not imported, so every decision routes to management until "
       + "accounts are assigned inside PIE.",
     ],
@@ -199,6 +203,10 @@ export const ERP_PAGES: ErpPageData[] = [
       + "and reports that rather than a guess.",
       "Estimates already in NetSuite are not imported, so a win rate has no denominator "
       + "until you start quoting here.",
+      "Vendor payments are not read from any ERP, NetSuite included, so what has actually "
+      + "been paid out is outside what PIE can see on this book.",
+      "Credit notes are not read from NetSuite in this version, so a returned or credited "
+      + "line still counts as sold until you say otherwise.",
       "Salespeople are not imported, so every decision routes to management until "
       + "accounts are assigned inside PIE.",
     ],
@@ -243,8 +251,8 @@ export const ERP_PAGES: ErpPageData[] = [
     connects:
       "A session sign-in as a dedicated integration user against the contract-based REST "
       + "API, from your site URL, the tenant's login name and — if you use them — a branch "
-      + "and an endpoint version. The session is signed out after every pull, including "
-      + "after a quote is sent: Acumatica counts live sessions against your licence, and a "
+      + "and an endpoint version. A connection check and a quote write each sign out the "
+      + "moment they finish — Acumatica counts live sessions against your licence, and a "
       + "leaked session is a seat you are paying for and nobody is sitting in.",
     reads: [
       { stage: "contacts", label: "Customers", source: "Customer" },
@@ -274,8 +282,8 @@ export const ERP_PAGES: ErpPageData[] = [
     gaps: [
       "Quotes already in Acumatica are not imported — no ERP's are — so a win rate has "
       + "no denominator until you start quoting here.",
-      "Vendor payments are not read, so what has actually been paid out is outside what "
-      + "PIE can see on an Acumatica book.",
+      "Vendor payments are not read from any ERP, Acumatica included, so what has "
+      + "actually been paid out is outside what PIE can see on this book.",
       "Credit notes are not read from Acumatica in this version, so a returned or "
       + "credited line still counts as sold until you say otherwise.",
       "Salespeople are not imported, so every decision routes to management until "
@@ -293,10 +301,10 @@ export const ERP_PAGES: ErpPageData[] = [
       {
         title: "Margin drift, with stock in the picture",
         body:
-          "Acumatica is the one system here that gives PIE quantity on hand and available "
-          + "as well as line-level history, so what a line returns on the cash it ties up is "
-          + "computable rather than absent — and every figure carries the policy version "
-          + "that judged it.",
+          "Of these three systems, Acumatica is the one that gives PIE quantity on hand "
+          + "and available as well as line-level history, so what a line returns on the cash "
+          + "it ties up is computable rather than absent — and every figure carries the "
+          + "policy version that judged it.",
       },
       {
         title: "Decline, and who actually pays late",
@@ -310,7 +318,12 @@ export const ERP_PAGES: ErpPageData[] = [
   },
 ];
 
-/** One page by slug, for the prerenderer's registry. */
+/** One page by slug, or a loud failure.
+ *
+ *  The registry in `prerender.tsx` maps over `ERP_PAGES` directly and does not
+ *  need this; it is here for a lookup by slug — `erp.test.ts` uses it — and it
+ *  throws rather than returning undefined so a wrong slug is a named error at
+ *  the call site instead of an empty page somewhere downstream. */
 export function erpPage(slug: string): ErpPageData {
   const page = ERP_PAGES.find((p) => p.slug === slug);
   if (!page) throw new Error(`no ERP page for slug ${slug}`);

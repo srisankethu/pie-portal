@@ -150,7 +150,16 @@ _BARE_QTY_DIGITS = 4
 #: rest of the line `code`.
 _QTY_PATTERNS = (
     # "<code>, 100"  ·  "<code>, x100" — a comma is a deliberate separator.
-    re.compile(r"^(?P<code>.*?)\s*,\s*x?\s*(?P<qty>\d+)\s*$", re.IGNORECASE),
+    # The comma is a separator when it is followed by whitespace, or when what
+    # precedes it is not a digit. `digit,digit` with nothing between them is a
+    # European decimal, and reading it as a quantity cost both halves of the
+    # line: `ENDMILL HARL 5FL 8x8x40x87 R0,5` came back as code `...R0` at a
+    # quantity of 5 — a 0.5 mm corner radius turned into an order for five of a
+    # product that is not the one asked for, and one that collides with a
+    # genuine `R0`. 790 catalogue rows carry a decimal comma; this rule was
+    # truncating every one that ended in it.
+    re.compile(r"^(?P<code>.*?)\s*,(?:\s+|(?<=\D,))\s*x?\s*(?P<qty>\d+)\s*$",
+               re.IGNORECASE),
     # "<code> x100"  ·  "<code>x100"
     re.compile(r"^(?P<code>.*?)\s*\bx\s*(?P<qty>\d+)\s*$", re.IGNORECASE),
     # "<code> - 100 nos"  ·  "<code> qty 100 nos" — an explicit separator or the
@@ -230,6 +239,20 @@ def _split_rfq(text: str) -> List[Dict[str, Any]]:
         for pattern in _QTY_PATTERNS:
             m = pattern.match(body)
             if m and any(ch.isalnum() for ch in m.group("code")):
+                # Zero is not a quantity, and reading one costs the code.
+                # `END MILL W4N1 12x12x26x83 R2,0` is a 2.0 mm corner radius
+                # written with a European decimal comma; the comma rule read
+                # `,0` as an order of zero, clamped it to one, and handed on
+                # `…R2` — a *different product*, and one that collides with a
+                # genuine `R2`. Twenty catalogue rows are written that way.
+                #
+                # It also silently discarded a real quantity: because a pattern
+                # had matched, `250000 nos ENDMILL … Rad 1,0` never reached the
+                # leading-quantity rule or the flag below, so a quarter-million
+                # piece line travelled as one. Falling through instead lets the
+                # right rule have it.
+                if int(m.group("qty")) == 0:
+                    continue
                 code = m.group("code").strip().rstrip(",").strip()
                 code = re.sub(r"\s*x$", "", code, flags=re.IGNORECASE).strip()
                 code = re.sub(rf"[\s,:–—-]*{_UNIT_WORDS}[\s.]*$", "", code,

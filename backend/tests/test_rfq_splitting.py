@@ -146,6 +146,53 @@ def test_the_shapes_that_do_state_a_quantity_still_read_it():
     assert _one("CNMG 120408 100 nos")["qty"] == 100
 
 
+# ── a dimension is not a quantity ────────────────────────────────────────────
+@pytest.mark.parametrize("line,code", [
+    ("ENDMILL HARL 5FL 8x8x40x87 R0,5", "ENDMILL HARL 5FL 8x8x40x87 R0,5"),
+    ("ENDMILL 5777 12x12x26x83 RAD 0,75", "ENDMILL 5777 12x12x26x83 RAD 0,75"),
+    ("KSSM 8+ MILL. INSERT IC=10 x 4,45", "KSSM 8+ MILL. INSERT IC=10 x 4,45"),
+    ("END MILL W4N1 12x12x26x83 R2,0", "END MILL W4N1 12x12x26x83 R2,0"),
+    ("SC-Machine-Reamer, spiral, \u00d84,0", "SC-Machine-Reamer, spiral, \u00d84,0"),
+])
+def test_a_european_decimal_comma_is_not_a_quantity(line, code):
+    """`R0,5` is a 0.5 mm corner radius. The comma rule read `,5` as an order of
+    five and handed on `...R0` — a different product, and one that collides with
+    a genuine `R0`. Both halves of the line wrong from one character.
+
+    790 of the 6,717 catalogue rows carry a decimal comma, and this rule
+    truncated every one that ended in it. A comma separates a quantity when it
+    is followed by whitespace (`2001174, 20`) or when what precedes it is not a
+    digit (`CNMG 120408-MP, 10`); `digit,digit` with nothing between is a
+    decimal.
+    """
+    row = _one(line)
+    assert row["code"] == code, "the dimension must survive intact"
+    assert row["qty"] == 1, "a decimal fraction is not an order quantity"
+
+
+@pytest.mark.parametrize("line,code", [
+    ("END MILL W4N1 12x12x26x83 R2,0", "END MILL W4N1 12x12x26x83 R2,0"),
+    ("DEFINED SURFACE FINISH PCD CARTRIDGE R 0", "DEFINED SURFACE FINISH PCD CARTRIDGE R 0"),
+])
+def test_zero_is_never_read_as_a_quantity(line, code):
+    """Nobody orders none of something. A matched quantity of zero was clamped
+    to one and the code truncated to pay for it, and because a pattern had
+    *matched*, a real quantity earlier in the line never reached the rules that
+    would have read it: `250000 nos ENDMILL ... Rad 1,0` travelled as one piece.
+    """
+    row = _one(line)
+    assert row["code"] == code
+    assert row["qty"] == 1
+
+
+def test_a_quantity_before_a_decimal_dimension_still_reads():
+    """The zero and decimal guards exist so the *right* rule gets the line, not
+    so the line stops being read."""
+    row = _one("250000 nos ENDMILL 57N8 10x10x22-30x76 Rad 1,0")
+    assert row["qty"] == 250000
+    assert row["code"] == "ENDMILL 57N8 10x10x22-30x76 Rad 1,0"
+
+
 # ── the part that must not default silently ──────────────────────────────────
 def test_a_unit_word_we_could_not_attribute_is_flagged_not_defaulted():
     """A unit word is evidence a quantity was meant. Failing to read it is a gap

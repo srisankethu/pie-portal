@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { demoLinkProps } from "./cta";
+import { demoCta } from "./cta";
 import { FooterBlurb, TrialFinePrint, TrustBand } from "./shared";
 import {
   detectRegion,
@@ -129,6 +129,14 @@ import "./landing.css";
  *     hero's primary action with it. Nobody signs an annual contract from
  *     inside a product trial, and the page had no way for a buyer who was
  *     ready to talk to say so. The trial keeps its own button.
+ *
+ *     Until a scheduling link exists, each of those buttons falls back — to
+ *     the trial door in the hero and the closing block, to "Ask for this plan"
+ *     on the paid panels, which is the mechanism the standfirst above them
+ *     already describes. They rendered the raw `{{DEMO_BOOKING_URL}}` token
+ *     into `href` before that, which put a dead destination on the primary
+ *     action of every public page for the sake of a reminder three other
+ *     things were already giving. See `cta.ts`.
  *   - The two panels that read as two products are one platform with a free
  *     floor now. That is a reversal of the note above about "free forever",
  *     and it is not a return to it: `PlanTier.FREE` is still not a
@@ -229,7 +237,23 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
   const price = pricingFor(region);
   const line = price.line;
 
-  const bookDemo = demoLinkProps();
+  /** The four "Book a demo" buttons on this page, each with the honest thing
+   *  to offer while no scheduling link is configured.
+   *
+   *  The hero and the closing block fall back to the trial door — the same
+   *  door their own secondary button opens, which is why that second button is
+   *  dropped when the fallback is showing rather than rendered twice. The paid
+   *  panels fall back to "Ask for this plan", which is not a euphemism: it is
+   *  the mechanism the standfirst above them already describes, and it was the
+   *  label on those panels until a scheduling link was planned. */
+  const heroDemo = demoCta({ href: "#signin", label: "Start free", onClick: start });
+  const closingDemo = demoCta({ href: "#signin", label: "Start free", onClick: start });
+  const intelligenceDemo = demoCta({
+    href: "#signin", label: "Ask for this plan", onClick: startOn("intelligence"),
+  });
+  const platformDemo = demoCta({
+    href: "#signin", label: "Ask for this plan", onClick: startOn("platform"),
+  });
 
   // The mobile nav collapses the section links behind a menu button. Closed on
   // first render, which is also the state the prerenderer bakes into the static
@@ -308,8 +332,9 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                   makes the buyer who is ready to talk go and find an address.
                   The trial keeps its own button, one step quieter. */}
               <div className="lp-ctas">
-                <a className="lp-btn solid" {...bookDemo}>Book a demo</a>
-                <a className="lp-btn" href="#signin" onClick={start}>Start free</a>
+                <a className="lp-btn solid" {...heroDemo.props}>{heroDemo.label}</a>
+                {heroDemo.ready
+                  && <a className="lp-btn" href="#signin" onClick={start}>Start free</a>}
                 {onDemo
                   ? <a className="lp-quiet" href="#demo" onClick={demo}>or see it on sample data</a>
                   : <a className="lp-quiet" href="#pricing">or see the pricing</a>}
@@ -933,7 +958,9 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                   health, collections — and the value ledger in Section D, which
                   is how you decide whether to keep paying for this.
                 </p>
-                <a className="lp-btn solid" {...bookDemo}>Book a demo</a>
+                <a className="lp-btn solid" {...intelligenceDemo.props}>
+                  {intelligenceDemo.label}
+                </a>
               </div>
               <div className="lp-panel lp-plan">
                 <h3>Platform</h3>
@@ -945,7 +972,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                   companies, one view — with all catalog builds included and a
                   named person who knows your setup.
                 </p>
-                <a className="lp-btn" {...bookDemo}>Book a demo</a>
+                <a className="lp-btn" {...platformDemo.props}>{platformDemo.label}</a>
               </div>
             </div>
             {/* The arithmetic, done on the page's own numbers rather than left
@@ -990,8 +1017,9 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
             <h2>Your books already know where the margin went.</h2>
             <p>PIE turns that history into better commercial decisions — and reports what that was worth.</p>
             <div className="lp-ctas lp-ctas-centred">
-              <a className="lp-btn solid" {...bookDemo}>Book a demo</a>
-              <a className="lp-btn" href="#signin" onClick={start}>Start free</a>
+              <a className="lp-btn solid" {...closingDemo.props}>{closingDemo.label}</a>
+              {closingDemo.ready
+                && <a className="lp-btn" href="#signin" onClick={start}>Start free</a>}
             </div>
           </div>
         </div>

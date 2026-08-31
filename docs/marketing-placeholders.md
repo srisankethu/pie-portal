@@ -64,12 +64,23 @@ time — after which neither is a range any more.
 | `{{DEMO_BOOKING_URL}}` | The scheduling link behind every **Book a demo** button — six of them, across the landing page and the three ERP pages |
 
 Replace the constant with the real URL (Cal.com, Calendly, HubSpot, whatever is
-chosen). The moment it stops looking like a token, the buttons start opening in
-a new tab and announcing that they do; until then they stay in the current tab
-so a broken destination is noticed rather than left open behind the page.
+chosen). Nothing else has to change: the moment it stops looking like a token,
+all six buttons switch to it, say "Book a demo", open in a new tab and announce
+that they do.
 
-**This is the one placeholder that makes the page actively misleading if it
-ships**: a primary call to action that goes nowhere.
+**Until then the page does not offer a meeting it cannot arrange.** Each button
+falls back to the honest alternative for where it sits — the trial door in the
+two hero blocks and the closing blocks, "Ask for this plan" on the two paid
+panels, which is the in-product request the pricing standfirst already
+describes — and the second button beside a fallback is dropped rather than
+rendered as a duplicate of it. `cta.test.ts` pins both states, and
+`prerender.test.tsx` asserts no built page carries a `{{…}}` token inside an
+`href` at all.
+
+So this one is no longer a deploy blocker; it is a conversion one. Every other
+token below is prose a reader can see is unfinished. This one is the difference
+between a buyer who is ready to talk being able to, and being sent to a signup
+form instead.
 
 ## 3 · Customers — Section F of `frontend/src/landing/Landing.tsx`
 

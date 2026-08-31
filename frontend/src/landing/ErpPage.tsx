@@ -1,4 +1,4 @@
-import { demoLinkProps } from "./cta";
+import { demoCta } from "./cta";
 import { FooterBlurb, TrialFinePrint, TrustBand } from "./shared";
 import type { ErpPageData } from "./erp";
 import "./landing.css";
@@ -35,7 +35,13 @@ import "./landing.css";
  * connector module's own source, in both directions.
  */
 export function ErpPage({ page }: { page: ErpPageData }) {
-  const bookDemo = demoLinkProps();
+  /** Both "Book a demo" buttons on a sub-page. With no scheduling link
+   *  configured they fall back to the trial door — and in the hero, where the
+   *  secondary button opens that same door, the secondary is dropped rather
+   *  than shown twice. These pages ship no JavaScript, so the fallback is a
+   *  plain path and carries no handler. */
+  const heroDemo = demoCta({ href: "/#signin", label: "Start free" });
+  const closingDemo = demoCta({ href: "/#signin", label: "Start free" });
 
   return (
     <div className="pie-landing">
@@ -76,8 +82,8 @@ export function ErpPage({ page }: { page: ErpPageData }) {
                 nothing you did not set a policy for.
               </p>
               <div className="lp-ctas">
-                <a className="lp-btn solid" {...bookDemo}>Book a demo</a>
-                <a className="lp-btn" href="/#signin">Start free</a>
+                <a className="lp-btn solid" {...heroDemo.props}>{heroDemo.label}</a>
+                {heroDemo.ready && <a className="lp-btn" href="/#signin">Start free</a>}
                 <a className="lp-quiet" href="/#pricing">or see the pricing</a>
               </div>
               <TrialFinePrint />
@@ -210,7 +216,7 @@ export function ErpPage({ page }: { page: ErpPageData }) {
               answer about what PIE can and cannot see in {page.name}.
             </p>
             <div className="lp-ctas lp-ctas-centred">
-              <a className="lp-btn solid" {...bookDemo}>Book a demo</a>
+              <a className="lp-btn solid" {...closingDemo.props}>{closingDemo.label}</a>
               <a className="lp-btn" href="/">Read the full product page</a>
             </div>
           </div>

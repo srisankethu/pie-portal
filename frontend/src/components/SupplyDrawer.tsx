@@ -4,7 +4,7 @@ import Drawer from "@mui/material/Drawer";
 import Paper from "@mui/material/Paper";
 import Typography from "@mui/material/Typography";
 import type { Line, LineIntelligence } from "../types";
-import { relTone } from "../rel";
+import { isFromOwnBook, relTone, sourceLabel } from "../rel";
 import { StatusChip } from "../platform/kit";
 import { DecisionSupport } from "./DecisionSupport";
 import { QuoteIntelligence } from "./QuoteIntelligence";
@@ -180,6 +180,28 @@ export function SupplyDrawer({
                       same tone table. Two spellings of one term is how a line
                       reads AMBIGUOUS in amber on the grid and in grey here. */}
                   <StatusChip label={c.rel} tone={relTone(c.rel)} dense />
+                  {/* Only for a candidate out of this organization's own book.
+                      Not a chip per brand: every catalogue candidate carries a
+                      manufacturer label, and a chip on all of them would be a
+                      row of decoration that stops meaning anything. This one
+                      marks the distinction a person acts on — "we already sell
+                      this" against "the maker's catalogue lists it". */}
+                  {isFromOwnBook(c.brand) && (
+                    <StatusChip
+                      label="in our book"
+                      tone="info"
+                      dense
+                      tip="From this organization's own item master rather than the manufacturer catalogue — something the business already sells."
+                    />
+                  )}
+                  {c.unverified && (
+                    <StatusChip
+                      label="unverified fit"
+                      tone="warn"
+                      dense
+                      tip="The engine could not compare every dimension the request named, so the match score is not a measure of fit. Capped at POSSIBLE and never auto-selected."
+                    />
+                  )}
                   {c.score !== null && (
                     <span className="text-muted" style={{ fontSize: 11 }}>
                       match {(c.score * 100).toFixed(0)}%
@@ -202,10 +224,19 @@ export function SupplyDrawer({
                   )}
                 </div>
                 <div style={{ fontSize: 12.5, marginTop: 4 }}>{c.desc}</div>
-                {c.grade && (
+                {/* Grade and source are separate facts and are rendered
+                    separately. They were one line, and the source was inside
+                    the grade's guard — so a candidate whose grade did not
+                    decode showed nothing about where it came from. That became
+                    load-bearing the moment this organization's own book joined
+                    the candidate pool: a book item and a catalogue item for the
+                    same product can both appear in one list, and unmarked they
+                    read as two unrelated products. */}
+                {(c.grade || c.brand) && (
                   <div className="text-muted" style={{ fontSize: 11.5 }}>
-                    grade {c.grade}
-                    {c.brand ? ` · ${c.brand}` : ""}
+                    {c.grade ? `grade ${c.grade}` : ""}
+                    {c.grade && c.brand ? " · " : ""}
+                    {c.brand ? sourceLabel(c.brand) : ""}
                   </div>
                 )}
                 {c.reason && <div className="reason">{c.reason}</div>}

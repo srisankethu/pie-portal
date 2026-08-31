@@ -27,6 +27,14 @@ class IntakeRequest(BaseModel):
     #: the server picking a route on the sender's behalf and filling the one
     #: index the corpus is grouped by with a guess.
     channel: Optional[str] = None
+    #: The document this RFQ arrived as, if one was attached — an
+    #: ``rfq_documents`` id from ``POST /api/v1/enquiries/documents``.
+    #:
+    #: An id rather than the file itself, so the upload keeps its own endpoint
+    #: with its own refusals and its own statuses. Folding the bytes in here
+    #: would make this route multipart to gain nothing, and would lose the
+    #: document whenever the intake failed for an unrelated reason.
+    rfq_document_id: Optional[str] = None
 
 
 class SelectSupplyRequest(BaseModel):

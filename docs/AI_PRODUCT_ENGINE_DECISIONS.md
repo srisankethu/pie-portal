@@ -1466,3 +1466,107 @@ call that wrote it.
   fix that decision 031 left open.
 * Decision 025's PIM import shares this receiving layer and is still blocked on
   the product owner's sample export.
+
+---
+
+## 033 — The UI half: a document can be attached, and a candidate says where it came from
+**Status:** ACCEPTED — 2026-08-31 · **Phase:** 3 · **Report §:** 11, 24
+
+**Decision.** The two open UI items from 031 and 032 are closed. A salesperson
+can attach the document an RFQ arrived as, and the Supply Drawer says which
+candidates came from this organization's own book.
+
+### The attachment
+
+`IntakeModal` already listed **"A PDF they sent"** as a channel — the desk stated
+the route and then retyped the contents, because there was nowhere to put the
+PDF. It now collects a `File` and hands it up on submit; `QuoteBuilder` uploads
+it and names the id on the intake.
+
+**Two calls, in that order, and the order is the design.** The upload has its own
+refusals and statuses (413 for a size or archive ceiling, 415 for a type), so
+folding the bytes into the intake body would make that route multipart to gain
+nothing. Uploading *second* would be worse in the way that matters: the lines
+would already be on the quote and the desk would be told the attachment failed
+with nothing left to retry. This way a refusal stops before anything is added,
+with the server's own sentence, and the text is still in the dialog.
+
+The file is held in component state and uploaded only on submit — an upload on
+selection would store a document every time somebody opened the picker and
+changed their mind, and there is no undo for a stored document. It can be
+*withdrawn*, which is a row saying somebody withdrew it, not a row that never
+existed.
+
+**The link is `source_ref`, extended and not replaced.** It already carries
+`quote:<id>`, the handle that marks a row as part of the worked subset and keeps
+a coverage report from dividing by enquiries somebody chose to work. A document
+link that overwrote it would buy a join and lose the property the field was added
+for, so the value is `quote:<id> doc:<id>` — two space-separated handles in a
+field documented as "a message id, a file name, a portal request id".
+
+**Ownership is checked before the id is written down.** A caller can put any
+string in `rfq_document_id`; an unchecked one would file the enquiry against
+another tenant's document — a cross-tenant reference stored permanently in a
+corpus row, which is worse than a failed lookup because nothing later questions
+it. A foreign id finds nothing and the handle is omitted rather than refused: the
+quote is the work and the corpus is a by-product, the same trade `_capture_enquiry`
+already makes about a bad channel.
+
+**And the message says only what is true.** The "attached" note appears only when
+the server actually kept the enquiry row, because that row is where the link
+lives. A document attached with no channel stated is stored and reachable, but
+nothing joins it to that RFQ — saying otherwise would promise a link somebody
+would later fail to find.
+
+### The candidate source (031's open item)
+
+`SupplyDrawer` rendered `c.brand` **inside** `{c.grade && …}`, so a candidate
+whose grade did not decode showed nothing about where it came from. Harmless
+while every candidate was a catalogue record with a manufacturer's name;
+load-bearing the moment this organization's own book joined the pool, because a
+book item and a catalogue item for the same physical product can appear in one
+list — `query._dedup` keys on a description a book record does not carry, so it
+cannot collapse them — and unmarked they read as two unrelated options.
+
+Grade and source are separate facts and render separately now. A book candidate
+also carries an **"in our book"** chip beside its relationship, and an unverified
+one carries **"unverified fit"** — status as a `Chip`, per `ui-standards.md` §6,
+rather than left to prose a reader scanning six candidates skips. Not a chip per
+brand: every catalogue candidate has a manufacturer label and a chip on all of
+them would be decoration that stops meaning anything.
+
+**The label is pinned across the two halves.** The browser decides "is this ours"
+by comparing `brand` against a literal. A rename on either side would break no
+type, empty no screen and fail no test — every book candidate would simply stop
+being marked. `test_frontend_contract.py` now asserts `rel.ts:OWN_BOOK_LABEL`
+equals `sellable_catalog.SELLABLE_LABEL`; mutated, it fails.
+
+### Two general defects found on the way
+
+**`authInit` hardcoded `Content-Type: application/json`.** `FormData` carries a
+multipart boundary only the browser knows, and it puts that boundary in the
+header it sets for itself — so declaring JSON does not merely mislabel the
+request, it makes the body unparseable and the server answers 400 with nothing
+pointing at that line. Now set only when the body is not a `FormData`. A general
+correctness fix: any future caller passing a form would have hit it.
+
+**`req` passed a non-string `detail` straight to `new Error`.** The document
+endpoints answer `{reason, detail}` so a client can branch on the kind without
+matching prose — which would have reached somebody's screen as
+`"[object Object]"`, the one message that tells them nothing at all.
+
+### And one the standards contradicted themselves about
+
+`ui-standards.md` §13 said "a chart carries a text summary and a table fallback —
+`ChartContainer` does this". §10 of the same file records `ChartContainer` as one
+of two components "that were never written", and explains at length why naming a
+component nobody can import is worse than naming none. §13 now names
+`viz/Panel.tsx`'s `Panel` + `Figure`, which is what actually does it. A standard
+that contradicts itself on an easy claim does not get read on the hard ones.
+
+### Still open
+
+Nothing reads the document. A BOQ attached as a spreadsheet is stored, linked and
+downloadable, and its contents still have to be pasted — the helper text says so
+in terms rather than implying the lines came from the file. Extraction is the
+next slice and it is where the bounded-read obligation from 032 lands.

@@ -45,6 +45,7 @@ from ..schemas import (
     SetPriceRequest,
 )
 from ..pie_service import Bands
+from ..enquiry import documents
 from ..sellable_catalog import sellable_pool_for
 from ..store import Line, Quote, store
 from ..ingestion.errors import SourceWriteRefused, SourceWriteUnknown
@@ -331,15 +332,47 @@ def _capture_enquiry(session: Session, principal: Principal,
             raw_text=body.text,
             channel=body.channel,
             customer_ref=_quote_customer_ref(session, principal, quote_id),
-            # Which quote this arrived on: the handle that marks this row as
-            # part of the worked subset, and the join back to what was made of
-            # the text.
-            source_ref=f"quote:{quote_id}")
+            # Which quote this arrived on, and — when the desk attached one —
+            # which document it arrived as. Appended rather than substituted:
+            # the quote handle is what marks this row as part of the worked
+            # subset, and replacing it would make the subset unidentifiable to
+            # buy a link that fits beside it. `source_ref` is free text and is
+            # documented as "a message id, a file name, a portal request id",
+            # so two space-separated handles is the field used as designed.
+            source_ref=_intake_source_ref(session, principal, quote_id, body))
     except enquiry.CaptureRefusal:
         log.warning("enquiry not captured for quote %s: channel %r is not in "
                     "the closed set", quote_id, body.channel)
         return False
     return True
+
+
+def _intake_source_ref(session: Session, principal: Principal, quote_id: str,
+                       body: IntakeRequest) -> str:
+    """`quote:<id>`, plus `doc:<id>` when a document was attached and is ours.
+
+    **Ownership is checked before the id is written down.** A caller can put any
+    string in `rfq_document_id`, and an unchecked one would file this enquiry
+    against another tenant's document — a cross-tenant reference stored
+    permanently in a corpus row, which is worse than a failed lookup because
+    nothing later would question it. `documents.read` filters on the
+    organization, so a foreign id simply finds nothing and the handle is
+    omitted.
+
+    Omitted rather than refused: the quote is the work and the corpus is a
+    by-product, which is the same trade `_capture_enquiry` makes about a bad
+    channel. An intake must not fail because a document reference was wrong.
+    """
+    ref = f"quote:{quote_id}"
+    document_id = (body.rfq_document_id or "").strip()
+    if not document_id:
+        return ref
+    if documents.read(session, principal.organization_id, document_id) is None:
+        log.warning("intake for quote %s named document %r, which this "
+                    "organization does not have; the enquiry is captured "
+                    "without it", quote_id, document_id)
+        return ref
+    return f"{ref} doc:{document_id}"
 
 
 def _quote_customer_ref(session: Session, principal: Principal,

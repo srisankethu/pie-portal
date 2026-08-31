@@ -9,7 +9,7 @@
  * on one request is how a screen ends up displaying one person's name while
  * deciding what to show from another's role.
  */
-import type { EstimateResult, Quote } from "./types";
+import type { EstimateResult, Quote, RfqDocument } from "./types";
 import { authInit } from "./authFetch";
 
 const DRAFT_KEY = "pie_portal_draft";
@@ -36,7 +36,17 @@ async function req<T>(path: string, opts: RequestInit = {}, token?: string): Pro
   if (!res.ok) {
     let detail = res.statusText;
     try {
-      detail = (await res.json()).detail || detail;
+      const body = (await res.json()).detail;
+      // A refusal may answer with a shape rather than a sentence — the
+      // document endpoints send `{reason, detail}` so a client can branch on
+      // the kind without matching prose. Read the sentence out of it: passed
+      // straight to `new Error`, an object becomes the string
+      // "[object Object]" on somebody's screen, which is the one message that
+      // tells them nothing at all.
+      if (typeof body === "string") detail = body || detail;
+      else if (body && typeof body === "object" && typeof body.detail === "string") {
+        detail = body.detail;
+      }
     } catch {
       /* ignore */
     }
@@ -56,14 +66,38 @@ export const api = {
 
   getQuote: (t: string, id: string) => req<Quote>(`/api/v1/quotes/${id}`, {}, t),
 
+  /** Store the document an RFQ arrived as, and return what was stored.
+   *
+   *  Its own call rather than a field on `intake`, because the upload has its
+   *  own refusals and its own statuses — 413 for a size or archive ceiling, 415
+   *  for a type — and folding the bytes into the intake body would make that
+   *  route multipart to gain nothing and would lose the document every time an
+   *  unrelated intake failure rolled it back. */
+  uploadRfqDocument: (t: string, file: File, licenceNote = "") => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("licence_note", licenceNote);
+    return req<RfqDocument>("/api/v1/enquiries/documents",
+                            { method: "POST", body: form }, t);
+  },
+
   /** `channel` is what turns the pasted words into a corpus row. Sent only when
    *  the person said how the enquiry arrived — omitted, the server captures
    *  nothing, because `InboundChannel` has no "unknown" member to file it
    *  under. */
-  intake: (t: string, id: string, text: string, channel?: string) =>
+  intake: (t: string, id: string, text: string, channel?: string,
+           rfqDocumentId?: string) =>
     req<Quote>(`/api/v1/quotes/${id}/intake`, {
       method: "POST",
-      body: JSON.stringify(channel ? { text, channel } : { text }),
+      body: JSON.stringify({
+        text,
+        ...(channel ? { channel } : {}),
+        // Named only when there is one. The server treats an unknown id as no
+        // id — the quote is the work and the corpus link is a by-product — so
+        // sending an empty string would be asking it to log a warning about a
+        // document nobody attached.
+        ...(rfqDocumentId ? { rfq_document_id: rfqDocumentId } : {}),
+      }),
     }, t),
 
   /** One line at a time, deliberately — see store.confirm_reading. */

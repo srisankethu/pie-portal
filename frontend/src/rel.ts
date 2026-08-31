@@ -55,3 +55,38 @@ export function statusTone(kind: string): Tone {
       : kind === "commercial" ? "info"
         : "good";
 }
+
+
+/** What the backend calls a candidate that came from this organization's own
+ *  book, rather than from the manufacturer catalogue.
+ *
+ *  It is `sellable_catalog.SELLABLE_LABEL` on the server, and it reaches the
+ *  browser as a candidate's `brand` — `ScoredEquivalent.to_dict` publishes the
+ *  catalog label there, not the record's own maker.
+ *
+ *  **A literal here is a coupling, and it is pinned rather than hoped for.**
+ *  If the server renamed its label, every book candidate would quietly stop
+ *  being marked: no error, no empty screen, just a distinction silently gone
+ *  from a list a person picks a product out of. That is the shape of failure
+ *  this codebase keeps finding, so `backend/tests/test_frontend_contract.py`
+ *  asserts the two strings are equal and the gate goes red on a rename. */
+export const OWN_BOOK_LABEL = "book";
+
+/** Did this candidate come out of the organization's own item master?
+ *
+ *  The distinction a person acts on. A catalogue candidate is something the
+ *  maker lists; a book candidate is something the business already sells, and
+ *  the two can appear in one list describing the same physical product —
+ *  `query._dedup` keys on a description a book record does not carry, so it
+ *  cannot collapse them. Unmarked, they read as two unrelated options. */
+export function isFromOwnBook(brand: string | null | undefined): boolean {
+  return (brand || "").toLowerCase() === OWN_BOOK_LABEL;
+}
+
+/** A candidate's source, in words a reader outside this codebase can use.
+ *
+ *  "book" is the server's internal label and means nothing to a salesperson;
+ *  everything else is a manufacturer's name and already reads correctly. */
+export function sourceLabel(brand: string): string {
+  return isFromOwnBook(brand) ? "our book" : brand;
+}

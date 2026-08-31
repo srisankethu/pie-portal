@@ -337,9 +337,22 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
     }
   }
 
-  const doIntake = (text: string, channel: string) =>
+  const doIntake = (text: string, channel: string, file: File | null) =>
     guard(async () => {
-      const q = await api.intake(t, quote!.id, text, channel || undefined);
+      // The document first, and its id named by the intake — two calls rather
+      // than one multipart request, because the upload has its own refusals
+      // (413 for a size or archive ceiling, 415 for a type) and its own
+      // statuses, and a document lost to an unrelated intake failure would
+      // have to be attached again.
+      //
+      // `guard` surfaces whichever one throws, so a refused document stops
+      // here with the server's own sentence and the RFQ text is still in the
+      // dialog to try again with. Uploading second would be worse in exactly
+      // the way that matters: the lines would already be on the quote, and the
+      // desk would be told the attachment failed with nothing left to retry.
+      const doc = file ? await api.uploadRfqDocument(t, file) : null;
+      const q = await api.intake(t, quote!.id, text, channel || undefined,
+                                 doc?.rfq_document_id);
       setQuote(q);
       setIntakeOpen(false);
       const read = q.lines.filter((l) => l.proposed).length;
@@ -347,11 +360,17 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       // the channel was stated, so this is how the desk sees that leaving the
       // dropdown unset costs the corpus a line — reported, never silent.
       const kept = q.intake?.captured ? " — wording kept" : "";
+      // Said only when the server actually kept the enquiry row, because that
+      // row is where the document link lives. A document attached with no
+      // channel stated is stored and reachable, but nothing joins it to this
+      // RFQ — claiming otherwise would be the message telling somebody a link
+      // exists that they will later fail to find.
+      const attached = doc && q.intake?.captured ? ` — ${doc.filename} attached` : "";
       // Says which produced the lines. A reading presented as though somebody
       // had typed it is the one outcome worth avoiding here.
       flash(read
-        ? `${q.summary.total} line(s) read from your message — check each one${kept}`
-        : `${q.summary.total} line(s) in quote${kept}`);
+        ? `${q.summary.total} line(s) read from your message — check each one${kept}${attached}`
+        : `${q.summary.total} line(s) in quote${kept}${attached}`);
     });
 
   const doConfirmReading = (id: string) =>

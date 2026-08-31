@@ -110,3 +110,74 @@ describe("SupplyDrawer caveats", () => {
     expect(container.querySelector(".cand.selected")).toBeNull();
   });
 });
+
+// The source of a candidate, which became load-bearing when this organization's
+// own book joined the candidate pool. Before that, `brand` was a manufacturer's
+// name and a missing one cost nothing; now it is the difference between "the
+// maker lists this" and "we already sell this", and a book item and a catalogue
+// item for the same physical product can appear in one list.
+describe("SupplyDrawer candidate source", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn(() => new Promise(() => {})));
+  });
+
+  it("marks a candidate that came from this organization's own book", () => {
+    renderDrawer(lineWithCaveats({
+      candidates: [candidate({ brand: "book", grade: null })],
+    }));
+
+    expect(screen.getByText("in our book")).toBeInTheDocument();
+    // And in the metadata line as well, not only as a chip — a chip is a
+    // second cue, never the only one. Matched exactly, because `/our book/`
+    // also matches the chip and would pass on either alone.
+    expect(screen.getByText("our book")).toBeInTheDocument();
+  });
+
+  it("shows the source even when the grade did not decode", () => {
+    // The defect this pins. `brand` was rendered inside the grade's guard, so a
+    // candidate with no decoded grade — which a book item routinely is — showed
+    // nothing at all about where it came from.
+    renderDrawer(lineWithCaveats({
+      candidates: [candidate({ brand: "Kennametal", grade: null })],
+    }));
+
+    expect(screen.getByText(/Kennametal/)).toBeInTheDocument();
+  });
+
+  it("still shows the grade beside the source when both are known", () => {
+    renderDrawer(lineWithCaveats({
+      candidates: [candidate({ brand: "Kennametal", grade: "TN2000" })],
+    }));
+
+    expect(screen.getByText(/grade TN2000 · Kennametal/)).toBeInTheDocument();
+  });
+
+  it("does not mark an ordinary catalogue candidate as ours", () => {
+    // The negative control. Without it the marker could be drawn on every
+    // candidate and the test above would still pass — a mark on everything
+    // marks nothing.
+    renderDrawer(lineWithCaveats({
+      candidates: [candidate({ brand: "Kennametal" })],
+    }));
+
+    expect(screen.queryByText("in our book")).not.toBeInTheDocument();
+  });
+
+  it("says when the engine could not verify the fit", () => {
+    // `unverified` reaches the browser and was rendered nowhere. The reason
+    // prose carries it, but a person scanning six candidates reads chips.
+    renderDrawer(lineWithCaveats({
+      candidates: [candidate({ unverified: true })],
+    }));
+
+    expect(screen.getByText("unverified fit")).toBeInTheDocument();
+  });
+
+  it("says nothing about verification when the comparison was complete", () => {
+    renderDrawer(lineWithCaveats({
+      candidates: [candidate({ unverified: false })],
+    }));
+
+    expect(screen.queryByText("unverified fit")).not.toBeInTheDocument();
+  });
+});

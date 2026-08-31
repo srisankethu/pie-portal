@@ -427,3 +427,103 @@ def test_the_listing_route_is_not_shadowed_by_the_line_route(api_client):
     body = listed.json()
     assert body["count"] == 1
     assert body["documents"][0]["filename"] == "rfq.pdf"
+
+
+# ── the link back to the enquiry ─────────────────────────────────────────────
+
+@pytest.fixture()
+def quote_client(engine):
+    """Both routers on one database, plus the session that wrote it.
+
+    `conftest.api_client` mounts the enquiry routes and not the quote ones, and
+    this pair of tests needs both in one request cycle: a document is uploaded
+    through the first and named by the second. Local rather than widened in
+    conftest, because every other suite that fixture serves would then pay for
+    a router it does not use.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from sqlalchemy.orm import sessionmaker
+
+    from app.db import get_session
+    from app.routers import enquiries, platform_auth, quote as quote_router
+    from app.seed import ensure_org_and_users
+
+    maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False,
+                         future=True)
+    setup = maker()
+    ensure_org_and_users(setup)
+    setup.commit()
+    org = setup.query(models.Organization).first().organization_id
+    setup.close()
+
+    app = FastAPI()
+    app.include_router(platform_auth.router)
+    app.include_router(enquiries.router)
+    app.include_router(quote_router.router)
+
+    def _session():
+        s = maker()
+        try:
+            yield s
+            s.commit()
+        finally:
+            s.close()
+
+    app.dependency_overrides[get_session] = _session
+    reader = maker()
+    yield TestClient(app), org, reader
+    reader.close()
+
+
+
+
+def test_an_enquiry_records_the_document_it_arrived_as(quote_client):
+    """`source_ref` carries both handles, and neither replaces the other.
+
+    The quote handle is what marks a row as part of the worked subset — the
+    thing that keeps a coverage report from dividing by enquiries somebody
+    chose to work. A document link that overwrote it would buy a join and lose
+    the property the field was added for.
+    """
+    client, org, session = quote_client
+    hdr = _hdr(client, SALES)
+    doc = client.post("/api/v1/enquiries/documents",
+                      files={"file": ("boq.pdf", PDF, "application/pdf")},
+                      headers=hdr).json()
+
+    quote = client.post("/api/v1/quotes", json={"customer": "Pitti"},
+                        headers=hdr).json()
+    client.post(f"/api/v1/quotes/{quote['id']}/intake",
+                json={"text": "2001174, 10", "channel": "PDF",
+                      "rfq_document_id": doc["rfq_document_id"]},
+                headers=hdr)
+
+    line = session.query(models.InboundLine).one()
+    assert f"quote:{quote['id']}" in line.source_ref
+    assert f"doc:{doc['rfq_document_id']}" in line.source_ref
+
+
+def test_an_intake_naming_another_tenants_document_captures_without_it(quote_client):
+    """A foreign id is dropped, not stored and not fatal.
+
+    Storing it would put a cross-tenant reference permanently into a corpus
+    row, which is worse than a failed lookup because nothing later would
+    question it. Failing the intake would lose somebody's RFQ over a
+    by-product — the trade `_capture_enquiry` already refuses to make.
+    """
+    client, org, session = quote_client
+    hdr = _hdr(client, SALES)
+
+    quote = client.post("/api/v1/quotes", json={"customer": "Pitti"},
+                        headers=hdr).json()
+    response = client.post(
+        f"/api/v1/quotes/{quote['id']}/intake",
+        json={"text": "2001174, 10", "channel": "PDF",
+              "rfq_document_id": "doc_belonging_to_someone_else"},
+        headers=hdr)
+
+    assert response.status_code == 200, response.text
+    line = session.query(models.InboundLine).one()
+    assert line.source_ref == f"quote:{quote['id']}"
+    assert "doc_belonging" not in line.source_ref

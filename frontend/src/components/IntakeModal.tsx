@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
@@ -9,6 +9,7 @@ import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import MenuItem from "@mui/material/MenuItem";
 import Typography from "@mui/material/Typography";
+import { StatusChip } from "../platform/kit";
 
 const SAMPLE = `2001174, 20
 CNMG 120408 KCP25  50
@@ -40,9 +41,19 @@ export function IntakeModal({
   onSubmit,
 }: {
   onClose: () => void;
-  onSubmit: (text: string, channel: string) => void;
+  /** `file` is the document the RFQ arrived as, when the desk attached one.
+   *  Handed up rather than uploaded here: this component collects, the screen
+   *  that owns the quote decides what order to call the API in and owns the
+   *  error surface for both calls. */
+  onSubmit: (text: string, channel: string, file: File | null) => void;
 }) {
   const [text, setText] = useState("");
+  // The document itself, not an id. It is uploaded by the caller when the
+  // form is submitted, so closing this dialog without submitting stores
+  // nothing — an upload on selection would leave a document behind every time
+  // somebody changed their mind.
+  const [file, setFile] = useState<File | null>(null);
+  const picker = useRef<HTMLInputElement>(null);
   // Unset by default. A pre-selected channel would be this screen answering a
   // question about the customer on their behalf, and every row it wrote would
   // be filed under a route nobody chose.
@@ -88,6 +99,48 @@ export function IntakeModal({
           ))}
         </TextField>
 
+        {/* The document it arrived as. "A PDF they sent" has been a channel on
+            this form since before there was anywhere to put the PDF, so the
+            desk stated the route and then retyped the contents. The file is
+            stored and linked to the enquiry; nothing reads it yet, and the
+            helper text says so rather than implying the lines below were
+            extracted from it. */}
+        <Paper variant="outlined" sx={{ p: 1.5, mt: 2 }}>
+          <Stack
+            direction="row"
+            spacing={1.5}
+            sx={{ alignItems: "center", flexWrap: "wrap" }}
+          >
+            <Button
+              size="small"
+              variant="outlined"
+              onClick={() => picker.current?.click()}
+            >
+              {file ? "Choose a different file" : "Attach the document"}
+            </Button>
+            {file && (
+              <>
+                <StatusChip label={file.name} tone="info" />
+                <Button size="small" color="inherit" onClick={() => setFile(null)}>
+                  Remove
+                </Button>
+              </>
+            )}
+          </Stack>
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            Optional. The file is kept with this enquiry so anyone can open what
+            the customer actually sent. It is <strong>not</strong> read — the
+            lines still come from the text above.
+          </Typography>
+          <input
+            ref={picker}
+            type="file"
+            hidden
+            accept=".pdf,.png,.jpg,.jpeg,.xlsx,.xls,.docx,.csv,.txt"
+            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+          />
+        </Paper>
+
         <Stack
           direction={{ xs: "column", sm: "row" }}
           spacing={1.5}
@@ -123,7 +176,7 @@ export function IntakeModal({
         <Button
           variant="contained"
           disabled={!text.trim()}
-          onClick={() => onSubmit(text, channel)}
+          onClick={() => onSubmit(text, channel, file)}
         >
           Resolve &amp; add
         </Button>

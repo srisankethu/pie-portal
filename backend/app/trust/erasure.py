@@ -141,6 +141,13 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # anything. A departing customer handed the stamped rows without this would
     # get an audit trail of hashes — the exact state this table was built to end.
     ("threshold_versions", models.ThresholdVersion),
+    # What pie-parser made of each connected company's item master: how many
+    # rows it could classify, which it could not, the tokens it had never
+    # seen, and the pack and ruleset that judged all of it. Exported rather
+    # than excluded because it is analysis *of this tenant's own master
+    # data* and reproducible by nobody else — the engine is private, so a
+    # departing customer cannot rebuild this report from the corpus alone.
+    ("company_catalogues", models.CompanyCatalogue),
     ("org_policies", models.OrgPolicy),
     ("identity_policies", models.IdentityPolicy),
     ("confirmed_code_mappings", models.ConfirmedCodeMapping),
@@ -272,6 +279,15 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
 #: justification travels with it — an exclusion nobody can explain is one
 #: nobody should trust.
 EXCLUDED_REASONS: dict[str, str] = {
+    "company_corpora": (
+        "The item-master export files you uploaded. Withheld for a reason "
+        "that is about this file format rather than about the data: these "
+        "are binary CSV blobs and this export is JSON, so carrying them "
+        "would mean a stringified copy that looks like your file and is "
+        "not one. They are your own exports from your own ERP, which you "
+        "already hold; the decoded result is included above as "
+        "company_catalogues, and the receipt counts these rows so an "
+        "erasure still accounts for them."),
     "zoho_credentials": (
         "Your ERP credentials are yours to rotate at the source, and exporting "
         "them would put live secrets in a file that travels by email."),
@@ -378,6 +394,7 @@ MANIFESTED: tuple[tuple[str, Any], ...] = EXPORTED + (
     ("queued_messages", models.QueuedMessage),
     ("ingested_documents", models.IngestedDocument),
     ("zoho_connections", models.ZohoConnection),
+    ("company_corpora", models.CompanyCorpus),
     ("ai_provider_keys", models.AIProviderKey),
     ("intelligence_trials", models.IntelligenceTrial),
     # The grants and the commercial relationship. Both are tenant rows that a

@@ -1,4 +1,12 @@
-# Per-company decoded catalogues — a plan, not yet built
+# Per-company decoded catalogues
+
+**Status: PR 1 is built** — tables, upload, pack selection, per-company build
+and the screen. The deployment-wide catalogue still answers every resolution;
+PR 2 is the cutover (§8). Two things landed differently from the plan below and
+are marked where they occur: the corpus arrives as a **raw request body**, so
+`python-multipart` was never added and `master_health`'s dependency refusal
+still stands; and the **index cache moved to PR 2**, because nothing in PR 1
+reads a per-company catalogue and a cache with no caller cannot be measured.
 
 The decoded catalogue is deployment-wide today: one `PIE_CATALOG` path, one
 `PIE_PACK`, one index per process, and `Setup → Decoded catalogue` says so in
@@ -85,6 +93,15 @@ company's catalogue is an owner in a browser, on a deployment where they have no
 shell and no way to place a file. A path argument serves them not at all. The
 refusal's reasoning does not transfer; its *caution* does, and shows up below as
 the limits every upload must carry.
+
+**As built, only half of it was re-opened.** The corpus arrives as a raw request
+body (`payload: bytes = Body(...)` on a sync endpoint) rather than as a
+multipart form, so `python-multipart` was never installed and the *dependency*
+this refusal declines is still declined. One CSV needs no form fields, the
+browser sends a `File` as a body directly, and the narrower mechanism was
+simply the better one. `master_health/__init__.py` now records this beside its
+refusal, so that paragraph does not read as false to the next person who greps
+for `UploadFile`.
 
 **The security problem, which is larger.** A pie-parser pack is not data — it is
 grammars and **regular expressions** that the engine compiles and runs over
@@ -281,9 +298,17 @@ The interesting ones, beyond the obvious CRUD:
 Two changes, because the risky half should be isolated:
 
 **PR 1 — the plumbing, default still answering.** Tables and migration, corpus
-upload with its limits, pack selection per company, per-company build and index
-cache, the screen gaining a company selector. The deployment default still
-answers resolution. Nothing regresses because nothing has been taken away.
+upload with its limits, pack selection per company, per-company build, the
+screen gaining a company selector. The deployment default still answers
+resolution. Nothing regresses because nothing has been taken away.
+
+**The index cache moved to PR 2, on second look.** §4 puts it here, and that was
+wrong: nothing in PR 1 *reads* a per-company catalogue — the screen renders from
+the catalogue row, not from a loaded index — so an LRU keyed by connection would
+ship with no caller at all. That is the speculative generality §7 warns about,
+and an unused cache is worse than none: it cannot be measured, so the bound
+would be guessed and then inherited as though it had been chosen. It belongs
+with the cutover that gives it a consumer.
 
 **PR 2 — the cutover.** The quote names the company, the resolution API gains
 its argument and its refusal, the seed migration runs, the default is removed,

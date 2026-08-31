@@ -27,6 +27,10 @@ backend/data/*.run_report.json
 # build killed mid-write leaves this behind. 13 MB, and `*.jsonl` does not
 # match it.
 backend/data/*.jsonl.tmp
+# Per-company decoded catalogues, one directory per connected company. The
+# globs above are single-level and do not reach these — the durable copy is the
+# corpus row in the database, and everything under here is derived from it.
+backend/data/catalogues/
 
 # Node / frontend
 node_modules/

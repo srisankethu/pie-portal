@@ -31,6 +31,7 @@ import Button from "@mui/material/Button";
 import LinearProgress from "@mui/material/LinearProgress";
 
 import { papi } from "./api";
+import { CompanyCatalogues } from "./CompanyCatalogues";
 import { ErrorState, LoadingState, PercentageValue, StatusChip } from "./kit";
 import type { CatalogStatus, PlatformSession } from "./types";
 import { Bp, Labelled, Tip } from "./ui";
@@ -319,9 +320,15 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
 
         <p className="st-help" style={{ marginTop: 10, marginBottom: 0 }}>
           Deployment-wide: one decoded catalogue serves every organization on
-          this server. It carries nomenclature only — never price, cost or stock.
+          this server, and this is what resolution reads today. It carries
+          nomenclature only — never price, cost or stock.
         </p>
       </Bp>
+
+      {/* The per-company half, which does not answer resolution yet. Below the
+          deployment one deliberately: that ordering is the honest picture of
+          which catalogue a quote line actually used. */}
+      <CompanyCatalogues session={session} />
     </div>
   );
 }

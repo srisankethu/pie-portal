@@ -29,6 +29,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -4859,3 +4860,118 @@ class ApiKey(Base):
         DateTime(timezone=True))
     revoked_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True))
+
+
+# ── the decoded catalogue, per connected company ─────────────────────────────
+#
+# The catalogue used to be one file for the whole deployment. It is per
+# connected company now: each company decodes its own item-master export
+# through its own org-layer pack, and a quote resolves against the catalogue of
+# the company it is raised from. `docs/per-company-catalogues.md` is the design.
+
+
+class CompanyCorpus(Base):
+    """One company's item-master export, kept as bytes rather than as a file.
+
+    **Why the content is a column and not a path.** The container filesystem is
+    ephemeral — ``railway.json`` declares no volume — and today that costs
+    nothing, because ``PIE_CORPUS`` ships inside the image and the catalogue is
+    derived from it in under two seconds. An *uploaded* corpus has no such
+    source: written to container disk it is gone on the next deploy, and the
+    company's catalogue could then never be rebuilt. Stored here it survives a
+    redeploy, it is inside the ``pg_dump`` restore drill the gate already runs,
+    and row-level security scopes it to its tenant with no new code.
+
+    That keeps the property the deployment-wide design had by accident: the
+    built JSONL is a *cache*, and losing the disk costs a rebuild rather than
+    the data.
+
+    **Append-only, superseded rather than mutated**, borrowing ``state/``'s
+    convention. A catalogue row points at the corpus it was built from, so
+    overwriting these bytes in place would silently change what an existing
+    stamp refers to — the provenance would still be there, and it would be
+    describing something else.
+    """
+
+    __tablename__ = "company_corpora"
+
+    corpus_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The connected company this corpus describes. The grain of the whole
+    #: feature: one organization reading three Zoho books has three item
+    #: masters, and they are not interchangeable.
+    connection_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    filename: Mapped[str] = mapped_column(String(255), default="")
+    content_type: Mapped[str] = mapped_column(String(128), default="")
+    size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    #: sha256 of ``content``. Also what makes a re-upload of identical bytes
+    #: recognisable as such rather than a second corpus that happens to match.
+    sha256: Mapped[str] = mapped_column(String(64), index=True)
+    content: Mapped[bytes] = mapped_column(LargeBinary)
+
+    uploaded_by: Mapped[Optional[str]] = mapped_column(String(64))
+    uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: Set when a newer corpus replaces this one. The row stays: a catalogue
+    #: built from it keeps a real referent.
+    superseded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+    __table_args__ = (
+        Index("ix_company_corpora_company", "organization_id", "connection_id"),
+    )
+
+
+class CompanyCatalogue(Base):
+    """What was built for one company, and the provenance it was stamped with.
+
+    Replaces the ``products.run_report.json`` sidecar the deployment-wide
+    version wrote beside the JSONL. A row rather than a file for the same
+    reason the corpus is a row: the file does not survive a deploy, and the run
+    report is the evidence behind every number the screen shows.
+
+    The decoded JSONL itself stays on disk, under
+    ``data/catalogues/<connection_id>/``. It is large, derived, and rebuildable
+    from :class:`CompanyCorpus` at any time — which is exactly what makes it
+    safe to lose.
+
+    One row per company: a rebuild replaces it. There is no history of
+    superseded catalogues here and there is not meant to be, on
+    ``customer_item_metrics``' reasoning — it is derived state, and the corpus
+    rows behind it are the append-only half.
+    """
+
+    __tablename__ = "company_catalogues"
+
+    organization_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    connection_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    #: Which corpus this was decoded from, and which pack decoded it. Both are
+    #: part of the answer to "which catalogue answered", alongside the stamp.
+    corpus_id: Mapped[Optional[str]] = mapped_column(String(64))
+    pack: Mapped[str] = mapped_column(String(255), default="")
+
+    records: Mapped[int] = mapped_column(Integer, default=0)
+    rows_read: Mapped[int] = mapped_column(Integer, default=0)
+    quarantined: Mapped[int] = mapped_column(Integer, default=0)
+    duration_s: Mapped[Optional[float]] = mapped_column(Float)
+
+    #: pie-parser's own ``RunReport.to_dict()``, stored whole and served
+    #: verbatim. The portal never recomputes a census or a parse rate — a
+    #: second parse-rate calculation is the semantic duplication CLAUDE.md §2
+    #: is about, and the parser has already answered.
+    report: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+
+    #: The stamp every emitted record carries. ``run_id`` derives from the
+    #: input bytes plus ``ruleset_checksum``, so these are what say *which*
+    #: catalogue answered a given resolution.
+    pack_id: Mapped[Optional[str]] = mapped_column(String(128))
+    pack_version: Mapped[Optional[str]] = mapped_column(String(64))
+    org_id: Mapped[Optional[str]] = mapped_column(String(128))
+    org_version: Mapped[Optional[str]] = mapped_column(String(64))
+    ruleset_checksum: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    run_id: Mapped[Optional[str]] = mapped_column(String(64))
+    engine_version: Mapped[Optional[str]] = mapped_column(String(32))
+    schema_version: Mapped[Optional[str]] = mapped_column(String(32))
+
+    built_by: Mapped[Optional[str]] = mapped_column(String(64))
+    built_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

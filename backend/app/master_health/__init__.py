@@ -8,10 +8,21 @@ reach, and what it would take to reach more.
 Three deliberate refusals, each of which was a live option and is written down
 so it is not re-added by someone who assumes it was an oversight:
 
-* **No upload endpoint.** There is no ``UploadFile`` and no multipart handler
-  anywhere in ``backend/app``, and ``python-multipart`` is not installed.
+* **No upload endpoint** — *for this package*, and the dependency half of that
+  still holds everywhere. There is no ``UploadFile`` and no multipart handler
+  anywhere in ``backend/app``, and ``python-multipart`` is still not installed.
   Adding one is a dependency decision and a new attack surface, and it buys
   nothing a path argument does not already give a person running a diagnostic.
+
+  The per-company catalogue (``routers/data_status.py``) does now accept an
+  uploaded item-master export, which is worth stating here rather than leaving
+  this paragraph to read as false. Two things kept it from re-opening what this
+  refusal closed. Its reasoning does not transfer: it rests on a path argument
+  already serving *a person running a diagnostic*, and the person configuring a
+  company's catalogue is an owner in a browser with no shell to supply one
+  from. And it takes the corpus as a **raw request body**, not a multipart
+  form, so ``python-multipart`` remains uninstalled and the dependency this
+  paragraph declines is still declined.
 
 * **No connector.** ``ingestion/erp/`` is the registry for *live* ERP
   connections, and its own module docstring records that Zoho — the connector

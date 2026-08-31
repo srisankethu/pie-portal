@@ -726,6 +726,58 @@ export interface CatalogStatus {
   can_rebuild: boolean;
 }
 
+/** One connected company's catalogue: its own uploaded corpus, its own chosen
+ *  pack, its own decoded output. Nothing resolves against these yet — the
+ *  cutover is a separate change (docs/per-company-catalogues.md §8). */
+export interface CompanyCatalogue {
+  connection_id: string;
+  label: string;
+  enabled: boolean;
+  scope: string;
+  /** The pack id stored against this company, and whether the pinned engine
+   *  still ships it. A stored id the engine no longer has resolves to nothing
+   *  rather than to a guess. */
+  pack_id: string | null;
+  pack_resolved: boolean;
+  pack: string | null;
+  exists: boolean;
+  /** A catalogue row whose file is gone: a rebuild waiting to happen, not an
+   *  absent catalogue. Different fix, so it is its own field. */
+  built_but_missing_on_disk: boolean;
+  /** null, never 0, when nothing is built — a company with no catalogue says
+   *  nothing about coverage. */
+  records: number | null;
+  rows_read: number | null;
+  quarantined: number | null;
+  duration_s: number | null;
+  built_at: string | null;
+  built_by: string | null;
+  report: CatalogReport | null;
+  stamp: CatalogStatus["stamp"];
+  corpus: {
+    corpus_id: string;
+    filename: string;
+    size_bytes: number;
+    sha256: string;
+    uploaded_at: string;
+    uploaded_by: string | null;
+  } | null;
+  /** Built from a corpus that has since been superseded. Still a real
+   *  catalogue with a real stamp — just not built from what was last
+   *  uploaded. Out of date, not wrong. */
+  stale: boolean;
+}
+
+export interface CompanyCatalogues {
+  scope: string;
+  companies: CompanyCatalogue[];
+  /** The org-layer packs the pinned engine ships. Chosen, never uploaded. */
+  packs: { id: string; path: string }[];
+  source: CatalogStatus["source"];
+  max_corpus_bytes: number;
+  can_manage: boolean;
+}
+
 // ── Customer × Item commercial intelligence ─────────────────────────────────
 // All of it is cost/margin, so every one of these surfaces is manager/owner
 // only — there is no salesperson-safe projection of a margin analysis.

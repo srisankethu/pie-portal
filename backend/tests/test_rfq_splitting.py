@@ -158,6 +158,42 @@ def test_a_unit_word_we_could_not_attribute_is_flagged_not_defaulted():
     assert "quantity" in row["reading"].lower()
 
 
+@pytest.mark.parametrize("line", [
+    "2001174nos",
+    "2001174NOS",
+    "6739214pcs",
+])
+def test_a_unit_word_glued_to_the_part_number_is_still_flagged(line):
+    """The flag used to need a word boundary before the unit word, and there is
+    none between a digit and a letter. So `2001174nos` came back quantity 1 and
+    *unflagged* — the benign default §1 says is never the answer, hiding in the
+    one shape nobody writes deliberately."""
+    row = _one(line)
+    assert row["qty"] == 1
+    assert row.get("proposed") is True, f"{line!r} states a unit and no quantity"
+
+
+@pytest.mark.parametrize("line", [
+    "WMT PC 805M MOULDED INSERTS",
+    "WMT PC 400M PRECISION PROFILING",
+    "DOV-LOK PCD MINI TIP INSERT NO WIPER",
+])
+def test_a_unit_word_inside_a_description_is_not_read_as_one(line):
+    """These are real catalogue descriptions, and all three used to travel
+    flagged: `PC` read as `pcs` and the English `NO` in "NO WIPER" read as a
+    count. Ten rows of the 6,717-row corpus were blocked for a unit word that
+    was a grade token or a preposition.
+
+    A quantity marker nobody could attribute sits at the *end* of the line —
+    `CNMG 120408-MP insert, nos` — which is what the anchor tests for. `PC` in
+    front of a dimension is not a unit, and a flag that fires on it is a flag
+    people learn to click through.
+    """
+    row = _one(line)
+    assert row["qty"] == 1
+    assert not row.get("proposed"), f"{line!r} is a description, not a quantity"
+
+
 def test_a_bare_code_is_one_unit_and_is_not_flagged():
     """Pasting a column of codes is a documented way to use this screen, and
     flagging every line of it would make the flag meaningless."""

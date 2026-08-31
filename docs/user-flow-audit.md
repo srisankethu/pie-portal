@@ -14,10 +14,11 @@ flows were run directly. The three findings whose subject is UI feedback were
 additionally confirmed in Chromium against a running dev server — §2 F2–F4
 records what was clicked and what appeared.
 
-**Result.** Over 100 behavioural checks across both repositories. **Four
+**Result.** Over 100 behavioural checks across both repositories. **Five
 defects, all now fixed with regression tests**: one genuine functional defect
-(RFQ quantity misreading, contained by the send gate) and three messages the
-interface set and never rendered. Every invariant the business depends on —
+(RFQ quantity misreading, contained by the send gate), a second in the flag that
+was supposed to contain it, and three messages the interface set and never
+rendered. Every invariant the business depends on —
 cost containment, approval authority, the identity gate, the send gate —
 **holds under direct attack.**
 
@@ -110,7 +111,7 @@ status code tells a caller which half of the guess was right.
 below 100%, byte-identical reruns.** `eval_identity`: 13/13 cases, **0
 false-positive identity** (the cardinal error). CLI exit codes as documented
 (2 on bad arguments / missing source / unknown record id; 0 on a clean lint).
-pie-portal's own suite: **3,538 passed, 141 skipped, 0 failed**, and the full
+pie-portal's own suite: **3,544 passed, 141 skipped, 0 failed**, and the full
 gate (`make verify`) green end to end — frontend build, migrations from nothing
 on SQLite *and* PostgreSQL, row-level security, the queue's concurrent
 claim, and the `pg_dump` → restore drill. The engine-backed (`requires_pie`)
@@ -213,15 +214,37 @@ obvious: that string is what reaches the resolver (`build_lines` passes
 an AMBIGUOUS line; and `confirm_reading` clears `proposed` and nothing else, so
 confirming the reading does not clean the code.
 
-**One residual, recorded rather than fixed.** The flag comes from a
-`\b`-bounded search for a unit word in the leftover code, so it needs a
-boundary before the word. Written with no space — `2001174nos` — there is none
-between `4` and `n`, and the line comes back qty 1 **unflagged**: better than
-the 2,001,174 it used to return, but still a silent default of exactly the kind
-§1 says is not a pass. The narrow fix is to also match a unit word glued to a
-digit; it is left out of this change because every edit to `_QTY_PATTERNS` in
-this finding's history created the next defect, and this one is not reachable
-from the shapes the corpus or the review actually produced.
+#### F1b · The flag itself was wrong in both directions — **FIXED**
+
+The rule deciding whether a line travels `proposed` was
+`re.search(r"\b{_UNIT_WORDS}\b", code)`, and it erred both ways.
+
+**It under-flagged.** A `\b` needs a boundary before the word and there is none
+between a digit and a letter, so `2001174nos` came back qty 1 and *unflagged* —
+better than the 2,001,174 it used to return, and still a silent default of
+exactly the kind §1 says is never a pass.
+
+**It over-flagged, on real rows.** Searching anywhere in the line matched
+mid-string: `WMT PC 805M MOULDED INSERTS` read the grade token `PC` as `pcs`,
+and `DOV-LOK PCD MINI TIP INSERT NO WIPER` read the English `NO` as a count.
+**Ten of the 6,717 catalogue rows** were blocked for a unit word that was not
+one — and a flag that fires on ordinary descriptions is a flag people learn to
+click through, which costs the cases it exists for.
+
+Both halves have the same cause: the test asked *whether* a unit word appears,
+when what matters is *where*. An unattributed quantity marker sits at the end of
+the line — `CNMG 120408-MP insert, nos` — while a grade token sits in front of a
+dimension. So the rule is now anchored, and admits a unit word glued to a digit:
+
+```python
+re.search(rf"(?:\b|(?<=\d)){_UNIT_WORDS}[\s.,:;-]*$", code, re.IGNORECASE)
+```
+
+Measured rather than reasoned about, because this function's history is that
+every edit to it created the next defect. Swept over all 6,717 rows in three
+shapes — MM# alone, description alone, and both together — the new rule flags
+**0** where the old flagged 10, and newly flags **nothing**. Six parametrised
+cases pin both directions and all six fail against the old rule.
 
 ### F2 · MINOR · A failed workspace switch told the user nothing — **FIXED**
 

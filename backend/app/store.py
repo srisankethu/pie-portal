@@ -219,8 +219,23 @@ def _split_rfq(text: str) -> List[Dict[str, Any]]:
                 break
         else:
             code = body.rstrip(",").strip()
-            # No quantity found. A unit word left in the line says one was meant.
-            if re.search(rf"\b{_UNIT_WORDS}\b", code, re.IGNORECASE):
+            # No quantity found. A unit word left *at the end of* the line says
+            # one was meant, and both halves of that test were measured against
+            # the 6,717-row catalogue rather than reasoned about.
+            #
+            # `(?:\b|(?<=\d))` — a plain `\b` needs a boundary before the word,
+            # and there is none between a digit and a letter, so `2001174nos`
+            # came back qty 1 *unflagged*: a silent default, which is the thing
+            # §1 says is never a pass. No catalogue code newly flags under this.
+            #
+            # `…$` — without the anchor this fired mid-string on ten real rows,
+            # reading the grade token in `WMT PC 805M MOULDED INSERTS` and the
+            # English in `DOV-LOK PCD MINI TIP INSERT NO WIPER` as units. An
+            # unattributed quantity marker sits at the end (`…insert, nos`);
+            # `PC` in front of a dimension does not. Ten false flags to none,
+            # and a flag people can trust is the whole value of having one.
+            if re.search(rf"(?:\b|(?<=\d)){_UNIT_WORDS}[\s.,:;-]*$",
+                         code, re.IGNORECASE):
                 read = ("quantity not read from this line — assumed 1. "
                         "Check it against what the customer wrote.")
 

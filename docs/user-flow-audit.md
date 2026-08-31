@@ -231,20 +231,37 @@ and `DOV-LOK PCD MINI TIP INSERT NO WIPER` read the English `NO` as a count.
 one — and a flag that fires on ordinary descriptions is a flag people learn to
 click through, which costs the cases it exists for.
 
-Both halves have the same cause: the test asked *whether* a unit word appears,
-when what matters is *where*. An unattributed quantity marker sits at the end of
-the line — `CNMG 120408-MP insert, nos` — while a grade token sits in front of a
-dimension. So the rule is now anchored, and admits a unit word glued to a digit:
+Both halves have one cause: the test asked *whether* a unit word appears, when
+what matters is whether it is **doing the work of a unit** — and the test for
+that is adjacency to a number.
 
 ```python
-re.search(rf"(?:\b|(?<=\d)){_UNIT_WORDS}[\s.,:;-]*$", code, re.IGNORECASE)
+re.search(rf"(?:\d\s*{_UNIT_WORDS}\b|\b{_UNIT_WORDS}[\s.,:;-]*$)", code, re.IGNORECASE)
 ```
 
-Measured rather than reasoned about, because this function's history is that
-every edit to it created the next defect. Swept over all 6,717 rows in three
-shapes — MM# alone, description alone, and both together — the new rule flags
-**0** where the old flagged 10, and newly flags **nothing**. Six parametrised
-cases pin both directions and all six fail against the old rule.
+Either the unit sits against a number anywhere in the line — `- 100 nos urgent`,
+`(100 nos)`, `100 nos TN2000`, or `2001174nos` with no space at all — or it
+stands at the end with no number to attach to, `CNMG 120408-MP insert, nos`,
+which is precisely the case a person has to read. A grade token in front of a
+dimension is neither.
+
+**The first attempt at this was wrong, and how it was caught is the point.** It
+anchored the unit word to the end of the line. That cleared all ten false flags
+and passed every test in the file — and silently lost the flag on `CNMG 120408
+TN2000 - 100 nos urgent`, `CNMG 120408 (100 nos)`, `- 250 nos, need by friday`
+and eight more: a stated quantity, unread, defaulted to 1, with nothing on
+screen to say so. One trailing courtesy word was enough. The measurement that
+justified the anchor had swept the 6,717-row **catalogue** — clean product
+descriptions — when the input this function parses is **messy buyer prose**.
+Right method, wrong corpus, and the corpus was the half that flattered the
+change.
+
+An adversarial pass over realistic inbound text found the class; it is now
+pinned by eleven parametrised cases. The rule that replaced it flags **0** of
+the 6,717 rows in three shapes where the bare search flagged 10, and holds every
+quantity-bearing shape the attack could construct. Twenty parametrised cases
+cover the three directions: six fail against the original rule, eleven against
+the anchored one.
 
 ### F2 · MINOR · A failed workspace switch told the user nothing — **FIXED**
 

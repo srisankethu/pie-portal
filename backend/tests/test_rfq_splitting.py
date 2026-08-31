@@ -174,6 +174,35 @@ def test_a_unit_word_glued_to_the_part_number_is_still_flagged(line):
 
 
 @pytest.mark.parametrize("line", [
+    "CNMG 120408 TN2000 - 100 nos urgent",
+    "CNMG 120408 (100 nos)",
+    "CNMG 120408 - 100 nos TN2000",
+    "DNMG 150608 - 250 nos, need by friday",
+    "Pls quote 100 nos CNMG 120408 TN2000",
+    "Need 20 nos of TCMT 110204",
+    "TPG 321 K68 - 50 nos?",
+    "WNMG 080408 100 nos @ 250/-",
+    "CNMG 120408 100 nos, delivery 2 weeks",
+    "M760 WIPER INSERT - 50 pcs balance",
+    "TCMT 110204 HP - 20 pcs & 10 pcs of CNMG",
+])
+def test_a_quantity_no_pattern_could_read_is_flagged_wherever_it_sits(line):
+    """Every one of these states a quantity that `_QTY_PATTERNS` does not read,
+    because something follows it — a courtesy word, a grade, a delivery clause,
+    a bracket, a rate. The line must not travel as one unit in silence.
+
+    This is the class an earlier version of the flag lost. It had been anchored
+    to the end of the line to stop a grade token being read as a unit, and the
+    anchor took this with it: `- 100 nos urgent` is a hundred pieces quoted as
+    one, with nothing on screen to say so. The rule tests adjacency to a number
+    instead, so where the unit sits stopped mattering.
+    """
+    row = _one(line)
+    assert row.get("proposed") is True, (
+        f"{line!r} states a quantity nothing read — it must be flagged")
+
+
+@pytest.mark.parametrize("line", [
     "WMT PC 805M MOULDED INSERTS",
     "WMT PC 400M PRECISION PROFILING",
     "DOV-LOK PCD MINI TIP INSERT NO WIPER",

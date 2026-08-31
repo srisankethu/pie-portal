@@ -219,22 +219,36 @@ def _split_rfq(text: str) -> List[Dict[str, Any]]:
                 break
         else:
             code = body.rstrip(",").strip()
-            # No quantity found. A unit word left *at the end of* the line says
-            # one was meant, and both halves of that test were measured against
-            # the 6,717-row catalogue rather than reasoned about.
+            # No quantity found. A unit word left in the line says one was
+            # meant — but only where it is *doing the work of a unit*, and the
+            # test for that is adjacency to a number, not position in the line.
             #
-            # `(?:\b|(?<=\d))` — a plain `\b` needs a boundary before the word,
-            # and there is none between a digit and a letter, so `2001174nos`
-            # came back qty 1 *unflagged*: a silent default, which is the thing
-            # §1 says is never a pass. No catalogue code newly flags under this.
+            # `\d\s*{unit}\b` — the unit sits against a number, anywhere in the
+            # line: `- 100 nos urgent`, `(100 nos)`, `100 nos TN2000`, and
+            # `2001174nos` with no space at all. The last of those is why the
+            # digit is inside the pattern rather than a `\b` in front of it: a
+            # `\b` needs a boundary before the word and there is none between a
+            # digit and a letter, so that shape used to default silently to 1.
             #
-            # `…$` — without the anchor this fired mid-string on ten real rows,
-            # reading the grade token in `WMT PC 805M MOULDED INSERTS` and the
-            # English in `DOV-LOK PCD MINI TIP INSERT NO WIPER` as units. An
-            # unattributed quantity marker sits at the end (`…insert, nos`);
-            # `PC` in front of a dimension does not. Ten false flags to none,
-            # and a flag people can trust is the whole value of having one.
-            if re.search(rf"(?:\b|(?<=\d)){_UNIT_WORDS}[\s.,:;-]*$",
+            # `\b{unit}[\s.,:;-]*$` — or the unit stands at the end with no
+            # number at all: `CNMG 120408-MP insert, nos`. A marker with nothing
+            # to attach to is exactly the case a human has to read.
+            #
+            # What neither arm matches is a unit word that is merely *present*,
+            # which the previous rule (a bare search) treated as evidence. It
+            # read the grade token in `WMT PC 805M MOULDED INSERTS` as `pcs` and
+            # the English in `DOV-LOK PCD MINI TIP INSERT NO WIPER` as a count —
+            # ten real catalogue rows blocked for a unit that was not one, and a
+            # flag that fires on ordinary descriptions is one people learn to
+            # click through.
+            #
+            # Measured, not reasoned about: over all 6,717 corpus rows in three
+            # shapes this flags none where the bare search flagged ten, and it
+            # holds every quantity-bearing shape an adversarial pass could
+            # construct. An earlier attempt anchored to the end of the line
+            # alone; it cleared the false flags and lost the flag on `- 100 nos
+            # urgent`, which is a hundred pieces quoted as one, in silence.
+            if re.search(rf"(?:\d\s*{_UNIT_WORDS}\b|\b{_UNIT_WORDS}[\s.,:;-]*$)",
                          code, re.IGNORECASE):
                 read = ("quantity not read from this line — assumed 1. "
                         "Check it against what the customer wrote.")

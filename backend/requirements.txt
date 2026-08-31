@@ -1,6 +1,12 @@
 fastapi>=0.111
 uvicorn[standard]>=0.30
 pydantic>=2.7
+# Multipart request parsing, which FastAPI requires for `UploadFile`. A RUNTIME
+# dependency, not a test one: without it the document upload route raises at
+# import time in production. Added by decision 012, which reverses
+# `master_health/__init__.py`'s "no upload endpoint" in the open — that note
+# calls adding one "a dependency decision", and this is the dependency.
+python-multipart>=0.0.9
 
 # Commercial Decision Platform — persistence (Phase 1 foundation)
 SQLAlchemy>=2.0

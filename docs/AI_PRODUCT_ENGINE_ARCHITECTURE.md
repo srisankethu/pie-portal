@@ -506,19 +506,31 @@ gate). No `numpy`, no `pandas`, no `pypdf`/`pdfplumber`/`PyMuPDF`/`pdfminer`,
 no `pytesseract`, no image library, no ML framework. `openpyxl` is present
 only because the parser reads XLSX.
 
-There is **no file-upload endpoint** among the 203 endpoints, and **no file
-storage backend** of any kind. `ingested_documents` holds no content.
+There **was** no file-upload endpoint and no file storage backend of any kind;
+`ingested_documents` still holds no content and is unrelated (it is a Zoho fetch
+cursor). **Decision 012 reversed that, explicitly**, and this paragraph is kept
+in the past tense because the reversal was supposed to be argued rather than
+assumed and the argument is the record.
 
-**This absence is a recorded decision, not an oversight,** and any proposal to
-add uploads has to argue against it rather than assume it. `master_health/__init__.py:11`
-states it in terms: *"There is no `UploadFile` and no multipart handler
-anywhere in `backend/app`, and `python-multipart` is not installed. Adding one
-is a dependency decision and a new attack surface, and it buys nothing a path
-argument does not already give a person running a diagnostic."* For a
-diagnostic CLI that reasoning holds. For customer RFQs arriving as PDFs it does
-not — a salesperson cannot pass a path argument — so the decision should be
-revisited explicitly, with the attack surface priced in (§33), not quietly
-reversed.
+`master_health/__init__.py:11` stated the absence in terms: *"There is no
+`UploadFile` and no multipart handler anywhere in `backend/app`, and
+`python-multipart` is not installed. Adding one is a dependency decision and a
+new attack surface, and it buys nothing a path argument does not already give a
+person running a diagnostic."* For a diagnostic CLI that reasoning holds and
+still holds — that package still takes a path. For customer RFQs arriving as
+PDFs it does not, because a salesperson cannot pass a path argument.
+
+What was built, and what it cost: `enquiry/documents.py` receives and retains
+and reads nothing — no PDF is parsed, no spreadsheet opened — and the one place
+it looks inside a container it does so without decompressing. Bytes are Fernet
+ciphertext under the tenant DEK, so `trust/erasure.erase` reaches them by
+destroying the key, which is the only deletion that also reaches the backups.
+The dependency is `python-multipart`. The surface is priced in §33 and in
+decision 032: four refusals with distinct statuses, a size ceiling checked both
+before and during the read, an archive-ratio check on the central directory, and
+a download that serves `application/octet-stream` with `attachment` and
+`nosniff` set **by the application** — because `deploy/Caddyfile` sets those
+headers and the free-tier topology has no Caddy at all.
 
 ## 12. Existing data imports
 

@@ -451,10 +451,18 @@ def test_the_receipt_no_longer_claims_crypto_shredding(session, org):
 def test_the_receipt_enumerates_what_key_destruction_reached(session, org):
     """`destroyed` must be the DEK-encrypted field classes — exactly those.
 
-    Two entries because exactly two call sites use `keys.encrypt_for`
-    (`vault.put`, `disclosure.record`). A third encrypted field class must be
-    added to `erasure.DESTROYED` in the same change, and this assertion is the
-    reminder.
+    A new encrypted field class must be added to `erasure.DESTROYED` in the same
+    change, and this assertion is the reminder. It has fired once already, for
+    the third entry below.
+
+    **How to count them, which is not what this docstring used to say.** It said
+    "two entries because exactly two call sites use `keys.encrypt_for`", and
+    that stopped being a way to count when `rfq_documents` arrived: a document's
+    bytes go through `cipher_for(...).encrypt_bytes`, so a grep for
+    `encrypt_for` would have found two call sites and missed a third field class
+    that the key destroys just the same. Count what is encrypted under the DEK —
+    every use of `keys.cipher_for`, `keys.encrypt_for` and the bytes pair — not
+    one function's callers.
     """
     row = erasure.erase(session, ORG, reason="Customer requested erasure",
                         actor_user_id="u1")
@@ -462,6 +470,7 @@ def test_the_receipt_enumerates_what_key_destruction_reached(session, org):
     assert {(d["table"], d["column"]) for d in destroyed} == {
         ("name_vault", "name_ciphertext"),
         ("model_payloads", "payload_ciphertext"),
+        ("rfq_documents", "content_ciphertext"),
     }
     assert all(d["holds"] for d in destroyed), (
         "an entry that does not say what the ciphertext held tells the "

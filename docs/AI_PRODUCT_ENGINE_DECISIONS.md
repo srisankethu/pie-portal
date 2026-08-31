@@ -299,7 +299,7 @@ is not covered by this decision.
 ---
 
 ## 012 — Revisit the no-upload decision explicitly
-**Status:** PROPOSED · **Phase:** 3 · **Report §:** 11, 24, 33
+**Status:** ACCEPTED — implemented 2026-08-31 (see 032) · **Phase:** 3 · **Report §:** 11, 24, 33
 
 **Decision.** File upload is added for customer RFQ documents, with type
 sniffing, size limits, archive-bomb defence, no inline rendering, a licence
@@ -1329,3 +1329,140 @@ that the pool is live, and more again because of the double-listing: two entries
 for one product, neither marked, read as two unrelated products. Not fixed here
 — this change is backend wiring and the fix is a UI pass under
 `docs/ui-standards.md`.
+
+---
+
+## 032 — RFQ documents: received and retained, never read and never rendered
+**Status:** ACCEPTED — 2026-08-31 · **Phase:** 3 · **Report §:** 11, 24, 33
+
+**Decision.** Decision 012 is implemented. `POST /api/v1/enquiries/documents`
+accepts a customer's RFQ document; `enquiry/documents.py` checks, encrypts and
+retains it; a download serves it as an attachment and never as a page. The
+reversal of `master_health/__init__.py`'s recorded "no upload endpoint" is
+stated there, in `docs/concepts/01`, and in the architecture doc — all three
+carried the claim and all three were false the moment this shipped.
+
+**Scope, stated because half of decision 012 is deliberately not here.** This
+receives and retains. It does **not** read: no PDF is parsed, no spreadsheet
+opened, no requirement extracted. Extraction is a later slice and the boundary
+keeps this module's surface at "bytes in, bytes out, checked on the way".
+
+### The four questions that decided the shape
+
+**Where the bytes go: Postgres, encrypted under the tenant DEK.** Only the `db`
+service has a volume (`compose.yaml:116-123`); `api` and `worker` have none and
+Railway's filesystem is ephemeral, so local disk is not durable on either
+supported topology. Between Postgres and an object store, erasure decides it and
+decides it structurally: `trust/erasure.erase` destroys the data key and writes a
+signed receipt and **deletes no rows**, because key destruction is "the only form
+of deletion that also reaches the backups". A DEK-encrypted blob inherits that
+for one entry in `DESTROYED`. A bucket is reached by none of the four gates this
+table passes (export completeness, the erasure manifest, the RLS census,
+migration drift), and `erase` would have to grow a network call whose failure
+mode is a receipt that overstates what it destroyed — which `erasure.py` calls
+worse than no receipt at all.
+
+Cost, measured rather than estimated: ciphertext is **1.333×** the plaintext
+through the new bytes path on `TenantCipher`, against **1.778×** had the bytes
+gone through the existing text path (base64, then Fernet's own base64).
+`BACKUP_RETAIN_DAYS` defaults to 14, so the ceiling of 25 MB is about 470 MB of
+retained backup at worst per document. Nothing in this repo measures database
+size; every backup check is a floor, never a ceiling. That is an open gap and it
+is not closed here.
+
+**Type sniffing, not a dependency.** A leading-byte table for the six formats an
+RFQ actually arrives in, plus a ZIP refinement read from the central directory.
+`python-magic` needs libmagic on the image and `filetype` is another supply-chain
+edge; neither buys anything for a list this short. **The client's declared type
+is evidence, never the decision** — a file named `.pdf` that begins `PK` is the
+interesting case, is stored as what it is, and publishes
+`type_matches_declaration: false`. A stream nothing recognises is UNKNOWN and
+refused; it does not fall back to what the upload claimed, which is the one input
+an attacker fully controls.
+
+**The size ceiling is checked twice and the first check is the one that
+matters.** `content-length` is refused before the body is read, then the body is
+read under a hard cap and refused again. Neither alone is enough: the first is
+fast and is a claim by the sender, the second is honest and expensive. This is
+`routers/enquiries.py`'s export ceiling applied to an input — the one that
+previously "fired only once the process had done exactly the work the ceiling
+exists to prevent".
+
+**Archive-bomb defence is real, and its limit is stated.** A ZIP's central
+directory is metadata, so declared sizes are read without decompressing anything:
+a 58 KB archive declaring 60 MB is refused unopened. **What that does not catch
+is a bomb that lies in its own directory** — a header saying 1 KB whose member
+expands to a gigabyte — and the only thing that catches that is a bounded read at
+extraction. Nothing here extracts anything, so nothing is exposed to it today;
+the day something does, the bounded read is that code's obligation. Written down
+rather than left for whoever writes it to discover.
+
+### The defence that could not live where it usually lives
+
+`deploy/Caddyfile:62-70` sets `X-Content-Type-Options: nosniff` and a CSP — on
+the **self-hosted topology only**. The free-tier topology is Vercel to Railway
+with no Caddy; `frontend/api/proxy.ts:113-141` corrects exactly two headers
+(`location`, and `content-encoding`/`content-length`) and adds no security ones,
+`vercel.json` has no headers block, and `app/main.py` sets none. A document
+download there would carry neither.
+
+So the response carries its own: `application/octet-stream` (never the sniffed
+type, however confidently sniffed), `Content-Disposition: attachment` with the
+filename reduced to a conservative character set, and `nosniff`. **A defence
+present on one of two supported topologies is not a defence.**
+
+### One defect this introduced and one it revealed
+
+**Introduced, then fixed:** appending the routes to the end of `enquiries.py` put
+`GET /documents` after `GET /{inbound_line_id}`, and FastAPI matches in
+definition order — so the listing was matched as an enquiry line whose id is the
+string "documents" and returned a 404 body a client reads as "you have no
+documents". A wrong answer that looks like a right one. The routes are now
+registered above the parameterised one and
+`test_the_listing_route_is_not_shadowed_by_the_line_route` pins it separately
+from the tests that merely use the listing, because those would go on passing.
+
+**Revealed:** `erasure._rows` had no `bytes` branch, so any blob column fell
+through to `str(value)` and would have put `"b'gAAAAA...'"` — a Python repr of
+megabytes of ciphertext — into a JSON export. A latent defect in a shared
+function that no table had yet triggered. It now describes a blob (`{"bytes": n,
+"omitted": …}`) rather than serialising it, so the export says which documents
+exist, what each is, how large and its checksum, and the content is served one at
+a time from its own endpoint under that endpoint's authorization.
+
+### The asymmetry with `inbound_lines`, and the half of 012 it blocks
+
+`inbound_lines.raw_text` is **plaintext by decision** and sits in
+`SURVIVES_PLAINTEXT`: "the corpus an RFQ parser is measured against has to be the
+bytes the customer sent. So destroying the key does not unread them; only row
+deletion removes this text." Documents are encrypted. The asymmetry is
+deliberate — a document is megabytes carrying letterheads, drawings and an end
+customer's name, and decision 012 asks for erasure reach specifically.
+
+**But 012 asks for erasure reach into "stored files *and extracted
+requirements*", and only the first is delivered.** A requirement extracted from a
+document becomes an `InboundLine`, and that table is plaintext on purpose. The
+second half cannot be met without reversing the corpus decision, which is not a
+call to make in passing. Recorded as an open conflict rather than quietly
+counted as done.
+
+### Verification
+
+Seven mutants were run against the tests and each is caught: serving the sniffed
+type, dropping `nosniff`, not sanitising the filename, storing plaintext,
+removing the archive ratio check, falling back to the declared type, and dropping
+the organization filter on read. The encryption is proved by reading the raw
+column back and asserting the customer's bytes are not in it, not by trusting the
+call that wrote it.
+
+### Open
+
+* No database-size measurement anywhere, and every backup check is a floor. A
+  document store makes that gap matter; it did not before.
+* `MAX_BYTES` is a module constant, not config. The number that suits a VM with
+  a volume is not the number that suits a free-tier Postgres.
+* No frontend. A salesperson cannot reach this yet — the drop zone is a UI pass
+  under `docs/ui-standards.md`, and it lands with the `SupplyDrawer` brand-marker
+  fix that decision 031 left open.
+* Decision 025's PIM import shares this receiving layer and is still blocked on
+  the product owner's sample export.

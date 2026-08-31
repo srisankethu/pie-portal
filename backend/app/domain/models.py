@@ -29,6 +29,7 @@ from sqlalchemy import (
     ForeignKey,
     Index,
     Integer,
+    LargeBinary,
     Numeric,
     String,
     Text,
@@ -4910,6 +4911,91 @@ class InboundLineDisposition(Base):
     #: Set when a later decision replaced this one. The row stays, and every
     #: current-state read filters ``IS NULL``.
     superseded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True))
+
+
+class RfqDocument(Base):
+    """One document a customer sent, exactly as it arrived — encrypted at rest.
+
+    **Canonical, not derived.** A PDF a customer emailed exists in no ERP, so a
+    complete re-sync rebuilds nothing here. That is the same property that put
+    ``InboundLine`` in ``enquiry/`` rather than ``state/``, and this table is its
+    companion: the line is what the customer *wrote*, this is what they *sent*.
+    A line extracted from a document names it in ``InboundLine.source_ref``,
+    which is already documented as "a message id, a file name, a portal request
+    id" — no new column, the existing provenance field used as designed.
+
+    **The bytes are ciphertext under the tenant DEK, and that is what makes
+    erasure honest.** ``trust.erasure.erase`` destroys the data key and writes a
+    receipt; it deletes no rows, because key destruction "is the only form of
+    deletion that also reaches the backups". A document stored as plaintext
+    bytes here would sit outside that promise while appearing inside it — and a
+    signed receipt that overstates what it destroyed is, in that module's own
+    words, worse than no receipt. So ``content_ciphertext`` is registered in
+    ``erasure.DESTROYED`` and erasure needs no new code path at all.
+
+    This is also the argument against an object store, and it is structural
+    rather than a preference: a bucket is reached by none of the four gates this
+    table passes through (export completeness, the erasure manifest, the RLS
+    census, migration drift), and ``erase`` would have to grow a network call
+    whose failure mode is a receipt that lies.
+
+    **Never rendered.** ``content_type_sniffed`` is what the bytes actually are,
+    recorded as evidence and deliberately NOT used as the response
+    ``Content-Type``: the download serves ``application/octet-stream`` with
+    ``Content-Disposition: attachment`` and ``X-Content-Type-Options: nosniff``,
+    set by the application rather than by the reverse proxy. The proxy is not
+    available to rely on — ``deploy/Caddyfile`` sets those headers and the
+    free-tier topology (Vercel to Railway) has no Caddy at all, and
+    ``frontend/api/proxy.ts`` corrects exactly two headers and adds no security
+    ones. A defence that holds on one of two supported topologies is not a
+    defence.
+    """
+
+    __tablename__ = "rfq_documents"
+
+    rfq_document_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                 default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    #: The name the sender's file had. Verbatim, for ``InboundLine.raw_text``'s
+    #: reason — it is evidence about what arrived, and it is also the one field
+    #: here an attacker controls, so every reader treats it as hostile: it is
+    #: never used to build a path, never echoed into a header unquoted, and
+    #: never trusted to say what the bytes are.
+    filename: Mapped[str] = mapped_column(String(255))
+    #: What the uploader's client SAID it was, kept only to be compared with
+    #: what it turned out to be. A mismatch is evidence, not an error.
+    content_type_declared: Mapped[str] = mapped_column(String(128), default="")
+    #: What the leading bytes actually are, decided here and not by the client.
+    content_type_sniffed: Mapped[str] = mapped_column(String(128), default="")
+
+    #: Plaintext length, in bytes, recorded before encryption. The stored
+    #: ciphertext is about 1.33x this; a reader wanting to know what the customer
+    #: sent wants this number, and a reader sizing the database wants the other.
+    byte_size: Mapped[int] = mapped_column(Integer)
+    #: SHA-256 of the PLAINTEXT bytes. Two purposes and neither is security:
+    #: recognising a redelivery of the same document, and proving after a
+    #: restore that what came back is what went in.
+    content_sha256: Mapped[str] = mapped_column(String(64), index=True)
+
+    #: The document itself, Fernet ciphertext under this organization's data
+    #: key. Registered in ``trust.erasure.DESTROYED``.
+    content_ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
+
+    #: Who uploaded it, and under what terms it may be held. The licence note is
+    #: free text on purpose: it is a sentence a person wrote about a document
+    #: somebody else owns, and a controlled vocabulary would invite a default.
+    uploaded_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    licence_note: Mapped[str] = mapped_column(Text, default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now)
+    #: NULL is live. Withdrawn rather than deleted, the supersede convention
+    #: ``enquiry/`` borrows from ``state/`` — a document somebody withdrew is a
+    #: fact about the enquiry, and a DELETE would make the corpus disagree with
+    #: itself about what arrived.
+    withdrawn_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True))
 
 

@@ -8,10 +8,26 @@ reach, and what it would take to reach more.
 Three deliberate refusals, each of which was a live option and is written down
 so it is not re-added by someone who assumes it was an oversight:
 
-* **No upload endpoint.** There is no ``UploadFile`` and no multipart handler
-  anywhere in ``backend/app``, and ``python-multipart`` is not installed.
-  Adding one is a dependency decision and a new attack surface, and it buys
-  nothing a path argument does not already give a person running a diagnostic.
+* **No upload endpoint — for THIS package.** The three sentences that used to
+  stand here are now false and are kept as the reason rather than deleted:
+  there is an ``UploadFile`` in ``backend/app`` (``routers/enquiries.py``),
+  there is a multipart handler, and ``python-multipart`` is installed. Decision
+  012 reversed all three in the open, because a salesperson receiving a
+  customer's PDF is not a person running a diagnostic, and the second of those
+  needs a door.
+
+  **The refusal still holds here, and for the reason it always did.** This
+  package takes *a path*, and a path is what a diagnostic wants: it costs no
+  authorization, no tenant, no storage and no retention question, and it can be
+  pointed at a prospect's export on a laptop. Nothing about an upload route
+  existing elsewhere makes routing this through it better; it would trade a
+  path argument for a session, an organization, a stored blob and an erasure
+  obligation, to answer a question that is a pure function of bytes.
+
+  So: an upload endpoint exists, this package does not use one, and the
+  distinction is between a *diagnostic over a file somebody hands you* and
+  *inbound demand a business has to keep*. The second is
+  ``enquiry/documents.py``.
 
 * **No connector.** ``ingestion/erp/`` is the registry for *live* ERP
   connections, and its own module docstring records that Zoho — the connector

@@ -286,10 +286,15 @@ is that measurement as a tool: an item-master export in, the census out.
 Three things were deliberately *not* built, and each was the obvious choice
 until it was looked at:
 
-- **No CSV upload endpoint.** There is no `UploadFile` and no multipart handler
-  anywhere in `backend/app`, and `python-multipart` is not a dependency. Adding
-  one is a dependency decision and a new unauthenticated-ish surface, and it
-  buys nothing over a path argument for a diagnostic somebody runs deliberately.
+- **No CSV upload endpoint — for this diagnostic.** The original claim here was
+  that there is no `UploadFile` anywhere in `backend/app` and that
+  `python-multipart` is not a dependency. Both were true when written and both
+  are now false: decision 012 added document upload for customer RFQs
+  (`routers/enquiries.py`, `enquiry/documents.py`). The refusal still stands for
+  *this* package and the reason is unchanged — a path argument costs no
+  authorization, no tenant, no stored blob and no erasure obligation, to answer
+  a question that is a pure function of bytes. What changed is that a
+  salesperson receiving a PDF is not somebody running a diagnostic.
 - **No `ingestion/erp/` connector.** That registry's own module docstring
   records that Zoho — the connector that would matter most here — deliberately
   does not register in it. A diagnostic gated on a working OAuth grant is a

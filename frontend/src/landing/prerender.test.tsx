@@ -42,62 +42,31 @@ describe("renderLandingMarkup", () => {
 });
 
 describe("the placeholders", () => {
-  /** Every `{{TOKEN}}` the page may carry, and what has to replace it.
+  /** Not one of them may reach a page.
    *
-   *  The list is the point. A marketing page that ships a placeholder is
-   *  embarrassing; a marketing page that ships an *invented* customer, figure
-   *  or certification in place of one is fatal to a product whose entire
-   *  argument is that its numbers re-derive. So the tokens stay visible as
-   *  tokens until somebody has the real thing — and this test refuses any
-   *  token that is not on the list below, so a new one cannot be added
-   *  without landing on the founder's checklist too.
+   *  This assertion replaces a weaker one. The site used to render its
+   *  unfilled slots as visible `{{TOKEN}}` strings, on the theory that a
+   *  visible placeholder is the loudest reminder to fill it in, and the test
+   *  here checked only that every token on the page was on a declared list.
+   *  It was the right reminder aimed at the wrong person: the maintainer had
+   *  three other ways of knowing, and the visitor got a building site.
    *
-   *  One-directional on purpose: a token that has been replaced simply stops
-   *  appearing, and this test stays green. It fails only for a token nobody
-   *  declared. */
-  const KNOWN = new Set([
-    // Prices the owner has not fixed yet (see pricing.ts).
-    "{{PRICE_TIER_1_USD}}",
-    "{{PRICE_TIER_2_USD}}",
-    "{{PRICE_CATALOG_BUILD_USD}}",
-    // The scheduling link behind every "Book a demo" (see cta.ts).
-    "{{DEMO_BOOKING_URL}}",
-    // Section F — real customers, with written permission, or nothing.
-    "{{CUSTOMER_LOGO_1}}",
-    "{{CUSTOMER_LOGO_2}}",
-    "{{CUSTOMER_LOGO_3}}",
-    "{{CUSTOMER_LOGO_4}}",
-    // Section F — one real customer's own value-ledger figures.
-    "{{CASE_STUDY_ERP}}",
-    "{{CASE_STUDY_DISTRIBUTOR_PROFILE}}",
-    "{{CASE_STUDY_NARRATIVE}}",
-    "{{CASE_STUDY_MARGIN_RECOVERED}}",
-    "{{CASE_STUDY_LINES_CHECKED}}",
-    "{{CASE_STUDY_LINES_HELD}}",
-    "{{CASE_STUDY_POLICY_VERSION}}",
-    "{{CASE_STUDY_WINDOW}}",
-    // Section F — the real status on the day this ships, whatever it is.
-    "{{SOC2_TYPE_II_STATUS}}",
-    "{{DATA_RESIDENCY}}",
-    "{{GDPR_DPA_STATUS}}",
-    // The ERP pages — real language from distributors running that system.
-    "{{PROPHET21_DISTRIBUTOR_EVIDENCE}}",
-    "{{NETSUITE_DISTRIBUTOR_EVIDENCE}}",
-    "{{ACUMATICA_DISTRIBUTOR_EVIDENCE}}",
-  ]);
-
-  it("carries no placeholder that is not declared, on any page", () => {
-    const found = new Set(
-      documents.flatMap(({ html }) => html.match(/\{\{[A-Z0-9_]+\}\}/g) ?? []),
-    );
-    expect([...found].filter((token) => !KNOWN.has(token)).sort()).toEqual([]);
+   *  Content that does not exist now hides its block — see `content.ts` and
+   *  `proof.ts` — so a token in a built page means something rendered one
+   *  instead of hiding, which is a defect and not a to-do. `prerender.mjs`
+   *  fails the build on the same condition; this catches it in the
+   *  three-second loop, and reports the whole set rather than the first.
+   */
+  it("puts no placeholder on any page, in any form", () => {
+    const found = documents.flatMap(({ page, html }) =>
+      (html.match(/\{\{[A-Z0-9_]+\}\}/g) ?? []).map((t) => `/${page.slug}: ${t}`));
+    expect(found).toEqual([]);
   });
 
   it("puts no placeholder anywhere a visitor can click", () => {
-    // A token in prose is a visible reminder. A token in an `href` is a dead
-    // primary call to action, and the two were the same mechanism until the
-    // demo link learned to degrade — see `cta.ts`. Every destination in every
-    // served document has to be somewhere a browser can actually go.
+    // The same rule for destinations rather than text: an `href` holding a
+    // token is a dead primary action, which is how the demo CTA behaved
+    // before it learned to fall back. See `cta.ts`.
     for (const { page, html } of documents) {
       for (const [, href] of html.matchAll(/href="([^"]*)"/g)) {
         expect(href, `/${page.slug} links to a placeholder: ${href}`)
@@ -107,11 +76,52 @@ describe("the placeholders", () => {
   });
 
   it("states no certification, either way, while the status is unknown", () => {
-    // The failure this guards is a specific one: somebody replaces the status
-    // token with reassuring prose instead of a status. Neither word may appear
-    // beside the compliance heading unless it is genuinely true.
-    const compliance = markup.slice(markup.indexOf("SOC 2 Type II"));
-    expect(compliance).not.toMatch(/SOC 2 Type II[^<]*(certified|compliant)/i);
+    // The compliance row is absent entirely today. If it returns, this is the
+    // edit it guards against: a status token replaced with reassuring prose
+    // rather than with the true status.
+    for (const { html } of documents) {
+      const at = html.indexOf("SOC 2 Type II");
+      if (at === -1) continue;
+      expect(html.slice(at)).not.toMatch(/SOC 2 Type II[^<]*(certified|compliant)/i);
+    }
+  });
+});
+
+describe("a section with nothing to say", () => {
+  const landing = documents.find((d) => d.page.slug === "")!.html;
+
+  it("is absent, rather than present and empty", () => {
+    // Section F ships empty today. An empty panel, a heading over nothing, or
+    // a "coming soon" would each be worse than the section not being there.
+    expect(landing).not.toContain('id="proof"');
+    expect(landing).not.toContain("Running PIE today");
+    expect(landing).not.toContain("Value ledger");
+  });
+
+  it("takes its navigation link with it", () => {
+    // A nav item scrolling to a section that does not exist is the visible
+    // half of the same defect.
+    expect(landing).not.toContain('href="#proof"');
+  });
+
+  it("leaves no gap in the section lettering", () => {
+    // The letters are computed from the sections that actually render, so
+    // hiding one closes the alphabet up rather than running A B C D E *G* —
+    // which a reader would rightly read as something removed in a hurry.
+    const letters = [...landing.matchAll(/Section ([A-Z]) — /g)].map((m) => m[1]);
+    expect(letters.length).toBeGreaterThan(3);
+    expect(letters).toEqual(
+      letters.map((_, i) => String.fromCharCode(65 + i)));
+  });
+
+  it("keeps the body's cross-references pointing at the right letter", () => {
+    // "the value ledger in Section D" has to name whichever letter that
+    // section ended up with, or the page argues with itself.
+    const worth = landing.match(/Section ([A-Z]) — What it was worth/)?.[1];
+    expect(worth).toBeTruthy();
+    for (const [, cited] of landing.matchAll(/value ledger in Section ([A-Z])/g)) {
+      expect(cited).toBe(worth);
+    }
   });
 });
 

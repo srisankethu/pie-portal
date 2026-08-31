@@ -1,3 +1,4 @@
+import { filled } from "./content";
 import { demoCta } from "./cta";
 import { FooterBlurb, TrialFinePrint, TrustBand } from "./shared";
 import type { ErpPageData } from "./erp";
@@ -40,6 +41,7 @@ export function ErpPage({ page }: { page: ErpPageData }) {
    *  secondary button opens that same door, the secondary is dropped rather
    *  than shown twice. These pages ship no JavaScript, so the fallback is a
    *  plain path and carries no handler. */
+  const evidence = filled(page.evidence);
   const heroDemo = demoCta({ href: "/#signin", label: "Start free" });
   const closingDemo = demoCta({ href: "/#signin", label: "Start free" });
 
@@ -194,15 +196,18 @@ export function ErpPage({ page }: { page: ErpPageData }) {
                 </div>
               ))}
             </div>
-            {/* PLACEHOLDER — real language from real distributors running this
-                system, with permission to print it. Replace `evidence` in
-                erp.ts with research, or delete this panel entirely. Do not
-                fill it with a plausible sentence: this page's argument is that
-                its claims are checkable, and one invented quote ends that. */}
-            <div className="lp-panel lp-evidence">
-              <span className="lp-tag">What {page.short} distributors tell us</span>
-              <p>{page.evidence}</p>
-            </div>
+            {/* Real language from a real distributor running this system,
+                with permission to print it, or nothing at all — a panel headed
+                "What Prophet 21 distributors tell us" containing a token tells
+                a Prophet 21 distributor exactly the wrong thing. Nothing in
+                this repository knows what they report, so nothing here claims
+                to until somebody has asked them. */}
+            {evidence && (
+              <div className="lp-panel lp-evidence">
+                <span className="lp-tag">What {page.short} distributors tell us</span>
+                <p>{evidence}</p>
+              </div>
+            )}
           </div>
         </section>
 

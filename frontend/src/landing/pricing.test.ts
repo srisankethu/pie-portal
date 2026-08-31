@@ -14,6 +14,8 @@
 import { describe, expect, it } from "vitest";
 import {
   MARGIN_FLOOR,
+  catalogBuildPrice,
+  tierPrice,
   detectRegion,
   heldToFloor,
   heldToRecommended,
@@ -121,5 +123,45 @@ describe("detectRegion", () => {
     } finally {
       intl.DateTimeFormat = real;
     }
+  });
+});
+
+describe("a tier whose price nobody has set", () => {
+  const intl = pricingFor("INTL");
+
+  it("says how pricing works instead of showing a token", () => {
+    // The one slot on this site that cannot simply disappear: a pricing panel
+    // with a blank where a price belongs is worse than one that says how
+    // pricing is done. The wording is not invented for the gap — it is what
+    // the section standfirst and `entitlements.py` both already say.
+    for (const tier of ["intelligence", "platform"] as const) {
+      const shown = tierPrice(intl, tier);
+      expect(shown.amount).toBeNull();
+      expect(shown.label).toBe("Priced per organization");
+      expect(shown.label).not.toContain("{{");
+      // No dangling "/month" under a phrase that is not an amount.
+      expect(shown.period).toBeNull();
+    }
+  });
+
+  it("drops the catalog-build sentence rather than half-writing it", () => {
+    expect(catalogBuildPrice(intl)).toBeNull();
+  });
+});
+
+describe("a tier whose price is set — the Indian list, which is real", () => {
+  const inr = pricingFor("IN");
+
+  it("shows the figure and its period", () => {
+    expect(tierPrice(inr, "intelligence")).toEqual({
+      amount: "₹9,999", label: "₹9,999", period: " /month",
+    });
+    expect(tierPrice(inr, "platform")).toEqual({
+      amount: "₹19,999", label: "₹19,999", period: " /month +",
+    });
+  });
+
+  it("keeps the catalog-build price", () => {
+    expect(catalogBuildPrice(inr)).toBe("₹4,999");
   });
 });

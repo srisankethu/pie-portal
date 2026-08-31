@@ -1,21 +1,26 @@
-# Marketing placeholders — what has to be real before this deploys
+# Marketing placeholders — what the site is waiting for
 
-The public site (`frontend/src/landing/`) carries 22 `{{PLACEHOLDER}}` tokens.
-Each one is a slot the repositioning needed and the repository could not fill
-truthfully: a price nobody has fixed, a link nobody has created, a customer
-nobody has permission to name, a certification that does not exist yet.
+The public site carries `{{PLACEHOLDER}}` tokens for content nobody has
+supplied yet: prices, a scheduling link, customer names, case-study figures,
+compliance statuses.
 
-They are rendered **verbatim**, as visible tokens on the page, and that is
-deliberate. The whole argument this site makes is that its numbers re-derive
-and its claims are checkable; a slot filled with something plausible would be
-worth less than an empty one, because it would make every other claim on the
-page a guess. An empty slot embarrasses. An invented customer ends the
-argument.
+**None of them reaches a visitor.** A block whose content is still a token is
+not rendered at all — no empty panel, no heading over nothing, no "coming
+soon". Where a whole section has nothing to show, the section goes, its
+navigation link goes with it, and the section lettering closes up so there is
+no gap in the alphabet where it used to be. The site is deployable exactly as
+it stands.
 
-**Nothing here may be filled in with an approximation, a rounded conversion, a
-representative example, or a name that has not given permission.** If the real
-answer is not available yet, the honest options are to leave the token, write
-the true state ("in progress"), or delete the block.
+That is a change from how this started. The tokens used to render, on the
+theory that a visible placeholder is the loudest possible reminder to replace
+it. True of whoever maintains the page and false of everybody else — the
+reminder had three other homes and the visitor got a building site.
+
+**Filling one in is all it takes.** Put real content in the source below and
+its block appears; there is no second switch. And the rule the whole site
+rests on is unchanged: *nothing here may be invented to make a section
+appear.* Hiding a section costs a section. Filling it with something plausible
+costs the argument every other claim on the page depends on.
 
 ## How to check what is still outstanding
 
@@ -23,17 +28,23 @@ the true state ("in progress"), or delete the block.
 cd frontend && npm run build
 ```
 
-The last line of the build lists every `{{…}}` token left in the built pages —
-a warning, not a failure, so the branch stays deployable to a preview while
-the values are decided. To see them in place, open `dist/index.html` and
-`dist/erp/*.html`.
+The build ends with every empty slot and what a visitor is not seeing because
+of it — for example:
 
-Two tests guard the discipline rather than the values:
-`src/landing/prerender.test.tsx` refuses any token that is not on its declared
-list (so a new placeholder cannot be added without landing on this checklist),
-and it fails if the compliance row is ever made to claim a certification.
+```
+prerender: 11 content slots are still empty, and the pages hide what depends on them:
+    DEMO_BOOKING_URL          → every "Book a demo" button falls back to the trial door
+    CUSTOMER_LOGO_1..4        → no customer strip
+    CASE_STUDY_*              → no case study
+    — all three above —       → the Proof section is hidden entirely
+```
 
----
+Nothing in that list is broken. Each line is a section the site is not showing.
+
+The reverse condition — a token actually reaching a built page — **fails the
+build**, because it means something rendered a placeholder instead of hiding
+its block. `prerender.test.tsx` catches the same thing in the three-second
+test loop, along with the section's navigation link and the lettering.
 
 ## 1 · Prices — `frontend/src/landing/pricing.ts`
 

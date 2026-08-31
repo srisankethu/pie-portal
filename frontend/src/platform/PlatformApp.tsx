@@ -390,6 +390,11 @@ export default function PlatformApp() {
   const queryClient = useQueryClient();
   const { enqueueSnackbar, closeSnackbar } = useSnackbar();
   const [session, setSession] = useState<PlatformSession | null>(loadPlatformSession());
+  //: The session as it is *now*, for the storage listener below. That listener
+  //: is registered once and would otherwise compare against the session that
+  //: existed when it was registered.
+  const sessionRef = useRef(session);
+  useEffect(() => { sessionRef.current = session; }, [session]);
   // Signed out, there are three doors: the public landing page (the default),
   // the sign-in card one click behind it, and — where the deployment offers it
   // — the sign-up card. State rather than a route on purpose: a person
@@ -502,21 +507,31 @@ export default function PlatformApp() {
   useEffect(() => onSessionChangedElsewhere((next) => {
     if (!next) {
       forgetSession();
+      // `setNotice` is right for this one alone: it ends with the shell
+      // unmounting, and the sign-in card that replaces it is what renders it.
       setNotice("You signed out in another tab.");
       return;
     }
-    setSession((prev) => {
-      if (prev && prev.user_id === next.user_id) return prev;   // same person; nothing to do
-      // A different account signed in elsewhere. Adopt it and drop everything
-      // loaded for the previous one rather than showing one person's data under
-      // another's name.
-      setSummaries(null);
-      setDetails({});
-      setError(null);
-      setNotice(`Signed in as ${next.name} in another tab.`);
-      return next;
-    });
-  }), [forgetSession]);
+    // Read the current session through the ref rather than a `setSession`
+    // updater's `prev`. The toast below is a side effect, and an updater is a
+    // place React is entitled to run twice — it does so in development under
+    // StrictMode, which `main.tsx` enables — while the effect itself
+    // is registered once and closes over the session it saw then, which is why
+    // the updater was reached for in the first place.
+    const prev = sessionRef.current;
+    if (prev && prev.user_id === next.user_id) return;   // same person; nothing to do
+    // A different account signed in elsewhere. Adopt it and drop everything
+    // loaded for the previous one rather than showing one person's data under
+    // another's name.
+    setSummaries(null);
+    setDetails({});
+    setError(null);
+    setSession(next);
+    // A toast, because this tab keeps its shell: `notice` has no renderer while
+    // a session exists, so this sentence was being set and never seen — the tab
+    // silently became somebody else.
+    flash(`Signed in as ${next.name} in another tab.`);
+  }), [forgetSession, flash]);
 
   // Registered once for the whole app. Before this, a 401 was recognised only
   // where a screen remembered to ask `isAuthError` — three call sites, all on
@@ -659,9 +674,16 @@ export default function PlatformApp() {
       // Deliberately quiet beyond the toast: a refused switch means the
       // membership is gone or was never there, and the honest response is to
       // stay exactly where the person already is.
-      setNotice("That workspace could not be opened. It may no longer be yours.");
+      //
+      // `flash`, not `setNotice`. The session survives a refused switch, so the
+      // shell stays mounted and the sign-in card — the only thing that renders
+      // `notice` — is never reached. The sentence was being set and never
+      // shown: the switch failed in silence, and the stale notice could then
+      // surface at the next sign-out, describing something that happened long
+      // before.
+      flash("That workspace could not be opened. It may no longer be yours.");
     }
-  }, [session, navigate, queryClient]);
+  }, [session, navigate, queryClient, flash]);
 
   const refresh = useCallback(async (id?: string) => {
     if (!session) return;

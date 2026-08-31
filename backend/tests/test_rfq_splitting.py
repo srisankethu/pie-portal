@@ -91,11 +91,59 @@ def test_a_two_token_code_ending_in_digits_is_a_code_not_a_quantity(line):
 
 
 def test_an_explicit_separator_still_lifts_the_digit_bound():
-    """The bound is on *bare* whitespace only. A comma, an `x` or a unit word is
+    """The bound is on *bare* whitespace only. A comma, an `x` or a dash is
     somebody saying "this is a quantity", and a large order is allowed."""
     assert _one("2001174, 250000")["qty"] == 250000
     assert _one("2001174 x250000")["qty"] == 250000
     assert _one("2001174 - 250000 nos")["qty"] == 250000
+    assert _one("2001174 qty 250000 nos")["qty"] == 250000
+
+
+# ── the unit word must not lift the bound, nor eat the code ──────────────────
+@pytest.mark.parametrize("line,code", [
+    ("DNMG 150608 nos", "DNMG 150608"),
+    ("CNMG 120408 nos", "CNMG 120408"),
+    ("TNMG 160404 pcs", "TNMG 160404"),
+])
+def test_a_unit_word_after_a_numeric_code_does_not_make_it_a_quantity(line, code):
+    """`_BARE_QTY_DIGITS` exists because `DNMG 150608` was read as 150,608 of a
+    code called `DNMG`. Lifting that bound whenever a unit word appeared let the
+    same defect back in through the other door: the unit sits *after* the
+    number, so it says nothing about which digits were meant.
+
+    The line still carries a unit word nobody could attribute, so it travels
+    flagged — the estimate is blocked until a person confirms the reading,
+    rather than a quotation going out for a hundred and fifty thousand.
+    """
+    row = _one(line)
+    assert row["qty"] == 1, f"{line!r} states no quantity"
+    assert row["code"].startswith(code), "the code must survive intact"
+    assert row.get("proposed") is True, "a stated-but-unread unit word is flagged"
+
+
+@pytest.mark.parametrize("line", [
+    "2001174 nos",
+    "2001174 pcs",
+    "6739214 units",
+    "2001174 NOS",
+])
+def test_a_unit_word_is_never_matched_as_a_prefix_of_the_next_token(line):
+    """The leading rule read `no` out of `nos` and kept the leftover `s` as the
+    product code, so `2001174 nos` became two million of a code one character
+    long. The number in these lines is the part, not the quantity."""
+    row = _one(line)
+    assert row["qty"] == 1, f"{line!r} names a part, not a quantity"
+    assert row["code"].startswith(line.split()[0]), "the part number must survive"
+    assert len(row["code"]) > 1, "the code is not the tail of a chopped unit word"
+
+
+def test_the_shapes_that_do_state_a_quantity_still_read_it():
+    """The guard above must not cost the readings it was put in to protect."""
+    assert _one("100 nos 2001174")["qty"] == 100
+    assert _one("100 nos of CNMG 120408")["qty"] == 100
+    assert _one("50 pieces DNMG 150608")["qty"] == 50
+    assert _one("100 no. CNMG 120408")["qty"] == 100
+    assert _one("CNMG 120408 100 nos")["qty"] == 100
 
 
 # ── the part that must not default silently ──────────────────────────────────

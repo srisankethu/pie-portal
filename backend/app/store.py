@@ -113,8 +113,17 @@ _LIST_MARKER = re.compile(r"^\(?\d{1,2}[.)]\s+")
 #: rule matched any trailing number after whitespace, so `DNMG 150608` came back
 #: as code `DNMG` at a quantity of a hundred and fifty thousand: the code mangled
 #: and the quantity invented, from a line a buyer would call perfectly ordinary.
-#: A comma, an `x` or a unit word is explicit enough to lift the bound; bare
-#: whitespace is not.
+#: A comma, an `x`, a dash or a `qty` keyword is explicit enough to lift the
+#: bound; bare whitespace is not.
+#:
+#: A *unit word* is not, either, and that correction is the point of this note.
+#: The bound used to be lifted by the mere presence of one, on the reasoning
+#: that a unit word makes the number unambiguous — but the unit sits *after* the
+#: number, so it says nothing about which digits were meant. `DNMG 150608 nos`
+#: therefore came back as code `DNMG` at 150,608: exactly the defect this
+#: constant was introduced to stop, re-entering through the door held open for
+#: it. The bound now travels with the separator, and only an explicit one lifts
+#: it — `DNMG 150608 - 250000 nos` is still a quarter-million pieces.
 _BARE_QTY_DIGITS = 4
 
 #: Tried in order, strongest evidence first, and the bare-number rule last
@@ -125,18 +134,30 @@ _QTY_PATTERNS = (
     re.compile(r"^(?P<code>.*?)\s*,\s*x?\s*(?P<qty>\d+)\s*$", re.IGNORECASE),
     # "<code> x100"  ·  "<code>x100"
     re.compile(r"^(?P<code>.*?)\s*\bx\s*(?P<qty>\d+)\s*$", re.IGNORECASE),
-    # "<code> - 100 nos"  ·  "<code> 100 pcs"  ·  "<code> qty 100 nos"
-    # A unit word has to be present — that is what makes this safe on a code
-    # whose own tail is numeric.
-    re.compile(rf"^(?P<code>.*?)[\s,\t:\u2013\u2014-]+"
-               rf"(?:(?:qty|quantity)[\s.:-]*)?(?P<qty>\d+)\s*{_UNIT_WORDS}\s*[.]?$",
+    # "<code> - 100 nos"  ·  "<code> qty 100 nos" — an explicit separator or the
+    # keyword is somebody saying "a quantity starts here", so it is unbounded.
+    re.compile(rf"^(?P<code>.*?)(?:[,\t:\u2013\u2014-]\s*|[\s,\t:\u2013\u2014-]+(?:qty|quantity)[\s.:-]*)"
+               rf"(?P<qty>\d+)\s*{_UNIT_WORDS}(?![A-Za-z])\s*[.]?$",
+               re.IGNORECASE),
+    # "<code> 100 pcs" — the same shape with nothing but whitespace between the
+    # code and the number, so `_BARE_QTY_DIGITS` still applies. The unit word
+    # cannot lift that bound: it sits after the number and says nothing about
+    # which digits were meant, which is how `DNMG 150608 nos` was read as
+    # 150,608 of a code called `DNMG`.
+    re.compile(rf"^(?P<code>.*?)[\s\t]+(?P<qty>\d{{1,{_BARE_QTY_DIGITS}}})"
+               rf"\s*{_UNIT_WORDS}(?![A-Za-z])\s*[.]?$",
                re.IGNORECASE),
     # "<code> qty 100" — the keyword standing in for the unit word.
     re.compile(r"^(?P<code>.*?)[\s,\t:\u2013\u2014-]+(?:qty|quantity)[\s.:-]*"
                r"(?P<qty>\d+)\s*[.]?$", re.IGNORECASE),
     # "100 nos <code>"  ·  "100 nos of <code>" — leading, and it needs a unit
     # word to be told apart from a code that starts with digits.
-    re.compile(rf"^(?P<qty>\d+)\s*{_UNIT_WORDS}[\s.:]*(?:of\s+)?(?P<code>.+)$",
+    #
+    # The lookahead is load-bearing: without it the alternation matches a
+    # *prefix* of the next token, so `2001174 nos` read `no` as the unit and
+    # left `s` as the product code — a quantity of two million of a code one
+    # character long, out of a line naming one part.
+    re.compile(rf"^(?P<qty>\d+)\s*{_UNIT_WORDS}(?![A-Za-z])[\s.:]*(?:of\s+)?(?P<code>.+)$",
                re.IGNORECASE),
     # "qty 25 <code>"  ·  "qty: 25 nos <code>"
     re.compile(rf"^(?:qty|quantity)[\s.:-]*(?P<qty>\d+)\s*(?:{_UNIT_WORDS})?"

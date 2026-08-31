@@ -93,6 +93,19 @@ describe("the placeholders", () => {
     expect([...found].filter((token) => !KNOWN.has(token)).sort()).toEqual([]);
   });
 
+  it("puts no placeholder anywhere a visitor can click", () => {
+    // A token in prose is a visible reminder. A token in an `href` is a dead
+    // primary call to action, and the two were the same mechanism until the
+    // demo link learned to degrade — see `cta.ts`. Every destination in every
+    // served document has to be somewhere a browser can actually go.
+    for (const { page, html } of documents) {
+      for (const [, href] of html.matchAll(/href="([^"]*)"/g)) {
+        expect(href, `/${page.slug} links to a placeholder: ${href}`)
+          .not.toContain("{{");
+      }
+    }
+  });
+
   it("states no certification, either way, while the status is unknown", () => {
     // The failure this guards is a specific one: somebody replaces the status
     // token with reassuring prose instead of a status. Neither word may appear

@@ -51,9 +51,16 @@
 		# app against this week's API.
 		header /index.html Cache-Control "no-cache"
 
-		# React Router owns the paths. A reload on /decisions or a pasted deep
-		# link has to be served the shell, not a 404 from the file server.
-		try_files {path} /index.html
+		# The ERP pages are real documents at /erp/{system}, baked by
+		# scripts/prerender.mjs as flat .html files. `{path}.html` is what
+		# resolves an extensionless address to one of them; without it the
+		# fallback below would answer /erp/prophet-21 with the landing page at
+		# HTTP 200, which is a soft 404 nothing would ever notice.
+		#
+		# After that, React Router owns the paths: a reload on /decisions or a
+		# pasted deep link has to be served the shell, not a 404 from the file
+		# server.
+		try_files {path} {path}.html /index.html
 		file_server
 	}
 

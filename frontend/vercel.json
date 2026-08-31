@@ -3,6 +3,9 @@
   "outputDirectory": "dist",
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/proxy?__path=$1" },
+    { "source": "/erp/prophet-21", "destination": "/erp/prophet-21.html" },
+    { "source": "/erp/netsuite", "destination": "/erp/netsuite.html" },
+    { "source": "/erp/acumatica", "destination": "/erp/acumatica.html" },
     { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

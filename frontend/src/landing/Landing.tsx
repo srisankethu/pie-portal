@@ -385,11 +385,17 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
         <div className="lp-sched">
           <div className="lp-wrap lp-sched-row">
             <span className="lp-sched-label">Reads the books you already keep</span>
+            {/* Three of these are links, and the other four are not, because
+                three have a page of their own at /erp/{system} — what PIE
+                reads out of that system, what it can write back, and what it
+                cannot see. They are also the only route by which those pages
+                are reachable from this one: a page in the sitemap and nowhere
+                in the site is an orphan, and reads like one. */}
             <span className="lp-sys">Zoho Books</span>
-            <span className="lp-sys">NetSuite</span>
+            <a className="lp-sys" href="/erp/netsuite">NetSuite</a>
             <span className="lp-sys">Dynamics 365 BC</span>
-            <span className="lp-sys">Acumatica</span>
-            <span className="lp-sys">Prophet 21</span>
+            <a className="lp-sys" href="/erp/acumatica">Acumatica</a>
+            <a className="lp-sys" href="/erp/prophet-21">Prophet 21</a>
             <span className="lp-sys">Sage X3</span>
             <span className="lp-sys">Sage 100</span>
             <span className="lp-sched-note">

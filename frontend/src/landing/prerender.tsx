@@ -17,6 +17,8 @@
  */
 import { renderToStaticMarkup } from "react-dom/server";
 import { CSS_VARS } from "../theme";
+import { ERP_PAGES } from "./erp";
+import { ErpPage } from "./ErpPage";
 import { Landing } from "./Landing";
 
 /** The landing exactly as `PlatformApp` mounts it for a signed-out visitor.
@@ -49,3 +51,46 @@ export function landingTokenCss(): string {
     .join(";");
   return `:root{${decls}}`;
 }
+
+/** One document the build emits, and everything that is true only of it.
+ *
+ * `slug` is the path under the origin: `""` is the landing at `/`, and
+ * `"erp/prophet-21"` is a document at `/erp/prophet-21`. The landing is an
+ * entry in this list rather than a special case beside it, so there is one
+ * code path in `scripts/prerender.mjs` and a page cannot exist without a
+ * canonical URL, a `<title>`, a description and a sitemap entry.
+ *
+ * `title` and `description` are `null` for the landing alone, and that is
+ * deliberate rather than untidy: the landing's own strings live in
+ * `index.html`, which is also what `npm run dev` serves and what the
+ * un-prerendered shell would show, and moving them here would leave the dev
+ * document untitled. The prerenderer reads them back out of the built
+ * document. Every other page's single source is its entry here.
+ *
+ * `standalone` says the document ships without the module script. See
+ * `ErpPage.tsx` for why that is the design and not a limitation.
+ */
+export interface PrerenderPage {
+  slug: string;
+  title: string | null;
+  description: string | null;
+  standalone: boolean;
+  render: () => string;
+}
+
+export const PAGES: PrerenderPage[] = [
+  {
+    slug: "",
+    title: null,
+    description: null,
+    standalone: false,
+    render: renderLandingMarkup,
+  },
+  ...ERP_PAGES.map((page) => ({
+    slug: `erp/${page.slug}`,
+    title: page.title,
+    description: page.description,
+    standalone: true,
+    render: () => renderToStaticMarkup(<ErpPage page={page} />),
+  })),
+];

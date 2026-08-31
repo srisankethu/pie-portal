@@ -8,10 +8,13 @@
  * the property that broke.
  */
 import { describe, expect, it } from "vitest";
-import { landingTokenCss, renderLandingMarkup } from "./prerender";
+import { PAGES, landingTokenCss, renderLandingMarkup } from "./prerender";
 
 /** Rendered once and read by every block below — the render is the fixture. */
 const markup = renderLandingMarkup();
+
+/** Every document the build emits, rendered the way the build renders them. */
+const documents = PAGES.map((page) => ({ page, html: page.render() }));
 
 describe("renderLandingMarkup", () => {
 
@@ -71,11 +74,17 @@ describe("the placeholders", () => {
     "{{SOC2_TYPE_II_STATUS}}",
     "{{DATA_RESIDENCY}}",
     "{{GDPR_DPA_STATUS}}",
+    // The ERP pages — real language from distributors running that system.
+    "{{PROPHET21_DISTRIBUTOR_EVIDENCE}}",
+    "{{NETSUITE_DISTRIBUTOR_EVIDENCE}}",
+    "{{ACUMATICA_DISTRIBUTOR_EVIDENCE}}",
   ]);
 
-  it("carries no placeholder that is not declared", () => {
-    const found = new Set(markup.match(/\{\{[A-Z0-9_]+\}\}/g) ?? []);
-    expect([...found].filter((token) => !KNOWN.has(token))).toEqual([]);
+  it("carries no placeholder that is not declared, on any page", () => {
+    const found = new Set(
+      documents.flatMap(({ html }) => html.match(/\{\{[A-Z0-9_]+\}\}/g) ?? []),
+    );
+    expect([...found].filter((token) => !KNOWN.has(token)).sort()).toEqual([]);
   });
 
   it("states no certification, either way, while the status is unknown", () => {
@@ -94,5 +103,55 @@ describe("landingTokenCss", () => {
     // The two tokens every surface depends on; the rest come from the same map.
     expect(css).toContain("--color-bg:#f2f2f3");
     expect(css).toContain("--font-body:");
+  });
+});
+
+describe("every prerendered page", () => {
+  it("renders one document per registry entry, each with a single h1", () => {
+    expect(documents.length).toBeGreaterThan(1);
+    for (const { page, html } of documents) {
+      expect(html.match(/<h1/g), `/${page.slug} h1 count`).toHaveLength(1);
+      expect(html).toContain("<nav");
+      expect(html).toContain("<footer");
+    }
+  });
+
+  it("gives every page but the landing its own title and description", () => {
+    for (const { page } of documents) {
+      if (page.slug === "") {
+        // The landing's strings live in index.html, which is also what the dev
+        // server and an un-prerendered shell serve. See prerender.tsx.
+        expect(page.title).toBeNull();
+        expect(page.description).toBeNull();
+      } else {
+        expect(page.title).toBeTruthy();
+        expect(page.description).toBeTruthy();
+      }
+    }
+  });
+
+  it("keeps a standalone page's links absolute, because it ships no router", () => {
+    // A standalone document carries no bundle: `href="#pricing"` on it is a
+    // fragment that scrolls nowhere, and the reader is left on a page with a
+    // dead button. Every in-site link has to be a path.
+    for (const { page, html } of documents.filter((d) => d.page.standalone)) {
+      const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]);
+      expect(hrefs.length).toBeGreaterThan(0);
+      for (const href of hrefs) {
+        expect(href.startsWith("#"), `/${page.slug} has a bare fragment: ${href}`)
+          .toBe(false);
+      }
+    }
+  });
+
+  it("names its own ERP in the first heading of each sub-page", () => {
+    // The whole reason these pages exist: a Prophet 21 distributor has to see
+    // "Prophet 21" without reading a paragraph first.
+    for (const { page, html } of documents.filter((d) => d.page.slug !== "")) {
+      const h1 = html.match(/<h1[^>]*>(.*?)<\/h1>/s)?.[1] ?? "";
+      const system = (page.title ?? "").split(" ")[2] ?? "";
+      expect(h1.length).toBeGreaterThan(0);
+      expect(`${h1} ${page.title}`).toContain(system);
+    }
   });
 });

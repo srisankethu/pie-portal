@@ -97,6 +97,25 @@ def sales_tax_label() -> str:
 #: wrong is one people learn to click through.
 _UNIT_WORDS = r"(?:nos?|no\.|pcs?|pieces?|units?|ea|each|qty|quantity)"
 
+#: The two unit words that are *only* ever quantity keywords.
+#:
+#: `pc`, `no` and `ea` all appear inside ordinary product prose — `WMT PC
+#: 805M`, `INSERT NO WIPER` — so they are only evidence of a quantity when
+#: they sit against a number or end the line. `qty` and `quantity` carry no
+#: such risk: they occur in 0 of the 6,717 corpus rows, and a person who
+#: types one is talking about a count and nothing else.
+_QTY_KEYWORD = r"(?:qty|quantity)"
+
+#: The unit words long enough that they are never a token in a description.
+#:
+#: This is `_UNIT_WORDS` minus the abbreviations that collide with product
+#: prose: bare `pc` (`WMT PC 805M`), bare `no` and `no.` (`INSERT NO WIPER`),
+#: bare `ea`, and the singulars. Only these may be read as a unit when they
+#: come *before* the number — `- nos 100 required` — because that position is
+#: exactly where `PC 805M` would otherwise be misread. Measured: 0 of the
+#: 6,717 corpus rows match in that position.
+_UNIT_STRONG = r"(?:nos|pcs|pieces|units|each|qty|quantity)"
+
 #: A list marker a person typed to number their enquiry — "1." or "2)".
 #:
 #: Stripped before anything reads a quantity, and it must never be read *as* one:
@@ -230,9 +249,30 @@ def _split_rfq(text: str) -> List[Dict[str, Any]]:
             # `\b` needs a boundary before the word and there is none between a
             # digit and a letter, so that shape used to default silently to 1.
             #
-            # `\b{unit}[\s.,:;-]*$` — or the unit stands at the end with no
-            # number at all: `CNMG 120408-MP insert, nos`. A marker with nothing
-            # to attach to is exactly the case a human has to read.
+            # The separator between number and unit is `[\s.-]*`, not a space:
+            # `100-nos` is how plenty of people write it, and a hyphen there
+            # cost the flag entirely.
+            #
+            # `\b{strong}[\s.-]*\d` — the unit can also come *first*:
+            # `- nos 100 required`. Only the long forms are allowed to, because
+            # that position is precisely where `WMT PC 805M` sits, so bare `pc`,
+            # `no` and `ea` are excluded from this arm and only this one.
+            #
+            # `\b{unit}\W*$` — or the unit stands at the end with no number at
+            # all: `insert, nos`. A marker with nothing to attach to is exactly
+            # the case a human has to read. The trailing run is `\W*` rather
+            # than an enumerated punctuation class, because the enumeration kept
+            # being wrong by one character — `(nos)`, `nos?`, `nos —` and
+            # WhatsApp's `*nos*` each defeated a list that did not name them,
+            # and `\W*` cannot swallow a digit, so it stays specific.
+            #
+            # `\bqty|quantity\b` — and the explicit keyword counts wherever it
+            # appears, because unlike `nos` or `pc` it is never a grade token or
+            # an English word in a description: it occurs in 0 of the 6,717
+            # corpus rows. `CNMG 120408-MP - qty to be confirmed` is the
+            # customer saying the number is not settled, which is the strongest
+            # evidence there is that a person must supply it — and adjacency
+            # alone would miss it, since there is no digit to be adjacent to.
             #
             # What neither arm matches is a unit word that is merely *present*,
             # which the previous rule (a bare search) treated as evidence. It
@@ -248,8 +288,10 @@ def _split_rfq(text: str) -> List[Dict[str, Any]]:
             # construct. An earlier attempt anchored to the end of the line
             # alone; it cleared the false flags and lost the flag on `- 100 nos
             # urgent`, which is a hundred pieces quoted as one, in silence.
-            if re.search(rf"(?:\d\s*{_UNIT_WORDS}\b|\b{_UNIT_WORDS}[\s.,:;-]*$)",
-                         code, re.IGNORECASE):
+            if re.search(rf"(?:\b{_QTY_KEYWORD}\b"
+                         rf"|\d[\s.-]*{_UNIT_WORDS}\b"
+                         rf"|\b{_UNIT_STRONG}[\s.-]*\d"
+                         rf"|\b{_UNIT_WORDS}\W*$)", code, re.IGNORECASE):
                 read = ("quantity not read from this line — assumed 1. "
                         "Check it against what the customer wrote.")
 

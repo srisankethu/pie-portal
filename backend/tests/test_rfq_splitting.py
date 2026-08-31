@@ -203,6 +203,52 @@ def test_a_quantity_no_pattern_could_read_is_flagged_wherever_it_sits(line):
 
 
 @pytest.mark.parametrize("line", [
+    "CNMG 120408 TN2000 (nos)",
+    "CNMG 120408 TN2000 - nos?",
+    "CNMG 120408 TN2000 - nos \u2014",
+    "*CNMG 120408 TN2000 - nos*",
+    "CNMG 120408 TN2000 - 100-nos urgent",
+    "CNMG 120408 - nos 100 required",
+    "need cnmg120408, 20 pcs urgent",
+])
+def test_the_punctuation_around_a_unit_word_does_not_decide_whether_it_counts(line):
+    """Each of these lost the flag to one character.
+
+    An enumerated trailing class — `[\\s.,:;-]*$` — kept being wrong by exactly
+    the punctuation the writer happened to use: a closing bracket, a question
+    mark, an em dash, WhatsApp's bold asterisk. A hyphen between the number and
+    its unit (`100-nos`) defeated the adjacency arm the same way, and a unit
+    written *before* its number (`nos 100`) had no arm at all.
+
+    None of that is a distinction a customer is making. The last case is the
+    repository's own inbound seed set — `underspec-wa-no-grade`, channel
+    WhatsApp — so it is what a real enquiry looks like, not a construction.
+    """
+    row = _one(line)
+    assert row.get("proposed") is True, f"{line!r} lost its flag to punctuation"
+
+
+@pytest.mark.parametrize("line", [
+    "CNMG 120408-MP - qty to be confirmed",
+    "CNMG 120408 - qty TBC",
+    "DNMG 150608 quantity to follow",
+])
+def test_an_explicit_qty_keyword_counts_wherever_it_appears(line):
+    """"Qty to be confirmed" is the customer saying the number is not settled —
+    the strongest evidence there is that a person has to supply it, and the one
+    shape with no digit for an adjacency test to find.
+
+    `qty` and `quantity` are carved out of the adjacency rule because, unlike
+    `nos` or `pc` or `ea`, they never appear inside product prose: 0 of the
+    6,717 corpus rows contain either. So they may be matched anywhere without
+    reintroducing the false flags the adjacency rule exists to stop.
+    """
+    row = _one(line)
+    assert row["qty"] == 1
+    assert row.get("proposed") is True, f"{line!r} says the quantity is unsettled"
+
+
+@pytest.mark.parametrize("line", [
     "WMT PC 805M MOULDED INSERTS",
     "WMT PC 400M PRECISION PROFILING",
     "DOV-LOK PCD MINI TIP INSERT NO WIPER",

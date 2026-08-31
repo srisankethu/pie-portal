@@ -236,14 +236,31 @@ what matters is whether it is **doing the work of a unit** — and the test for
 that is adjacency to a number.
 
 ```python
-re.search(rf"(?:\d\s*{_UNIT_WORDS}\b|\b{_UNIT_WORDS}[\s.,:;-]*$)", code, re.IGNORECASE)
+re.search(rf"(?:\b{_QTY_KEYWORD}\b"
+          rf"|\d[\s.-]*{_UNIT_WORDS}\b"
+          rf"|\b{_UNIT_STRONG}[\s.-]*\d"
+          rf"|\b{_UNIT_WORDS}\W*$)", code, re.IGNORECASE)
 ```
 
-Either the unit sits against a number anywhere in the line — `- 100 nos urgent`,
-`(100 nos)`, `100 nos TN2000`, or `2001174nos` with no space at all — or it
-stands at the end with no number to attach to, `CNMG 120408-MP insert, nos`,
-which is precisely the case a person has to read. A grade token in front of a
-dimension is neither.
+Four arms, each earning its place:
+
+- **The explicit keyword, anywhere.** `qty` and `quantity` never occur in
+  product prose — 0 of the 6,717 corpus rows contain either — so
+  `CNMG 120408-MP - qty to be confirmed` is the customer saying the number is
+  not settled, and there is no digit for an adjacency test to find.
+- **A unit after a number.** `- 100 nos urgent`, `(100 nos)`, `100 nos TN2000`,
+  `2001174nos` with no space, and `100-nos` with a hyphen.
+- **A unit before a number**, long forms only. `- nos 100 required` is ordinary
+  phrasing, but that position is exactly where `WMT PC 805M` sits, so bare `pc`,
+  `no` and `ea` are excluded from this arm and only this one.
+- **A unit at the end with nothing to attach to.** `insert, nos` — a marker with
+  no number is the case most in need of a human. The trailing run is `\W*`
+  rather than an enumerated punctuation class, because the enumeration kept
+  being wrong by one character: `(nos)`, `nos?`, `nos —` and WhatsApp's `*nos*`
+  each defeated a list that did not name them. `\W*` cannot swallow a digit, so
+  it stays specific.
+
+A grade token in front of a dimension matches none of the four.
 
 **The first attempt at this was wrong, and how it was caught is the point.** It
 anchored the unit word to the end of the line. That cleared all ten false flags
@@ -256,12 +273,17 @@ descriptions — when the input this function parses is **messy buyer prose**.
 Right method, wrong corpus, and the corpus was the half that flattered the
 change.
 
-An adversarial pass over realistic inbound text found the class; it is now
-pinned by eleven parametrised cases. The rule that replaced it flags **0** of
-the 6,717 rows in three shapes where the bare search flagged 10, and holds every
-quantity-bearing shape the attack could construct. Twenty parametrised cases
-cover the three directions: six fail against the original rule, eleven against
-the anchored one.
+An adversarial pass over realistic inbound text found the class, and kept
+finding narrower versions of it — a closing bracket, a question mark, an em
+dash, a WhatsApp asterisk, a hyphen between number and unit, a unit written
+before its number. Each was one character away from the last, which is the
+argument against enumerating punctuation at all.
+
+The rule that replaced it flags **0** of the 6,717 rows in three shapes where
+the bare search flagged 10, holds every quantity-bearing shape four adversarial
+lenses could construct, and leaves nothing unflagged-but-stated across the
+repository's own 14-case inbound seed set. Thirty parametrised cases pin the
+directions.
 
 ### F2 · MINOR · A failed workspace switch told the user nothing — **FIXED**
 

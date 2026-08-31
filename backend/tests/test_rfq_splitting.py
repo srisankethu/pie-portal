@@ -158,6 +158,117 @@ def test_a_unit_word_we_could_not_attribute_is_flagged_not_defaulted():
     assert "quantity" in row["reading"].lower()
 
 
+@pytest.mark.parametrize("line", [
+    "2001174nos",
+    "2001174NOS",
+    "6739214pcs",
+])
+def test_a_unit_word_glued_to_the_part_number_is_still_flagged(line):
+    """The flag used to need a word boundary before the unit word, and there is
+    none between a digit and a letter. So `2001174nos` came back quantity 1 and
+    *unflagged* — the benign default §1 says is never the answer, hiding in the
+    one shape nobody writes deliberately."""
+    row = _one(line)
+    assert row["qty"] == 1
+    assert row.get("proposed") is True, f"{line!r} states a unit and no quantity"
+
+
+@pytest.mark.parametrize("line", [
+    "CNMG 120408 TN2000 - 100 nos urgent",
+    "CNMG 120408 (100 nos)",
+    "CNMG 120408 - 100 nos TN2000",
+    "DNMG 150608 - 250 nos, need by friday",
+    "Pls quote 100 nos CNMG 120408 TN2000",
+    "Need 20 nos of TCMT 110204",
+    "TPG 321 K68 - 50 nos?",
+    "WNMG 080408 100 nos @ 250/-",
+    "CNMG 120408 100 nos, delivery 2 weeks",
+    "M760 WIPER INSERT - 50 pcs balance",
+    "TCMT 110204 HP - 20 pcs & 10 pcs of CNMG",
+])
+def test_a_quantity_no_pattern_could_read_is_flagged_wherever_it_sits(line):
+    """Every one of these states a quantity that `_QTY_PATTERNS` does not read,
+    because something follows it — a courtesy word, a grade, a delivery clause,
+    a bracket, a rate. The line must not travel as one unit in silence.
+
+    This is the class an earlier version of the flag lost. It had been anchored
+    to the end of the line to stop a grade token being read as a unit, and the
+    anchor took this with it: `- 100 nos urgent` is a hundred pieces quoted as
+    one, with nothing on screen to say so. The rule tests adjacency to a number
+    instead, so where the unit sits stopped mattering.
+    """
+    row = _one(line)
+    assert row.get("proposed") is True, (
+        f"{line!r} states a quantity nothing read — it must be flagged")
+
+
+@pytest.mark.parametrize("line", [
+    "CNMG 120408 TN2000 (nos)",
+    "CNMG 120408 TN2000 - nos?",
+    "CNMG 120408 TN2000 - nos \u2014",
+    "*CNMG 120408 TN2000 - nos*",
+    "CNMG 120408 TN2000 - 100-nos urgent",
+    "CNMG 120408 - nos 100 required",
+    "need cnmg120408, 20 pcs urgent",
+])
+def test_the_punctuation_around_a_unit_word_does_not_decide_whether_it_counts(line):
+    """Each of these lost the flag to one character.
+
+    An enumerated trailing class — `[\\s.,:;-]*$` — kept being wrong by exactly
+    the punctuation the writer happened to use: a closing bracket, a question
+    mark, an em dash, WhatsApp's bold asterisk. A hyphen between the number and
+    its unit (`100-nos`) defeated the adjacency arm the same way, and a unit
+    written *before* its number (`nos 100`) had no arm at all.
+
+    None of that is a distinction a customer is making. The last case is the
+    repository's own inbound seed set — `underspec-wa-no-grade`, channel
+    WhatsApp — so it is what a real enquiry looks like, not a construction.
+    """
+    row = _one(line)
+    assert row.get("proposed") is True, f"{line!r} lost its flag to punctuation"
+
+
+@pytest.mark.parametrize("line", [
+    "CNMG 120408-MP - qty to be confirmed",
+    "CNMG 120408 - qty TBC",
+    "DNMG 150608 quantity to follow",
+])
+def test_an_explicit_qty_keyword_counts_wherever_it_appears(line):
+    """"Qty to be confirmed" is the customer saying the number is not settled —
+    the strongest evidence there is that a person has to supply it, and the one
+    shape with no digit for an adjacency test to find.
+
+    `qty` and `quantity` are carved out of the adjacency rule because, unlike
+    `nos` or `pc` or `ea`, they never appear inside product prose: 0 of the
+    6,717 corpus rows contain either. So they may be matched anywhere without
+    reintroducing the false flags the adjacency rule exists to stop.
+    """
+    row = _one(line)
+    assert row["qty"] == 1
+    assert row.get("proposed") is True, f"{line!r} says the quantity is unsettled"
+
+
+@pytest.mark.parametrize("line", [
+    "WMT PC 805M MOULDED INSERTS",
+    "WMT PC 400M PRECISION PROFILING",
+    "DOV-LOK PCD MINI TIP INSERT NO WIPER",
+])
+def test_a_unit_word_inside_a_description_is_not_read_as_one(line):
+    """These are real catalogue descriptions, and all three used to travel
+    flagged: `PC` read as `pcs` and the English `NO` in "NO WIPER" read as a
+    count. Ten rows of the 6,717-row corpus were blocked for a unit word that
+    was a grade token or a preposition.
+
+    A quantity marker nobody could attribute sits at the *end* of the line —
+    `CNMG 120408-MP insert, nos` — which is what the anchor tests for. `PC` in
+    front of a dimension is not a unit, and a flag that fires on it is a flag
+    people learn to click through.
+    """
+    row = _one(line)
+    assert row["qty"] == 1
+    assert not row.get("proposed"), f"{line!r} is a description, not a quantity"
+
+
 def test_a_bare_code_is_one_unit_and_is_not_flagged():
     """Pasting a column of codes is a documented way to use this screen, and
     flagging every line of it would make the flag meaningless."""

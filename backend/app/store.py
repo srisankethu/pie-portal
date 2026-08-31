@@ -97,6 +97,25 @@ def sales_tax_label() -> str:
 #: wrong is one people learn to click through.
 _UNIT_WORDS = r"(?:nos?|no\.|pcs?|pieces?|units?|ea|each|qty|quantity)"
 
+#: The two unit words that are *only* ever quantity keywords.
+#:
+#: `pc`, `no` and `ea` all appear inside ordinary product prose — `WMT PC
+#: 805M`, `INSERT NO WIPER` — so they are only evidence of a quantity when
+#: they sit against a number or end the line. `qty` and `quantity` carry no
+#: such risk: they occur in 0 of the 6,717 corpus rows, and a person who
+#: types one is talking about a count and nothing else.
+_QTY_KEYWORD = r"(?:qty|quantity)"
+
+#: The unit words long enough that they are never a token in a description.
+#:
+#: This is `_UNIT_WORDS` minus the abbreviations that collide with product
+#: prose: bare `pc` (`WMT PC 805M`), bare `no` and `no.` (`INSERT NO WIPER`),
+#: bare `ea`, and the singulars. Only these may be read as a unit when they
+#: come *before* the number — `- nos 100 required` — because that position is
+#: exactly where `PC 805M` would otherwise be misread. Measured: 0 of the
+#: 6,717 corpus rows match in that position.
+_UNIT_STRONG = r"(?:nos|pcs|pieces|units|each|qty|quantity)"
+
 #: A list marker a person typed to number their enquiry — "1." or "2)".
 #:
 #: Stripped before anything reads a quantity, and it must never be read *as* one:
@@ -219,8 +238,60 @@ def _split_rfq(text: str) -> List[Dict[str, Any]]:
                 break
         else:
             code = body.rstrip(",").strip()
-            # No quantity found. A unit word left in the line says one was meant.
-            if re.search(rf"\b{_UNIT_WORDS}\b", code, re.IGNORECASE):
+            # No quantity found. A unit word left in the line says one was
+            # meant — but only where it is *doing the work of a unit*, and the
+            # test for that is adjacency to a number, not position in the line.
+            #
+            # `\d\s*{unit}\b` — the unit sits against a number, anywhere in the
+            # line: `- 100 nos urgent`, `(100 nos)`, `100 nos TN2000`, and
+            # `2001174nos` with no space at all. The last of those is why the
+            # digit is inside the pattern rather than a `\b` in front of it: a
+            # `\b` needs a boundary before the word and there is none between a
+            # digit and a letter, so that shape used to default silently to 1.
+            #
+            # The separator between number and unit is `[\s.-]*`, not a space:
+            # `100-nos` is how plenty of people write it, and a hyphen there
+            # cost the flag entirely.
+            #
+            # `\b{strong}[\s.-]*\d` — the unit can also come *first*:
+            # `- nos 100 required`. Only the long forms are allowed to, because
+            # that position is precisely where `WMT PC 805M` sits, so bare `pc`,
+            # `no` and `ea` are excluded from this arm and only this one.
+            #
+            # `\b{unit}\W*$` — or the unit stands at the end with no number at
+            # all: `insert, nos`. A marker with nothing to attach to is exactly
+            # the case a human has to read. The trailing run is `\W*` rather
+            # than an enumerated punctuation class, because the enumeration kept
+            # being wrong by one character — `(nos)`, `nos?`, `nos —` and
+            # WhatsApp's `*nos*` each defeated a list that did not name them,
+            # and `\W*` cannot swallow a digit, so it stays specific.
+            #
+            # `\bqty|quantity\b` — and the explicit keyword counts wherever it
+            # appears, because unlike `nos` or `pc` it is never a grade token or
+            # an English word in a description: it occurs in 0 of the 6,717
+            # corpus rows. `CNMG 120408-MP - qty to be confirmed` is the
+            # customer saying the number is not settled, which is the strongest
+            # evidence there is that a person must supply it — and adjacency
+            # alone would miss it, since there is no digit to be adjacent to.
+            #
+            # What neither arm matches is a unit word that is merely *present*,
+            # which the previous rule (a bare search) treated as evidence. It
+            # read the grade token in `WMT PC 805M MOULDED INSERTS` as `pcs` and
+            # the English in `DOV-LOK PCD MINI TIP INSERT NO WIPER` as a count —
+            # ten real catalogue rows blocked for a unit that was not one, and a
+            # flag that fires on ordinary descriptions is one people learn to
+            # click through.
+            #
+            # Measured, not reasoned about: over all 6,717 corpus rows in three
+            # shapes this flags none where the bare search flagged ten, and it
+            # holds every quantity-bearing shape an adversarial pass could
+            # construct. An earlier attempt anchored to the end of the line
+            # alone; it cleared the false flags and lost the flag on `- 100 nos
+            # urgent`, which is a hundred pieces quoted as one, in silence.
+            if re.search(rf"(?:\b{_QTY_KEYWORD}\b"
+                         rf"|\d[\s.-]*{_UNIT_WORDS}\b"
+                         rf"|\b{_UNIT_STRONG}[\s.-]*\d"
+                         rf"|\b{_UNIT_WORDS}\W*$)", code, re.IGNORECASE):
                 read = ("quantity not read from this line — assumed 1. "
                         "Check it against what the customer wrote.")
 

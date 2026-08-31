@@ -14,10 +14,11 @@ flows were run directly. The three findings whose subject is UI feedback were
 additionally confirmed in Chromium against a running dev server — §2 F2–F4
 records what was clicked and what appeared.
 
-**Result.** Over 100 behavioural checks across both repositories. **Four
+**Result.** Over 100 behavioural checks across both repositories. **Five
 defects, all now fixed with regression tests**: one genuine functional defect
-(RFQ quantity misreading, contained by the send gate) and three messages the
-interface set and never rendered. Every invariant the business depends on —
+(RFQ quantity misreading, contained by the send gate), a second in the flag that
+was supposed to contain it, and three messages the interface set and never
+rendered. Every invariant the business depends on —
 cost containment, approval authority, the identity gate, the send gate —
 **holds under direct attack.**
 
@@ -110,7 +111,7 @@ status code tells a caller which half of the guess was right.
 below 100%, byte-identical reruns.** `eval_identity`: 13/13 cases, **0
 false-positive identity** (the cardinal error). CLI exit codes as documented
 (2 on bad arguments / missing source / unknown record id; 0 on a clean lint).
-pie-portal's own suite: **3,538 passed, 141 skipped, 0 failed**, and the full
+pie-portal's own suite: **3,544 passed, 141 skipped, 0 failed**, and the full
 gate (`make verify`) green end to end — frontend build, migrations from nothing
 on SQLite *and* PostgreSQL, row-level security, the queue's concurrent
 claim, and the `pg_dump` → restore drill. The engine-backed (`requires_pie`)
@@ -213,15 +214,77 @@ obvious: that string is what reaches the resolver (`build_lines` passes
 an AMBIGUOUS line; and `confirm_reading` clears `proposed` and nothing else, so
 confirming the reading does not clean the code.
 
-**One residual, recorded rather than fixed.** The flag comes from a
-`\b`-bounded search for a unit word in the leftover code, so it needs a
-boundary before the word. Written with no space — `2001174nos` — there is none
-between `4` and `n`, and the line comes back qty 1 **unflagged**: better than
-the 2,001,174 it used to return, but still a silent default of exactly the kind
-§1 says is not a pass. The narrow fix is to also match a unit word glued to a
-digit; it is left out of this change because every edit to `_QTY_PATTERNS` in
-this finding's history created the next defect, and this one is not reachable
-from the shapes the corpus or the review actually produced.
+#### F1b · The flag itself was wrong in both directions — **FIXED**
+
+The rule deciding whether a line travels `proposed` was
+`re.search(r"\b{_UNIT_WORDS}\b", code)`, and it erred both ways.
+
+**It under-flagged.** A `\b` needs a boundary before the word and there is none
+between a digit and a letter, so `2001174nos` came back qty 1 and *unflagged* —
+better than the 2,001,174 it used to return, and still a silent default of
+exactly the kind §1 says is never a pass.
+
+**It over-flagged, on real rows.** Searching anywhere in the line matched
+mid-string: `WMT PC 805M MOULDED INSERTS` read the grade token `PC` as `pcs`,
+and `DOV-LOK PCD MINI TIP INSERT NO WIPER` read the English `NO` as a count.
+**Ten of the 6,717 catalogue rows** were blocked for a unit word that was not
+one — and a flag that fires on ordinary descriptions is a flag people learn to
+click through, which costs the cases it exists for.
+
+Both halves have one cause: the test asked *whether* a unit word appears, when
+what matters is whether it is **doing the work of a unit** — and the test for
+that is adjacency to a number.
+
+```python
+re.search(rf"(?:\b{_QTY_KEYWORD}\b"
+          rf"|\d[\s.-]*{_UNIT_WORDS}\b"
+          rf"|\b{_UNIT_STRONG}[\s.-]*\d"
+          rf"|\b{_UNIT_WORDS}\W*$)", code, re.IGNORECASE)
+```
+
+Four arms, each earning its place:
+
+- **The explicit keyword, anywhere.** `qty` and `quantity` never occur in
+  product prose — 0 of the 6,717 corpus rows contain either — so
+  `CNMG 120408-MP - qty to be confirmed` is the customer saying the number is
+  not settled, and there is no digit for an adjacency test to find.
+- **A unit after a number.** `- 100 nos urgent`, `(100 nos)`, `100 nos TN2000`,
+  `2001174nos` with no space, and `100-nos` with a hyphen.
+- **A unit before a number**, long forms only. `- nos 100 required` is ordinary
+  phrasing, but that position is exactly where `WMT PC 805M` sits, so bare `pc`,
+  `no` and `ea` are excluded from this arm and only this one.
+- **A unit at the end with nothing to attach to.** `insert, nos` — a marker with
+  no number is the case most in need of a human. The trailing run is `\W*`
+  rather than an enumerated punctuation class, because the enumeration kept
+  being wrong by one character: `(nos)`, `nos?`, `nos —` and WhatsApp's `*nos*`
+  each defeated a list that did not name them. `\W*` cannot swallow a digit, so
+  it stays specific.
+
+A grade token in front of a dimension matches none of the four.
+
+**The first attempt at this was wrong, and how it was caught is the point.** It
+anchored the unit word to the end of the line. That cleared all ten false flags
+and passed every test in the file — and silently lost the flag on `CNMG 120408
+TN2000 - 100 nos urgent`, `CNMG 120408 (100 nos)`, `- 250 nos, need by friday`
+and eight more: a stated quantity, unread, defaulted to 1, with nothing on
+screen to say so. One trailing courtesy word was enough. The measurement that
+justified the anchor had swept the 6,717-row **catalogue** — clean product
+descriptions — when the input this function parses is **messy buyer prose**.
+Right method, wrong corpus, and the corpus was the half that flattered the
+change.
+
+An adversarial pass over realistic inbound text found the class, and kept
+finding narrower versions of it — a closing bracket, a question mark, an em
+dash, a WhatsApp asterisk, a hyphen between number and unit, a unit written
+before its number. Each was one character away from the last, which is the
+argument against enumerating punctuation at all.
+
+The rule that replaced it flags **0** of the 6,717 rows in three shapes where
+the bare search flagged 10, holds every quantity-bearing shape four adversarial
+lenses could construct, and leaves nothing unflagged-but-stated across the
+repository's own 14-case inbound seed set. `test_rfq_splitting.py` goes from 28
+collected cases to 55; against the original rule 6 of them fail, and against the
+anchored attempt 21 do.
 
 ### F2 · MINOR · A failed workspace switch told the user nothing — **FIXED**
 

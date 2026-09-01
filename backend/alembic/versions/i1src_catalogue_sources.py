@@ -41,15 +41,32 @@ Additive only. Every column is nullable or defaulted, no stored value changes,
 and a database that has run this still serves the previous code — which is what
 lets it deploy ahead of the application rather than in lockstep with it.
 
+Re-pointed onto ``i1contact`` rather than joined to it by a merge revision.
+Both were written against ``h2rls`` — ``i1contact`` (the contact-request table)
+landed on ``main`` while this was in flight, giving the checkout two heads and
+no single ``head`` to upgrade to. ``alembic/env.py`` suggests ``alembic merge``
+for that, which is right when **both** revisions are released: an edited parent
+would then mean two databases that ran "the same" revision with different
+ancestry, and nothing able to tell them apart. That is not this case — this
+revision has never left the branch — so re-pointing it is the narrower fix, and
+it keeps the history linear. ``test_the_newest_migration_is_reversible`` is why
+that matters in practice: ``alembic downgrade -1`` cannot choose a parent at a
+merge node and fails with "Ambiguous walk", so a merge revision at the head
+costs the reversibility check the repository runs on every migration.
+
+``e1heads`` is the other case, kept as the precedent it is: two branches that
+had both already landed on ``main``, where a merge revision was the only
+correct answer.
+
 Revision ID: i1src
-Revises: h2rls
+Revises: i1contact
 Create Date: 2026-09-01
 """
 import sqlalchemy as sa
 from alembic import op
 
 revision = "i1src"
-down_revision = "h2rls"
+down_revision = "i1contact"
 branch_labels = None
 depends_on = None
 

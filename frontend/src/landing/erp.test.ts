@@ -23,6 +23,7 @@ import { describe, expect, it } from "vitest";
 import acumaticaSource from "../../../backend/app/ingestion/erp/acumatica.py?raw";
 import netsuiteSource from "../../../backend/app/ingestion/erp/netsuite.py?raw";
 import prophet21Source from "../../../backend/app/ingestion/erp/prophet21.py?raw";
+import zohoSource from "../../../backend/app/ingestion/zoho_client.py?raw";
 
 import { ERP_PAGES, erpPage } from "./erp";
 
@@ -30,7 +31,29 @@ const SOURCE: Record<string, string> = {
   prophet21: prophet21Source,
   netsuite: netsuiteSource,
   acumatica: acumaticaSource,
+  zoho: zohoSource,
 };
+
+/** Zoho Books is not a connector, and declares what it reads differently.
+ *
+ *  It predates `ingestion/erp/` and is the book this platform was built
+ *  against, so there is no `Permission(reads=…)` to match: the equivalent
+ *  declaration is `SCOPE_FOR_PATH`, the map from Zoho API path to the OAuth
+ *  scope that path needs. That map is load-bearing rather than descriptive —
+ *  it is what turns a 401 into "grant ZohoBooks.creditnotes.READ" instead of a
+ *  symptom — so an endpoint cannot be read without appearing in it, which is
+ *  exactly the property this test needs from a declaration.
+ *
+ *  The comparison stays both-directional for the reason the file header gives:
+ *  a stage the page claims and Zoho does not read is a lie now, and a stage
+ *  Zoho reads and the page omits is a capability nobody is being sold. */
+const ZOHO = "zoho";
+
+function pathsIn(source: string, table: string): Set<string> {
+  const body = source.match(new RegExp(`${table}: dict\\[str, str\\] = \\{([\\s\\S]*?)\\n\\}`))?.[1];
+  if (body === undefined) throw new Error(`${table} not found in zoho_client.py`);
+  return new Set([...body.matchAll(/^\s*"([a-z]+)":/gm)].map((m) => m[1]));
+}
 
 /** The stages a connector declares it reads.
  *
@@ -38,14 +61,16 @@ const SOURCE: Record<string, string> = {
  *  `tests/decision_platform/test_erp_connectors.py::test_connector_permissions`
  *  already holds it against the `list_<stage>` methods that implement it — so
  *  matching this is matching the implementation, one step removed. */
-function declaredReads(source: string): Set<string> {
+function declaredReads(source: string, connector: string): Set<string> {
+  if (connector === ZOHO) return pathsIn(source, "SCOPE_FOR_PATH");
   return new Set(
     [...source.matchAll(/reads=\(([^)]*)\)/g)]
       .flatMap((m) => [...m[1].matchAll(/"([a-z_]+)"/g)].map((s) => s[1])),
   );
 }
 
-function declaredWrites(source: string): Set<string> {
+function declaredWrites(source: string, connector: string): Set<string> {
+  if (connector === ZOHO) return pathsIn(source, "WRITE_SCOPE_FOR_PATH");
   return new Set(
     [...source.matchAll(/writes=\(([^)]*)\)/g)]
       .flatMap((m) => [...m[1].matchAll(/"([a-z_]+)"/g)].map((s) => s[1])),
@@ -57,26 +82,50 @@ describe.each(ERP_PAGES.map((p) => [p.slug, p] as const))("/erp/%s", (_slug, pag
 
   it("is backed by a connector module that exists", () => {
     expect(source).toBeTruthy();
-    // The page names the system; the module names itself the same way.
-    expect(source).toContain(`"${page.connector}"`);
+    // The page names the system; the module names itself the same way. A
+    // connector in `erp/` declares its own key as a literal; `zoho_client.py`
+    // predates that registry and never did, so what identifies it is the
+    // vocabulary it is written in — every scope it names is a Zoho Books one.
+    if (page.connector === ZOHO) expect(source).toContain("ZohoBooks.");
+    else expect(source).toContain(`"${page.connector}"`);
   });
 
   it("lists exactly the stages that connector declares it reads", () => {
     const claimed = new Set(page.reads.map((r) => r.stage));
-    const declared = declaredReads(source);
+    const declared = declaredReads(source, page.connector);
     // Both directions, and reported as sorted arrays so a failure names the
     // stage rather than printing two Sets.
     expect([...claimed].sort()).toEqual([...declared].sort());
   });
 
   it("claims a write only where the connector declares one", () => {
-    const writes = declaredWrites(source);
+    const writes = declaredWrites(source, page.connector);
     if (page.writes === null) {
       expect(writes.size).toBe(0);
+    } else if (page.connector === ZOHO) {
+      // Zoho Books is the one connection PIE creates two kinds of record in,
+      // and the page has to say both. This is the drift that shipped: two
+      // pages read "the only thing PIE ever creates anywhere", which was
+      // written when an estimate was, and `WRITE_SCOPE_FOR_PATH` has carried
+      // `items` all along. The test that would have caught it is this one,
+      // and it did not exist for the connection that has the second write.
+      expect([...writes].sort()).toEqual(["estimates", "items"]);
+      expect(page.writes).toMatch(/estimate/i);
+      expect(page.writes).toMatch(/item/i);
     } else {
       expect(writes.has("sales_quotes")).toBe(true);
       // And the copy has to say what is created, not merely that something is.
       expect(page.writes).toMatch(/quote|estimate/i);
+    }
+  });
+
+  it("does not claim to create nothing anywhere else", () => {
+    // "the only thing PIE ever creates anywhere" was true of no deployment
+    // with Zoho Books connected — the Quote Builder creates an item there
+    // too. A page may say what it is the only thing PIE creates *in this
+    // system*; it may not make a claim about every other system from here.
+    if (page.writes !== null) {
+      expect(page.writes).not.toMatch(/creates anywhere/i);
     }
   });
 

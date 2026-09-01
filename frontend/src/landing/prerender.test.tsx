@@ -22,6 +22,20 @@ import { PAGES, landingTokenCss, renderLandingMarkup } from "./prerender";
 /** Rendered once and read by every block below — the render is the fixture. */
 const markup = renderLandingMarkup();
 
+describe("every ERP page is reachable from the landing page", () => {
+  // The strip in the landing page's "Reads the books you already keep" row is
+  // the only route from the site's front door to these pages. A page in the
+  // sitemap and nowhere in the site is an orphan: a crawler finds it, a reader
+  // never does, and nothing fails. The links are derived from `ERP_PAGES` for
+  // that reason, and this is the test that says so — it would have failed on
+  // the hand-written list the moment a fourth page was added.
+  it.each(ERP_PAGES.map((p) => [p.slug, p] as const))("links /erp/%s", (slug, page) => {
+    expect(markup).toContain(`href="/erp/${slug}"`);
+    // And by the name a reader is looking for, not by the slug.
+    expect(markup).toMatch(new RegExp(`href="/erp/${slug}"[^>]*>${page.short}<`));
+  });
+});
+
 /** Every document the build emits, rendered the way the build renders them. */
 const documents = PAGES.map((page) => ({ page, html: page.render() }));
 

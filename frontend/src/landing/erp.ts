@@ -181,7 +181,7 @@ export const ERP_PAGES: ErpPageData[] = [
     ],
     writes:
       "A quote built in PIE can be created in NetSuite as an estimate — and that is the "
-      + "only thing PIE ever creates anywhere. The write is idempotent by construction: it "
+      + "only thing PIE ever creates in NetSuite. The write is idempotent by construction: it "
       + "upserts on the external id, so pressing send twice cannot put two estimates in "
       + "front of your customer. It refuses rather than guessing — no NetSuite customer, no "
       + "priced lines, or a line with no price or quantity, and nothing is sent. NetSuite "
@@ -266,7 +266,7 @@ export const ERP_PAGES: ErpPageData[] = [
     ],
     writes:
       "A quote built in PIE can be created in Acumatica as a sales quote — a sales order "
-      + "of type QT — and that is the only thing PIE ever creates anywhere. Acumatica's PUT "
+      + "of type QT — and that is the only thing PIE ever creates in Acumatica. Acumatica's PUT "
       + "always inserts, so it is not idempotent on its own; PIE reads the reference back "
       + "before it sends, so a second press cannot make a second quote. It refuses rather "
       + "than guessing: no customer, no priced lines, or a line with no price or quantity, "
@@ -315,6 +315,140 @@ export const ERP_PAGES: ErpPageData[] = [
       },
     ],
     evidence: "{{ACUMATICA_DISTRIBUTOR_EVIDENCE}}",
+  },
+  {
+    // The one page on this site whose subject is not a connector in
+    // `ingestion/erp/`. Zoho Books is the book this platform was built
+    // against and the source `state/` is derived from, so its integration is
+    // not a connector at all — it is `ingestion/zoho_client.py`, and it is
+    // deeper than any of the three above. `erp.test.ts` therefore reads a
+    // different file for this page and matches a different declaration; see
+    // the note on `stage` below.
+    slug: "zoho-books",
+    connector: "zoho",
+    name: "Zoho Books",
+    short: "Zoho Books",
+    title: "PIE for Zoho Books · margin control on the book you already run",
+    description:
+      "PIE reads your Zoho Books organization in full — customers, vendors, the item "
+      + "master, invoices, bills, credit notes, vendor credits, customer and vendor "
+      + "payments, sales and purchase orders, estimates, warehouses and per-location "
+      + "stock — checks every new quote line against your own margin floor, and can write "
+      + "the quote back as an estimate.",
+    connects:
+      "A Zoho Self Client: an administrator mints one refresh token against the scope "
+      + "list below, and PIE exchanges it for a short-lived access token as it works — no "
+      + "browser round-trip on a sync and nothing to renew on a schedule. The form asks "
+      + "for that refresh token, the client id and secret, your organization id and your "
+      + "data centre, and the connection is checked when you save it. One Zoho "
+      + "organization is one connection; a group running several books connects each one "
+      + "and sees them under a single view on the Platform plan.",
+    reads: [
+      // `stage` here is the Zoho API path the read goes to — the key of
+      // `SCOPE_FOR_PATH` in `zoho_client.py` — rather than an
+      // `ingestion/erp/base.READ_STAGES` name, because that vocabulary is the
+      // connector registry's and this is not a connector. It is the same kind
+      // of anchor: the identifier the implementation itself uses, checked
+      // against the implementation by `erp.test.ts` in both directions.
+      { stage: "contacts", label: "Customers", source: "contacts · type customer" },
+      // The same `contacts` endpoint as the row above, the other contact type
+      // — two rows, one path, because a buyer looks for "suppliers" by name
+      // and the stage set is compared as a set.
+      { stage: "contacts", label: "Suppliers", source: "contacts · type vendor" },
+      // Zoho's /items defaults to Status.Active and the client overrides it,
+      // deliberately: a distributor deactivates a line the moment it is
+      // discontinued, but the bills that priced it do not go with it. Without
+      // the override every historical line for a retired item is skipped and
+      // the visible effect is missing *margin*, not a missing item.
+      { stage: "items", label: "The item master, discontinued lines included", source: "items" },
+      { stage: "invoices", label: "Invoices, with their lines", source: "invoices" },
+      { stage: "bills", label: "Bills, with their lines", source: "bills" },
+      { stage: "creditnotes", label: "Credit notes", source: "creditnotes" },
+      { stage: "vendorcredits", label: "Vendor credits", source: "vendorcredits" },
+      { stage: "customerpayments", label: "Customer payments", source: "customerpayments" },
+      { stage: "vendorpayments", label: "Payments out", source: "vendorpayments" },
+      { stage: "salesorders", label: "Sales orders", source: "salesorders" },
+      { stage: "purchaseorders", label: "Purchase orders", source: "purchaseorders" },
+      { stage: "estimates", label: "Estimates — what was offered", source: "estimates" },
+      { stage: "locations", label: "Warehouses", source: "locations" },
+      { stage: "itemdetails", label: "Stock, per location", source: "itemdetails" },
+      { stage: "users", label: "Users, to match salespeople by email", source: "users" },
+    ],
+    writes:
+      "Two things, both optional and both off until you grant their scope. A quote built "
+      + "in PIE can be created in Zoho Books as an estimate: the write is checked rather "
+      + "than trusted — PIE reads the reference back before it sends, so a request that "
+      + "timed out and lost its response cannot put two estimates in front of one "
+      + "customer. And a salesperson who adds a supply product to a quote can create that "
+      + "item in your item master rather than leaving it for someone to key in later; a "
+      + "write that fails leaves the line visibly in CREATE FAILED rather than stuck. "
+      + "Nothing else is ever written: no invoice, no order, no payment, no edit to a "
+      + "record that already exists.",
+    setup:
+      "The scopes are chosen when the Self Client grant is generated, and they are the "
+      + "whole of the configuration. Reads: ZohoBooks.contacts.READ, "
+      + "ZohoBooks.settings.READ (the item master, warehouses and per-location stock), "
+      + "ZohoBooks.invoices.READ, ZohoBooks.creditnotes.READ, ZohoBooks.bills.READ, "
+      + "ZohoBooks.vendorcredits.READ, ZohoBooks.customerpayments.READ, "
+      + "ZohoBooks.vendorpayments.READ, ZohoBooks.salesorders.READ, "
+      + "ZohoBooks.purchaseorders.READ, ZohoBooks.estimates.READ and "
+      + "ZohoBooks.users.READ. Writing is two more and neither is required: "
+      + "ZohoBooks.estimates.CREATE to send a quote, ZohoBooks.settings.CREATE to create "
+      + "an item. Pressing Check probes each scope with one real call and reports it "
+      + "granted, refused, or — where the call timed out or was throttled — unknown. An "
+      + "endpoint that could not be reached is never reported as granted, so what you "
+      + "read is what was actually answered rather than a pass assembled out of missing "
+      + "evidence. A scope refused mid-sync is named on the report the same way: which "
+      + "permission, and what to grant.",
+    gaps: [
+      "Draft and void invoices and bills are not read, deliberately: a cancelled invoice "
+      + "must never count as revenue a customer stopped spending.",
+      "History is bounded — two years by default. The detectors compare a recent window "
+      + "against a prior one, so a decade of ledger costs API calls and buys nothing.",
+      "Invoice and bill lines with no item — comment and charge rows, freight and "
+      + "handling — are not product lines, so they are not costed and carry no margin.",
+      "A salesperson is matched to a platform user by email, exactly. Anything else "
+      + "leaves the account unassigned and says so on the sync report; a wrongly assigned "
+      + "account would be invisible to the person who should act on it, which is worse.",
+      "Where a product has no cost on any bill, margin is suppressed rather than "
+      + "estimated. On a first sync that suppresses heavily, and that is the correct "
+      + "answer rather than a failure — the platform does not assert a margin it cannot "
+      + "stand behind.",
+      "Only contacts Zoho types as customers or vendors are read; other contact types "
+      + "are not.",
+    ],
+    fit: [
+      {
+        title: "Every screen has something to read",
+        body:
+          "This is the book PIE was built against, and it is the only connection where "
+          + "no stage is missing. Payments come in, so collections and days-to-pay are "
+          + "measured rather than absent. Estimates come in, so a win rate has a "
+          + "denominator from the first sync. Per-location stock comes in, so what a line "
+          + "returns on the cash it ties up is computable. On the ERP connectors some of "
+          + "those screens stay empty and say why; here none of them do.",
+      },
+      {
+        title: "Every quote line, against your own floor",
+        body:
+          "Your invoice and bill lines are what a floor is computed from: what you sold, "
+          + "to whom, and what it cost. PIE checks each new line against the policy you "
+          + "set and routes a breach for sign-off — the platform holds it, not the "
+          + "salesperson, and the sign-off is on record. Cost and margin never reach a "
+          + "salesperson's screen at all; they are absent from the response, not hidden "
+          + "in it.",
+      },
+      {
+        title: "Your books stay the system of record",
+        body:
+          "Everything PIE derives is rebuilt from a complete re-sync, so nothing "
+          + "important lives only here — disconnect and your ledger is untouched and "
+          + "whole. Every computed number is stamped with the version of the policy that "
+          + "judged it, and opens into the rows it came from. The AI reads those numbers "
+          + "and phrases them; it never produces one.",
+      },
+    ],
+    evidence: "{{ZOHO_DISTRIBUTOR_EVIDENCE}}",
   },
 ];
 

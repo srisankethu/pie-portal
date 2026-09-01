@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { demoCta } from "./cta";
+import { ERP_PAGES } from "./erp";
 import { caseStudy, complianceRows, hasProof, namedCustomers } from "./proof";
 import { FooterBlurb, TrialFinePrint, TrustBand } from "./shared";
 import {
@@ -14,6 +15,17 @@ import {
   type Region,
 } from "./pricing";
 import "./landing.css";
+
+/** The books PIE reads, in the order the strip shows them.
+ *
+ *  Zoho Books first because it is the one this platform was built against and
+ *  the only connection with no missing stage; the rest are the connector
+ *  registry in `ingestion/erp/`. A name here that matches an `ERP_PAGES.short`
+ *  renders as a link to that page — see the strip below. */
+const SYSTEMS = [
+  "Zoho Books", "NetSuite", "Dynamics 365 BC", "Acumatica",
+  "Prophet 21", "Sage X3", "Sage 100",
+];
 
 /**
  * The public front door — what a signed-out visitor sees before the sign-in
@@ -486,19 +498,20 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
         <div className="lp-sched">
           <div className="lp-wrap lp-sched-row">
             <span className="lp-sched-label">Reads the books you already keep</span>
-            {/* Three of these are links, and the other four are not, because
-                three have a page of their own at /erp/{system} — what PIE
-                reads out of that system, what it can write back, and what it
-                cannot see. They are also the only route by which those pages
-                are reachable from this one: a page in the sitemap and nowhere
-                in the site is an orphan, and reads like one. */}
-            <span className="lp-sys">Zoho Books</span>
-            <a className="lp-sys" href="/erp/netsuite">NetSuite</a>
-            <span className="lp-sys">Dynamics 365 BC</span>
-            <a className="lp-sys" href="/erp/acumatica">Acumatica</a>
-            <a className="lp-sys" href="/erp/prophet-21">Prophet 21</a>
-            <span className="lp-sys">Sage X3</span>
-            <span className="lp-sys">Sage 100</span>
+            {/* A system with a page of its own is a link to it; the rest are
+                plain text. This is derived from `ERP_PAGES` rather than
+                written out, because these links are the only route by which
+                those pages are reachable from this one — a page in the
+                sitemap and nowhere in the site is an orphan and reads like
+                one — and a hand-maintained list is how a new page becomes an
+                orphan. The count used to be in this comment too, which lasted
+                exactly until the fourth page. */}
+            {SYSTEMS.map((name) => {
+              const page = ERP_PAGES.find((p) => p.short === name);
+              return page
+                ? <a className="lp-sys" key={name} href={`/erp/${page.slug}`}>{name}</a>
+                : <span className="lp-sys" key={name}>{name}</span>;
+            })}
             <span className="lp-sched-note">
               — your ERP records what happened; PIE helps you decide what to do next
             </span>

@@ -344,6 +344,22 @@ describe("the decoded catalogue screen", () => {
     expect(screen.queryByRole("button", { name: /Save and re-read/ })).toBeNull();
   });
 
+  it("shows a small file's size in a unit that is not 0.0 MB", async () => {
+    // Found by looking at the screen rather than by a test: every real file —
+    // a 700-byte test export, a 200 kB range extension — rendered as "0.0 MB",
+    // which reads as an upload that did not work on the one screen whose job is
+    // to say what was uploaded.
+    vi.spyOn(papi, "companyCatalogues").mockResolvedValue(
+      view([company({ sources: [source({ size_bytes: 726 })] })]));
+    render(<CatalogScreen session={SESSION} />);
+
+    // Both the file list and the fact panel name it, which is the point of
+    // the fact panel row — so the assertion is on the size, not the filename.
+    // Both the file list and the fact panel carry it, so `findAll`.
+    expect((await screen.findAllByText(/726 B/)).length).toBeGreaterThan(0);
+    expect(document.body.textContent ?? "").not.toMatch(/0\.0 MB/);
+  });
+
   it("withholds the build controls from anyone the server did not clear", async () => {
     vi.spyOn(papi, "companyCatalogues").mockResolvedValue(
       view([company({ ...BUILT, sources: [source()] })], { can_manage: false }));

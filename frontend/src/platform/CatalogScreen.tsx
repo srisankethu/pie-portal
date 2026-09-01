@@ -63,7 +63,7 @@ import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 
 import { papi } from "./api";
-import { CatalogSources, megabytes } from "./CatalogSources";
+import { CatalogSources, fileSize, megabytes } from "./CatalogSources";
 import { ErrorState, LoadingState, PercentageValue, StatusChip } from "./kit";
 import type { CompanyCatalogue, CompanyCatalogues as View, PackFit,
               PlatformSession } from "./types";
@@ -424,7 +424,7 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
                               ? c.sources[0].filename
                               : `${c.sources.length} files`}
                             <div className="fsrc">
-                              {megabytes(c.sources.reduce(
+                              {fileSize(c.sources.reduce(
                                 (t, x) => t + x.size_bytes, 0))} · newest{" "}
                               {formatDateTime(c.corpus?.uploaded_at ?? null)}
                             </div>

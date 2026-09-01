@@ -40,6 +40,21 @@ import type { CompanyCatalogue, CompanySource, SourceIngest } from "./types";
 import { Tip } from "./ui";
 import { formatDateTime } from "../when";
 
+/** A file's size, in the unit that makes it legible.
+ *
+ *  Always-megabytes rendered every real file as "0.0 MB" — a 700-byte test
+ *  export, a 200 kB range extension, the seeded corpus. That reads as an upload
+ *  that did not work, on the one screen whose job is to say what was uploaded.
+ *  The ceiling is still quoted in MB, because that is the unit the limit is set
+ *  in.
+ */
+export function fileSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} kB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** The upload ceiling, which is set and talked about in megabytes. */
 export function megabytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
@@ -183,7 +198,7 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
         <span>
           {p.data.filename}
           <span className="fsrc" style={{ marginLeft: 8 }}>
-            {megabytes(p.data.size_bytes)}
+            {fileSize(p.data.size_bytes)}
           </span>
         </span>
       ),
@@ -300,7 +315,7 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
             <b>{r.filename}</b>
             <span className="fsrc">
               {rowsOf(r, built.get(r.source_key))} rows ·{" "}
-              {megabytes(r.size_bytes)} ·{" "}
+              {fileSize(r.size_bytes)} ·{" "}
               {formatDateTime(r.uploaded_at)}
             </span>
             {/* Named on a phone too. The nomenclature-only claim is checkable

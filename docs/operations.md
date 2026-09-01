@@ -86,8 +86,8 @@ There is no billing in this product.
 
 **This flag is what makes registration reachable at all.** On — the default —
 the sign-in card carries a "Create your organization" link, the landing page's
-"Start free" button opens the sign-up form, and its pricing panels open it on
-the plan that was being read about. With `SELF_SERVE_SIGNUP=0` none of that is
+"Start free" button opens the sign-up form, and the free panel's trial button
+opens it on the plan that was being read about. With `SELF_SERVE_SIGNUP=0` none of that is
 offered: the card has no way to create an organization and the landing page's
 buttons say "Sign in", which is correct for a single-tenant install where the
 only accounts are the ones an owner creates from Settings. The page never shows
@@ -258,13 +258,20 @@ getting one wrong is silent.
 | `DEFAULT_PLAN` | `platform` *(default)* — the one tenant has every feature | `free` — a tenant gets what it is licensed for |
 | `SELF_SERVE_SIGNUP` | `0` — accounts are made by the operator | `1` *(default)* |
 | `PUBLIC_DEMO_ORG_ID` / `PUBLIC_DEMO_EMAIL` | unset — no public door | set, pointing at a tenant built by `python -m app.demo --org … --email …` |
-| The landing page's pricing section | Not applicable. Three tiers and locked rates describe a thing this shape does not do — remove the section or do not serve the landing publicly. | Applicable, and see the plan queue below. |
+| The landing page's plans section | Not applicable. Three tiers describe a thing this shape does not do — remove the section or do not serve the landing publicly. | Applicable, and see the plan queue below. |
 
-**The failure to avoid is the mixture**: a public landing selling three tiers on
+**The failure to avoid is the mixture**: a public landing offering three tiers on
 top of `DEFAULT_PLAN=platform`, where every organization silently holds the top
-tier and nothing the pricing section says is enforced by anything. Nothing in
-the code can detect that combination — the app cannot know whether its landing
-page is reachable — so it is written here instead.
+tier and nothing the plans section says is enforced by anything. Nothing in the
+code can detect that combination — the app cannot know whether its landing page
+is reachable — so it is written here instead.
+
+**The site states no price**, in either currency, on any page: what a business
+pays is settled in a conversation, and the plans section ends in a form rather
+than a figure. A hosted deployment therefore has a third queue to work —
+`python -m app.contact`, folded into `python -m app.entitlements requests` — and
+an enquiry sitting in it unanswered is the one failure this arrangement has
+that a price list did not.
 
 ### Plans, and how one actually changes
 

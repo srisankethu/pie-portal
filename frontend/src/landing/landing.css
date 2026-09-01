@@ -376,9 +376,9 @@
   .pie-landing .lp-sched .lp-sched-row { gap: 8px 6px; }
 }
 
-/* How a plan actually changes. Sits under the pricing standfirst, quieter than
+/* How a plan actually changes. Sits under the plans standfirst, quieter than
    it — it is the mechanism, not the offer. */
-.pie-landing .lp-pricing-how {
+.pie-landing .lp-plans-how {
   font-size: 13px;
   color: var(--color-neutral-700);
   margin-top: -4px;
@@ -570,13 +570,79 @@
 
 .pie-landing .lp-evidence { margin-top: 22px; }
 
-/* pricing teaser */
-.pie-landing .lp-plan { text-align: left; }
+/* the plan panels.
+   The `.p` rule that set a price in 24px went with the price. A panel is a
+   heading, a paragraph and a button now, and the button is what carries the
+   weight the figure used to. */
+.pie-landing .lp-plan { text-align: left; display: flex; flex-direction: column; }
 .pie-landing .lp-plan.mid { border: 2px solid var(--color-accent-700); }
-.pie-landing .lp-plan .p { font-size: 24px; font-weight: 700; }
-.pie-landing .lp-plan .p small { font-size: 13px; font-weight: 400; color: var(--color-neutral-700); }
-.pie-landing .lp-plan h3 { margin-bottom: 2px; }
-.pie-landing .lp-pricing-note { margin-top: 20px; font-size: 14px; color: var(--color-neutral-700); }
+.pie-landing .lp-plan h3 { margin-bottom: 10px; }
+/* The button sits on the floor of every panel whatever the copy above it
+   measures, so three panels of unequal prose still line up along the bottom —
+   which is the row a reader compares. */
+.pie-landing .lp-plan .lp-btn { margin-top: auto; align-self: flex-start; }
+.pie-landing .lp-plan p { margin-bottom: 22px; }
+.pie-landing .lp-plans-note { margin-top: 20px; font-size: 14px; color: var(--color-neutral-700); }
+
+/* ── the form the price list used to be ──
+   It is a `.lp-panel` like the plan panels above it, one column wide and set
+   apart by space rather than by a second border treatment: it is the end of
+   that section, not a new one. */
+.pie-landing .lp-talk { margin-top: 34px; }
+.pie-landing .lp-form h3 { margin-bottom: 6px; }
+.pie-landing .lp-form-lead {
+  font-size: 14.5px; color: var(--color-neutral-700); margin: 0 0 22px;
+}
+/* Two columns where there is room for two, one where there is not. `auto-fit`
+   rather than a media query for the same reason `.lp-grid3` uses it: the
+   breakpoint that matters is the width of a legible field, not a phone. */
+.pie-landing .lp-form-grid {
+  display: grid; gap: 16px;
+  grid-template-columns: repeat(auto-fit, minmax(min(240px, 100%), 1fr));
+  margin-bottom: 16px;
+}
+.pie-landing .lp-field { display: block; }
+.pie-landing .lp-field > span {
+  display: block; font-size: 13px; font-weight: 600; margin-bottom: 5px;
+}
+/* "optional" reads as part of the label, not as a second one. */
+.pie-landing .lp-field > span em {
+  font-style: normal; font-weight: 400; color: var(--color-neutral-700);
+}
+.pie-landing .lp-field input,
+.pie-landing .lp-field select,
+.pie-landing .lp-field textarea {
+  width: 100%; box-sizing: border-box;
+  font-family: var(--font-body); font-size: 15px; color: var(--color-text);
+  background: var(--color-bg);
+  border: 1px solid var(--color-neutral-400);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+}
+.pie-landing .lp-field textarea { resize: vertical; }
+.pie-landing .lp-field input:focus-visible,
+.pie-landing .lp-field select:focus-visible,
+.pie-landing .lp-field textarea:focus-visible {
+  outline: 2px solid var(--color-accent); outline-offset: 1px;
+}
+.pie-landing .lp-field input:disabled,
+.pie-landing .lp-field select:disabled,
+.pie-landing .lp-field textarea:disabled {
+  background: var(--color-neutral-100); color: var(--color-neutral-700);
+}
+.pie-landing .lp-form-actions {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 14px;
+  margin-top: 20px;
+}
+/* `.lp-fine` carries its own top margin for the line under the hero buttons;
+   here it sits beside one, so the margin is dropped rather than a second fine-
+   print class invented. */
+.pie-landing .lp-form-actions .lp-fine { margin: 0; }
+.pie-landing .lp-form-error {
+  color: var(--danger-fg); font-size: 14px; font-weight: 600;
+  margin: 16px 0 0;
+}
+.pie-landing .lp-form-done h3 { margin-bottom: 8px; }
 
 /* final CTA + footer */
 .pie-landing .lp-final { text-align: center; padding: 84px 0; }

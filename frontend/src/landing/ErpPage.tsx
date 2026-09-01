@@ -21,8 +21,11 @@ import "./landing.css";
  *
  *   - **Nothing here may need JavaScript.** No `useState`, no menu that opens,
  *     no handler. Every link is an `href` that works with the bundle absent,
- *     and in-page links to the main page are absolute (`/#pricing`) because a
- *     bare `#pricing` on this document is a fragment that goes nowhere.
+ *     and in-page links to the main page are absolute (`/#plans`) because a
+ *     bare `#plans` on this document is a fragment that goes nowhere. The
+ *     enquiry form is one of those links rather than a copy of the form: these
+ *     pages ship no JavaScript, so a form here would render and refuse to
+ *     send.
  *   - **Only `landing.css` may style it.** The built stylesheet contains what
  *     the *client* graph imports; a new stylesheet imported only from here
  *     would compile during the prerender and never be emitted, and the page
@@ -60,7 +63,7 @@ export function ErpPage({ page }: { page: ErpPageData }) {
             <div className="lp-nav-links lp-nav-static">
               <a href="/#product">Product</a>
               <a href="/#how">How it works</a>
-              <a href="/#pricing">Pricing</a>
+              <a href="/#plans">Plans</a>
               <a className="lp-btn solid lp-nav-cta" href="/#signin">Sign in</a>
             </div>
           </div>
@@ -86,7 +89,7 @@ export function ErpPage({ page }: { page: ErpPageData }) {
               <div className="lp-ctas">
                 <a className="lp-btn solid" {...heroDemo.props}>{heroDemo.label}</a>
                 {heroDemo.ready && <a className="lp-btn" href="/#signin">Start free</a>}
-                <a className="lp-quiet" href="/#pricing">or see the pricing</a>
+                <a className="lp-quiet" href="/#talk">or tell us what you run</a>
               </div>
               <TrialFinePrint />
             </div>

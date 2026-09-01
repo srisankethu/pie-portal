@@ -20,7 +20,6 @@ import { CSS_VARS } from "../theme";
 import { isPlaceholder } from "./content";
 import { DEMO_BOOKING_URL } from "./cta";
 import { ERP_PAGES } from "./erp";
-import { pricingFor } from "./pricing";
 import { caseStudy, complianceRows, namedCustomers } from "./proof";
 import { ErpPage } from "./ErpPage";
 import { Landing } from "./Landing";
@@ -42,7 +41,8 @@ import { Landing } from "./Landing";
  * as its call to action would sell the product to nobody.
  *
  * Where a deployment does not accept them, the mounted app corrects the label
- * within a paint — the same swap it already makes for the rupee price list.
+ * within a paint — the same swap it already makes for the worked example's
+ * currency.
  * That is the right way round: the common case is served statically and the
  * exception is corrected, rather than every visitor being shown the exception.
  */
@@ -129,22 +129,6 @@ export function contentGaps(): { slot: string; effect: string }[] {
     gaps.push({
       slot: "DEMO_BOOKING_URL",
       effect: "every \"Book a demo\" button falls back to the trial door",
-    });
-  }
-
-  const usd = pricingFor("INTL");
-  for (const [name, value] of [
-    ["PRICE_TIER_1_USD", usd.tierIntelligence],
-    ["PRICE_TIER_2_USD", usd.tierPlatform],
-  ] as const) {
-    if (isPlaceholder(value)) {
-      gaps.push({ slot: name, effect: 'the panel reads "Priced per organization"' });
-    }
-  }
-  if (isPlaceholder(usd.catalogBuild)) {
-    gaps.push({
-      slot: "PRICE_CATALOG_BUILD_USD",
-      effect: "the catalog-build sentence is omitted for non-Indian visitors",
     });
   }
 

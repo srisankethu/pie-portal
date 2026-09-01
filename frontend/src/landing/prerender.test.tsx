@@ -54,7 +54,7 @@ describe("renderLandingMarkup", () => {
 
   it("keeps the CTAs as anchors, so the markup degrades to links", () => {
     expect(markup).toContain('href="#signin"');
-    expect(markup).toContain('href="#pricing"');
+    expect(markup).toContain('href="#plans"');
   });
 });
 
@@ -174,6 +174,62 @@ describe("the history window", () => {
     // is not a pass").
     expect(checked, "no page states the history window at all")
       .toBeGreaterThanOrEqual(documents.length);
+  });
+});
+
+describe("what a plan costs", () => {
+  /** The site does not say, anywhere, and the form is how it does not.
+   *
+   *  This is the assertion that keeps the decision from eroding one panel at a
+   *  time. A price on this page is not merely a number: it answers a question
+   *  the page has asked the reader nothing about — how many companies, which
+   *  ERP, how much catalogue — and it answers it wrongly for the reader who is
+   *  worth the most. `worked-example.test.ts` holds the same line at the source;
+   *  this holds it in the markup, which is where a hand-written literal would
+   *  land.
+   *
+   *  It cannot simply forbid a currency symbol: the worked quote line is money
+   *  and is the page's whole argument. So it forbids the shapes a *plan* price
+   *  takes — a period after an amount, and the phrase the panels fell back to
+   *  when a figure was unset.
+   */
+  it("is not stated on any page, in any currency", () => {
+    for (const { page, html } of documents) {
+      // "/month" is the shape a subscription price takes on a panel, and
+      // "per month" is the same thing written out. Not a blanket ban on the
+      // word: Section A says a quote desk makes hundreds of decisions *a
+      // month*, which is the problem being described rather than a price.
+      expect(html, `/${page.slug} prices a plan by the month`)
+        .not.toMatch(/\/\s?month|per month/i);
+      expect(html, `/${page.slug} still carries the price fallback`)
+        .not.toContain("Priced per organization");
+    }
+  });
+
+  it("is asked about instead, in a form that submits somewhere", () => {
+    // The other half, and the half that makes the first honest: removing a
+    // price and leaving nothing in its place would be a page that describes
+    // three plans and gives a buyer no way to ask about any of them.
+    const landing = documents.find((d) => d.page.slug === "")!.html;
+    expect(landing).toContain('id="talk"');
+    expect(landing).toContain("<form");
+    expect(landing).toContain('name="email"');
+    expect(landing).toContain('name="message"');
+    // The panels lead here, so the jump target has to exist in the same
+    // document that links to it.
+    expect(landing).toContain('href="#talk"');
+  });
+
+  it("is reachable from every ERP page, which ship no JavaScript", () => {
+    // A form on a page with no bundle would render and refuse to send, so the
+    // sub-pages link to the landing's instead. An absolute path, because a
+    // bare `#talk` on /erp/prophet-21 is a fragment that goes nowhere.
+    for (const { page, html } of documents) {
+      if (page.slug === "") continue;
+      expect(html, `/${page.slug} cannot reach the form`).toContain('href="/#talk"');
+      expect(html, `/${page.slug} carries a form it cannot submit`)
+        .not.toContain("<form");
+    }
   });
 });
 

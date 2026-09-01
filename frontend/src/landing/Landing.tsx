@@ -3,17 +3,16 @@ import { demoCta } from "./cta";
 import { ERP_PAGES } from "./erp";
 import { caseStudy, complianceRows, hasProof, namedCustomers } from "./proof";
 import { FooterBlurb, TrialFinePrint, TrustBand } from "./shared";
+import { ContactForm, PLANS } from "./ContactForm";
 import {
   detectRegion,
+  exampleFor,
   heldToFloor,
   heldToRecommended,
-  catalogBuildPrice,
   lineTotal,
-  pricingFor,
-  tierPrice,
   unitPrice,
   type Region,
-} from "./pricing";
+} from "./worked-example";
 import "./landing.css";
 
 /** The books PIE reads, in the order the strip shows them.
@@ -35,7 +34,7 @@ const SYSTEMS = [
  * the wording is held to the same honesty rule as everything else here: it is
  * sample data, said plainly, rather than "see it live" or "try it free" over a
  * book that belongs to nobody. Absent where no demonstration workspace is
- * configured, in which case the pricing link takes the slot back. Purely presentational (no data fetch, no session), styled entirely
+ * configured, in which case the link to the plans takes the slot back. Purely presentational (no data fetch, no session), styled entirely
  * from the theme's emitted tokens so it reads as the same product as the
  * screens behind it.
  *
@@ -112,9 +111,7 @@ const SYSTEMS = [
  *   - The pricing section named three tiers whose upper two could be reached
  *     only by somebody with a shell on the server, so it described a purchase
  *     nobody could make. `PlanChangeRequest` gave it a real mechanism and the
- *     section now says what that is. The rate lock and the yearly discount stay
- *     as written: they are commitments rather than product claims, and no
- *     module was ever going to implement them.
+ *     section says what that is.
  *
  * Repositioned in Aug 2026, for a different buyer: a US or European
  * mid-market industrial distributor on Prophet 21, NetSuite or Acumatica,
@@ -132,18 +129,25 @@ const SYSTEMS = [
  *     policy stamp, the append-only record and the ledger that says UNKNOWN are
  *     the reason the outcome claim is sayable at all.
  *
- *   - Prices are per visitor now. A non-Indian visitor sees the dollar list
- *     and no rupee figure anywhere on the page — not in the panels, not in the
- *     worked card, not in the arithmetic under the panels — because ₹9,999 is
- *     an anchor this positioning cannot survive a reader forming. Indian
- *     visitors still see rupees. The dollar list is what the prerender bakes,
- *     so it is also what a crawler and a no-JavaScript reader get; the swap
- *     happens on mount and only for a browser whose own clock says India. See
- *     `pricing.ts`.
- *   - "Ask for this plan" became "Book a demo" on the paid panels, and the
- *     hero's primary action with it. Nobody signs an annual contract from
- *     inside a product trial, and the page had no way for a buyer who was
- *     ready to talk to say so. The trial keeps its own button.
+ *   - **The page states no price at all, and the plans section ends in a
+ *     form.** The
+ *     panels carried a monthly figure per region, and the currency swap was
+ *     built because ₹9,999 is an anchor this positioning could not survive a
+ *     reader forming. The figure itself was the deeper version of the same
+ *     problem: what this costs turns on how many companies are connected,
+ *     which ERP each sits on and how much catalogue there is to build, so any
+ *     number on a panel is wrong for somebody, and wrong in a way they act on
+ *     without ever asking. The panels now say what each plan *is*, and the
+ *     section ends in `ContactForm` — which posts to `POST /api/v1/contact`
+ *     and lands in a queue an operator reads. The per-visitor currency
+ *     survives for the worked card, whose figures are still money. See
+ *     `worked-example.ts`.
+ *   - The hero's primary action became "Book a demo". Nobody signs an annual
+ *     contract from inside a product trial, and the page had no way for a
+ *     buyer who was ready to talk to say so. The trial keeps its own button.
+ *     The paid panels went further and now lead to the form at the end of
+ *     their own section, which reaches the same person a meeting would and
+ *     works whether or not a scheduling link has ever been configured.
  *
  *     Until a scheduling link exists, each of those buttons falls back — to
  *     the trial door in the hero and the closing block, to "Ask for this plan"
@@ -181,8 +185,8 @@ const SYSTEMS = [
  * question it belongs to is not settled on this branch.
  *
  * The decision card's figures are illustrative but formula-consistent:
- * floor = cost / (1 − margin floor). They live in `pricing.ts` now, in both
- * currencies, and `pricing.test.ts` re-derives every one of them — so editing
+ * floor = cost / (1 − margin floor). They live in `worked-example.ts` now, in
+ * both currencies, and its test re-derives every one of them — so editing
  * the card without editing the note that re-reads it fails a test rather than
  * shipping a page whose own arithmetic does not close. The card shows cost
  * because it depicts the *approver's* view — a manager sees cost, a
@@ -206,10 +210,10 @@ const SYSTEMS = [
  */
 export function Landing({ onEnter, onSignUp, onDemo }: {
   onEnter: () => void;
-  /** Takes the plan the visitor was reading about, where they came through a
-   *  pricing panel. It only preselects the radio on the sign-up form — the
-   *  account created is the free one whichever panel was pressed, because
-   *  nothing here sells anything. */
+  /** Takes the plan the visitor was reading about, where they came through the
+   *  trial button on a plan panel. It only preselects the radio on the sign-up
+   *  form — the account created is the free one either way, because nothing
+   *  here sells anything. */
   onSignUp?: (plan?: string) => void;
   onDemo?: () => void;
 }) {
@@ -222,12 +226,13 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
     e.preventDefault();
     (onSignUp ?? onEnter)();
   };
-  /** A pricing panel's own CTA. Same door, opened on that plan.
+  /** The trial door, opened on the plan a panel was describing.
    *
    *  The panels were three static blocks with nothing to press, so the one
    *  place a visitor has decided which plan they want was the one place the
    *  page stopped talking to them — they had to scroll back to a CTA that
-   *  asked the question again. */
+   *  asked the question again. The two paid panels ask instead (`askAbout`);
+   *  this is the free panel's, and the one the trial line beside it means. */
   const startOn = (plan: string) => (e: React.MouseEvent) => {
     e.preventDefault();
     (onSignUp ?? onEnter)(plan);
@@ -240,15 +245,18 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
     onDemo?.();
   };
 
-  /** Which price list this visitor sees, and in which currency every figure on
-   *  the page is written.
+  /** Which currency the worked example is written in.
+   *
+   *  There is no price list any more — the page states nothing about what a
+   *  plan costs — but the example quote line is still money, and money that is
+   *  not the reader's own is money they have to convert before the arithmetic
+   *  means anything.
    *
    *  INTL until proven otherwise, and deliberately so: `useEffect` does not run
    *  during the static prerender, so the HTML baked into `dist/index.html` — the
    *  document a crawler reads, and the one a US visitor sees before the bundle
-   *  arrives — carries the dollar list and no rupee figure anywhere in it. The
-   *  swap to the Indian list happens on mount, for the visitors whose own clock
-   *  says they are in India.
+   *  arrives — carries dollars and no rupee figure anywhere in it. The swap
+   *  happens on mount, for the visitors whose own clock says they are in India.
    *
    *  State rather than a call in the render body because `detectRegion` reads
    *  `Intl` and `navigator`, neither of which exists on the server, and because
@@ -256,11 +264,13 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
    *  paint is the one thing `prerender.tsx` is built to avoid. */
   const [region, setRegion] = useState<Region>("INTL");
   useEffect(() => setRegion(detectRegion()), []);
-  const price = pricingFor(region);
+  const price = exampleFor(region);
   const line = price.line;
-  const intelligencePrice = tierPrice(price, "intelligence");
-  const platformPrice = tierPrice(price, "platform");
-  const buildPrice = catalogBuildPrice(price);
+
+  /** Which plan the visitor pressed, held here so the form below can open on
+   *  it. The panels are the one place somebody says which plan they want, and
+   *  the section used to forget it the moment they scrolled. */
+  const [askingAbout, setAskingAbout] = useState<string>("");
 
   /** The four "Book a demo" buttons on this page, each with the honest thing
    *  to offer while no scheduling link is configured.
@@ -287,7 +297,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
    *  worth writing. */
   const proofShown = hasProof();
   const sections = ["problem", "product", "how", "worth", "ownership",
-                    ...(proofShown ? ["proof"] : []), "pricing"];
+                    ...(proofShown ? ["proof"] : []), "plans"];
   const letter = (name: string) => String.fromCharCode(65 + sections.indexOf(name));
 
   const customers = namedCustomers();
@@ -318,12 +328,15 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
 
   const heroDemo = demoCta({ href: "#signin", ...startCta });
   const closingDemo = demoCta({ href: "#signin", ...startCta });
-  const intelligenceDemo = demoCta({
-    href: "#signin", label: "Ask for this plan", onClick: startOn("intelligence"),
-  });
-  const platformDemo = demoCta({
-    href: "#signin", label: "Ask for this plan", onClick: startOn("platform"),
-  });
+
+  /** A paid panel's own button: the form below, opened on that plan.
+   *
+   *  No `preventDefault` — `#talk` is a real element and the jump is the
+   *  browser's own, so a visitor whose JavaScript never arrives gets the same
+   *  scroll and a form reading "Not sure yet". All the handler adds is the
+   *  answer they already gave by pressing this panel rather than the one
+   *  beside it. */
+  const askAbout = (plan: string) => () => setAskingAbout(plan);
 
   // The mobile nav collapses the section links behind a menu button. Closed on
   // first render, which is also the state the prerenderer bakes into the static
@@ -365,7 +378,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
               <a href="#worth" onClick={closeMenu}>What it&rsquo;s worth</a>
               <a href="#trust" onClick={closeMenu}>Trust</a>
               {proofShown && <a href="#proof" onClick={closeMenu}>Proof</a>}
-              <a href="#pricing" onClick={closeMenu}>Pricing</a>
+              <a href="#plans" onClick={closeMenu}>Plans</a>
               <a className="lp-btn solid lp-nav-cta" href="#signin" onClick={enter}>Sign in</a>
             </div>
           </div>
@@ -407,7 +420,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                   && <a className="lp-btn" href="#signin" onClick={startCta.onClick}>{startCta.label}</a>}
                 {onDemo
                   ? <a className="lp-quiet" href="#demo" onClick={demo}>or see it on sample data</a>
-                  : <a className="lp-quiet" href="#pricing">or see the pricing</a>}
+                  : <a className="lp-quiet" href="#plans">or see the plans</a>}
               </div>
               {signUpOffered && <TrialFinePrint />}
             </div>
@@ -895,8 +908,8 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           </>
         )}
 
-        <div className="lp-dim"><b>Section {letter("pricing")} — Pricing</b></div>
-        <section id="pricing">
+        <div className="lp-dim"><b>Section {letter("plans")} — Plans</b></div>
+        <section id="plans">
           <div className="lp-wrap">
             <div className="lp-sec-head">
               {/* This read as two products — a free quote desk and a separate
@@ -909,29 +922,33 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
               <h2>One platform. The quote desk keeps working; the decision layer is what you buy.</h2>
               <p>
                 Unlimited users on every plan — nothing here counts seats.
-                Early-adopter rates, locked for 24 months; yearly billing gets
-                two months free.
               </p>
-              {/* The mechanism, quieter than the offer. It describes what
-                  actually happens rather than dressing it as a checkout, which
-                  there still is not: `PlanChangeRequest` records the ask and an
-                  operator applies it. Saying "no card" is worth more to this
-                  buyer than a payment page would be.
+              {/* **No price on this page, in any currency.** The panels used to
+                  carry one and it was answering a question the page had asked
+                  the reader nothing about: what this costs turns on how many
+                  companies are connected, which ERP each of them sits on and
+                  how much catalogue there is to build. A figure that is right
+                  for a single-company book on Zoho is wrong for four on
+                  Prophet 21, and the reader it is wrong for is the one worth
+                  the most.
 
-                  The two terms above are commitments rather than mechanisms —
-                  nothing in the code enforces a rate lock or a yearly discount
-                  — which is fine for a price list and is why they sit in the
-                  sentence about what we will do rather than among the claims
-                  about what the product does. */}
-              <p className="lp-pricing-how">
+                  So the mechanism is stated plainly instead, and it is the
+                  mechanism that already exists rather than a euphemism for a
+                  price nobody will say: `PlanChangeRequest` records an ask from
+                  inside the product and an operator applies it, and the form
+                  below records one from out here. There is no checkout in this
+                  product at all. */}
+              <p className="lp-plans-how">
                 Every organization starts on a 30-day trial of Commercial
-                Intelligence — no card, no conversation needed. Buying is a
-                conversation: book
-                a demo, and the plan is then requested from inside the product
-                and confirmed by a person. There is no checkout. If the trial
-                ends without one, the decision layer locks, the quote desk
-                carries on, and{" "}
-                <b>everything you have put in stays exactly where it is</b>.
+                Intelligence — no card, no conversation needed. What a paid plan
+                costs depends on your setup, so we quote it after we have seen
+                it: tell us what you run, using the form at the end of this
+                section, and we will come back with the number and what it
+                takes. Buying is then a conversation — the plan is requested
+                from inside the product and confirmed by a person, and{" "}
+                <b>everything you have put in stays exactly where it is</b> if
+                the trial ends without one: the decision layer locks and the
+                quote desk carries on.
               </p>
             </div>
             <div className="lp-grid3">
@@ -944,8 +961,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                   is the entry the buyer actually experiences and the promise the
                   trial has to keep. */}
               <div className="lp-panel lp-plan">
-                <h3>Quote desk</h3>
-                <div className="p">Free</div>
+                <h3>{PLANS[0].label}</h3>
                 <p>
                   Where everyone starts, and what keeps working when nothing is
                   being paid for: quoting, RFQ reading, margin floors and
@@ -957,33 +973,29 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                 </a>
               </div>
               <div className="lp-panel lp-plan mid">
-                <h3>Commercial Intelligence</h3>
-                <div className={`p${intelligencePrice.amount ? " lp-num" : ""}`}>
-                  {intelligencePrice.label}
-                  {intelligencePrice.period && <small>{intelligencePrice.period}</small>}
-                </div>
+                <h3>{PLANS[1].label}</h3>
                 <p>
                   <b>The decision layer.</b> The attention list, customer
                   health, collections — and the value ledger in Section{" "}
                   {letter("worth")}, which is how you decide whether to keep
                   paying for this.
                 </p>
-                <a className="lp-btn solid" {...intelligenceDemo.props}>
-                  {intelligenceDemo.label}
+                <a className="lp-btn solid" href="#talk"
+                   onClick={askAbout(PLANS[1].value)}>
+                  Talk to us about this plan
                 </a>
               </div>
               <div className="lp-panel lp-plan">
-                <h3>Platform</h3>
-                <div className={`p${platformPrice.amount ? " lp-num" : ""}`}>
-                  {platformPrice.label}
-                  {platformPrice.period && <small>{platformPrice.period}</small>}
-                </div>
+                <h3>{PLANS[2].label}</h3>
                 <p>
                   <b>Commercial intelligence across the business.</b> Several
                   companies, one view — with all catalog builds included and a
                   named person who knows your setup.
                 </p>
-                <a className="lp-btn" {...platformDemo.props}>{platformDemo.label}</a>
+                <a className="lp-btn" href="#talk"
+                   onClick={askAbout(PLANS[2].value)}>
+                  Talk to us about this plan
+                </a>
               </div>
             </div>
             {/* The arithmetic, done on the page's own numbers rather than left
@@ -998,12 +1010,12 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                 the module it is describing, two sections after promising it
                 does not.
 
-                Both figures come from `pricing.ts`, where a test re-derives
-                them from the card's own cost and floor. It used to say "about
-                three weeks of the middle plan", which cannot be said while the
-                middle plan is a placeholder — and should not be said even once
-                it is not, because the ratio changes with every price. */}
-            <p className="lp-pricing-note">
+                Both figures come from `worked-example.ts`, where a test
+                re-derives them from the card's own cost and floor. It used to
+                say "about three weeks of the middle plan", which cannot be said
+                by a page that states no price — and should not have been said
+                while it did, because the ratio changes with every line. */}
+            <p className="lp-plans-note">
               The card at the top of this page is one worked line:{" "}
               {line.units} units asked at {unitPrice(price, line.asked)} against
               a floor of {unitPrice(price, line.floor)}. Held to that floor it
@@ -1013,21 +1025,21 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
               price would have made, because clearing a floor by more than it
               asked for is your judgement, not ours.
             </p>
-            {/* The first sentence carries a price, so it is dropped whole
-                where there is none rather than left as "builds from , yours
-                permanently". The second is true regardless and stays. */}
-            <p className="lp-pricing-note">
-              {buildPrice && (
-                <>
-                  One-time catalog builds from{" "}
-                  <span className="lp-num">{buildPrice}</span>, yours
-                  permanently.{" "}
-                </>
-              )}
-              Every organization starts on the 30-day trial and works the same
-              day — the paid plans are enabled with you, and nothing is charged
-              when you sign up.
+            <p className="lp-plans-note">
+              A catalog build is one-time work on your own item master, and what
+              it produces is yours permanently. Every organization starts on the
+              30-day trial and works the same day — the paid plans are enabled
+              with you, and nothing is charged when you sign up.
             </p>
+
+            {/* The end of the section is the door. It is an anchor a panel can
+                jump to and an id the ERP sub-pages link into (`/#talk`), so
+                "Talk to us about this plan" lands on the form with that plan
+                already chosen rather than at the top of a section the visitor
+                has just read. */}
+            <div className="lp-talk" id="talk">
+              <ContactForm plan={askingAbout} onPlanChange={setAskingAbout} />
+            </div>
           </div>
         </section>
 

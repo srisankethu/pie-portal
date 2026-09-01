@@ -36,7 +36,7 @@ from typing import Any, Optional
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import crypto
+from .. import clock, crypto
 from ..domain import models
 from .url_safety import require_safe_source_url, require_safe_source_urls
 # The type Zoho's scope list shares with every registered connector's — one
@@ -48,6 +48,10 @@ log = logging.getLogger("pie_portal.connections")
 
 #: The connector name every Zoho pull records itself under (``sync.SyncService``).
 ZOHO_CONNECTOR = "zoho"
+
+#: Sort floor for a row whose ``created_at`` is missing — only reachable on a
+#: hand-written row, and it must not be allowed to win a tiebreak.
+_EPOCH = datetime(1970, 1, 1, tzinfo=timezone.utc)
 
 #: How far back a first pull reads when nobody has said otherwise. Eighteen
 #: months gives the detectors a full recent window, a full comparison window,
@@ -601,6 +605,51 @@ def find_matching_credential(session: Session, organization_id: str, *, client_i
     return None
 
 
+def find_rotatable_credential(session: Session, organization_id: str, *,
+                              client_id: str,
+                              accounts_base: str) -> Optional[models.ZohoCredential]:
+    """This organization's own grant for the same app, whatever secret it holds.
+
+    ``find_matching_credential`` above matches the whole secret triple, which is
+    the right key for "attach to what is already there, change nothing". It is
+    the wrong key for deciding whether a *new* row is warranted: Zoho issues a
+    fresh refresh token every time a Self Client grant is generated, so
+    re-entering the same app's credentials after re-generating the token misses
+    that match and mints a second row for one app registration. That is exactly
+    the state ``find_matching_credential``'s own docstring calls out — "two rows
+    holding one secret is the state that makes a rotation miss one of them" —
+    arrived at from the other direction.
+
+    So the key here is the app, not the secret: connector, client id and the
+    data centre. Same as ``oauth.credential_from_oauth``, deliberately — the
+    manual path and the authorized path were creating rows under two different
+    rules, and only one of them was right.
+
+    **Owned only.** ``usable_credentials`` includes grants another organization
+    has shared with this one, and rotating one of those from here would
+    overwrite a key underneath every other tenant using it. Sharing grants use,
+    never the right to change the secret (see ``rotate_credential``).
+
+    **A database that already accumulated duplicates gets a defined answer.**
+    Going forward there is at most one row per app, but the rule arrived after
+    the rows did, and picking arbitrarily among them is the bad case: rotating
+    an orphan while a *connected* duplicate keeps the revoked token leaves a
+    company that looks connected and cannot sync — the same failure the delete
+    guard exists to prevent, reached from the other side. So the one something
+    is connected through wins, then the most recent.
+    """
+    candidates = list(session.scalars(select(models.ZohoCredential).where(
+        models.ZohoCredential.owner_organization_id == organization_id,
+        models.ZohoCredential.connector == ZOHO_CONNECTOR,
+        models.ZohoCredential.client_id == client_id,
+        models.ZohoCredential.accounts_base == accounts_base)))
+    if len(candidates) <= 1:
+        return candidates[0] if candidates else None
+    return max(candidates,
+               key=lambda c: (len(connections_using(session, c.credential_id)),
+                              clock.aware(c.created_at) or _EPOCH))
+
+
 def create_credential(session: Session, organization_id: str, *, client_id: str,
                       client_secret: str, refresh_token: str, label: str = "",
                       accounts_base: str = "https://accounts.zoho.in",
@@ -865,20 +914,46 @@ def set_zoho_credentials(
     They are separate because one sign-in commonly serves several companies,
     and a grant named after the first company it happened to connect reads as
     a lie the moment it also serves the second.
+
+    Three outcomes, in order, and the middle one is the reason this is not a
+    two-branch function: identical secrets **attach** to the row already on
+    file; a different secret for an app this organization already has a grant
+    for **rotates** that row; anything else **creates** one. Without the middle
+    case, re-entering credentials after re-generating a Self Client token left
+    a second row for the same ``client_id``, and every such row outlived the
+    connection that prompted it (``delete_connection`` does not cascade), so
+    the sign-in picker accumulated duplicates nothing could remove.
     """
     cred = find_matching_credential(
         session, organization_id, client_id=client_id, client_secret=client_secret,
         refresh_token=refresh_token)
+    rotating = False
     if cred is None:
+        cred = find_rotatable_credential(
+            session, organization_id, client_id=client_id,
+            accounts_base=accounts_base)
+        rotating = cred is not None
+
+    if cred is None:
+        # Validated inside create_credential, before the row exists.
         cred = create_credential(
             session, organization_id, client_id=client_id, client_secret=client_secret,
             refresh_token=refresh_token, label=credential_label or label,
             accounts_base=accounts_base, api_base=api_base)
     else:
-        # The create path validates inside create_credential; this branch sets
-        # the hosts on an existing credential directly, so it must too.
+        # Both existing-row branches write the hosts directly, so both must
+        # validate them — and *before* anything is written. A refused URL that
+        # has already replaced a working secret leaves the credential broken
+        # in the one case the check exists to prevent.
         require_safe_source_url(accounts_base, field="Accounts URL")
         require_safe_source_url(api_base, field="API URL")
+        if rotating:
+            # Stamped as the rotation it is: `rotated_at` is what the screen
+            # shows, and a secret that changed under a date that did not move
+            # is the kind of thing an incident gets reconstructed from.
+            cred.client_secret_encrypted = crypto.encrypt(client_secret)
+            cred.refresh_token_encrypted = crypto.encrypt(refresh_token)
+            cred.rotated_at = datetime.now(timezone.utc)
         cred.accounts_base = accounts_base
         cred.api_base = api_base
     return add_connection(

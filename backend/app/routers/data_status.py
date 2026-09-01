@@ -526,6 +526,40 @@ def share(
     return {"credential": _credential_dict(session, cred, principal.organization_id)}
 
 
+@router.delete("/credentials/{credential_id}")
+def remove_credential(
+    credential_id: str,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Remove a sign-in nothing is connected through any more.
+
+    Disconnecting a company deliberately leaves its credential behind
+    (``connections.clear_zoho_connection``): other organizations may be using
+    it, and keeping it means reconnecting does not mean re-entering a secret.
+    That is right, and it is also why an owner needs *this* — without it a
+    grant that no longer reaches anything is permanent, and the picker offering
+    it reads as a live option. Retention is the default; this is the way out of
+    it, not a reversal of it.
+
+    The in-use refusal is the service's, not a check repeated here: a
+    credential deleted out from under a live connection leaves an organization
+    that looks connected and silently cannot sync.
+    """
+    from ..ingestion.connections import CredentialNotUsable, delete_credential
+
+    try:
+        delete_credential(session, principal.organization_id, credential_id)
+    except CredentialNotUsable as e:
+        # Same answer for "no such credential" and "not yours" — the service
+        # collapses them on purpose, so that this endpoint cannot be used to
+        # enumerate another tenant's credential ids.
+        raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
+    except ValueError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    return {"removed": True, "credential_id": credential_id}
+
+
 @router.delete("/connection")
 def delete_connection(
     principal: Principal = Depends(require_owner),

@@ -1195,39 +1195,6 @@ function AddConnection({
                 ))}
               </ul>
             )}
-
-            {/* The sign-ins left behind by companies that have been removed.
-                Kept on purpose — see `clear_zoho_connection` — but kept
-                without a way out they accumulate, and the picker above offers
-                every one of them as though it still reached something. */}
-            {unusedSignIns.length > 0 && (
-              <div className="cx-unused">
-                <p className="st-help">
-                  {unusedSignIns.length === 1
-                    ? "One sign-in here reaches no company."
-                    : `${unusedSignIns.length} sign-ins here reach no company.`}{" "}
-                  Removing a company leaves its sign-in on file so that
-                  reconnecting does not mean re-entering a secret. One you are
-                  finished with can go.
-                </p>
-                <ul className="cred-orgs">
-                  {unusedSignIns.map((c) => (
-                    <li key={c.credential_id}>
-                      <span className="mono">{c.client_id.slice(0, 18)}…</span>
-                      <Button
-                        type="button"
-                        variant="text" size="small"
-                        disabled={busy}
-                        onClick={() => removeSignIn(c)}
-                      >
-                        Remove
-                      </Button>
-                      <Tip text="Deletes the stored secret. Nothing is connected through this sign-in, so no company stops being pulled and nothing already synced is affected." />
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            )}
           </>
         ) : (
           <>
@@ -1325,6 +1292,43 @@ function AddConnection({
       </form>
       )}
       </>
+      )}
+
+      {/* The sign-ins left behind by companies that have been removed. Kept
+          on purpose — see `clear_zoho_connection` — but kept without a way out
+          they accumulate, and the picker above offers every one of them as
+          though it still reached something.
+
+          Below the form rather than under the picker it refers to: between the
+          picker and the organization-id field it split the add-a-company flow
+          in half, and the rule above it read as the end of a section that had
+          not ended. */}
+      {unusedSignIns.length > 0 && (
+        <div className="cx-unused">
+          <p className="st-help">
+            {unusedSignIns.length === 1
+              ? "One sign-in on file reaches no company."
+              : `${unusedSignIns.length} sign-ins on file reach no company.`}{" "}
+            Removing a company leaves its sign-in behind so that reconnecting
+            does not mean re-entering a secret. One you are finished with can go.
+          </p>
+          <ul className="cred-orgs">
+            {unusedSignIns.map((c) => (
+              <li key={c.credential_id}>
+                <span className="mono">{c.client_id.slice(0, 18)}…</span>
+                <Button
+                  type="button"
+                  variant="text" size="small"
+                  disabled={busy}
+                  onClick={() => removeSignIn(c)}
+                >
+                  Remove
+                </Button>
+                <Tip text="Deletes the stored secret. Nothing is connected through this sign-in, so no company stops being pulled and nothing already synced is affected." />
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {entry && <Access entry={entry} />}

@@ -121,12 +121,15 @@ become signed in.
 
 **Trigger.** Any URL opened with no session (and no pending notice).
 **Path.**
-1. Landing page renders (hero, proof, pricing). On mount the app asks whether
+1. Landing page renders (hero, proof, plans). On mount the app asks whether
    the two optional doors exist — `GET /api/v1/signup`, `GET /api/v1/demo`;
    any failure reads as "not offered".
 2. CTAs: *Sign in* → sign-in card. *Get started free* → sign-up card when
-   offered, else falls back to sign-in. A pricing panel CTA opens sign-up with
-   that plan preselected. *See it on sample data* → demo (only when configured).
+   offered, else falls back to sign-in. The free panel's trial button opens
+   sign-up with that plan preselected; each paid panel jumps to the enquiry
+   form at the end of the section with that plan chosen (`POST
+   /api/v1/contact`, public, records an ask and grants nothing). *See it on
+   sample data* → demo (only when configured).
 
 **Branches.** Self-serve sign-up off (the default) → every "get started" CTA
 opens sign-in and the sign-in card drops its "Create your organization" link ·
@@ -1754,6 +1757,7 @@ shims, are mounted but are not flows and are not listed here.
 | POST | `/api/v1/resolve/confirm` | api-key | Confirm a customer's code → record mapping through the same confirm_proposed_identity gate as the Quote Builder; line re-resolved server-side; every… |
 | GET | `/api/v1/resolve/openapi.json` | public | Generated OpenAPI contract for the resolution routes; shapes only, built once per process |
 | GET | `/api/v1/retrospective` | manager/owner +plan | First-run look-back: verdict (UNEXAMINED/PARTIAL/EXAMINED), history coverage, per-detector judged/withheld/found |
+| POST | `/api/v1/contact` | public | Record an enquiry from the landing page's form — name, company, email, ERP, the plan they were reading about; creates nothing and licenses nothing (202) |
 | GET | `/api/v1/signup` | public | Whether self-serve sign-up is offered; trial length, landing plan, plan ladder for the form |
 | POST | `/api/v1/signup` | public | Create organization + owner + trial, record requested plan (never granted), sign the owner straight in (login envelope, 201) |
 | GET | `/api/v1/trust/access` | owner | Every break-glass grant, per-use access, and revocation against this tenant — no filter, no suppression |

@@ -102,9 +102,11 @@ PLAN_LABEL: dict[PlanTier, str] = {
 #: ladder. Here rather than in the browser for the reason ``loses_on_expiry``
 #: gives below: a client-side copy of the plan map is a second copy, and the two
 #: disagree the first time a feature moves between tiers. Prices are deliberately
-#: **not** here — they are marketing copy and live in one place, the landing
-#: page's pricing section. A second copy of a price is worse than a second copy
-#: of a feature list.
+#: **not** here, and no longer anywhere: nothing in this repository states what a
+#: plan costs. The public site describes what each plan *is* and ends its plans
+#: section in a form, because what a distributor pays turns on how many
+#: companies they run and how much catalogue there is to build — which a panel
+#: does not know and had been answering anyway.
 PLAN_SUMMARY: dict[PlanTier, str] = {
     PlanTier.FREE: ("Quoting, RFQ reading, margin floors and approvals — what "
                     "keeps working when nothing is being paid for. One "
@@ -788,24 +790,38 @@ def _main() -> int:
     args = parser.parse_args()
 
     with SessionLocal() as session:
-        # **One command over two queues, because an operator asking "who wants a
-        # plan" must get one answer.** Two arrived independently and the merge
-        # is where that shows: `organizations.requested_plan` is what a business
+        # **One command over three queues, because an operator asking "who wants
+        # a plan" must get one answer.** They arrived independently and the
+        # merge is where that shows: `organizations.requested_plan` is what a business
         # said it wanted *on the sign-up form*, before it was a customer, and it
         # has no decision to make — granting it is `set-plan`. A
         # `PlanChangeRequest` is an existing customer asking *from inside the
         # product*, and it carries a decision, which is why it has an id you can
         # `apply` or `decline`.
         #
-        # They are genuinely different questions and both are worth having. They
-        # are also two places that answer "what plan does this organization
-        # want", which is the responsibility duplication CLAUDE.md §2 names —
-        # unifying them means the sign-up answer writing a request row and the
-        # column going away, and that is a change to a released feature rather
-        # than something to smuggle into a conflict resolution. Listed together
-        # so nobody has to know there are two tables; flagged here so the next
-        # person to touch it knows there are.
+        # A `ContactRequest` is the third and the one that is not a customer at
+        # all: the public site prices nothing, so somebody who wants to buy
+        # before they have an account fills in a form, and that ask would
+        # otherwise sit in a table no command reads. It has no decision to
+        # apply either — the reply is an email and `python -m app.contact
+        # handled <id>` records that it was sent.
+        #
+        # They are genuinely different questions and all three are worth
+        # having. Two of them are also two places that answer "what plan does
+        # this organization want", which is the responsibility duplication
+        # CLAUDE.md §2 names — unifying them means the sign-up answer writing a
+        # request row and the column going away, and that is a change to a
+        # released feature rather than something to smuggle into a conflict
+        # resolution. Listed together so nobody has to know there are three
+        # tables; flagged here so the next person to touch it knows there are.
         if args.cmd == "requests":
+            # The third queue, and the only one whose rows are not a customer:
+            # the public site states no price and ends its plans section in a
+            # form, so somebody who wants to buy before they have signed up
+            # lands in `contact_requests`. Imported here rather than at module
+            # scope because `contact` imports `onboarding`, which imports this.
+            from . import contact
+
             asked = [(org, want) for org in session.scalars(
                         select(models.Organization).order_by(
                             models.Organization.created_at))
@@ -814,7 +830,8 @@ def _main() -> int:
                 select(models.PlanChangeRequest)
                 .where(models.PlanChangeRequest.status == REQUESTED)
                 .order_by(models.PlanChangeRequest.requested_at)).all()
-            if not asked and not rows:
+            enquiries = contact.pending(session)
+            if not asked and not rows and not enquiries:
                 print("Nobody is asking for more than they have.")
                 return 0
             if asked:
@@ -833,6 +850,13 @@ def _main() -> int:
                           f"by {row.requested_by}")
                     if row.note:
                         print(f"      note: {row.note}")
+            if enquiries:
+                if asked or rows:
+                    print()
+                print("Asked from the public site — reply, then "
+                      "`python -m app.contact handled <id>`:")
+                for enquiry in enquiries:
+                    print(contact.describe(enquiry))
             return 0
         if args.cmd == "set-plan":
             set_plan(session, args.organization_id, PlanTier(args.plan))

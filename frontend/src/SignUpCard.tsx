@@ -32,8 +32,10 @@
  * The ladder itself comes from the server (`GET /api/v1/signup`) rather than
  * being written here, for the reason `entitlements.describe` gives about
  * `loses_on_expiry`: a client-side copy of the plan map goes stale the first
- * time a feature moves between tiers. Prices are not in it either — those are
- * marketing copy and live in exactly one place, the landing page.
+ * time a feature moves between tiers. There are no prices in it, and none
+ * anywhere else either: the site states no price, and the landing page's plans
+ * section ends in a form because what a business pays depends on a setup a
+ * panel has not asked about.
  */
 import { useState } from "react";
 

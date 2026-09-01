@@ -1,11 +1,12 @@
 """Sign up, and find out what is left to do.
 
-Three endpoints, and the first two are the only unauthenticated surface in this
-application that *writes*. That is worth saying at the top rather than burying,
+Three of the endpoints below take a write from somebody who has not signed in,
+and they are the only unauthenticated writes in this application. That is worth saying at the top rather than burying,
 because everything odd about this file follows from it:
 
 - ``GET  /api/v1/signup``     — is sign-up offered here at all? (public, read)
 - ``POST /api/v1/signup``     — create a tenant and sign its owner in (public, write)
+- ``POST /api/v1/contact``    — record an enquiry from the public site (public, write)
 - ``GET  /api/v1/demo``       — is there a demonstration workspace? (public, read)
 - ``POST /api/v1/demo``       — enter it, with no account (public, read-only session)
 - ``GET  /api/v1/onboarding`` — what this organization still has to do (authed)
@@ -39,7 +40,8 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import clock, entitlements, memberships, onboarding, ratelimit, tenancy
+from .. import (clock, contact, entitlements, memberships, onboarding,
+                ratelimit, tenancy)
 from ..authz import Principal, current_principal, open_session, set_session_cookie
 from ..config import settings
 from ..db import get_session
@@ -51,10 +53,11 @@ router = APIRouter(prefix="/api/v1", tags=["onboarding"])
 
 
 # ── the speed bump ───────────────────────────────────────────────────────────
-#: One hour, and the reason the two doors below have separate buckets: the
-#: demonstration door and the sign-up door are different doors. A stranger who
-#: looked at the demo five times must still be able to sign up, which is the
-#: entire point of having let them look.
+#: One hour, and the reason the doors below have separate buckets: they are
+#: different doors. A stranger who looked at the demo five times must still be
+#: able to sign up, which is the entire point of having let them look — and
+#: somebody who signed up must still be able to send an enquiry, which is the
+#: same argument one door further along.
 _WINDOW_SECONDS = 3600.0
 
 
@@ -188,6 +191,66 @@ def sign_up(body: SignUpRequest, request: Request, response: Response,
         currency=(getattr(org, "currency", None) or settings.DEFAULT_CURRENCY),
         timezone=(getattr(org, "timezone", None) or clock.DEFAULT_ZONE),
         must_change_password=owner.must_change_password)
+
+
+# ── the enquiry the pricing panels used to answer badly ──────────────────────
+class ContactRequestBody(BaseModel):
+    """What the landing page's form sends.
+
+    Only ``email`` and one of ``name``/``company`` are load-bearing; the rest is
+    what a buyer chose to tell us. The lengths here are the outer bound the
+    request body may carry — ``contact.capture`` applies the same ceilings on
+    the way to the column, so an over-long field is refused at the edge where
+    that is cheap and truncated at the model where it is not.
+    """
+
+    company: str = Field(default="", max_length=255)
+    name: str = Field(default="", max_length=255)
+    email: str = Field(min_length=3, max_length=255)
+    phone: str = Field(default="", max_length=64)
+    #: Which panel they came through. A plan *name*, and this endpoint grants no
+    #: more than the sign-up form does with the same field: nothing.
+    plan: Optional[str] = Field(default=None, max_length=32)
+    #: The ERP they run, in their own words — the sub-pages ask it because it is
+    #: the most useful sentence an operator can have before replying.
+    erp: str = Field(default="", max_length=64)
+    message: str = Field(default="", max_length=contact.MAX_MESSAGE)
+
+
+@router.post("/contact", status_code=status.HTTP_202_ACCEPTED)
+def contact_us(body: ContactRequestBody, request: Request,
+               session: Session = Depends(get_session)) -> dict:
+    """Record an enquiry from the public site.
+
+    **202, not 201.** Nothing was created that the caller now owns — no account,
+    no plan, no session — and answering 201 with no resource to name would be
+    the endpoint implying it did more than it did. It accepted a message.
+
+    Not gated on ``SELF_SERVE_SIGNUP``. A deployment that does not want
+    strangers creating tenants still wants to be told somebody is interested;
+    the two doors answer different questions, and closing the first has never
+    meant closing the second.
+
+    The reply says what happens next and says nothing else. It carries no id: a
+    visitor has nothing to do with one, and an id handed to an unauthenticated
+    caller is an argument they can then use somewhere.
+    """
+    if _too_many(request, bucket="contact",
+                 limit=settings.CONTACT_RATE_LIMIT_PER_HOUR):
+        raise HTTPException(
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            "Too many enquiries from here in the last hour. Try again later, "
+            "or write to us directly.")
+    try:
+        contact.capture(
+            session, company=body.company, name=body.name, email=body.email,
+            phone=body.phone, plan=body.plan, erp=body.erp,
+            message=body.message)
+    except contact.ContactRefused as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    session.commit()
+    return {"received": True,
+            "note": "Thanks — we will come back to you at that address."}
 
 
 # ── what is left ─────────────────────────────────────────────────────────────

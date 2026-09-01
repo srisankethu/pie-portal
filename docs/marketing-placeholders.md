@@ -47,50 +47,55 @@ build**, because it means something rendered a placeholder instead of hiding
 its block. `prerender.test.tsx` catches the same thing in the three-second
 test loop, along with the section's navigation link and the lettering.
 
-## 1 · Prices — `frontend/src/landing/pricing.ts`
+## 1 · Prices — there are none, and that is the design
 
-The landing page is the **only** place a price lives; `backend/app/entitlements.py`
-deliberately holds none. Both monthly lists are now real: Indian visitors see
-the rupee prices, everyone else sees the dollar ones.
+**The site states no price, in any currency, on any page.** There is no slot to
+fill and no token to replace: `frontend/src/landing/pricing.ts` is now
+`worked-example.ts` and holds only the illustrative quote line the hero card and
+the plans note share.
 
-| Slot | What it is | Set to |
-|---|---|---|
-| `tierIntelligence` (INTL) | Commercial Intelligence, per month | **$1,950** |
-| `tierPlatform` (INTL) | Platform, per month | **$3,950** |
-| `{{PRICE_CATALOG_BUILD_USD}}` | One-time catalog build | **Still unset.** No dollar figure exists. The rupee price is ₹4,999; a converted price would be a guess dressed as a decision, so the sentence carrying it is dropped whole for a dollar visitor |
+What a distributor pays turns on how many companies are connected, which ERP
+each of them sits on and how much catalogue there is to build. A figure on a
+panel answers that before asking any of it, and it is wrong for somebody — who
+then acts on it without ever getting in touch. So the plans section describes
+what each plan *is* and ends in a form (`ContactForm.tsx` → `POST
+/api/v1/contact`), and the enquiry lands in a queue an operator works:
 
-To change a price, write it as it should read, symbol included — `"$1,950"` —
-and keep the `/month` suffix in the markup rather than in the string. The page
-displays the string unchanged.
+```bash
+cd backend
+python3 -m app.contact                    # who is waiting for a reply
+python3 -m app.contact handled <id>       # after replying
+python3 -m app.entitlements requests      # this queue plus the two in-product ones
+```
 
-The dollar tiers are the founder's own figures, not conversions of the rupee
-ones; the two lists are not expected to track each other and editing one is not
-a reason to edit the other.
+Two tests hold the line, because "just this one figure" is how it comes back:
+`worked-example.test.ts` fails if the module grows a price-shaped export, and
+`prerender.test.tsx` fails if any built page carries `/month`, `per month` or
+the old "Priced per organization" fallback.
+
+If a price list is ever wanted again, this is the section to rewrite — not a
+literal to paste into a panel.
 
 ## 2 · The demo booking link — `frontend/src/landing/cta.ts`
 
 | Token | What it is |
 |---|---|
-| `{{DEMO_BOOKING_URL}}` | The scheduling link behind every **Book a demo** button — six of them, across the landing page and the three ERP pages |
+| `{{DEMO_BOOKING_URL}}` | The scheduling link behind every **Book a demo** button — four of them: the landing page's hero and closing block, and each ERP page's |
 
 Replace the constant with the real URL (Cal.com, Calendly, HubSpot, whatever is
 chosen). Nothing else has to change: the moment it stops looking like a token,
-all six buttons switch to it, say "Book a demo", open in a new tab and announce
+all four buttons switch to it, say "Book a demo", open in a new tab and announce
 that they do.
 
 **Until then the page does not offer a meeting it cannot arrange.** Each button
-falls back to the honest alternative for where it sits — the trial door in the
-two hero blocks and the closing blocks, "Ask for this plan" on the two paid
-panels, which is the in-product request the pricing standfirst already
-describes — and the second button beside a fallback is dropped rather than
-rendered as a duplicate of it. `cta.test.ts` pins both states, and
-`prerender.test.tsx` asserts no built page carries a `{{…}}` token inside an
-`href` at all.
+falls back to the trial door under a label that says so, and the second button
+beside a fallback is dropped rather than rendered as a duplicate of it.
+`cta.test.ts` pins both states, and `prerender.test.tsx` asserts no built page
+carries a `{{…}}` token inside an `href` at all.
 
-So this one is no longer a deploy blocker; it is a conversion one. Every other
-token below is prose a reader can see is unfinished. This one is the difference
-between a buyer who is ready to talk being able to, and being sent to a signup
-form instead.
+It stopped being a conversion blocker when the plans section grew its form: a
+buyer who is ready to talk now has a door on every one of these pages whether
+or not a scheduling link exists. Filling this in adds the faster one.
 
 ## 3 · Customers — Section F of `frontend/src/landing/Landing.tsx`
 

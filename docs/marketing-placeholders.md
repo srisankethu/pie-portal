@@ -32,7 +32,7 @@ The build ends with every empty slot and what a visitor is not seeing because
 of it — for example:
 
 ```
-prerender: 9 content slots are still empty, and the pages hide what depends on them:
+prerender: 10 content slots are still empty, and the pages hide what depends on them:
     DEMO_BOOKING_URL          → every "Book a demo" button falls back to the trial door
     PRICE_CATALOG_BUILD_USD   → the catalog-build sentence is omitted for non-Indian visitors
     CUSTOMER_LOGO_1..4        → no customer strip
@@ -142,6 +142,7 @@ not exist is the claim a diligence process takes apart.
 | `{{PROPHET21_DISTRIBUTOR_EVIDENCE}}` | What distributors running Prophet 21 actually say about margin on their own quote desk |
 | `{{NETSUITE_DISTRIBUTOR_EVIDENCE}}` | The same, for NetSuite |
 | `{{ACUMATICA_DISTRIBUTOR_EVIDENCE}}` | The same, for Acumatica |
+| `{{ZOHO_DISTRIBUTOR_EVIDENCE}}` | The same, for Zoho Books — the one of the four where we run the book ourselves, so this is the panel most likely to be fillable first, and still not with our own words |
 
 This is the one field on those pages with no source in the code. Everything
 else there — how PIE connects, what it reads, what it writes, what it cannot

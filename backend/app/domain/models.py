@@ -4871,7 +4871,17 @@ class ApiKey(Base):
 
 
 class CompanyCorpus(Base):
-    """One company's item-master export, kept as bytes rather than as a file.
+    """One file a company's catalogue is decoded from, kept as bytes.
+
+    A company has **several** of these at once, and that is the grain the
+    ``source_key`` column carries: an item master exported from the ERP, a
+    manufacturer's range extension, a price list covering products the master
+    has not caught up with. They are merged into one corpus at build time
+    (``catalog.combined_corpus``), which is where the record-id collisions
+    between them are resolved and counted — pie-parser's ``AuthoritativeIndex``
+    treats a duplicate identifier inside one namespace as a collision that
+    never resolves, so merging without de-duplicating would silently stop a
+    part number resolving at all.
 
     **Why the content is a column and not a path.** The container filesystem is
     ephemeral — ``railway.json`` declares no volume — and today that costs
@@ -4902,13 +4912,36 @@ class CompanyCorpus(Base):
     #: masters, and they are not interchangeable.
     connection_id: Mapped[str] = mapped_column(String(64), index=True)
 
+    #: Which of this company's sources this file *is*. A re-upload under the
+    #: same key supersedes that one file and leaves the others alone; a new key
+    #: adds a source. Nullable because every row written before a company could
+    #: have more than one predates the idea — those read as the unnamed source
+    #: and behave exactly as they did.
+    source_key: Mapped[Optional[str]] = mapped_column(String(128))
     filename: Mapped[str] = mapped_column(String(255), default="")
     content_type: Mapped[str] = mapped_column(String(128), default="")
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    #: Which of this file's columns hold the record id, the description and the
+    #: grade. An organisation fact about *this file*, not about the pack: two
+    #: exports of the same catalogue call the part number ``MM#`` and
+    #: ``Part No``, and asking a person to rename spreadsheet columns to match
+    #: a pack is asking them to do the platform's job. Null means "not stated" —
+    #: `ingestion.item_master.suggest_mapping` reads the headers instead.
+    mapping: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+    #: What reading this file kept and what it left out: the columns mapped, the
+    #: columns dropped, and which of those were commercial. Evidence for the
+    #: nomenclature-only rule that a person can check against their own file,
+    #: rather than a count they have to trust.
+    ingest: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     #: sha256 of ``content``. Also what makes a re-upload of identical bytes
     #: recognisable as such rather than a second corpus that happens to match.
     sha256: Mapped[str] = mapped_column(String(64), index=True)
-    content: Mapped[bytes] = mapped_column(LargeBinary)
+    #: The file itself. **Deferred**: it is loaded only when something asks for
+    #: it, because a company keeps several and the listing endpoint asks for
+    #: none of them. Eager, a company with twenty 30 MB exports made
+    #: ``GET /catalog/companies`` read 600 MB of blobs to render a file list.
+    #: A build reads them one at a time and expires each after use.
+    content: Mapped[bytes] = mapped_column(LargeBinary, deferred=True)
 
     uploaded_by: Mapped[Optional[str]] = mapped_column(String(64))
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
@@ -4947,8 +4980,28 @@ class CompanyCatalogue(Base):
 
     #: Which corpus this was decoded from, and which pack decoded it. Both are
     #: part of the answer to "which catalogue answered", alongside the stamp.
+    #: ``corpus_id`` names the newest of the sources; with several of them it is
+    #: no longer the whole answer, which is what ``corpus_digest`` is for.
     corpus_id: Mapped[Optional[str]] = mapped_column(String(64))
     pack: Mapped[str] = mapped_column(String(255), default="")
+
+    #: A hash over the set of sources this was built from — every live source's
+    #: key and content digest. What makes "out of date" answerable once a
+    #: company has several files: a source added, replaced or removed all move
+    #: this, and comparing one ``corpus_id`` could not see any of the three.
+    #: Null on a row built before there was more than one source, where the
+    #: ``corpus_id`` comparison is still the honest answer.
+    corpus_digest: Mapped[Optional[str]] = mapped_column(String(64))
+    #: The sources themselves, as they were at build time — filename, key,
+    #: digest and rows contributed. Provenance: with several files merged, "what
+    #: is in this catalogue" is not answerable from a single filename.
+    sources: Mapped[Optional[list[Any]]] = mapped_column(JSON)
+    #: What merging them did: rows in, rows kept, and the record ids that
+    #: appeared in more than one file. A collision is resolved in favour of the
+    #: newest source and *counted* — never silently dropped, because the same
+    #: part number in two price lists is a real disagreement about a real
+    #: product and somebody has to know.
+    ingest: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
 
     records: Mapped[int] = mapped_column(Integer, default=0)
     rows_read: Mapped[int] = mapped_column(Integer, default=0)

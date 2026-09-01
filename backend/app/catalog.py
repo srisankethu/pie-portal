@@ -21,6 +21,7 @@ Nothing reads it once a company has its own.
 """
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import logging
@@ -103,6 +104,34 @@ def source_state() -> Dict[str, Any]:
     }
 
 
+def pack_columns(pack_path: Path) -> Dict[str, str]:
+    """What this pack calls the three columns the pipeline reads.
+
+    Which headers a corpus uses is the *pack's* to say — it is a fact about one
+    organisation's export, and pie-parser's org layer declares it. Asked here
+    rather than restated at each caller: these three literals were once
+    duplicated between this file and pie-parser's ``tools/run_parser.py``, so a
+    second distributor's corpus needed the same edit made twice, in two
+    repositories, and one of them would eventually be missed. There are two
+    callers again now — the parse, and the normalisation that writes the corpus
+    the parse reads — and they must agree exactly or the parse finds no columns.
+
+    ``getattr`` rather than a plain attribute read, and the same defaults: the
+    two repositories version independently and ``PIE_PARSER_ROOT`` is a pinned
+    checkout, so a portal that crashed on a slightly older engine would be a
+    worse failure than one that falls back to the values that engine was using
+    anyway.
+    """
+    root = str(settings.PIE_PARSER_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    from engine.pack import load_pack  # noqa: PLC0415
+
+    return getattr(load_pack(pack_path), "columns", None) or {
+        "record_id": "MM#", "description": "Material Description",
+        "grade": "Grade"}
+
+
 def run_parse(corpus: Path, pack_path: Path, out: Path) -> Dict[str, Any]:
     """Decode one corpus through one pack into one JSONL. The single parse.
 
@@ -133,19 +162,12 @@ def run_parse(corpus: Path, pack_path: Path, out: Path) -> Dict[str, Any]:
     started = time.perf_counter()
     out.parent.mkdir(parents=True, exist_ok=True)
     pack = load_pack(pack_path)
-    # Which headers the corpus uses is the *pack's* to say — it is a fact about
-    # one organisation's export, and pie-parser's org layer declares it. These
-    # three literals were duplicated here and in `tools/run_parser.py`, so a
-    # second distributor's corpus needed the same edit made twice, in two
-    # repositories, and one of them would eventually be missed.
-    #
-    # `getattr` rather than a plain attribute read: the two repositories version
-    # independently, `PIE_PARSER_ROOT` is a pinned checkout, and a portal that
-    # crashed on a slightly older engine would be a worse failure than one that
-    # falls back to the values that engine was using anyway.
-    columns = getattr(pack, "columns", None) or {
-        "record_id": "MM#", "description": "Material Description",
-        "grade": "Grade"}
+    # Which headers the corpus uses is the *pack's* to say, and `pack_columns`
+    # is where that is asked — the same answer the normalisation that produced
+    # this corpus was written against. Loading the pack twice costs milliseconds
+    # against a parse measured in seconds; two copies of the fallback literals
+    # would cost a corpus that normalises to headers the parse then cannot find.
+    columns = pack_columns(pack_path)
     mapping = ColumnMapping(
         record_id=columns["record_id"], description=columns["description"],
         grade=columns["grade"]
@@ -201,6 +223,13 @@ def run_parse(corpus: Path, pack_path: Path, out: Path) -> Dict[str, Any]:
 #: the bytes are read into memory, not after.
 MAX_CORPUS_BYTES = 32 * 1024 * 1024
 
+#: How many files one company may keep as sources at once. A ceiling rather
+#: than a limit anyone should reach: a build reads every one of them on every
+#: rebuild, and a company with fifty price lists has a data problem the
+#: catalogue cannot fix. Refused by name, so the answer says what to do
+#: (replace a source, or remove one) instead of failing at build time.
+MAX_SOURCES = 20
+
 
 def company_catalog_path(connection_id: str) -> Path:
     """Where one company's decoded JSONL lives.
@@ -252,25 +281,185 @@ def pack_for(connection: Any) -> Optional[Path]:
     return None
 
 
-def current_corpus(session: Any, org: str, connection_id: str) -> Any:
-    """The corpus a company would build from, or None if it has uploaded none.
+def current_corpora(session: Any, org: str, connection_id: str) -> List[Any]:
+    """Every file this company's catalogue would be built from, oldest first.
 
-    The newest row that has not been superseded. Scoped to the organization in
-    the query rather than checked after it, like ``_skip_rows`` in the data
-    router: a connection id from another tenant must read as "no corpus" rather
-    than as a permission error that confirms one exists.
+    Oldest first because that is the order :func:`combined_corpus` resolves
+    collisions in: the newest source wins, so it must be written last.
+
+    Scoped to the organization in the query rather than checked after it, like
+    ``_skip_rows`` in the data router: a connection id from another tenant must
+    read as "no sources" rather than as a permission error that confirms one
+    exists.
     """
     from sqlalchemy import select
 
     from .domain import models
 
-    return session.scalar(
+    return list(session.scalars(
         select(models.CompanyCorpus)
         .where(models.CompanyCorpus.organization_id == org,
                models.CompanyCorpus.connection_id == connection_id,
                models.CompanyCorpus.superseded_at.is_(None))
-        .order_by(models.CompanyCorpus.uploaded_at.desc())
-        .limit(1))
+        .order_by(models.CompanyCorpus.uploaded_at.asc(),
+                  models.CompanyCorpus.corpus_id.asc())))
+
+
+def current_corpus(session: Any, org: str, connection_id: str) -> Any:
+    """The newest of a company's sources, or None if it has uploaded none.
+
+    Still meaningful with several: it is the file whose arrival a screen dates
+    the export by, and the one a collision resolves in favour of. What it is
+    *not* any more is the whole of what the catalogue was built from — that is
+    :func:`current_corpora`, and the digest over it.
+    """
+    sources = current_corpora(session, org, connection_id)
+    return sources[-1] if sources else None
+
+
+def source_key_of(row: Any) -> str:
+    """Which source a corpus row is, for a row written before keys existed.
+
+    Falls back to the filename and then to the id, so every row has a key to be
+    replaced or removed by. Never empty: an unkeyed row that could not be
+    addressed would be a source a person can see and not delete.
+    """
+    return (getattr(row, "source_key", None) or row.filename
+            or row.corpus_id)
+
+
+def sources_digest(sources: List[Any]) -> str:
+    """A hash over the set of files a build would read.
+
+    Over each source's key and content digest, sorted, so it is a property of
+    the *set* rather than of the order it was assembled in. This is what makes
+    "out of date" answerable once a company has several files: adding a source,
+    replacing one and removing one all move this hash, and none of the three is
+    visible in a single ``corpus_id``.
+    """
+    parts = sorted(f"{source_key_of(s)}:{s.sha256}" for s in sources)
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
+
+
+def _release(source: Any) -> None:
+    """Forget one source's bytes, so a merge holds one file rather than all.
+
+    Best effort by design: a detached row, or one built by hand in a test, has
+    no session to expire it against and needs none — it was never the case this
+    protects.
+    """
+    from sqlalchemy import inspect as sa_inspect
+
+    try:
+        state = sa_inspect(source)
+        if state.session is not None:
+            state.session.expire(source, ["content"])
+    except Exception:  # noqa: BLE001 — releasing memory must not fail a build
+        log.debug("could not expire the content of a corpus row", exc_info=True)
+
+
+def combined_corpus(sources: List[Any], pack_path: Path, out: Path,
+                    limit: Optional[int] = None) -> Dict[str, Any]:
+    """Write every source, normalised to the pack's columns, as one CSV.
+
+    Three things happen here, and the third is the one with teeth.
+
+    *Normalisation* is per source, through the mapping stored with it, into the
+    column names this pack declares — so a company can build from an item
+    master calling the part number ``MM#`` and a price list calling it
+    ``Part No`` without either file being edited.
+
+    *Streaming*: each source is read row by row and written straight to ``out``.
+    Materialising them cost 394 MB of resident memory for one 33 MB file (see
+    ``ingestion.item_master.Table``), and a company may keep twenty.
+
+    *De-duplication* is by record id, and the newest source wins. This is not
+    tidying. pie-parser's ``AuthoritativeIndex`` indexes identifiers per
+    namespace and treats a duplicate inside one namespace as a collision that
+    **never resolves** — so emitting the same part number from two files would
+    not give a wrong answer, it would silently stop that part number resolving
+    at all, which is a defect nobody would find by looking at record counts.
+    Newest-wins is a policy and it is stated as one: a later file is a later
+    statement about the same product. Every collision is counted and the first
+    of them named, because the same part number in two price lists is a real
+    disagreement and the answer is to tell somebody, not to pick quietly.
+
+    The sources are therefore read **newest first**, so the row that wins is
+    the first one seen and only the keys have to be remembered rather than the
+    rows. The output is in that order; nothing downstream depends on the order
+    of a corpus, and a given set of files always produces the same bytes.
+
+    ``limit`` reads only the first rows of each source, for the pack-fit trial.
+    """
+    from .ingestion import item_master
+
+    headers = pack_columns(pack_path)
+    order = [headers.get(role) or role for role in item_master.ROLES]
+
+    seen: set = set()
+    collisions: Dict[str, str] = {}
+    per_source: List[Dict[str, Any]] = []
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    with out.open("w", encoding="utf-8", newline="") as fh:
+        writer = csv.writer(fh, lineterminator="\n")
+        writer.writerow(order)
+        for source in reversed(sources):
+            # Named per file. "The build failed" over six sources is not
+            # something a person can act on, and the reason a file has stopped
+            # being readable is usually specific to that file — a mapping whose
+            # column was renamed in a re-upload, a workbook saved in an older
+            # format.
+            report: Dict[str, Any] = {}
+            emitted = 0
+            try:
+                table = item_master.read_table(
+                    source.content, source.filename, source.content_type or "")
+                mapping = (getattr(source, "mapping", None)
+                           or item_master.suggest_mapping(table))
+                report = item_master.ingest_report(table, mapping)
+                # Streamed, not collected: `list()` around this generator would
+                # put the whole file back in memory, which is the one thing this
+                # function exists to avoid.
+                for row in item_master.emit_rows(table, mapping, report,
+                                                 limit=limit):
+                    if row[0] in seen:
+                        # An older file restating a part number a newer one
+                        # already gave. Recorded against the file that lost,
+                        # which is the one somebody would go and look at.
+                        collisions.setdefault(row[0], source_key_of(source))
+                        continue
+                    seen.add(row[0])
+                    writer.writerow(row)
+                    emitted += 1
+            except item_master.ItemMasterError as e:
+                raise item_master.ItemMasterError(
+                    f"{source.filename or source_key_of(source)}: {e}") from e
+            report["rows_emitted"] = emitted
+            report["source_key"] = source_key_of(source)
+            report["filename"] = source.filename
+            report["sha256"] = source.sha256
+            per_source.append(report)
+            # Released as soon as this file has been written out. `content` is
+            # deferred, so it arrived on demand a moment ago; without this the
+            # session would hold every source's bytes at once by the end of the
+            # loop, which is the profile deferring it was for.
+            _release(source)
+
+    return {
+        # Oldest first, matching how the screen lists them; the reading order
+        # above is an implementation detail of the collision rule.
+        "sources": list(reversed(per_source)),
+        "rows_kept": len(seen),
+        "rows_in": sum(r["rows_read"] for r in per_source),
+        "rows_skipped_blank_key": sum(r["rows_skipped_blank_key"]
+                                      for r in per_source),
+        "collisions": len(collisions),
+        # A handful, named. The full list would be unbounded and the count is
+        # what says whether this is a stray or a structural overlap.
+        "collision_examples": sorted(collisions)[:10],
+        "sampled": any(r["sampled"] for r in per_source),
+    }
 
 
 def company_catalog_state(session: Any, org: str, connection_id: str) -> Dict[str, Any]:
@@ -285,13 +474,27 @@ def company_catalog_state(session: Any, org: str, connection_id: str) -> Dict[st
     but it is no longer built from what the company last uploaded. Saying so is
     the difference between "out of date" and "wrong", and only one of them is
     urgent.
+
+    With several sources, staleness is a comparison of *digests over the set* —
+    a source added or removed changes what a build would read while leaving the
+    newest ``corpus_id`` untouched, so the old single-id comparison would have
+    called that catalogue current. It is kept as the fallback for a row built
+    before the digest column existed, where it is still the honest answer.
     """
     from .domain import models
 
     row = session.get(models.CompanyCatalogue, (org, connection_id))
-    corpus = current_corpus(session, org, connection_id)
+    sources = current_corpora(session, org, connection_id)
+    corpus = sources[-1] if sources else None
     path = company_catalog_path(connection_id)
     on_disk = path.exists()
+
+    if not row or not sources:
+        stale = False
+    elif row.corpus_digest:
+        stale = row.corpus_digest != sources_digest(sources)
+    else:
+        stale = row.corpus_id != corpus.corpus_id
 
     return {
         "connection_id": connection_id,
@@ -311,6 +514,14 @@ def company_catalog_state(session: Any, org: str, connection_id: str) -> Dict[st
         "report": row.report if row else None,
         "stamp": ({k: getattr(row, k) for k in STAMP_FIELDS
                    if getattr(row, k, None) is not None} if row else {}),
+        # What merging the sources did, and — for a built catalogue — which
+        # files it read. Kept out of `report`, which is the parser's own dict
+        # served verbatim and must not gain fields the parser did not write.
+        "ingest": row.ingest if row else None,
+        "built_from": row.sources if row else None,
+        # The newest source, kept under its original name: a screen dates a
+        # company's export by the file that arrived last, and one caller
+        # (`master_health`) still asks for one file rather than the set.
         "corpus": ({
             "corpus_id": corpus.corpus_id,
             "filename": corpus.filename,
@@ -319,29 +530,45 @@ def company_catalog_state(session: Any, org: str, connection_id: str) -> Dict[st
             "uploaded_at": clock.iso(clock.aware(corpus.uploaded_at)),
             "uploaded_by": corpus.uploaded_by,
         } if corpus else None),
-        "stale": bool(row and corpus and row.corpus_id != corpus.corpus_id),
+        "sources": [{
+            "source_key": source_key_of(s),
+            "corpus_id": s.corpus_id,
+            "filename": s.filename,
+            "content_type": s.content_type,
+            "size_bytes": s.size_bytes,
+            "sha256": s.sha256,
+            "uploaded_at": clock.iso(clock.aware(s.uploaded_at)),
+            "uploaded_by": s.uploaded_by,
+            "mapping": getattr(s, "mapping", None),
+            "ingest": getattr(s, "ingest", None),
+        } for s in sources],
+        "stale": stale,
     }
 
 
 def build_for_company(session: Any, org: str, connection_id: str,
                       pack_path: Path, actor: Optional[str] = None) -> Dict[str, Any]:
-    """Decode this company's uploaded corpus through its chosen pack.
+    """Decode every file this company has uploaded, through its chosen pack.
 
-    The corpus is written to a temporary file for the parse and removed after:
-    pie-parser's ``CsvAdapter`` reads a path, and the durable copy is the row —
-    materialising it beside the output would put a second source of truth on
-    the disk that §1.1 of the design says cannot be trusted to survive.
+    The merged corpus is written to a temporary file for the parse and removed
+    after: pie-parser's ``CsvAdapter`` reads a path, and the durable copies are
+    the rows — materialising them beside the output would put a second source
+    of truth on the disk that §1.1 of the design says cannot be trusted to
+    survive.
 
     Stores the run report and the stamp as a row rather than a sidecar file,
     for the same reason. Raises ``FileNotFoundError`` when the company has
-    uploaded nothing, which is a state to report rather than an error to log.
+    uploaded nothing, which is a state to report rather than an error to log,
+    and ``ingestion.item_master.ItemMasterError`` when one of its files can no
+    longer be read as a table — named per file, because "the build failed" over
+    six sources is not something a person can act on.
     """
     import tempfile
 
     from .domain import models
 
-    corpus = current_corpus(session, org, connection_id)
-    if corpus is None:
+    sources = current_corpora(session, org, connection_id)
+    if not sources:
         raise FileNotFoundError(
             "This company has no item-master export on file. Upload one "
             "before building its catalogue.")
@@ -349,12 +576,12 @@ def build_for_company(session: Any, org: str, connection_id: str,
     out = company_catalog_path(connection_id)
     with _build_lock:
         tmpdir = tempfile.mkdtemp(prefix="pie-corpus-")
-        tmp_corpus = Path(tmpdir) / (corpus.filename or "corpus.csv")
+        tmp_corpus = Path(tmpdir) / "corpus.csv"
         try:
-            tmp_corpus.write_bytes(corpus.content)
+            combine = combined_corpus(sources, pack_path, tmp_corpus)
             result = run_parse(tmp_corpus, pack_path, out)
         finally:
-            # The bytes are in the row; nothing is lost by removing them here,
+            # The bytes are in the rows; nothing is lost by removing them here,
             # and leaving a tenant's item master in /tmp is a disclosure.
             tmp_corpus.unlink(missing_ok=True)
             Path(tmpdir).rmdir()
@@ -364,7 +591,15 @@ def build_for_company(session: Any, org: str, connection_id: str,
         row = models.CompanyCatalogue(organization_id=org,
                                       connection_id=connection_id)
         session.add(row)
-    row.corpus_id = corpus.corpus_id
+    row.corpus_id = sources[-1].corpus_id
+    row.corpus_digest = sources_digest(sources)
+    row.sources = [{
+        "source_key": source_key_of(s),
+        "corpus_id": s.corpus_id,
+        "filename": s.filename,
+        "sha256": s.sha256,
+    } for s in sources]
+    row.ingest = combine
     row.pack = str(pack_path)
     row.records = result["records"]
     row.rows_read = result["rows_read"]
@@ -379,65 +614,112 @@ def build_for_company(session: Any, org: str, connection_id: str,
     return company_catalog_state(session, org, connection_id)
 
 
-def validate_corpus(raw: bytes, pack_path: Optional[Path]) -> Optional[str]:
-    """Why these bytes are not a usable item-master export, or None.
+def prepare_source(raw: bytes, filename: str = "", content_type: str = "",
+                   mapping: Optional[Dict[str, Any]] = None,
+                   ) -> tuple[Dict[str, Optional[str]], Dict[str, Any]]:
+    """Read an upload as a table, settle its column mapping, and say what it holds.
 
-    Checked here rather than in the router, which stays a mapping layer (§3),
-    and *before* the row is written rather than at build time: an upload that
-    is accepted and then fails to build leaves the company holding a corpus it
-    cannot use and no message saying why.
+    Called *before* the row is written rather than at build time: an upload that
+    is accepted and then fails to build leaves the company holding a file it
+    cannot use and no message saying why. It lives here rather than in the
+    router, which stays a mapping layer (§3).
 
-    Three things, in the order they stop being cheap:
+    Returns the mapping to store and the ingest report to store beside it.
+    Raises ``ingestion.item_master.ItemMasterError`` with a sentence written for
+    the person who uploaded the file.
 
-    * it decodes as UTF-8 — a mojibaked master is unusable and the failure is
-      otherwise a confusing parse error thousands of rows in;
-    * it has a header row at all;
-    * where the company has already chosen a pack, that pack's mapped columns
-      are present, and the message names the missing one. The pack declares
-      which headers it reads, so this asks the pack rather than restating the
-      three column names it happens to use today.
+    **What it no longer checks is the pack's own column names.** It used to
+    refuse any file whose headers were not the ones the chosen pack declares,
+    which made every export other than the one this platform was written
+    against unusable — and the fix a person needed was to rename spreadsheet
+    columns to match a pack they cannot see. The mapping replaced that: the file
+    keeps its own headers, the mapping says which of them fills each role, and
+    `combined_corpus` renames the columns on the way into the parse. So the
+    refusal here is narrower and more useful — a file whose part number or
+    description cannot be *identified at all*, with its headers listed so the
+    person can say which column it is.
     """
-    if not raw.strip():
-        return "The file is empty."
-    try:
-        text = raw.decode("utf-8-sig")
-    except UnicodeDecodeError:
-        return ("The file is not UTF-8 text. Export it as UTF-8 CSV — an "
-                "item master in another encoding decodes to the wrong "
-                "characters rather than failing outright.")
+    from .ingestion import item_master
 
-    import csv as _csv
-    import io as _io
+    table = item_master.read_table(raw, filename, content_type)
+    settled = dict(mapping) if mapping else item_master.suggest_mapping(table)
+    item_master.check_mapping(table, settled)
+    return settled, item_master.describe(table, settled)
 
-    reader = _csv.reader(_io.StringIO(text))
-    try:
-        header = [h.strip() for h in next(reader)]
-    except StopIteration:
-        return "The file has no header row."
-    if not any(header):
-        return "The first row is empty, so there are no column names to read."
 
-    if pack_path is None:
-        return None
-    try:
-        root = str(settings.PIE_PARSER_ROOT)
-        if root not in sys.path:
-            sys.path.insert(0, root)
-        from engine.pack import load_pack  # noqa: PLC0415
+def pack_fit(session: Any, org: str, connection_id: str,
+             sample_rows: int = 0) -> Dict[str, Any]:
+    """Try every shipped pack against a sample of this company's files.
 
-        columns = getattr(load_pack(pack_path), "columns", None) or {}
-    except Exception:  # noqa: BLE001 — an unreadable pack is not the file's fault
-        log.warning("could not read columns from %s; accepting the upload "
-                    "without a column check", pack_path, exc_info=True)
-        return None
+    Which pack decodes an export is not a question a person can answer from a
+    dropdown of identifiers — ``zcnc`` says nothing about whether it reads
+    their file. So this runs the real pipeline over the first rows of the real
+    sources and reports **the parser's own counts** for each pack: classified,
+    quarantined, and the per-family census it produced. It computes no score
+    and no rate of its own; ranking packs by a number this module invented
+    would be exactly the second parse-rate calculation ``run_parse`` refuses.
 
-    for role in ("record_id", "description"):
-        wanted = columns.get(role)
-        if wanted and wanted not in header:
-            return (f"This pack reads the {role.replace('_', ' ')} from a "
-                    f"column called {wanted!r}, which this file does not have. "
-                    f"Its columns are: {', '.join(h for h in header if h)}.")
-    return None
+    Safe by construction, and this is why it can exist at all: it executes only
+    the packs the pinned engine ships. No tenant-supplied pattern is compiled
+    (see :func:`available_packs`), so the trial adds no execution surface — it
+    only spends CPU that the build was going to spend anyway.
+
+    ``available: False`` with a reason when there is nothing to try, never an
+    empty result that reads as "no pack fits".
+    """
+    import tempfile
+
+    from .ingestion import item_master
+
+    sample_rows = sample_rows or item_master.SAMPLE_ROWS
+    packs = available_packs()
+    sources = current_corpora(session, org, connection_id)
+    if not packs:
+        return {"available": False, "reason": source_state()["reason"] or (
+            "This engine ships no org-layer packs."), "packs": []}
+    if not sources:
+        return {"available": False, "reason": (
+            "This company has no item-master export on file yet, so there is "
+            "nothing to try a pack against."), "packs": []}
+
+    out: List[Dict[str, Any]] = []
+    with _build_lock:
+        tmpdir = Path(tempfile.mkdtemp(prefix="pie-packfit-"))
+        try:
+            for pack in packs:
+                path = tmpdir / f"{pack['id']}.jsonl"
+                try:
+                    combine = combined_corpus(sources, Path(pack["path"]),
+                                              tmpdir / "corpus.csv",
+                                              limit=sample_rows)
+                    result = run_parse(tmpdir / "corpus.csv",
+                                       Path(pack["path"]), path)
+                except Exception as e:  # noqa: BLE001 — one pack failing is a result
+                    # Reported against that pack rather than raised: a pack the
+                    # engine ships but cannot run on this file is precisely
+                    # what the trial is for, and it must not hide the others.
+                    log.info("pack %s could not decode %s: %s",
+                             pack["id"], connection_id, e)
+                    out.append({"pack_id": pack["id"],
+                                "error": f"{type(e).__name__}: {e}"})
+                    continue
+                out.append({
+                    "pack_id": pack["id"],
+                    "rows_read": result["rows_read"],
+                    "classified": result["records"],
+                    "quarantined": result["quarantined"],
+                    "report": result["report"],
+                    "sampled": combine["sampled"],
+                })
+        finally:
+            # Nothing here is a catalogue: a trial that left a products.jsonl
+            # behind would be a company resolving against a pack it never chose.
+            for leftover in tmpdir.glob("*"):
+                leftover.unlink(missing_ok=True)
+            tmpdir.rmdir()
+
+    return {"available": True, "reason": None, "sample_rows": sample_rows,
+            "packs": out}
 
 
 # ── the seed: what a deployment that predates per-company catalogues gets ────
@@ -497,6 +779,13 @@ def seed_company_catalogues(session: Any,
         session.add(models.CompanyCorpus(
             organization_id=org,
             connection_id=first.connection_id,
+            # Keyed by its filename like any other source, so the company can
+            # replace or remove the seed from the screen once it has its own
+            # export. No mapping is stored: the shipped corpus uses the shipped
+            # pack's own column names, which is exactly the case
+            # `suggest_mapping` reads correctly, and inventing a mapping here
+            # would state a fact about a file this function did not read.
+            source_key=settings.PIE_CORPUS.name,
             filename=settings.PIE_CORPUS.name,
             content_type="text/csv",
             size_bytes=len(raw),

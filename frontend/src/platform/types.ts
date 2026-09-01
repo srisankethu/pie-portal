@@ -700,6 +700,106 @@ export interface CatalogSource {
   pack: string;
 }
 
+/** Which of one uploaded file's columns hold the three things a pack reads.
+ *
+ *  An organisation fact about that FILE, not about the pack: two exports of the
+ *  same catalogue call the part number `MM#` and `Part No`, and the mapping is
+ *  what lets both build without either being edited. */
+export interface SourceColumnMapping {
+  record_id: string | null;
+  description: string | null;
+  grade: string | null;
+}
+
+/** What reading one file kept, and what it left out.
+ *
+ *  The dropped columns are NAMED rather than counted on purpose. The catalogue
+ *  is nomenclature only — a price column is absent from it because it was never
+ *  written, not because something filtered it — and "12 columns ignored" is not
+ *  a claim anybody can check against their own spreadsheet. */
+export interface SourceIngest {
+  columns: string[];
+  mapped: SourceColumnMapping;
+  dropped_columns: string[];
+  /** The dropped columns that looked commercial: price, cost, stock, discount.
+   *  Reporting only — every unmapped column is dropped either way. */
+  commercial_columns_dropped: string[];
+  rows_read?: number;
+  /** Rows with a part number and a description — what this file can contribute. */
+  rows_kept?: number;
+  /** Rows this file actually contributed to the merged corpus, present only in
+   *  a build's own report. Lower than `rows_kept` where a newer file already
+   *  carried the same part numbers, and zero for a file every row of which is
+   *  superseded — which is worth seeing, since such a file is dead weight on
+   *  every rebuild. */
+  rows_emitted?: number;
+  /** Rows with no part number or no description. A large number here usually
+   *  means the wrong column is mapped, which is why it is shown. */
+  rows_skipped_blank_key?: number;
+  sampled?: boolean;
+  source_key?: string;
+  filename?: string;
+  sha256?: string;
+}
+
+/** One of the files a company's catalogue is built from. */
+export interface CompanySource {
+  /** What this file IS, for replacing or removing it. Uploading under the same
+   *  key replaces that one file and leaves the others alone. */
+  source_key: string;
+  corpus_id: string;
+  filename: string;
+  content_type: string;
+  size_bytes: number;
+  sha256: string;
+  uploaded_at: string;
+  uploaded_by: string | null;
+  /** Null where none was stated: the headers are read for a suggestion at
+   *  build time instead. */
+  mapping: SourceColumnMapping | null;
+  ingest: SourceIngest | null;
+}
+
+/** What merging a company's files into one corpus did. */
+export interface CompanyCombine {
+  sources: SourceIngest[];
+  rows_kept: number;
+  /** Rows read across every file, before de-duplication and before rows with
+   *  no part number were left out. */
+  rows_in: number;
+  rows_skipped_blank_key: number;
+  /** Part numbers that appeared in more than one file. The newest file wins,
+   *  and the count is here because that is a policy somebody has to know about
+   *  — two price lists disagreeing about one product is a real disagreement. */
+  collisions: number;
+  collision_examples: string[];
+  sampled: boolean;
+}
+
+/** Every shipped pack tried against a sample of one company's files.
+ *
+ *  Counts from the parser, never a score computed here: ranking packs by a
+ *  number the portal invented would be the second parse-rate calculation
+ *  `catalog.run_parse` refuses to have. */
+export interface PackFit {
+  available: boolean;
+  /** Why there was nothing to try, when there was: no packs shipped, or no
+   *  file uploaded. Never an empty list that reads as "no pack fits". */
+  reason: string | null;
+  sample_rows?: number;
+  packs: {
+    pack_id: string;
+    rows_read?: number;
+    classified?: number;
+    quarantined?: number;
+    report?: CatalogReport;
+    sampled?: boolean;
+    /** This pack could not read this file. A result, not a failure of the
+     *  trial — it is the answer the trial exists to give. */
+    error?: string;
+  }[];
+}
+
 export interface CompanyCatalogue {
   connection_id: string;
   label: string;
@@ -733,9 +833,19 @@ export interface CompanyCatalogue {
     uploaded_at: string;
     uploaded_by: string | null;
   } | null;
-  /** Built from a corpus that has since been superseded. Still a real
-   *  catalogue with a real stamp — just not built from what was last
-   *  uploaded. Out of date, not wrong. */
+  /** Every file this company's catalogue would be built from. One company can
+   *  keep several — an ERP item master, a manufacturer's range extension, a
+   *  price list — and the build merges them. */
+  sources: CompanySource[];
+  /** What merging them did, at the last build. Null before the first one. */
+  ingest: CompanyCombine | null;
+  /** Which files the built catalogue actually read, as they were then. With
+   *  several merged, one filename does not answer "what is in this". */
+  built_from: { source_key: string; corpus_id: string; filename: string;
+                sha256: string }[] | null;
+  /** Built from a set of sources that has since changed — one replaced, added
+   *  or removed. Still a real catalogue with a real stamp, just not built from
+   *  what this company now holds. Out of date, not wrong. */
   stale: boolean;
 }
 

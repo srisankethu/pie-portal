@@ -1,4 +1,4 @@
-import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PackFit, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -730,12 +730,44 @@ export const papi = {
    *  bytes directly, so this needs no `python-multipart` on the backend — the
    *  dependency `master_health/__init__.py` refuses stays refused. `File` is
    *  a `Blob`, so `body: file` streams it without reading it into a string. */
-  uploadCompanyCorpus: (t: string, connectionId: string, file: File) =>
+  /** `sourceKey` names which of the company's files this one is, so uploading
+   *  a second price list replaces that source and leaves the item master
+   *  alone. Omitted, the server keeps the older meaning and replaces the whole
+   *  export — which is what "Replace export" on a single-file company means. */
+  uploadCompanyCorpus: (t: string, connectionId: string, file: File,
+                        sourceKey?: string) =>
     req<CompanyCatalogue>(
       `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/corpus`
-      + `?filename=${encodeURIComponent(file.name)}`,
+      + `?filename=${encodeURIComponent(file.name)}`
+      + (sourceKey ? `&source_key=${encodeURIComponent(sourceKey)}` : ""),
       { method: "POST", body: file,
         headers: { "Content-Type": file.type || "text/csv" } }, t),
+
+  /** Correct which columns of one source file the parse reads. Refused when it
+   *  names a column the file does not have, so a mapping that cannot build is
+   *  never stored. */
+  setSourceMapping: (t: string, connectionId: string, sourceKey: string,
+                     mapping: { record_id: string; description: string;
+                                grade?: string | null }) =>
+    req<CompanyCatalogue>(
+      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}`
+      + `/sources/${encodeURIComponent(sourceKey)}/mapping`,
+      { method: "PUT", body: JSON.stringify(mapping) }, t),
+
+  /** Stop building from one file. Superseded, not deleted, and the built
+   *  catalogue is left alone — it goes OUT OF DATE until somebody rebuilds. */
+  removeCompanySource: (t: string, connectionId: string, sourceKey: string) =>
+    req<CompanyCatalogue>(
+      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}`
+      + `/sources/${encodeURIComponent(sourceKey)}`,
+      { method: "DELETE" }, t),
+
+  /** Try every shipped pack against a sample of this company's files, so the
+   *  pack is chosen on the parser's own counts rather than on its name. */
+  companyPackFit: (t: string, connectionId: string) =>
+    req<PackFit>(
+      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/pack-fit`,
+      {}, t),
 
   /** Choose which shipped pack decodes this company's export. */
   setCompanyPack: (t: string, connectionId: string, packId: string) =>

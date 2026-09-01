@@ -456,8 +456,13 @@ def test_a_file_with_its_own_column_names_builds_after_being_mapped(
     assert "OLD-1" in decoded and "NEW-1" not in decoded
 
 
+@requires_pie
 def test_a_build_names_the_file_it_could_not_read(client):
     """"The build failed" over six files is not something a person can act on.
+
+    ``requires_pie`` because it has to get *past* the pack check to reach the
+    read: with no engine there is no pack to choose, the build stops at 409
+    "no pack chosen", and the test would be asserting the wrong refusal.
 
     Reached by storing a mapping and then replacing the file with one that has
     different headers under the same key — which is the realistic way a source
@@ -568,14 +573,40 @@ def test_the_pack_trial_reports_the_parsers_counts_and_writes_nothing(
     assert not catalog.company_catalog_path("cx_sls").exists()
 
 
-def test_the_pack_trial_says_why_it_has_nothing_to_try(client):
+def test_the_pack_trial_says_why_it_has_nothing_to_try(client, monkeypatch):
     """``available: False`` with a reason, never an empty list.
 
     An empty result would read as "no pack fits your file", which is a claim
     about the file. The two real causes — no file uploaded, no pack shipped —
-    are different problems with different fixes.
+    are different problems with different fixes, and this asserts they are
+    reported as different problems.
+
+    Both branches are driven by patching ``available_packs`` rather than by
+    what happens to be on disk. Written the naive way, this passed locally and
+    failed in CI: the no-sources assertion only holds when a pack exists, and CI
+    has no engine, so the *first* branch answered and the test read as broken
+    when it was the fixture that was ambient. A test whose result depends on
+    whether a submodule is checked out is testing the checkout.
     """
+    from app import catalog
+
     hdr = _hdr(client)
+
+    # No pack to try. The wording depends on *why* — an engine that is absent
+    # says so and names the fix, an engine that is present but ships no
+    # org-layer pack says that instead — so what is asserted is the part that
+    # is true of both: a reason is given, and it is not the file's fault.
+    monkeypatch.setattr(catalog, "available_packs", list)
+    fit = client.get("/api/v1/data/catalog/companies/cx_sls/pack-fit",
+                     headers=hdr).json()
+    assert fit["available"] is False
+    assert fit["packs"] == []
+    assert fit["reason"]
+    assert "item-master export" not in fit["reason"]
+
+    # A pack exists and the company has uploaded nothing: the other cause.
+    monkeypatch.setattr(catalog, "available_packs",
+                        lambda: [{"id": "zcnc", "path": "/nonexistent"}])
     fit = client.get("/api/v1/data/catalog/companies/cx_sls/pack-fit",
                      headers=hdr).json()
     assert fit["available"] is False

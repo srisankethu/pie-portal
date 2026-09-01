@@ -378,8 +378,14 @@ Zoho's consent screen.
 **Path.** Data centre + client id + secret + refresh token (password fields,
 "never shown again") + Zoho org id + human label; the Access panel lists every
 scope with what it buys and two copyable scope strings (full and minimum).
-`POST /api/v1/connections` creates or reuses the credential (identical secrets
-attach to the one on file), connects, checks; the card appears.
+`POST /api/v1/connections` creates, reuses or rotates the credential, connects,
+checks; the card appears. Three outcomes on the credential, keyed on the app
+rather than the secret: identical secrets **attach** to the row on file; a
+different secret for a client id and data centre this organization already owns
+a grant for **rotates** that row (Zoho re-issues a refresh token every time a
+Self Client grant is generated, so this is what reconnecting looks like);
+anything else **creates** one. A grant shared *by another organization* is
+never rotated from here — sharing grants use, not the right to change the key.
 **Branches.** Missing secrets → 400 naming them · unsafe base URL → 400 (SSRF
 guard) · plan refuses a second company → 403 · once one credential exists the
 form auto-switches to "use a sign-in already on file" · base-currency mismatch
@@ -393,9 +399,18 @@ time instead).
 (`GET /api/v1/data/credentials/{id}/organizations`, live from Zoho;
 already-connected ones disabled) → pick → `POST /api/v1/connections` with no
 secret re-entered.
+The picker offers only the sign-ins for the system being added, and the
+sign-ins this organization owns that reach no company are listed below it with
+a **Remove** each (`DELETE /api/v1/data/credentials/{id}`, confirm dialog).
+Removing a company deliberately leaves its sign-in on file — so reconnecting
+does not mean re-entering a secret — and this is the way out of that retention
+rather than a reversal of it.
 **Branches.** Zoho rejects the credential → 502 inline · grant sees no
-companies → stated.
-**Ends.** Second company connected sharing the grant · refused · abandoned.
+companies → stated · remove a sign-in something still connects through → 409
+naming the count · remove one another organization owns → 403 · cancel on
+remove → nothing.
+**Ends.** Second company connected sharing the grant · sign-in removed · refused
+· abandoned.
 
 ### 4.5 Connect a US-market ERP (registry connector)
 
@@ -1622,6 +1637,7 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/data/credentials` | owner | Every Zoho grant this org may connect through, with used_by and sharing info |
 | GET | `/api/v1/data/credentials/{credential_id}/organizations` | owner | Live list of Zoho companies one grant reaches, marked already_connected (502 if Zoho rejects it) |
 | POST | `/api/v1/data/credentials/{credential_id}/share` | owner | Full-replace which other organizations may connect through this grant |
+| DELETE | `/api/v1/data/credentials/{credential_id}` | owner | Remove a sign-in nothing is connected through; 409 while any connection still uses it, 403 unless this org owns it |
 | GET | `/api/v1/data/status` | signed-in | Connection state headline, auto_sync, last_sync run dict, per-company coverage, live sync state, read-model counts, can_sync/can_manage_connection |
 | GET | `/api/v1/data/sync` | signed-in | Sync state for polling: active run(s), busy_connections, last, last_successful_at, can_start |
 | POST | `/api/v1/data/sync` | manager/owner | Queue a pull (since/full/connection_id) → 202; returns the existing job instead of erroring on overlap; 503 if sync_runs schema is behind |

@@ -845,6 +845,14 @@ export const papi = {
       `/api/v1/data/credentials/${credentialId}/share`,
       { method: "POST", body: JSON.stringify({ organization_ids }) }, t),
 
+  // Removing a sign-in, not a company. Disconnecting a company deliberately
+  // leaves its sign-in behind, so this is the only way one that no longer
+  // reaches anything ever goes away. The server refuses (409) while any
+  // connection still uses it.
+  removeCredential: (t: string, credentialId: string) =>
+    req<{ removed: boolean; credential_id: string }>(
+      `/api/v1/data/credentials/${credentialId}`, { method: "DELETE" }, t),
+
   clearZohoConnection: (t: string) =>
     req<{ removed: boolean; connection: DataStatus["connection"] }>(
       "/api/v1/data/connection", { method: "DELETE" }, t),

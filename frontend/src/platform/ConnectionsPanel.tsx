@@ -3,13 +3,14 @@ import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import { formatDate, since, todayISO } from "../when";
 import { papi } from "./api";
 import { ErrorState, LoadingState } from "./kit";
 import type {
   ConnectionCheck,
+  ConnectionCredential,
   ConnectionsView,
   ConnectorCatalogEntry,
   ConnectorField,
@@ -848,7 +849,20 @@ function AddConnection({
   // richest flow and the incumbent — then every registered connector.
   const [connector, setConnector] = useState("zoho");
   const entry = catalog.find((c) => c.key === connector);
-  const hasCredentials = view.credentials.length > 0;
+  // Only the sign-ins for the system being added. A credential is a grant into
+  // one specific system, so offering a Zoho sign-in while Acumatica is selected
+  // offers a choice the server can only refuse — `add_connection` takes the
+  // connector *from* the credential, and the mismatch is not expressible there.
+  const signIns = useMemo(
+    () => view.credentials.filter((c) => c.connector === connector),
+    [view.credentials, connector]);
+  const hasCredentials = signIns.length > 0;
+  // Owned only: the server refuses to delete a grant another organization owns
+  // and merely shared with this one, so offering the button would be offering
+  // a 403.
+  const unusedSignIns = useMemo(
+    () => signIns.filter((c) => c.used_by === 0 && c.is_owner),
+    [signIns]);
   const [mode, setMode] = useState<"existing" | "new" | "oauth">(
     hasCredentials ? "existing" : "new");
   // The data centre a Zoho grant belongs to. Not portable between estates: a
@@ -856,7 +870,7 @@ function AddConnection({
   // it is chosen before the redirect rather than guessed after it.
   const [dc, setDc] = useState("in");
   const [form, setForm] = useState(EMPTY_FORM);
-  const [credentialId, setCredentialId] = useState(view.credentials[0]?.credential_id ?? "");
+  const [credentialId, setCredentialId] = useState(signIns[0]?.credential_id ?? "");
   const [orgs, setOrgs] = useState<ZohoVisibleOrg[] | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -880,10 +894,10 @@ function AddConnection({
       setForm(EMPTY_FORM);
       hadCredentials.current = true;
     }
-    if (!view.credentials.some((c) => c.credential_id === credentialId)) {
-      setCredentialId(view.credentials[0].credential_id);
+    if (!signIns.some((c) => c.credential_id === credentialId)) {
+      setCredentialId(signIns[0].credential_id);
     }
-  }, [hasCredentials, view.credentials, credentialId]);
+  }, [hasCredentials, signIns, credentialId]);
 
 
   // Coming back from Zoho. The callback redirects to `/#/data?oauth=…`, and
@@ -953,6 +967,37 @@ function AddConnection({
       setOrgs(r.visible_organizations);
     } catch (e) {
       setError((e as Error).message);
+    }
+  }
+
+  /** Remove a sign-in that no longer reaches a company.
+   *
+   *  The counterpart to the retention that leaves it here: removing a company
+   *  deliberately keeps its sign-in, and without this the ones left over are
+   *  permanent — offered in the picker above for ever, indistinguishable from
+   *  a live grant except by a count nobody reads as an instruction.
+   */
+  async function removeSignIn(c: ConnectionCredential) {
+    if (
+      !window.confirm(
+        `Remove the sign-in ${c.client_id.slice(0, 18)}…?\n\n` +
+          "It reaches no company here, so nothing stops being pulled and nothing " +
+          "already synced is touched. The secret is deleted — connecting through " +
+          "this sign-in again means entering it again.",
+      )
+    ) {
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await papi.removeCredential(token, c.credential_id);
+      setOrgs(null);
+      await onAdded();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -1109,7 +1154,7 @@ function AddConnection({
                 setOrgs(null);
               }}
             >
-              {view.credentials.map((c) => (
+              {signIns.map((c) => (
                 <MenuItem key={c.credential_id} value={c.credential_id}>
                   {c.label} · {c.client_id.slice(0, 18)}… · used by {c.used_by}{" "}
                   {c.used_by === 1 ? "company" : "companies"}
@@ -1247,6 +1292,43 @@ function AddConnection({
       </form>
       )}
       </>
+      )}
+
+      {/* The sign-ins left behind by companies that have been removed. Kept
+          on purpose — see `clear_zoho_connection` — but kept without a way out
+          they accumulate, and the picker above offers every one of them as
+          though it still reached something.
+
+          Below the form rather than under the picker it refers to: between the
+          picker and the organization-id field it split the add-a-company flow
+          in half, and the rule above it read as the end of a section that had
+          not ended. */}
+      {unusedSignIns.length > 0 && (
+        <div className="cx-unused">
+          <p className="st-help">
+            {unusedSignIns.length === 1
+              ? "One sign-in on file reaches no company."
+              : `${unusedSignIns.length} sign-ins on file reach no company.`}{" "}
+            Removing a company leaves its sign-in behind so that reconnecting
+            does not mean re-entering a secret. One you are finished with can go.
+          </p>
+          <ul className="cred-orgs">
+            {unusedSignIns.map((c) => (
+              <li key={c.credential_id}>
+                <span className="mono">{c.client_id.slice(0, 18)}…</span>
+                <Button
+                  type="button"
+                  variant="text" size="small"
+                  disabled={busy}
+                  onClick={() => removeSignIn(c)}
+                >
+                  Remove
+                </Button>
+                <Tip text="Deletes the stored secret. Nothing is connected through this sign-in, so no company stops being pulled and nothing already synced is affected." />
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {entry && <Access entry={entry} />}

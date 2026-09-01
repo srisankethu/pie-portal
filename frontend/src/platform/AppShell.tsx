@@ -62,9 +62,11 @@ import PaymentsOutlined from "@mui/icons-material/PaymentsOutlined";
 import ReceiptLongOutlined from "@mui/icons-material/ReceiptLongOutlined";
 import TimelineOutlined from "@mui/icons-material/TimelineOutlined";
 import StorageOutlined from "@mui/icons-material/StorageOutlined";
+import ManageSearchOutlined from "@mui/icons-material/ManageSearchOutlined";
 import FingerprintOutlined from "@mui/icons-material/FingerprintOutlined";
 import PsychologyOutlined from "@mui/icons-material/PsychologyOutlined";
 import ScoreboardOutlined from "@mui/icons-material/ScoreboardOutlined";
+import PendingActionsOutlined from "@mui/icons-material/PendingActionsOutlined";
 import CurrencyExchangeOutlined from "@mui/icons-material/CurrencyExchangeOutlined";
 import GavelOutlined from "@mui/icons-material/GavelOutlined";
 import ShieldOutlined from "@mui/icons-material/ShieldOutlined";
@@ -100,6 +102,10 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   simulate: ScienceOutlined,
   quotes: RequestQuoteOutlined,
   quoteOutcomes: ScoreboardOutlined,
+  // A clipboard still waiting on its clock: these are quotes lapsed without a
+  // win or a loss recorded, not quotes that were lost. The scoreboard above is
+  // the settled half of the same pair.
+  unrecordedQuotes: PendingActionsOutlined,
   approvals: FactCheckOutlined,
 
   weather: CloudOutlined,
@@ -131,6 +137,9 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   attribution: InsightsOutlined,
 
   data: StorageOutlined,
+  // A lookup, not a second catalogue: `catalogue` above is the book of items,
+  // this is the decode that says which pack and ruleset answered for one.
+  decodedCatalog: ManageSearchOutlined,
   identity: FingerprintOutlined,
   states: PsychologyOutlined,
   trust: ShieldOutlined,

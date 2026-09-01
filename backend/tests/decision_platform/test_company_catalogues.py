@@ -168,15 +168,28 @@ def test_a_newer_export_marks_the_catalogue_out_of_date_not_wrong(client, tmp_pa
 
 # ── the upload, and what it refuses ──────────────────────────────────────────
 
-def test_an_export_missing_the_packs_column_is_refused_by_name(client):
-    """Rejected at upload with the column named, not accepted and then failing
-    to build — a corpus that is stored and unusable is worse than one refused."""
+def test_an_export_whose_columns_cannot_be_identified_is_refused(client):
+    """Rejected at upload, listing the file's own headers — not accepted and
+    then failing to build, because a corpus that is stored and unusable is
+    worse than one refused.
+
+    **This used to demand the pack's column names**, and the message named
+    ``MM#``. That was wrong in the way that mattered most: it made every export
+    other than the one this platform was written against unusable, and the fix
+    it implied was to rename spreadsheet columns to match a pack a person
+    cannot see. A file keeps its own headers now and a stored mapping says which
+    of them fills each role, so the only thing left to refuse is a file whose
+    part number and description cannot be identified *at all* — and the answer
+    to that is the list of what the file does have.
+    """
     hdr = _hdr(client, "s.menon@pie.example")
     client.put("/api/v1/data/catalog/companies/cx_sls/pack",
                json={"pack_id": "zcnc"}, headers=hdr)
     r = _upload(client, hdr, "cx_sls", b"Wrong,Headers\n1,2\n")
     assert r.status_code == 422
-    assert "MM#" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert "record id" in detail
+    assert "Wrong, Headers" in detail
 
 
 def test_an_export_that_is_not_utf8_is_refused(client):

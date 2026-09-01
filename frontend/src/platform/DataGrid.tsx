@@ -25,7 +25,7 @@
 // up disagreeing about it. It also means a phone never fetches the ag-grid
 // chunk at all.
 
-import { lazy, Suspense, useMemo, useState } from "react";
+import { Fragment, lazy, Suspense, useMemo, useState } from "react";
 import Button from "@mui/material/Button";
 import Stack from "@mui/material/Stack";
 import useMediaQuery from "@mui/material/useMediaQuery";
@@ -160,7 +160,7 @@ export function DataGrid<T>(props: DataGridProps<T>) {
   if (narrow && renderNarrow) {
     return (
       <NarrowRows rows={rows} render={renderNarrow} pageSize={pageSize}
-                  ariaLabel={ariaLabel} />
+                  ariaLabel={ariaLabel} getRowId={props.getRowId} />
     );
   }
 
@@ -178,18 +178,27 @@ export function DataGrid<T>(props: DataGridProps<T>) {
  *  hundred cards on the device least able to draw them. The button says how
  *  many are left rather than "more", so the count is never a surprise. */
 function NarrowRows<T>({
-  rows, render, pageSize, ariaLabel,
+  rows, render, pageSize, ariaLabel, getRowId,
 }: {
   rows: T[];
   render: (row: T, index: number) => React.ReactNode;
   pageSize: number;
   ariaLabel: string;
+  getRowId?: (row: T) => string;
 }) {
   const [shown, setShown] = useState(pageSize);
   const rest = rows.length - shown;
   return (
     <Stack spacing={1.5} role="list" aria-label={ariaLabel}>
-      {rows.slice(0, shown).map((row, i) => render(row, i))}
+      {/* Keyed here rather than by each caller. The wrapper owns the mapping,
+          so a caller cannot key it — every `renderNarrow` in the app was
+          logging React's missing-key warning, and the fix belonging to one
+          place is the same reason §3 says to extend this wrapper rather than
+          open `AgGridReact` beside it. A Fragment so no element is added
+          between the Stack and the card the caller drew. */}
+      {rows.slice(0, shown).map((row, i) => (
+        <Fragment key={getRowId ? getRowId(row) : i}>{render(row, i)}</Fragment>
+      ))}
       {rest > 0 && (
         <Button variant="outlined" onClick={() => setShown(shown + pageSize)}>
           Show {Math.min(rest, pageSize)} more of {rows.length}

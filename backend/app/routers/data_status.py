@@ -1048,11 +1048,12 @@ def upload_company_corpus(
     connection_id: str,
     request: Request,
     filename: str = "",
-    payload: bytes = Body(default=b""),
+    source_key: str = "",
     principal: Principal = Depends(require_owner),
+    payload: bytes = Body(default=b""),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Store this company's item-master export.
+    """Store one of the files this company's catalogue is built from.
 
     The bytes are kept as a row rather than a file. The container filesystem is
     ephemeral — `railway.json` declares no volume — and today that costs
@@ -1060,11 +1061,26 @@ def upload_company_corpus(
     derived from it. An uploaded corpus has no such source: on container disk it
     is gone on the next deploy, and the catalogue could then never be rebuilt.
 
-    Append-only: a new upload supersedes the previous one rather than
-    overwriting it, so a catalogue already built keeps a real referent for the
-    corpus its stamp names.
+    Append-only: an upload supersedes rather than overwrites, so a catalogue
+    already built keeps a real referent for the corpus its stamp names.
+
+    **`source_key` decides what is being replaced**, and the two cases are
+    deliberately different:
+
+    * named — this file *is* that source. Only that one is superseded, so
+      uploading a second price list leaves the item master alone. This is how a
+      company builds one catalogue out of several exports.
+    * absent — the older meaning: replace the whole export. Every live source is
+      superseded. Kept because "Replace export" on a company with one file is
+      still the common action, and silently turning it into "add a second file"
+      would leave a company resolving against a merge it never asked for.
+
+    CSV or Excel. A workbook is read with ``openpyxl``, which is already a
+    dependency; ``python-multipart`` is still not, because the browser sends the
+    file as a raw body and one file needs no form fields.
     """
     from .. import catalog
+    from ..ingestion.item_master import ItemMasterError
 
     connection = _company(session, principal, connection_id)
 
@@ -1083,31 +1099,158 @@ def upload_company_corpus(
             f"That file is larger than the {catalog.MAX_CORPUS_BYTES // (1024 * 1024)} MB "
             f"limit for an item-master export.")
 
-    problem = catalog.validate_corpus(payload, catalog.pack_for(connection))
-    if problem:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, problem)
+    name = (filename or "item-master.csv")[:255]
+    content_type = (request.headers.get("content-type") or "")[:128]
+    key = (source_key or name)[:128]
+
+    live = catalog.current_corpora(session, principal.organization_id, connection_id)
+    # Counted before the file is read, so a company at the ceiling is told so
+    # rather than made to wait for the read of a file that will be refused.
+    if source_key and len(live) >= catalog.MAX_SOURCES and not any(
+            catalog.source_key_of(s) == key for s in live):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"This company already has {len(live)} source files, which is the "
+            f"limit of {catalog.MAX_SOURCES}. Replace one of them, or remove "
+            f"one first.")
+
+    try:
+        mapping, ingest = catalog.prepare_source(payload, name, content_type)
+    except ItemMasterError as e:
+        # The reason, verbatim: it names the column it could not find and lists
+        # the headers the file does have, which is what makes it actionable.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
 
     digest = hashlib.sha256(payload).hexdigest()
     now = clock.now()
-    for previous in session.scalars(
-            select(models.CompanyCorpus).where(
-                models.CompanyCorpus.organization_id == principal.organization_id,
-                models.CompanyCorpus.connection_id == connection_id,
-                models.CompanyCorpus.superseded_at.is_(None))):
-        previous.superseded_at = now
+    for previous in live:
+        if not source_key or catalog.source_key_of(previous) == key:
+            previous.superseded_at = now
     session.add(models.CompanyCorpus(
         organization_id=principal.organization_id,
         connection_id=connection_id,
-        filename=(filename or "item-master.csv")[:255],
-        content_type=(request.headers.get("content-type") or "")[:128],
+        source_key=key,
+        filename=name,
+        content_type=content_type,
         size_bytes=len(payload),
         sha256=digest,
         content=payload,
+        mapping=mapping,
+        ingest=ingest,
         uploaded_by=principal.user_id,
         uploaded_at=now,
     ))
     session.flush()
     return _company_dict(session, connection, principal)
+
+
+def _source(session: Session, principal: Principal, connection_id: str,
+            source_key: str):
+    """One of this company's live sources, by key.
+
+    Scoped through ``current_corpora``, which puts the organization in the query
+    rather than checking it afterwards — a key from another tenant reads as
+    absent rather than as a permission error that confirms it exists.
+    """
+    from .. import catalog
+
+    for row in catalog.current_corpora(session, principal.organization_id,
+                                       connection_id):
+        if catalog.source_key_of(row) == source_key:
+            return row
+    raise HTTPException(status.HTTP_404_NOT_FOUND,
+                        "This company has no source file by that name.")
+
+
+class SourceMappingRequest(BaseModel):
+    """Which of one file's columns hold the record id, description and grade."""
+
+    record_id: str
+    description: str
+    grade: Optional[str] = None
+
+
+@router.put("/catalog/companies/{connection_id}/sources/{source_key}/mapping")
+def set_source_mapping(
+    connection_id: str,
+    source_key: str,
+    body: SourceMappingRequest,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Correct which columns of one source file the parse reads.
+
+    The mapping is guessed at upload from the headers, and a guess is sometimes
+    wrong — a master carrying both ``Old Code`` and ``Item Code``, a sheet whose
+    description column is called ``Particulars``. Setting it here re-reads the
+    stored bytes with the new mapping and refuses one naming a column the file
+    does not have, so a mapping that cannot build is never stored.
+
+    The bytes are not touched, and the source is not superseded: this changes
+    how a file is *read*, and superseding it would say a different file had
+    arrived.
+    """
+    from .. import catalog
+    from ..ingestion.item_master import ItemMasterError
+
+    connection = _company(session, principal, connection_id)
+    row = _source(session, principal, connection_id, source_key)
+    wanted = {"record_id": body.record_id, "description": body.description,
+              "grade": body.grade or None}
+    try:
+        mapping, ingest = catalog.prepare_source(
+            row.content, row.filename, row.content_type or "", mapping=wanted)
+    except ItemMasterError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+    row.mapping = mapping
+    row.ingest = ingest
+    session.flush()
+    return _company_dict(session, connection, principal)
+
+
+@router.delete("/catalog/companies/{connection_id}/sources/{source_key}")
+def remove_company_source(
+    connection_id: str,
+    source_key: str,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Stop building this company's catalogue from one of its files.
+
+    Superseded, not deleted, on the same reasoning as an upload: a catalogue
+    built from this source keeps a real referent for what its stamp names. The
+    built catalogue is left alone and goes OUT OF DATE — removing a source
+    changes what a build *would* read, and rebuilding here would replace what a
+    company resolves against as a side effect of tidying a file list.
+    """
+    connection = _company(session, principal, connection_id)
+    row = _source(session, principal, connection_id, source_key)
+    row.superseded_at = clock.now()
+    session.flush()
+    return _company_dict(session, connection, principal)
+
+
+@router.get("/catalog/companies/{connection_id}/pack-fit")
+def company_pack_fit(
+    connection_id: str,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Try every shipped pack against a sample of this company's files.
+
+    A pack identifier says nothing about whether it reads a given export, so
+    this reports the parser's own counts for each one and lets a person choose
+    on evidence rather than by name. It writes nothing — no catalogue, no row —
+    and it runs only packs the pinned engine ships, so it adds no execution
+    surface that a build does not already have.
+
+    Owner-only, unlike reading the catalogue's state: it spends a parse per pack
+    on request, which belongs behind the same role that can trigger a build.
+    """
+    from .. import catalog
+
+    _company(session, principal, connection_id)
+    return catalog.pack_fit(session, principal.organization_id, connection_id)
 
 
 class CompanyPackRequest(BaseModel):
@@ -1159,6 +1302,7 @@ def build_company_catalog(
     — the response carries the finished result.
     """
     from .. import catalog
+    from ..ingestion.item_master import ItemMasterError
 
     connection = _company(session, principal, connection_id)
     pack = catalog.pack_for(connection)
@@ -1172,6 +1316,11 @@ def build_company_catalog(
                                   connection_id, pack, actor=principal.user_id)
     except FileNotFoundError as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except ItemMasterError as e:
+        # One of the files stopped being readable — usually a mapping whose
+        # column a re-upload renamed. Its own message, which names the file,
+        # rather than the parser failure below: nothing has reached the parser.
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
     except OSError as e:
         if e.errno == errno.ENOSPC:
             raise HTTPException(

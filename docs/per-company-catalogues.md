@@ -1,11 +1,18 @@
 # Per-company decoded catalogues
 
-**Status: built, both parts.** PR 1 brought the tables, upload, pack selection,
-per-company build and the screen; PR 2 was the cutover — the quote names its
-company, the resolution API gained its argument and its refusal, the shipped
-corpus became a *seed*, and the deployment-wide catalogue was removed. Read the
-plan below as the record of why it is shaped this way; where the build differs
-from the plan, it is marked at the point it differs.
+**Status: built, both parts, plus §10.** PR 1 brought the tables, upload, pack
+selection, per-company build and the screen; PR 2 was the cutover — the quote
+names its company, the resolution API gained its argument and its refusal, the
+shipped corpus became a *seed*, and the deployment-wide catalogue was removed.
+Read the plan below as the record of why it is shaped this way; where the build
+differs from the plan, it is marked at the point it differs.
+
+**§10 is the part that overturns something above.** A company keeps *several*
+source files rather than one, each with its own column mapping, merged into one
+catalogue at build time — and the pack is chosen against the parser's counts on
+the company's own files instead of by its identifier. §2's single `corpus_id`
+and §1.2's "the corpus must be phrased like the pack" are both superseded there.
+Read §10 before acting on either.
 
 Four things landed differently from the plan and are marked where they occur:
 the corpus arrives as a **raw request body**, so `python-multipart` was never
@@ -373,7 +380,104 @@ lives only in a chat log is a decision the next person re-litigates.
    forbids. An organization with exactly one company still answers with no
    argument, so single-entity callers see no change.
 
-## 10. Still open, now that both parts are built
+## 10. Several files per company, and the mapping (built)
+
+The design above gives a company **one** export at a time: an upload supersedes
+whatever was there. That turned out to be the wrong grain, and for a reason
+worth writing down rather than a preference.
+
+The exports do not arrive as one file. There is an item master out of the ERP, a
+manufacturer's range extension for products the master has not caught up with,
+and a price list covering a line bought this quarter. Building from one of them
+means the other two are not in the catalogue — and a part number that is not in
+the catalogue resolves to UNKNOWN, which looks exactly like the engine being
+wrong about a product it has simply never seen.
+
+So a company keeps a **set of sources** (`company_corpora.source_key`) and the
+build merges them. Three consequences, in the order they bite:
+
+**De-duplication is required, not tidying.** `identity/store.py`'s
+`AuthoritativeIndex` indexes identifiers per namespace and treats a duplicate
+inside one namespace as a collision that **never resolves** — so two files both
+emitting part number `A` would not produce a wrong answer, they would silently
+stop `A` resolving at all, which no record count reveals.
+`catalog.combined_corpus` therefore de-duplicates by record id, **newest source
+wins** (a later file is a later statement about the same product), and counts
+every collision into `company_catalogues.ingest` so the overlap is reported
+rather than absorbed.
+
+**Staleness became a set comparison.** `row.corpus_id != corpus.corpus_id` could
+not see a source *added* or *removed* — both leave the newest id untouched — so
+the catalogue went on calling itself current while a rebuild would have produced
+a different one. `corpus_digest` is a hash over every live source's key and
+content digest. The old comparison survives as the fallback for rows built
+before the column existed, where it is still honest.
+
+**A file keeps its own column names.** `validate_corpus` refused any upload
+whose headers were not the ones the chosen pack declares, and the message named
+`MM#`. That made every export other than the one this platform was written
+against unusable, and the fix it implied was to rename spreadsheet columns to
+match a pack the person cannot see. It is a stored **mapping** per source now
+(`company_corpora.mapping`): `ingestion/item_master.suggest_mapping` guesses it
+from the headers at upload, an owner corrects it from the screen, and
+`combined_corpus` renames the columns on the way into the parse. `pack_columns`
+is the single place the pack's declared names are read, because the parse and
+the normalisation must agree exactly or the parse finds no columns at all.
+
+**Excel, and no new dependency.** `openpyxl` is already in
+`requirements.txt` — pie-parser pulls it in — so a workbook is read directly
+(`read_only`, `data_only=True`, so a price list full of formulas yields the
+values a person sees). `python-multipart` is still not installed: the browser
+sends one file as a raw body. PDF was considered and left out; it is the least
+reliable input and would be a real dependency decision, so it stays a
+conversion the person does.
+
+**Reading a file is streamed, and that was measured.** Materialising a 33 MB
+CSV as lists of cells peaked at **394 MB** of resident memory — for one file, on
+an upload an owner can repeat, on a container sized in hundreds of megabytes.
+`item_master.Table` holds the bytes and re-reads them per pass instead, and
+`combined_corpus` writes each row straight to the temp file the parser reads,
+remembering only the record ids it has already emitted. Two 33 MB files now
+merge inside 335 MB peak, and finding the header row went from 5.9 s to 0.18 s.
+`CompanyCorpus.content` is `deferred` for the same reason: the listing endpoint
+asks for no blob at all, and a build expires each one after writing it out.
+
+The sources are therefore read **newest first** — the winner of a collision is
+then the first row seen, so only the keys have to be remembered rather than the
+rows. Nothing downstream depends on a corpus's order, and a given set of files
+still produces the same bytes.
+
+**Nomenclature only, structurally.** The normalised corpus carries the three
+mapped columns and nothing else — a price column is absent from it because it
+was never written, not because a filter removed it, which is the same reasoning
+CLAUDE.md §1 gives for the server omitting cost rather than the browser hiding
+it. `ingest` still *names* every dropped column, commercial ones first, because
+"12 columns ignored" is not a claim a person can check against their own
+spreadsheet.
+
+### Choosing a pack on evidence
+
+`zcnc` says nothing about whether it reads a given export, which made the pack
+selector a dropdown of identifiers to guess between. `catalog.pack_fit` runs
+each shipped pack over the first `SAMPLE_ROWS` of the company's real files and
+reports **the parser's own counts** — classified, quarantined, the per-family
+census. It computes no score: a single "83% fit" would be the second parse-rate
+calculation `run_parse` refuses to have, and it would hide the distinction that
+decides the choice, since a pack that classifies few rows is wrong for this
+export while a pack that errors could not read it at all.
+
+It is safe for exactly the reason §1.2 gives: it executes only the packs the
+pinned engine ships, so no tenant-supplied pattern is compiled. Uploaded pack
+bundles remain phase 2, unchanged.
+
+And the empty case is now stated. `deploy/backend.Dockerfile` builds an image
+without the private submodule on purpose, so `packs: []` is a legitimate
+production state — and the screen rendered it as a dropdown that opened onto
+nothing, with the server's own explanation sitting unused in `source.reason`. An
+empty control that does not say why is the interface's version of the benign
+default §1 forbids.
+
+## 11. Still open, now that both parts are built
 
 - The **index cache bound** (§4) is three, chosen against the shape of the
   business rather than a benchmark. Revisit it from a measurement of the
@@ -391,4 +495,17 @@ lives only in a chat log is a decision the next person re-litigates.
   or a portal-side entry point that resolves the pair — the second is the
   better shape if it is ever worth doing.
 - Uploaded **pack bundles** remain phase 2, with the regex budget and sandbox
-  §1.2 describes.
+  §1.2 describes. §10's pack trial narrows what they are *for*: a tenant can now
+  see which shipped pack reads their export, so the remaining case is a
+  distributor whose phrasing no shipped pack covers at all — which is a pack
+  somebody writes in pie-parser, not one uploaded through a browser.
+- **Newest-wins on a collision** is a policy, chosen because a later file is a
+  later statement about the same product. The alternative worth considering is
+  an explicit precedence per source, which is a real answer for a company whose
+  item master should always beat a supplier's price list. It needs a screen to
+  set it and it is not obviously worth one; the collision count is what would
+  say whether it is.
+- **A workbook's first sheet only.** Which sheet of a multi-sheet workbook is
+  the item master is a question `item_master` cannot answer, and concatenating a
+  "Discontinued" tab into the catalogue is worse than reading one sheet. It is
+  logged, not surfaced. A sheet picker is the obvious fix if a real file needs it.

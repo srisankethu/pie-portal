@@ -594,6 +594,66 @@ class PlanChangeRequest(Base):
     decided_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
 
 
+class ContactRequest(Base):
+    """A visitor on the public site asking to talk, before there is a tenant.
+
+    The landing page states no price. It never will: what a business pays is
+    settled in a conversation, and a page that answered the question in a panel
+    was answering it for a reader whose situation it had not asked about. The
+    panels now describe what each plan *is* and the section ends in a form, so
+    this table is where that form lands.
+
+    **Not tenant-scoped, and that is the whole point.** Every other table in
+    this schema carries an ``organization_id`` because every other row belongs
+    to a company that has already signed up. The person who fills in this form
+    has not: there is no tenant to scope them to, no principal on the request,
+    and nothing here is any organization's data. It is the one row in this
+    database that exists *before* the relationship does — which is also why it
+    is named as the third table in ``test_row_level_security`` rather than
+    being given a policy that would have nothing to enforce.
+
+    Append-only in the same way :class:`PlanChangeRequest` is: an enquiry is
+    never edited into a different enquiry. Answering one stamps ``handled_at``
+    and leaves what was asked intact, because the question six months from now
+    is what somebody asked for and when.
+
+    It grants nothing, exactly like the plan-request row above it. Writing here
+    creates no account, licenses no plan and sends no mail — it records an ask
+    that ``python -m app.contact`` (and ``python -m app.entitlements requests``,
+    which lists all three queues together) puts in front of an operator.
+    """
+
+    __tablename__ = "contact_requests"
+
+    contact_request_id: Mapped[str] = mapped_column(
+        String(64), primary_key=True, default=_uuid)
+    #: What they said they are, in their own words. Free text and unvalidated
+    #: beyond a length: this is the first thing a stranger types, and a form
+    #: that argues with a company name is a form that loses the enquiry.
+    company: Mapped[str] = mapped_column(String(255), default="")
+    name: Mapped[str] = mapped_column(String(255), default="")
+    email: Mapped[str] = mapped_column(String(255), default="")
+    phone: Mapped[str] = mapped_column(String(64), default="")
+    #: Which panel they were reading when they pressed, where they came through
+    #: one. A plan *name*, not an order — the same non-promise
+    #: ``organizations.requested_plan`` is, and read by nothing that licenses
+    #: anything.
+    plan: Mapped[str] = mapped_column(String(32), default="")
+    #: The ERP they run, where the form asked. It is the single most useful
+    #: sentence an operator can have before replying.
+    erp: Mapped[str] = mapped_column(String(64), default="")
+    message: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, index=True)
+
+    #: NEW until somebody replies. Then HANDLED, with who and when. There is no
+    #: third state and no way back: a second enquiry is a second row.
+    status: Mapped[str] = mapped_column(String(16), default="NEW", index=True)
+    handled_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), nullable=True)
+    handled_by: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
+
 class AIProviderKey(Base):
     """One organization's own API key for one AI provider (BYOK).
 

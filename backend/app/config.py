@@ -422,6 +422,14 @@ class Settings:
     # it does and does not stop.
     SIGNUP_RATE_LIMIT_PER_HOUR: int = int(
         os.environ.get("SIGNUP_RATE_LIMIT_PER_HOUR", "5"))
+    # Enquiries accepted from one address per hour, from the public site's
+    # form. Higher than the sign-up allowance because the cost is different in
+    # both directions: this endpoint hashes no password, so it is not the CPU
+    # amplifier that one is, and the thing being refused is a buyer trying to
+    # reach us. Over-limiting the sign-up door costs a retry; over-limiting
+    # this one costs the enquiry, because nobody fills a form in twice.
+    CONTACT_RATE_LIMIT_PER_HOUR: int = int(
+        os.environ.get("CONTACT_RATE_LIMIT_PER_HOUR", "20"))
 
     # ── The public resolution API (app/routers/resolve.py) ───────────────────
     # The default allowance a newly minted API key carries, per minute, per

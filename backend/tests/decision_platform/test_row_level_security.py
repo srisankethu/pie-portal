@@ -633,17 +633,22 @@ def test_every_tenant_scoped_table_is_covered_or_deliberately_named(migrated):
         "a table named here no longer carries organization_id")
 
 
-def test_the_two_tables_without_a_tenant_column_are_still_the_same_two(migrated):
-    """`zoho_credentials` belongs to a person rather than a company and
-    `process_leases` is infrastructure about processes, so neither can take this
-    policy shape at all. A *third* one appearing means a model was added without
-    a tenant column, which is a decision worth making on purpose rather than
-    discovering when it leaks."""
+def test_the_three_tables_without_a_tenant_column_are_still_the_same_three(migrated):
+    """`zoho_credentials` belongs to a person rather than a company,
+    `process_leases` is infrastructure about processes, and `contact_requests`
+    is written by somebody who has no organization yet — the public site's
+    enquiry form, filled in before there is a tenant to scope the row to. None
+    of the three can take this policy shape at all: a policy keyed on a column
+    that does not exist is not a control.
+
+    A *fourth* appearing means a model was added without a tenant column, which
+    is a decision worth making on purpose rather than discovering when it
+    leaks."""
     from app.db import Base
 
     unscoped = {t.name for t in Base.metadata.sorted_tables
                 if "organization_id" not in t.c}
-    assert unscoped == {"zoho_credentials", "process_leases"}
+    assert unscoped == {"zoho_credentials", "process_leases", "contact_requests"}
 
 
 # ── the unauthenticated paths, which have no tenant until they find one ─────

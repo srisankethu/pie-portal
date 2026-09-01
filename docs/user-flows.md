@@ -121,12 +121,15 @@ become signed in.
 
 **Trigger.** Any URL opened with no session (and no pending notice).
 **Path.**
-1. Landing page renders (hero, proof, pricing). On mount the app asks whether
+1. Landing page renders (hero, proof, plans). On mount the app asks whether
    the two optional doors exist — `GET /api/v1/signup`, `GET /api/v1/demo`;
    any failure reads as "not offered".
 2. CTAs: *Sign in* → sign-in card. *Get started free* → sign-up card when
-   offered, else falls back to sign-in. A pricing panel CTA opens sign-up with
-   that plan preselected. *See it on sample data* → demo (only when configured).
+   offered, else falls back to sign-in. The free panel's trial button opens
+   sign-up with that plan preselected; each paid panel jumps to the enquiry
+   form at the end of the section with that plan chosen (`POST
+   /api/v1/contact`, public, records an ask and grants nothing). *See it on
+   sample data* → demo (only when configured).
 
 **Branches.** Self-serve sign-up off (the default) → every "get started" CTA
 opens sign-in and the sign-in card drops its "Create your organization" link ·
@@ -375,8 +378,14 @@ Zoho's consent screen.
 **Path.** Data centre + client id + secret + refresh token (password fields,
 "never shown again") + Zoho org id + human label; the Access panel lists every
 scope with what it buys and two copyable scope strings (full and minimum).
-`POST /api/v1/connections` creates or reuses the credential (identical secrets
-attach to the one on file), connects, checks; the card appears.
+`POST /api/v1/connections` creates, reuses or rotates the credential, connects,
+checks; the card appears. Three outcomes on the credential, keyed on the app
+rather than the secret: identical secrets **attach** to the row on file; a
+different secret for a client id and data centre this organization already owns
+a grant for **rotates** that row (Zoho re-issues a refresh token every time a
+Self Client grant is generated, so this is what reconnecting looks like);
+anything else **creates** one. A grant shared *by another organization* is
+never rotated from here — sharing grants use, not the right to change the key.
 **Branches.** Missing secrets → 400 naming them · unsafe base URL → 400 (SSRF
 guard) · plan refuses a second company → 403 · once one credential exists the
 form auto-switches to "use a sign-in already on file" · base-currency mismatch
@@ -390,9 +399,18 @@ time instead).
 (`GET /api/v1/data/credentials/{id}/organizations`, live from Zoho;
 already-connected ones disabled) → pick → `POST /api/v1/connections` with no
 secret re-entered.
+The picker offers only the sign-ins for the system being added, and the
+sign-ins this organization owns that reach no company are listed below it with
+a **Remove** each (`DELETE /api/v1/data/credentials/{id}`, confirm dialog).
+Removing a company deliberately leaves its sign-in on file — so reconnecting
+does not mean re-entering a secret — and this is the way out of that retention
+rather than a reversal of it.
 **Branches.** Zoho rejects the credential → 502 inline · grant sees no
-companies → stated.
-**Ends.** Second company connected sharing the grant · refused · abandoned.
+companies → stated · remove a sign-in something still connects through → 409
+naming the count · remove one another organization owns → 403 · cancel on
+remove → nothing.
+**Ends.** Second company connected sharing the grant · sign-in removed · refused
+· abandoned.
 
 ### 4.5 Connect a US-market ERP (registry connector)
 
@@ -1622,6 +1640,7 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/data/credentials` | owner | Every Zoho grant this org may connect through, with used_by and sharing info |
 | GET | `/api/v1/data/credentials/{credential_id}/organizations` | owner | Live list of Zoho companies one grant reaches, marked already_connected (502 if Zoho rejects it) |
 | POST | `/api/v1/data/credentials/{credential_id}/share` | owner | Full-replace which other organizations may connect through this grant |
+| DELETE | `/api/v1/data/credentials/{credential_id}` | owner | Remove a sign-in nothing is connected through; 409 while any connection still uses it, 403 unless this org owns it |
 | GET | `/api/v1/data/status` | signed-in | Connection state headline, auto_sync, last_sync run dict, per-company coverage, live sync state, read-model counts, can_sync/can_manage_connection |
 | GET | `/api/v1/data/sync` | signed-in | Sync state for polling: active run(s), busy_connections, last, last_successful_at, can_start |
 | POST | `/api/v1/data/sync` | manager/owner | Queue a pull (since/full/connection_id) → 202; returns the existing job instead of erroring on overlap; 503 if sync_runs schema is behind |
@@ -1757,6 +1776,7 @@ shims, are mounted but are not flows and are not listed here.
 | POST | `/api/v1/resolve/confirm` | api-key | Confirm a customer's code → record mapping through the same confirm_proposed_identity gate as the Quote Builder; line re-resolved server-side; every… |
 | GET | `/api/v1/resolve/openapi.json` | public | Generated OpenAPI contract for the resolution routes; shapes only, built once per process |
 | GET | `/api/v1/retrospective` | manager/owner +plan | First-run look-back: verdict (UNEXAMINED/PARTIAL/EXAMINED), history coverage, per-detector judged/withheld/found |
+| POST | `/api/v1/contact` | public | Record an enquiry from the landing page's form — name, company, email, ERP, the plan they were reading about; creates nothing and licenses nothing (202) |
 | GET | `/api/v1/signup` | public | Whether self-serve sign-up is offered; trial length, landing plan, plan ladder for the form |
 | POST | `/api/v1/signup` | public | Create organization + owner + trial, record requested plan (never granted), sign the owner straight in (login envelope, 201) |
 | GET | `/api/v1/trust/access` | owner | Every break-glass grant, per-use access, and revocation against this tenant — no filter, no suppression |

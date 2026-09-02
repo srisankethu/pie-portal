@@ -191,9 +191,14 @@ def _product(cand: Candidate, *, with_provenance: bool,
         # confirmed means this product — both compared by the engine
         # afterwards but never ranked by it, so such a record is always
         # POSSIBLE and is never the answer. ``confirmed_code`` carries the code.
-        "found_by": ("confirmed_code" if cand.alias is not None
+        "found_by": ("prior_choice" if cand.alias is not None and cand.alias_kind == "phrase"
+                     else "confirmed_code" if cand.alias is not None
                      else "retrieval" if cand.retrieved else "ranking"),
-        "confirmed_code": cand.alias,
+        "confirmed_code": cand.alias if cand.alias_kind != "phrase" else None,
+        # The words this customer had quoted as this record before, when that
+        # is how it was found. A past choice: not an identity, not the engine's
+        # reading, and honestly not always what they mean this time.
+        "prior_phrase": cand.alias if cand.alias_kind == "phrase" else None,
     }
     if record is not None:
         out["record_confidence"] = record.get("row_confidence")

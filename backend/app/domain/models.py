@@ -4635,6 +4635,56 @@ class ConfirmedCodeMapping(Base):
                                                  index=True)
 
 
+class CustomerPhraseAlias(Base):
+    """"For this customer, that phrase was quoted as this product."
+
+    What a person taught the system by choosing: a requirement line — words,
+    not a code — for a linked customer, and the catalogue record they put on
+    the quote for it. Recorded by ``identity.service.record_phrase_alias`` when
+    a supply is selected on such a line, and read by ``app/retrieval/aliases``
+    so the next time this customer writes something close, the record is
+    *offered* — beneath the engine's ranking, as a possibility, never selected.
+
+    **Not an identity, and kept in its own table so it cannot become one.** A
+    ``ConfirmedCodeMapping`` is asserted identity: the engine resolves the code
+    authoritatively and derives requirements from the record. A phrase alias
+    asserts nothing — the same words may honestly mean a different product
+    next quarter, and a substitution on one quote must stay one (CLAUDE.md
+    §1). Nothing reads this table into the engine's mapping store as a code.
+
+    Superseded rather than mutated, on the same convention as the mapping:
+    choosing a different product for the same phrase retires the old row and
+    leaves it explainable.
+    """
+
+    __tablename__ = "customer_phrase_aliases"
+    __table_args__ = (
+        Index("ix_phrase_alias_lookup",
+              "organization_id", "identity_id", "phrase_key", "active"),
+    )
+
+    alias_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The customer's cross-connector identity the phrase was quoted for.
+    identity_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The line as the person resolved it, trimmed, otherwise verbatim — the
+    #: text retrieval indexes and the text a screen shows back.
+    phrase: Mapped[str] = mapped_column(String(512))
+    #: ``phrase`` upper-cased with whitespace collapsed: the key that makes a
+    #: re-selection of the same words idempotent and a different choice a
+    #: supersession rather than a second row.
+    phrase_key: Mapped[str] = mapped_column(String(512))
+    #: The catalogue record (an MM#) that went on the quote for it.
+    target_record_id: Mapped[str] = mapped_column(String(64))
+    #: e.g. "quote q1 line l3" — where the choice was made.
+    source_ref: Mapped[str] = mapped_column(String(255), default="")
+    recorded_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    active: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    superseded_by: Mapped[Optional[str]] = mapped_column(String(64))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 index=True)
+
+
 class QueuedMessage(Base):
     """One unit of background work, durable enough to survive the process.
 

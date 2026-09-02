@@ -683,9 +683,12 @@ def test_a_series_named_in_words_is_surfaced_by_retrieval():
 class _Store:
     """The two methods of ``OrgMappingStore`` the retrieval pass reads."""
 
-    def __init__(self, rows, fingerprint="fp1"):
+    def __init__(self, rows, fingerprint=None):
         self._rows = rows
-        self._fp = fingerprint
+        # Content-derived like the real store's, or the alias-index memo in
+        # ``pie_service`` would hand one test's index to another with the
+        # same constant fingerprint — which it did, under xdist.
+        self._fp = fingerprint or repr(sorted(rows))
 
     def aliases(self):
         return list(self._rows)
@@ -866,3 +869,21 @@ def test_a_confirmed_code_survives_a_gate_the_engine_read_off_the_code_itself():
     assert "iso_shape" in offered[0].reason
     # The description neighbour with the same shape mismatch is still dropped.
     assert not any(c.code == "2559490" for c in res.candidates)
+
+
+def test_a_past_choice_is_offered_as_a_past_choice_not_a_confirmation():
+    from app.pie_service import Bands
+
+    store = _Store([(PITTI, "12mm drill for SS", "4149315", "phrase")])
+    res = pie_service._map(
+        "12 mm drill for stainless", _requirement([], {}, outcome="UNRESOLVED"),
+        Bands.default(), view=_view_with([_DRILL, _TURNING]),
+        customer_scope=PITTI, mapping_store=store)
+
+    first = res.candidates[0]
+    assert first.code == "4149315" and first.retrieved
+    assert first.alias == "12mm drill for SS" and first.alias_kind == "phrase"
+    assert first.rel == "POSSIBLE" and res.supplyCode is None
+    assert "quoted this product before" in first.reason
+    assert "confirmed" not in first.reason
+    assert res.retrieval["aliases_offered"] == 1

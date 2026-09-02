@@ -41,34 +41,40 @@ class AliasHit:
     record_id: str
     similarity: float
     alias: str
+    #: ``"code"`` — a confirmed customer code; ``"phrase"`` — words a person
+    #: had quoted as this record for this customer. Same index, different
+    #: sentence beside the candidate.
+    kind: str = "code"
 
 
 class AliasIndex:
     """Confirmed codes, indexed per customer scope."""
 
-    def __init__(self, aliases: Iterable[Tuple[str, str, str]],
+    def __init__(self, aliases: Iterable[Tuple[str, ...]],
                  embedder: Optional[HashedNgramEmbedder] = None) -> None:
-        """``aliases`` are ``(scope, code, record_id)`` triples — the customer
-        identity the code was confirmed under, the code, and the catalogue
-        record it means."""
+        """``aliases`` are ``(scope, text, record_id[, kind])`` — the customer
+        identity the text was confirmed or quoted under, the text, the
+        catalogue record it names, and ``"code"`` (the default) or
+        ``"phrase"``."""
         self.embedder = embedder or HashedNgramEmbedder()
-        grouped: Dict[str, List[Tuple[str, str]]] = {}
-        for scope, code, record_id in aliases:
-            if not (scope and code and record_id):
+        grouped: Dict[str, List[Tuple[str, str, str]]] = {}
+        for scope, text, record_id, *rest in aliases:
+            if not (scope and text and record_id):
                 continue
-            grouped.setdefault(str(scope), []).append((str(code), str(record_id)))
-        self._by_scope: Dict[str, Tuple[RetrievalIndex, List[str]]] = {}
+            kind = str(rest[0]) if rest else "code"
+            grouped.setdefault(str(scope), []).append((str(text), str(record_id), kind))
+        self._by_scope: Dict[str, Tuple[RetrievalIndex, List[Tuple[str, str]]]] = {}
         for scope, rows in grouped.items():
             # Sorted so the same rows in any order build the same index. Each
             # alias is its own row; ``RetrievalIndex.search`` keeps the best row
-            # per record, so two codes for one product yield one hit.
+            # per record, so two texts for one product yield one hit.
             rows.sort()
-            records = [{"record_id": record_id, "description_raw": code}
-                       for code, record_id in rows]
+            records = [{"record_id": record_id, "description_raw": text}
+                       for text, record_id, _ in rows]
             self._by_scope[scope] = (
                 RetrievalIndex.build(records, self.embedder),
-                [code for code, _ in rows])
-        self.aliases = sum(len(codes) for _, codes in self._by_scope.values())
+                [(text, kind) for text, _, kind in rows])
+        self.aliases = sum(len(texts) for _, texts in self._by_scope.values())
 
     @property
     def model_id(self) -> str:
@@ -92,8 +98,8 @@ class AliasIndex:
         entry = self._by_scope.get(str(scope))
         if entry is None:
             return []
-        index, codes = entry
+        index, texts = entry
         return [AliasHit(record_id=h.record_id, similarity=h.similarity,
-                         alias=codes[h.row])
+                         alias=texts[h.row][0], kind=texts[h.row][1])
                 for h in index.search(text, k=k, exclude=exclude,
                                       min_similarity=min_similarity)]

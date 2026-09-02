@@ -31,6 +31,11 @@ export interface Candidate {
    *  product. Still retrieved, still `POSSIBLE`, still never selected — the
    *  confirmation answered an exact question once, and this line is not it. */
   alias?: string | null;
+  /** What `alias` is. `"code"`: a mapping a person confirmed, which the
+   *  engine resolves exactly when the line *is* the code. `"phrase"`: words a
+   *  person had quoted as this record for this customer — a past choice the
+   *  engine never reads, which asserts nothing about this line. */
+  alias_kind?: "code" | "phrase" | null;
 }
 
 export interface Economics {

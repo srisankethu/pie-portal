@@ -134,6 +134,21 @@ describe("SupplyDrawer caveats", () => {
     expect(screen.queryByText("nearest by description")).not.toBeInTheDocument();
   });
 
+  it("says a past choice is a past choice, not a confirmation", () => {
+    renderDrawer(lineWithCaveats({
+      candidates: [
+        candidate({ code: "4149315", desc: "SC DRILL 12mm/.4724/ 5xD COOLANT",
+                    score: null, unverified: true, retrieved: true,
+                    alias: "12mm drill for SS", alias_kind: "phrase",
+                    reason: "This customer was quoted this product before." }),
+      ],
+      notes: [],
+    }));
+
+    expect(screen.getByText("quoted before for “12mm drill for SS”")).toBeTruthy();
+    expect(screen.queryByText(/confirmed code/)).not.toBeInTheDocument();
+  });
+
   it("does not present an unverified candidate as selected supply", () => {
     // The server decides this; the drawer must not contradict it by drawing a
     // selection the response does not carry.

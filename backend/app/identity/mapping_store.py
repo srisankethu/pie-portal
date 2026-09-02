@@ -57,6 +57,14 @@ class OrgMappingStore:
         #: afterwards — the store is a *snapshot*, which is the property that
         #: makes this safe and the one to preserve if a writer is ever added.
         self._fingerprint: Optional[str] = None
+        #: Phrases a person had quoted for a customer. Read by retrieval only
+        #: — never by ``lookup``, which is the engine's authoritative path,
+        #: and never keyed like a code. Part of the snapshot and of the
+        #: fingerprint, so an alias index memoised against this store is
+        #: rebuilt when a phrase is recorded.
+        self._phrases: list = sorted(
+            ((row.identity_id, row.phrase, row.target_record_id)
+             for row in service.active_phrase_aliases(session, organization_id)))
         for row in service.active_code_mappings(session, organization_id):
             key = ScopedIdentifier(
                 namespace=Namespace.CUSTOMER_ITEM,
@@ -85,17 +93,22 @@ class OrgMappingStore:
     def __len__(self) -> int:
         return len(self._by_key)
 
-    def aliases(self) -> list[tuple[str, str, str]]:
-        """Every active mapping as ``(scope, code, record_id)``, for the
-        retrieval pass (``app/retrieval/aliases``) to index.
+    def aliases(self) -> list[tuple[str, str, str, str]]:
+        """Every active mapping and phrase as ``(scope, text, record_id,
+        kind)`` — ``kind`` is ``"code"`` for a confirmed mapping and
+        ``"phrase"`` for a recorded choice — for the retrieval pass
+        (``app/retrieval/aliases``) to index.
 
         The same snapshot ``lookup`` answers from, so a code the engine would
         resolve exactly and a code retrieval would offer as near are one set
         of facts under one fingerprint. Sorted so the index built from it is
         the same whatever order the rows were read in.
         """
-        return sorted((row.identity_id, row.code, row.target_record_id)
-                      for row in self._by_key.values())
+        codes = ((row.identity_id, row.code, row.target_record_id, "code")
+                 for row in self._by_key.values())
+        phrases = ((scope, phrase, record_id, "phrase")
+                   for scope, phrase, record_id in self._phrases)
+        return sorted([*codes, *phrases])
 
     def fingerprint(self) -> str:
         """A value that changes when what this store answers changes.
@@ -124,6 +137,15 @@ class OrgMappingStore:
                 # Every field terminated rather than joined: a separator that
                 # can appear inside a value makes two different mapping sets
                 # hash the same, which is a stale cache with no way to see it.
+                digest.update(str(field).encode("utf-8"))
+                digest.update(b"\x00")
+        # The phrases too, after a marker no key can start with: a recorded
+        # choice changes what retrieval offers, and the alias index is
+        # memoised against this value. It costs the resolution cache one miss
+        # per recording, which is the honest price of the answer changing.
+        digest.update(b"\x01phrases\x00")
+        for scope, phrase, record_id in self._phrases:
+            for field in (scope, phrase, record_id):
                 digest.update(str(field).encode("utf-8"))
                 digest.update(b"\x00")
         self._fingerprint = digest.hexdigest()[:32]

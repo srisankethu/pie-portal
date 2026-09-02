@@ -193,7 +193,11 @@ alternative the engine ranked says `found_by: "ranking"`. A third value,
 `found_by: "confirmed_code"`, is a near miss of a code this customer confirmed
 means this product — `confirmed_code` carries the code — offered under the
 same terms: the exact code resolves as an identity; a line that is almost it
-gets the record as an option, for that customer only. `engine.retrieval`
+gets the record as an option, for that customer only. A fourth,
+`found_by: "prior_choice"`, is a record a person put on a quote for this
+customer when they asked for words close to these — `prior_phrase` carries
+the words. A past choice, never an identity: the engine does not read it, and
+the same words may honestly mean a different product this time. `engine.retrieval`
 says whether that search ran — which model id, over how many records, offering
 how many — and is null where it did not, which reads as "not searched" and
 never as "nothing near". The model is a deterministic hashed n-gram embedding

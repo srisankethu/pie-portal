@@ -701,6 +701,73 @@ def confirm_proposed_identity(
         user_id=user_id)
 
 
+def phrase_key(phrase: str) -> str:
+    """The key a phrase is recorded under: upper-cased, whitespace collapsed.
+    Punctuation is kept — "CNMG 120408-49" and "CNMG 120408 49" are two ways
+    a person writes one thing, and the retrieval pass is what bridges those;
+    this key only has to make the *same* words idempotent."""
+    return " ".join((phrase or "").upper().split())
+
+
+def record_phrase_alias(session: Session, organization_id: str, *,
+                        identity_id: Optional[str], phrase: str,
+                        target_record_id: Optional[str], source_ref: str = "",
+                        user_id: Optional[str] = None
+                        ) -> Optional[models.CustomerPhraseAlias]:
+    """Record that, for this customer, this phrase was quoted as this product.
+
+    The learning half of retrieval, and deliberately *not* the identity gate:
+    ``confirm_proposed_identity`` files a fact the engine will assert, and
+    refuses everything but the engine's own proposal because an asserted
+    identity composes tolerances. This files nothing the engine reads. It
+    records a person's choice so ``app/retrieval/aliases`` can offer the same
+    record back when the customer writes something close — an option beneath
+    the ranking, never an answer — so any selection a person makes on a
+    requirement line is worth remembering, a substitution included: "last
+    time you quoted them Y for this" is exactly what the next person needs
+    to see and is free to ignore.
+
+    Idempotent for the same phrase and target; a different target supersedes
+    the old row rather than overwriting it. ``None`` — a refusal, not an error
+    — without a scope, a phrase, or a target.
+    """
+    key = phrase_key(phrase)
+    if not (identity_id and key and target_record_id):
+        return None
+    current = session.scalars(
+        select(models.CustomerPhraseAlias).where(
+            models.CustomerPhraseAlias.organization_id == organization_id,
+            models.CustomerPhraseAlias.identity_id == identity_id,
+            models.CustomerPhraseAlias.phrase_key == key,
+            models.CustomerPhraseAlias.active.is_(True))).first()
+    if current is not None and current.target_record_id == target_record_id:
+        return current
+    row = models.CustomerPhraseAlias(
+        organization_id=organization_id, identity_id=identity_id,
+        phrase=(phrase or "").strip()[:512], phrase_key=key[:512],
+        target_record_id=target_record_id, source_ref=source_ref[:255],
+        recorded_by_user_id=user_id)
+    session.add(row)
+    session.flush()
+    if current is not None:
+        current.active = False
+        current.superseded_by = row.alias_id
+        session.flush()
+    record_event(session, organization_id, entity_type=CUSTOMER,
+                 identity_id=identity_id, action="PHRASE_ALIAS_RECORDED",
+                 actor=user_id or "SYSTEM",
+                 detail=f"{key!r} -> {target_record_id} ({source_ref})")
+    return row
+
+
+def active_phrase_aliases(session: Session, organization_id: str
+                          ) -> list[models.CustomerPhraseAlias]:
+    return list(session.scalars(
+        select(models.CustomerPhraseAlias).where(
+            models.CustomerPhraseAlias.organization_id == organization_id,
+            models.CustomerPhraseAlias.active.is_(True))))
+
+
 def active_code_mappings(session: Session, organization_id: str
                          ) -> list[models.ConfirmedCodeMapping]:
     return list(session.scalars(

@@ -353,3 +353,53 @@ def test_an_unauthenticated_caller_confirms_nothing(api, monkeypatch):
 
     assert response.status_code == 401
     assert _mappings(session) == []
+
+
+# ── the other thing a selection teaches: a phrase, for retrieval only ───────
+#
+# `_learn_phrase` sits beside `_confirm_identity` in `select_supply` and must
+# never be mistaken for it. These pin what it records and what it refuses; the
+# table it writes is read by `app/retrieval/aliases`, never by the engine
+# (`tests/test_confirmed_mappings.py` pins that side).
+from app.routers.quote import _learn_phrase  # noqa: E402
+
+
+def _phrases(session) -> list:
+    return session.query(models.CustomerPhraseAlias).all()
+
+
+def test_a_choice_on_a_requirement_line_is_remembered_for_the_customer(session, principal):
+    quote = Quote(id="q1", customer="Pitti", number="QB-1")
+    line = _line(reqCode="12mm drill for SS", semantics="REQUIREMENT",
+                 identityCandidate=None)
+
+    assert _learn_phrase(session, principal, quote, line, "4149315") is True
+
+    rows = _phrases(session)
+    assert len(rows) == 1
+    assert rows[0].phrase == "12mm drill for SS" and rows[0].target_record_id == "4149315"
+    assert rows[0].identity_id == IDENTITY
+    assert rows[0].source_ref == "quote q1 line l1"
+    # And nothing was filed as identity: a choice is not a confirmation.
+    assert _mappings(session) == []
+
+
+def test_a_code_line_teaches_the_gate_or_nothing_never_a_phrase(session, principal):
+    quote = Quote(id="q1", customer="Pitti", number="QB-1")
+    assert _learn_phrase(session, principal, quote, _line(), "2001174") is False
+    assert _phrases(session) == []
+
+
+def test_an_unlinked_customer_teaches_no_phrase(session, principal):
+    quote = Quote(id="q1", customer="Walk-in", number="QB-1")
+    line = _line(reqCode="12mm drill for SS", semantics="REQUIREMENT",
+                 customerScope=None, identityCandidate=None)
+    assert _learn_phrase(session, principal, quote, line, "4149315") is False
+    assert _phrases(session) == []
+
+
+def test_selecting_the_line_itself_teaches_nothing(session, principal):
+    quote = Quote(id="q1", customer="Pitti", number="QB-1")
+    line = _line(reqCode="4149315", semantics="REQUIREMENT", identityCandidate=None)
+    assert _learn_phrase(session, principal, quote, line, "4149315") is False
+    assert _phrases(session) == []

@@ -531,6 +531,29 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
                             <div className="fsrc">schema v{c.stamp.schema_version}</div>
                           </td>
                         </tr>
+                        <tr>
+                          <td>
+                            <Labelled tip="A line the engine cannot rank — a series named in words, a request with no ISO code in it — is also searched by description: the records whose text reads most like the line are offered as possibilities beneath the engine's own ranking, after the engine has compared them. The model id and record count here are what say which index found a given option.">
+                              Retrieval index
+                            </Labelled>
+                          </td>
+                          <td className="fv">
+                            {c.retrieval ? (
+                              <>
+                                {c.retrieval.model_id}
+                                <div className="fsrc">
+                                  {c.retrieval.records} records indexed
+                                  {!c.retrieval.current && " · behind this catalogue, rebuilt on next use"}
+                                </div>
+                              </>
+                            ) : (
+                              <>
+                                none yet
+                                <div className="fsrc">built on first use</div>
+                              </>
+                            )}
+                          </td>
+                        </tr>
                       </>
                     )}
                   </tbody>

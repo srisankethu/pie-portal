@@ -1297,9 +1297,10 @@ def build_company_catalog(
     """Decode this company's stored corpus through its chosen pack.
 
     Synchronous, on a measurement rather than an assumption: the shipped
-    6,717-row corpus parses and writes in under two seconds in-process, so
-    there is no job to poll and no long-running database write to phase-commit
-    — the response carries the finished result.
+    6,717-row corpus parses and writes in under two seconds in-process, and
+    the retrieval index built beside it (``app/retrieval``) takes under three
+    more, so there is no job to poll and no long-running database write to
+    phase-commit — the response carries the finished result.
     """
     from .. import catalog
     from ..ingestion.item_master import ItemMasterError

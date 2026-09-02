@@ -786,3 +786,43 @@ def test_an_owner_key_is_a_manager_recipient(env):
     body = _post(client, proposed_price="500", quantity="10").json()
 
     assert "economics" in body["commercial"]
+
+
+def test_a_retrieved_alternative_says_so_and_the_engine_block_says_it_searched(
+        env, monkeypatch):
+    """A record found by nearest-description retrieval sits in ``alternatives``
+    beside ranked ones and must not read as one: ``found_by`` names the source
+    and ``engine.retrieval`` says the search ran. See
+    ``docs/per-company-catalogues.md`` §12 for why such a record is never the
+    resolution."""
+    app, maker, session, svc = env
+    monkeypatch.setattr(svc, "resolve", lambda *a, **k: _resolution(
+        candidates=[
+            Candidate(code="2576285", desc="A", rel="EXACT"),
+            Candidate(code="2576424", desc="B", rel="TECH", score=0.91),
+            Candidate(code="5642232", desc="VSM11 MILLING INSERT R=1.2 MM",
+                      rel="POSSIBLE", score=None, retrieved=True,
+                      reason="Nearest catalogue description to this text "
+                             "(0.71 similar), not a ranked match.")],
+        retrieval={"model_id": "hashed-ngram/1", "searched": 6717, "offered": 1}))
+    client = _client(app, _key(session).secret)
+
+    body = _post(client).json()
+
+    by_id = {a["record_id"]: a for a in body["alternatives"]}
+    assert by_id["2576424"]["found_by"] == "ranking"
+    assert by_id["5642232"]["found_by"] == "retrieval"
+    assert by_id["5642232"]["relationship"] == "POSSIBLE"
+    assert by_id["5642232"]["equivalence_score"] is None
+    assert body["resolution"]["found_by"] == "ranking"
+    assert body["engine"]["retrieval"] == {
+        "model_id": "hashed-ngram/1", "searched": 6717, "offered": 1}
+
+
+def test_a_line_that_did_not_search_by_description_says_so(env):
+    """Null, not an empty object: "not searched" and "nothing near" are
+    different facts and a caller must be able to tell them apart."""
+    app, maker, session, _svc = env
+    client = _client(app, _key(session).secret)
+
+    assert _post(client).json()["engine"]["retrieval"] is None

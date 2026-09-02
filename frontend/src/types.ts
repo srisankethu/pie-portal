@@ -21,6 +21,11 @@ export interface Candidate {
    *  auto-selected; the flag is here so a screen can say *why* it is only a
    *  possibility. */
   unverified?: boolean;
+  /** Found by nearest-neighbour retrieval over the catalogue's descriptions,
+   *  not by the engine's ranked pass. The engine still compared it — a record
+   *  its gates reject is never offered — but nothing ranked it, so it has no
+   *  `score`, is always `POSSIBLE`, and is never the selected supply. */
+  retrieved?: boolean;
 }
 
 export interface Economics {

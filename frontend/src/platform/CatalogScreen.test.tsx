@@ -52,6 +52,7 @@ function company(over: Partial<CompanyCatalogue> = {}): CompanyCatalogue {
     ingest: null,
     built_from: null,
     stale: false,
+    retrieval: null,
     ...over,
   };
 }
@@ -120,6 +121,8 @@ const BUILT: Partial<CompanyCatalogue> = {
   },
   built_from: [{ source_key: "item-master.csv", corpus_id: "cor1",
                  filename: "item-master.csv", sha256: "abc" }],
+  retrieval: { model_id: "hashed-ngram/1", dim: 262144, records: 6717,
+               current: true, min_similarity: 0.2 },
   report: {
     total: 6717,
     by_family: { turning_insert: 2273, milling_insert: 897 },
@@ -199,6 +202,22 @@ describe("the decoded catalogue screen", () => {
     expect(screen.getByText("f67131512eb97513")).toBeTruthy();
     expect(screen.getByText("2b5c96f97de49436")).toBeTruthy();
     expect(screen.getByText(/kennametal_widia v0\.10\.0/)).toBeTruthy();
+    // The retrieval index is provenance too: which model found an option.
+    expect(screen.getByText("hashed-ngram/1")).toBeTruthy();
+    expect(screen.getByText(/6717 records indexed/)).toBeTruthy();
+  });
+
+  it("says when a built catalogue has no retrieval index yet, and when it is behind", async () => {
+    vi.spyOn(papi, "companyCatalogues").mockResolvedValue(view([
+      company({ ...BUILT, sources: [source()], retrieval: null }),
+      company({ ...BUILT, connection_id: "conn-b", label: "4U Precision", sources: [source()],
+                retrieval: { model_id: "hashed-ngram/1", dim: 262144, records: 6000,
+                             current: false, min_similarity: 0.2 } }),
+    ]));
+    render(<CatalogScreen session={SESSION} />);
+
+    expect(await screen.findByText("none yet")).toBeTruthy();
+    expect(screen.getByText(/behind this catalogue, rebuilt on next use/)).toBeTruthy();
   });
 
   it("keeps one company's state inside that company's own surface", async () => {

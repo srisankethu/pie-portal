@@ -76,6 +76,8 @@ def give_company_a_catalogue(connection_id: str) -> Path:
     from app import catalog
     from app.pie_service import pie_service
 
+    from app import retrieval
+
     source = shared_catalogue()
     target = catalog.company_catalog_path(connection_id)
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -85,14 +87,23 @@ def give_company_a_catalogue(connection_id: str) -> Path:
     # Renamed into place rather than unlinked and re-created: a reader that
     # opens the path between those two steps gets no file at all, which is a
     # company that has no catalogue for one unlucky test.
+    _link(source, target)
+    # The retrieval index too, built once beside the shared catalogue: it is
+    # derived from the file and the company would otherwise rebuild the same
+    # 11 MB on its first requirement line, once per company per worker.
+    retrieval.ensure_index(source)
+    _link(retrieval.index_path_for(source), retrieval.index_path_for(target))
+    pie_service.reload(connection_id)
+    return target
+
+
+def _link(source: Path, target: Path) -> None:
     staged = target.with_suffix(f".{os.getpid()}.tmp")
     try:
         os.link(source, staged)
     except OSError:
         shutil.copyfile(source, staged)
     os.replace(staged, target)
-    pie_service.reload(connection_id)
-    return target
 
 
 def forget_company_catalogue(connection_id: str) -> None:
@@ -100,5 +111,9 @@ def forget_company_catalogue(connection_id: str) -> None:
     from app import catalog
     from app.pie_service import pie_service
 
-    catalog.company_catalog_path(connection_id).unlink(missing_ok=True)
+    from app import retrieval
+
+    path = catalog.company_catalog_path(connection_id)
+    path.unlink(missing_ok=True)
+    retrieval.index_path_for(path).unlink(missing_ok=True)
     pie_service.reload(connection_id)

@@ -131,6 +131,11 @@ class Settings:
     # Max ranked alternatives returned per line.
     TOP_N: int = int(os.environ.get("PIE_TOP_N", "6"))
 
+    # How many nearest-by-description records retrieval may add beneath the
+    # engine's ranked suggestions on a requirement line (see app/retrieval).
+    # 0 turns retrieval off; the engine's own answer is unchanged either way.
+    RETRIEVAL_TOP_K: int = int(os.environ.get("PIE_RETRIEVAL_TOP_K", "5"))
+
     # Deployment environment. "production" turns on hard guards (real auth secret
     # required, demo-seed disabled). Anything else is treated as dev/test.
     APP_ENV: str = os.environ.get("APP_ENV", "development")

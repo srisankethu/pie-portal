@@ -337,6 +337,10 @@ def test_a_bearing_is_not_a_carbide_insert():
     assert not any(c.rel in ("TECH", "COMPAT") for c in res.candidates), (
         "an insert or an endmill was offered as technically equivalent to a "
         "deep-groove ball bearing")
+    # Retrieval searched and found nothing near enough: the floor refused the
+    # least-unlike endmill rather than offering it as "nearest".
+    assert not any(c.retrieved for c in res.candidates)
+    assert res.retrieval is not None and res.retrieval["offered"] == 0
 
 
 def test_a_dimension_the_candidate_does_not_carry_also_counts_as_unverified():
@@ -478,3 +482,189 @@ def test_the_tier_survives_into_the_candidates_a_caller_reads():
                "rank_tier": [-0.96, 1, 0, 0, -0.96]}
     cand = pie_service._candidates_from_suggestions([payload], Bands.default())[0]
     assert cand.rank_tier == [-0.96, 1, 0, 0, -0.96]
+
+
+# ── retrieval: the nearest descriptions as extra options, never the answer ───
+#
+# `app/retrieval` finds the catalogue records whose descriptions read most like
+# the text, and `_map` hands each to the engine's own `compare_geometry`. What
+# these pin is the line that keeps it a candidate *generator*: a retrieved
+# record is appended after the ranking, is POSSIBLE whatever it scored, carries
+# no score, is never the supply, and is dropped when the engine's gates reject
+# it. The floor and the determinism of the search itself are in
+# `tests/decision_platform/test_retrieval.py`.
+
+_TURNING = {"record_id": "2001174", "description_raw": "CNMG 120408-49 - TN2000",
+            "grade": "TN2000", "brand": "WIDIA", "product_family": "turning_insert",
+            "iso_shape": "C", "edge_length_mm": 12, "corner_radius_mm": 0.8,
+            "thickness_mm": 4.76}
+_TURNING_2 = {**_TURNING, "record_id": "2559490",
+              "description_raw": "CNMG 120408 - TN4000", "grade": "TN4000"}
+_REAMER = {"record_id": "3668915", "description_raw": "RMS REAMER CNMG 120408 Ø 10.00",
+           "grade": "KC6305", "product_family": "reamer", "cutting_dia_mm": 10}
+_DRILL = {"record_id": "4149315", "description_raw": "SC DRILL 12mm/.4724/ 5xD COOLANT",
+          "grade": "KC7325", "product_family": "solid_carbide_drill",
+          "cutting_dia_mm": 12}
+
+
+class _Index:
+    """The two methods of pie-parser's ``AuthoritativeIndex`` that ``_map`` uses."""
+
+    def __init__(self, records):
+        self._by_id = {r["record_id"]: r for r in records}
+
+    def lookup_material(self, key):
+        return self._by_id.get(str(key))
+
+
+def _view_with(records, retriever="build"):
+    from pathlib import Path
+
+    from app.pie_service import _View
+    from app.retrieval import RetrievalIndex
+
+    view = _View(path=Path("/nonexistent/products.jsonl"), version="v1",
+                 index=_Index(records))
+    view.retriever = RetrievalIndex.build(records) if retriever == "build" else retriever
+    return view
+
+
+def _requirement(suggestions, spec, outcome="AUTO_MATCH"):
+    return {
+        "resolution": {"outcome": outcome, "input_semantics": "REQUIREMENT",
+                       "matches": []},
+        "identity_role": "NONE",
+        "understood_spec": {"engine_spec": spec},
+        "suggestions": suggestions,
+        "notes": [],
+    }
+
+
+def test_retrieved_records_are_appended_after_the_ranking_and_never_selected():
+    from app.pie_service import Bands
+
+    spec = {"product_family": "turning_insert", "iso_shape": "C",
+            "edge_length_mm": 12, "corner_radius_mm": 0.8}
+    res = pie_service._map(
+        "CNMG 120408 TN2000",
+        _requirement([_suggestion("a", 0.96, unverified=False, dims=3),
+                      _suggestion("b", 0.70, unverified=False, dims=3)], spec),
+        Bands.default(),
+        view=_view_with([_TURNING, _TURNING_2, _REAMER, _DRILL]))
+
+    # The engine's answer is exactly what it was without retrieval.
+    assert res.supplyCode == "a" and res.rel == "TECH"
+    assert [c.code for c in res.candidates[:2]] == ["a", "b"]
+    retrieved = [c for c in res.candidates if c.retrieved]
+    assert retrieved, "nothing was retrieved for a text that names two records"
+    assert {c.code for c in retrieved} == {"2001174", "2559490"}
+    assert all(c.rel == "POSSIBLE" and c.score is None for c in retrieved)
+    assert all("not a ranked match" in c.reason for c in retrieved)
+    assert not any(c.unverified for c in retrieved), (
+        "the engine compared three dimensions; the record was verified")
+    assert res.retrieval == {"model_id": "hashed-ngram/1", "searched": 4, "offered": 2}
+
+
+def test_a_record_the_engine_gates_out_is_never_offered_by_retrieval():
+    """The reamer's description *contains* the insert code, so by text it is
+    the nearest thing; the engine's family gate says it is not a turning
+    insert, and the gate wins."""
+    from app.pie_service import Bands
+
+    spec = {"product_family": "turning_insert", "iso_shape": "C"}
+    res = pie_service._map(
+        "CNMG 120408 reamer", _requirement([], spec, outcome="UNRESOLVED"),
+        Bands.default(), view=_view_with([_TURNING, _REAMER]))
+
+    codes = {c.code for c in res.candidates}
+    assert "3668915" not in codes
+    assert "2001174" in codes
+
+
+def test_with_nothing_ranked_retrieval_offers_options_but_no_answer():
+    from app.pie_service import Bands
+
+    res = pie_service._map(
+        "12mm drill coolant", _requirement([], {}, outcome="UNRESOLVED"),
+        Bands.default(), view=_view_with([_TURNING, _DRILL, _REAMER]))
+
+    assert res.rel == "AMBIGUOUS" and res.supplyCode is None
+    assert res.candidates and all(c.retrieved and c.rel == "POSSIBLE"
+                                  for c in res.candidates)
+    assert res.candidates[0].code == "4149315"
+    assert any("could not rank" in n for n in res.notes), (
+        "the reader is not told these are nearest descriptions, not a shortlist")
+    # An empty spec compares nothing, and a comparison of nothing is unverified.
+    assert all(c.unverified for c in res.candidates)
+
+
+def test_a_record_the_engine_already_ranked_is_not_offered_twice():
+    from app.pie_service import Bands
+
+    spec = {"product_family": "turning_insert"}
+    res = pie_service._map(
+        "CNMG 120408 TN2000",
+        _requirement([_suggestion("2001174", 0.9, unverified=False, dims=3)], spec),
+        Bands.default(), view=_view_with([_TURNING, _TURNING_2]))
+
+    assert [c.code for c in res.candidates].count("2001174") == 1
+    assert not next(c for c in res.candidates if c.code == "2001174").retrieved
+
+
+def test_no_index_means_no_retrieval_and_no_provenance():
+    from app.pie_service import Bands
+
+    res = pie_service._map(
+        "CNMG 120408", _requirement([], {}, outcome="UNRESOLVED"),
+        Bands.default(), view=_view_with([_TURNING], retriever=False))
+
+    assert res.rel == "UNRESOLVED" and res.candidates == []
+    assert res.retrieval is None, "absence must read as not searched, not as nothing near"
+
+
+def test_a_retrieval_failure_leaves_the_engine_answer_unchanged():
+    from app.pie_service import Bands
+
+    class _Broken:
+        stamp = None
+
+        def search(self, *a, **k):
+            raise RuntimeError("index corrupt")
+
+    spec = {"product_family": "turning_insert"}
+    result = _requirement([_suggestion("a", 0.96, unverified=False, dims=3),
+                           _suggestion("b", 0.70, unverified=False, dims=3)], spec)
+    with_retrieval = pie_service._map("CNMG 120408", result, Bands.default(),
+                                      view=_view_with([_TURNING], retriever=_Broken()))
+    without = pie_service._map("CNMG 120408", result, Bands.default())
+
+    assert (with_retrieval.rel, with_retrieval.supplyCode,
+            [c.code for c in with_retrieval.candidates]) == (
+        without.rel, without.supplyCode, [c.code for c in without.candidates])
+    assert with_retrieval.retrieval is None
+
+
+def test_retrieval_can_be_switched_off(monkeypatch, tmp_path):
+    from app.config import settings
+    from app.pie_service import PieService
+
+    monkeypatch.setattr(settings, "RETRIEVAL_TOP_K", 0)
+    view = _view_with([_TURNING], retriever=None)
+    assert PieService._load_retriever(view) is False
+
+
+def test_a_series_named_in_words_is_surfaced_by_retrieval():
+    """Against the real catalogue. The engine ranks every R=1.2 milling insert
+    at the same score and cuts the list at TOP_N, so the three records that
+    actually *say* VSM11 were never shown; by description they are the nearest
+    of all. They are offered — beneath the ranking, as possibilities."""
+    res = pie_service.resolve("VSM11 milling insert r1.2", connection_id=COMPANY)
+
+    retrieved = [c for c in res.candidates if c.retrieved]
+    assert retrieved, "retrieval offered nothing for a series name"
+    assert any(c.desc.startswith("VSM11") for c in retrieved)
+    assert all(c.rel == "POSSIBLE" for c in retrieved)
+    assert res.supplyCode not in {c.code for c in retrieved}
+    ranked = [c for c in res.candidates if not c.retrieved]
+    assert res.candidates[:len(ranked)] == ranked, "a retrieved record was ranked"
+    assert res.retrieval and res.retrieval["model_id"] == "hashed-ngram/1"

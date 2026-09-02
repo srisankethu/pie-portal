@@ -187,7 +187,13 @@ export function SupplyDrawer({
                   {/* A retrieved record sits beside ranked ones and must not
                       read as one: "nearest description" is a statement about
                       text, and the chip says so where the score would be. */}
-                  {c.retrieved && c.alias && (
+                  {c.retrieved && c.alias && c.alias_kind === "phrase" && (
+                    <StatusChip
+                      label={`quoted before for “${c.alias}”`} tone="info" dense
+                      tip="A person put this product on a quote for this customer when they asked for those words. A past choice, not a match — they may mean the same thing this time, or not."
+                    />
+                  )}
+                  {c.retrieved && c.alias && c.alias_kind !== "phrase" && (
                     <StatusChip
                       label={`near confirmed code ${c.alias}`} tone="info" dense
                       tip="This customer confirmed that code means this product. This line is close to that code but is not it, so the record is offered, not selected."

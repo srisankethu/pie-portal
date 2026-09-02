@@ -408,6 +408,9 @@ EXPECTED_POLICIED = {
     # every integration a competitor's book runs; the secret is a PBKDF2 hash,
     # which is the half that would matter most and the half that is safe.
     "api_keys",
+    # l1alias — what each customer asked for in their own words and what was
+    # quoted to them: the demand side of the book, per customer, verbatim.
+    "customer_phrase_aliases",
     # k1fields — which quote-level fields an organization asks for and which
     # it makes mandatory. Small, but it is the shape of a competitor's quote
     # form, and it is written by an owner, so it takes the ordinary policy.

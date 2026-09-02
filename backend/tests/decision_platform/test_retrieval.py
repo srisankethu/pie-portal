@@ -253,3 +253,13 @@ def test_exclusion_and_the_floor_apply_to_aliases_too():
 def test_blank_rows_are_skipped_not_indexed():
     index = AliasIndex([("c", "", "1"), ("", "X", "1"), ("c", "X", ""), ("c", "X-1", "1")])
     assert index.aliases == 1
+
+
+def test_a_phrase_alias_keeps_its_kind_and_a_code_keeps_the_default():
+    index = AliasIndex([("c", "PITTI-7781", "2001174"),
+                        ("c", "12mm drill for SS", "4149315", "phrase")])
+    assert index.aliases == 2
+    hit = index.search("c", "12 mm drill for stainless")[0]
+    assert hit.record_id == "4149315" and hit.kind == "phrase"
+    assert hit.alias == "12mm drill for SS"
+    assert index.search("c", "pitti 7781")[0].kind == "code"

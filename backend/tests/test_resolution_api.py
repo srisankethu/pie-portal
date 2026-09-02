@@ -849,3 +849,19 @@ def test_an_alternative_near_a_confirmed_code_names_the_code(env, monkeypatch):
     assert body["resolution"]["found_by"] == "ranking"
     assert body["resolution"]["confirmed_code"] is None
     assert body["engine"]["retrieval"]["aliases_offered"] == 1
+
+
+def test_a_past_choice_is_named_as_one_and_never_as_a_confirmed_code(env, monkeypatch):
+    app, maker, session, svc = env
+    monkeypatch.setattr(svc, "resolve", lambda *a, **k: _resolution(
+        candidates=[
+            Candidate(code="2576285", desc="A", rel="EXACT"),
+            Candidate(code="4149315", desc="SC DRILL 12mm", rel="POSSIBLE", score=None,
+                      retrieved=True, alias="12mm drill for SS", alias_kind="phrase",
+                      reason="This customer was quoted this product before.")]))
+    client = _client(app, _key(session).secret)
+
+    alt = _post(client).json()["alternatives"][0]
+    assert alt["found_by"] == "prior_choice"
+    assert alt["prior_phrase"] == "12mm drill for SS"
+    assert alt["confirmed_code"] is None

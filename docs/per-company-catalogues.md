@@ -634,3 +634,32 @@ store's fingerprint, the value the resolution cache already keys on, so a
 correction is seen on the next line and a 200-line quote builds it once. It is
 small (an organization's confirmed codes are hundreds of short strings) and
 deterministic like the catalogue index.
+
+**Phrases: learning from a person's choice (built).** A confirmed code is one
+act of teaching, and the gate that files it is narrow on purpose. The other
+act happens on every quote: a person puts a product on a requirement line —
+words, not a code — for a linked customer. That choice is now recorded
+(`identity.service.record_phrase_alias`, from `routers.quote.select_supply`)
+in its own table, `customer_phrase_aliases`, and indexed as an alias of the
+`"phrase"` kind, so the next time this customer writes something close the
+record is offered back: "quoted before for *12mm drill for SS*".
+
+Its own table, and not a row kind on `confirmed_code_mappings`, is the design:
+a confirmed mapping is asserted identity the engine resolves authoritatively
+and derives requirements from; a phrase asserts nothing. `OrgMappingStore`
+reads phrases into the snapshot and the fingerprint but never into `lookup`,
+so nothing the engine reads can be reached through a phrase, and the
+composition of tolerances §1 forbids has no new path. On the wire it is
+`found_by: "prior_choice"` with `prior_phrase`, and the chip says "quoted
+before", never "confirmed".
+
+What is recorded, and what is refused: any selection on a line the engine read
+as words (`REQUIREMENT` or `MIXED`), for a linked customer, where the chosen
+code is not the line itself — a substitution included, because "last time you
+quoted them Y for this" is exactly what the next person needs to see and is
+free to ignore. Nothing on an `IDENTITY` line (a code goes through the gate or
+nowhere), nothing for an unlinked customer, and nothing the engine chose on
+its own. The same words chosen for a different product supersede the old row
+rather than stacking, so the newest choice is the one offered. There is no
+screen to retire an alias yet; superseding it by choosing again is the only
+correction, and that is the first thing to add if a wrong one proves sticky.

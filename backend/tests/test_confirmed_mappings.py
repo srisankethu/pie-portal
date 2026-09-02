@@ -244,5 +244,68 @@ def test_the_store_hands_its_active_rows_to_retrieval_as_aliases(session):
     assert superseded.active is False
 
     store = OrgMappingStore(session, ORG)
-    assert store.aliases() == [(IDENTITY, "7781", "2001174"),
-                               (IDENTITY, "7782", "6739214")]
+    assert store.aliases() == [(IDENTITY, "7781", "2001174", "code"),
+                               (IDENTITY, "7782", "6739214", "code")]
+
+
+# ── phrases: what a person chose, remembered for retrieval only ─────────────
+
+def _choose(session, phrase="12mm drill for SS", target="4149315", **kw):
+    return identity_service.record_phrase_alias(
+        session, ORG, identity_id=IDENTITY, phrase=phrase,
+        target_record_id=target, source_ref="quote q1 line l2", user_id="u1", **kw)
+
+
+def test_a_choice_is_recorded_under_its_own_key_and_audited(session):
+    row = _choose(session, phrase="  12mm  drill for SS ")
+    assert row is not None
+    assert row.phrase == "12mm  drill for SS"
+    assert row.phrase_key == "12MM DRILL FOR SS"
+    assert row.target_record_id == "4149315" and row.active is True
+    events = session.query(models.IdentityEvent).all()
+    assert [e.action for e in events] == ["PHRASE_ALIAS_RECORDED"]
+
+
+def test_choosing_the_same_thing_again_does_not_stack(session):
+    first = _choose(session)
+    again = _choose(session, phrase="12MM DRILL FOR SS")
+    assert again.alias_id == first.alias_id
+    assert session.query(models.CustomerPhraseAlias).count() == 1
+
+
+def test_a_different_choice_supersedes_the_old_one(session):
+    first = _choose(session, target="4149315")
+    second = _choose(session, target="4151229")
+    session.refresh(first)
+    assert first.active is False and first.superseded_by == second.alias_id
+    assert second.active is True
+
+
+def test_nothing_is_recorded_without_a_scope_a_phrase_or_a_target(session):
+    assert identity_service.record_phrase_alias(
+        session, ORG, identity_id=None, phrase="x", target_record_id="1") is None
+    assert identity_service.record_phrase_alias(
+        session, ORG, identity_id=IDENTITY, phrase="   ", target_record_id="1") is None
+    assert identity_service.record_phrase_alias(
+        session, ORG, identity_id=IDENTITY, phrase="x", target_record_id=None) is None
+    assert session.query(models.CustomerPhraseAlias).count() == 0
+
+
+def test_a_phrase_reaches_retrieval_and_the_fingerprint_but_never_the_engine(session):
+    """The line that keeps a choice from becoming an identity: the store hands
+    it to retrieval as a ``phrase``, changes its fingerprint so the alias
+    index is rebuilt, and answers the engine's lookup with nothing."""
+    from identity.model import Namespace, ScopedIdentifier
+
+    _confirm(session, code="7781", target="2001174")
+    before = OrgMappingStore(session, ORG).fingerprint()
+    _choose(session)
+
+    store = OrgMappingStore(session, ORG)
+    assert store.aliases() == [(IDENTITY, "12mm drill for SS", "4149315", "phrase"),
+                               (IDENTITY, "7781", "2001174", "code")]
+    assert store.fingerprint() != before
+    assert len(store) == 1, "a phrase must not count as a mapping"
+    assert store.lookup(ScopedIdentifier(
+        namespace=Namespace.CUSTOMER_ITEM, value="12mm drill for SS",
+        scope=IDENTITY)) is None

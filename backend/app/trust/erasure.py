@@ -151,6 +151,9 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("org_policies", models.OrgPolicy),
     ("identity_policies", models.IdentityPolicy),
     ("confirmed_code_mappings", models.ConfirmedCodeMapping),
+    # What each customer asked for in their own words and what went on the
+    # quote for it — a tenant's own sales vocabulary, which nobody else holds.
+    ("customer_phrase_aliases", models.CustomerPhraseAlias),
     # Every document line a pull could not fully resolve — the part number as
     # written on the bill, the document it was on, the supplier and the value.
     # Exported rather than excluded with its parent `sync_runs`, and the split

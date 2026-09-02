@@ -601,6 +601,7 @@ def select_supply(quote_id: str, line_id: str, body: SelectSupplyRequest,
     q = _get_editable(session, principal, quote_id)
     ln = _get_line(q, line_id)
     confirmed = _confirm_identity(session, principal, q, ln, body.code)
+    learned = _learn_phrase(session, principal, q, ln, body.code)
     store.select_supply(ln, body.code, zoho, manual=body.manual)
     out = _saved(session, principal, q)
     if confirmed:
@@ -609,7 +610,42 @@ def select_supply(quote_id: str, line_id: str, body: SelectSupplyRequest,
         # not happen.
         out["note"] = (f"Recorded: this customer's {ln.reqCode} means {body.code}. "
                        "It will resolve on its own from now on.")
+    elif learned:
+        # Weaker, and worded so: nothing will resolve on its own from this.
+        out["note"] = (f"Noted: for this customer, \"{ln.reqCode}\" was quoted as "
+                       f"{body.code}. It will be offered next time they ask for "
+                       "something close.")
     return out
+
+
+def _learn_phrase(session: Session, principal: Principal,
+                  quote: Quote, ln: Line, code: str) -> bool:
+    """Remember a person's choice on a requirement line, for retrieval.
+
+    The other half of ``_confirm_identity``, and deliberately the lesser one:
+    that records an identity the engine will assert, and refuses all but the
+    engine's own proposal; this records a *choice* the engine will never read,
+    for a customer, so ``app/retrieval/aliases`` can offer it back as an
+    option. Only for a line the engine read as words — a code goes through the
+    gate above or nowhere — and only for a linked customer, because the same
+    words from another customer are another request.
+    """
+    if ln.semantics == "IDENTITY" or not ln.customerScope or code == ln.reqCode:
+        return False
+    try:
+        row = identity_service.record_phrase_alias(
+            session, principal.organization_id,
+            identity_id=ln.customerScope, phrase=ln.reqCode,
+            target_record_id=code,
+            source_ref=f"quote {quote.id} line {ln.id}",
+            user_id=principal.user_id)
+        if row is not None:
+            session.commit()
+        return row is not None
+    except Exception:  # noqa: BLE001 — a quote must not fail over bookkeeping
+        log.exception("could not record a phrase alias for line %s", ln.id)
+        session.rollback()
+        return False
 
 
 def _confirm_identity(session: Session, principal: Principal,

@@ -170,6 +170,12 @@ class Candidate:
     #: still POSSIBLE, still never selected: the confirmation answered an
     #: exact question once, and this line is not that question.
     alias: Optional[str] = None
+    #: What ``alias`` is: ``"code"`` — a mapping a person confirmed, which the
+    #: engine would resolve exactly if the line were the code; ``"phrase"`` —
+    #: words a person had quoted as this record for this customer, which the
+    #: engine never reads and which asserts nothing. One flag on the wire so a
+    #: screen does not say "confirmed" about a choice.
+    alias_kind: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -177,7 +183,7 @@ class Candidate:
             "grade": self.grade, "brand": self.brand, "score": self.score,
             "reason": self.reason, "attributes": self.attributes,
             "unverified": self.unverified, "retrieved": self.retrieved,
-            "alias": self.alias,
+            "alias": self.alias, "alias_kind": self.alias_kind,
         }
 
 
@@ -1053,6 +1059,7 @@ class PieService:
             out: List[Candidate] = []
             for hit in [*alias_hits, *hits]:
                 alias = getattr(hit, "alias", None)
+                alias_kind = getattr(hit, "kind", None) if alias is not None else None
                 rec = self._record(view, hit.record_id)
                 if rec is None:
                     continue
@@ -1078,17 +1085,25 @@ class PieService:
                     "dimensions_compared": geo.get("dimensions_compared"),
                     "field_breakdown": geo.get("field_matches"),
                 })
-                reason = (
-                    f"Near a code this customer confirmed as this product "
-                    f"({alias!r}, {hit.similarity:.2f} similar to this line), "
-                    f"not the confirmed code itself. "
-                    if alias is not None else
-                    f"Nearest catalogue description to this text "
-                    f"({hit.similarity:.2f} similar), not a ranked match. ")
+                if alias is None:
+                    reason = (f"Nearest catalogue description to this text "
+                              f"({hit.similarity:.2f} similar), not a ranked match. ")
+                elif alias_kind == "phrase":
+                    reason = (f"This customer was quoted this product before for "
+                              f"{alias!r} ({hit.similarity:.2f} similar to this "
+                              f"line). A past choice, not a match: they may mean "
+                              f"the same thing, or not. ")
+                else:
+                    reason = (f"Near a code this customer confirmed as this product "
+                              f"({alias!r}, {hit.similarity:.2f} similar to this line), "
+                              f"not the confirmed code itself. ")
                 if gate_reason is not None:
                     reason += (f"The engine read this line's own words as a "
-                               f"different geometry ({gate_reason}); the "
-                               f"confirmation is the stronger evidence, but check. ")
+                               f"different geometry ({gate_reason}); "
+                               + ("the past choice is worth seeing beside that, "
+                                  "but check. " if alias_kind == "phrase" else
+                                  "the confirmation is the stronger evidence, "
+                                  "but check. "))
                 elif unverified:
                     reason += ("No dimension of the request could be compared "
                                "against this record. ")
@@ -1101,7 +1116,7 @@ class PieService:
                     rel="POSSIBLE", grade=rec.get("grade"), brand=rec.get("brand"),
                     score=None, reason=reason.strip(),
                     attributes=_attributes_of(rec), unverified=unverified,
-                    retrieved=True, alias=alias))
+                    retrieved=True, alias=alias, alias_kind=alias_kind))
             stamp = retriever.stamp
             return out, {"model_id": stamp.model_id, "searched": stamp.records,
                          "offered": len(out),

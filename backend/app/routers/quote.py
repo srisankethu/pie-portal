@@ -25,7 +25,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from .. import approvals, enquiry, quote_workspace, resolution
+from .. import approvals, enquiry, quote_fields, quote_workspace, resolution
 from ..authz import Principal, current_principal
 from ..commercial import policy as policy_service, quote_service
 from ..domain.enums import QuoteOutcomeStatus
@@ -43,6 +43,8 @@ from ..schemas import (
     IntakeRequest,
     SelectSupplyRequest,
     SetCustomerRequest,
+    SetFieldsRequest,
+    SetOwnerRequest,
     SetPriceRequest,
 )
 from ..pie_service import Bands
@@ -72,6 +74,39 @@ def _get_quote(session: Session, quote_id: str, org: str) -> Quote:
     if q is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Quote not found")
     return q
+
+
+def _get_editable(session: Session, principal: Principal, quote_id: str) -> Quote:
+    """The quote, for a change — refused unless this person may change it.
+
+    Every quote has an owner (whoever started it) and only the owner changes
+    it, plus managers and owners where the organization's policy allows
+    (``quote_workspace.may_edit``). The refusal names the owner, because
+    "403" on a quote a colleague can plainly see is a locked door with no
+    sign on it. A 404 stays a 404: this runs *after* the tenant check, so an
+    outsider still learns nothing.
+    """
+    q = _get_quote(session, quote_id, principal.organization_id)
+    policy = approvals.get_policy(session, principal.organization_id)
+    if not quote_workspace.may_edit(q, user_id=principal.user_id,
+                                    role=principal.role, policy=policy):
+        owner = _names(session, principal, [q.ownerId]).get(q.ownerId or "", "its owner")
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            f"{q.number} belongs to {owner}. Only they"
+            + (" or a manager" if policy.managers_may_edit_any_quote else "")
+            + " can change it — ask them, or have it handed to you.")
+    return q
+
+
+def _names(session: Session, principal: Principal,
+           ids: list[Optional[str]]) -> dict[str, str]:
+    wanted = {i for i in ids if i}
+    if not wanted:
+        return {}
+    from ..memberships import users_in
+    return {u.user_id: u.name or "" for u in users_in(session, principal.organization_id)
+            if u.user_id in wanted}
 
 
 def _saved(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
@@ -214,7 +249,29 @@ def list_quotes(principal: Principal = Depends(current_principal),
     list carries each quote's own selling total and the send gate's answer,
     and nothing derived from cost.
     """
-    return {"quotes": quote_workspace.list_drafts(session, principal.organization_id)}
+    return {"quotes": quote_workspace.list_drafts(
+        session, principal.organization_id,
+        user_id=principal.user_id, role=principal.role)}
+
+
+@router.get("/field-definitions")
+def field_definitions(principal: Principal = Depends(current_principal),
+                      session: Session = Depends(get_session)):
+    """The quote-level fields this organization asks for, for the builder to
+    render. Every role: a salesperson fills them in. Edited under
+    ``/admin/quote-fields``."""
+    return {"fields": [quote_fields.to_dict(d)
+                       for d in quote_fields.definitions_for(
+                           session, principal.organization_id)]}
+
+
+@router.get("/assignees")
+def quote_assignees(principal: Principal = Depends(current_principal),
+                    session: Session = Depends(get_session)):
+    """Who a quote can be handed to. Names and ids only — the members list
+    proper is a manager's screen, and a salesperson handing over their own
+    quote needs exactly this much of it."""
+    return {"members": quote_workspace.assignees(session, principal.organization_id)}
 
 
 @router.post("")
@@ -270,7 +327,7 @@ def delete_quote(quote_id: str,
     number it was given is never minted again (``quote_workspace.delete``).
     """
     org = principal.organization_id
-    _get_quote(session, quote_id, org)
+    _get_editable(session, principal, quote_id)
     if quote_service.latest_document(session, org, quote_id=quote_id) is not None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -297,8 +354,7 @@ def set_customer(quote_id: str, body: SetCustomerRequest,
     ``books_for_quote`` resolves from the customer — so the customer is
     written first and the adapter is chosen after.
     """
-    org = principal.organization_id
-    q = _get_quote(session, quote_id, org)
+    q = _get_editable(session, principal, quote_id)
     if not body.customer.strip() and not body.customer_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "Name the customer this quote is for.")
@@ -317,12 +373,47 @@ def set_customer(quote_id: str, body: SetCustomerRequest,
     return out
 
 
+@router.put("/{quote_id}/fields")
+def set_fields(quote_id: str, body: SetFieldsRequest,
+               principal: Principal = Depends(current_principal),
+               session: Session = Depends(get_session)):
+    """The quote-level details — customer reference, validity, terms, and the
+    organization's own fields. Checked against the definitions
+    (``quote_fields.normalise``); which are mandatory is judged at the send
+    and reported on the quote as ``missingFields``, never enforced here, so a
+    half-filled form can still be saved."""
+    q = _get_editable(session, principal, quote_id)
+    defs = quote_fields.definitions_for(session, principal.organization_id)
+    try:
+        q.fields = quote_fields.normalise(defs, body.fields)
+    except quote_fields.FieldError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    return _saved(session, principal, q)
+
+
+@router.put("/{quote_id}/owner")
+def set_owner(quote_id: str, body: SetOwnerRequest,
+              principal: Principal = Depends(current_principal),
+              session: Session = Depends(get_session)):
+    """Hand the quote to another member. The owner may, and so may whoever the
+    policy lets edit — handing over is a change like any other."""
+    q = _get_editable(session, principal, quote_id)
+    try:
+        name = quote_workspace.set_owner(session, principal.organization_id, q,
+                                         body.user_id, by_user_id=principal.user_id)
+    except LookupError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    out = _view(session, principal, q)
+    out["note"] = f"{q.number} is now {name}'s."
+    return out
+
+
 @router.post("/{quote_id}/intake")
 def intake(quote_id: str, body: IntakeRequest,
            principal: Principal = Depends(current_principal),
            zoho: ZohoService = Depends(zoho_for_quote),
            session: Session = Depends(get_session)):
-    q = _get_quote(session, quote_id, principal.organization_id)
+    q = _get_editable(session, principal, quote_id)
     if not body.text.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No RFQ text provided")
     # Read the enquiry into rows first. This is the one place in the quote
@@ -507,7 +598,7 @@ def select_supply(quote_id: str, line_id: str, body: SelectSupplyRequest,
                   principal: Principal = Depends(current_principal),
                   zoho: ZohoService = Depends(zoho_for_quote),
                   session: Session = Depends(get_session)):
-    q = _get_quote(session, quote_id, principal.organization_id)
+    q = _get_editable(session, principal, quote_id)
     ln = _get_line(q, line_id)
     confirmed = _confirm_identity(session, principal, q, ln, body.code)
     store.select_supply(ln, body.code, zoho, manual=body.manual)
@@ -560,7 +651,7 @@ def confirm_reading(quote_id: str, line_id: str,
     knows what was meant — and because a confirmation queue that only a manager
     can clear is a quote that waits for a manager.
     """
-    q = _get_quote(session, quote_id, principal.organization_id)
+    q = _get_editable(session, principal, quote_id)
     store.confirm_reading(_get_line(q, line_id))
     return _saved(session, principal, q)
 
@@ -569,7 +660,7 @@ def confirm_reading(quote_id: str, line_id: str,
 def set_price(quote_id: str, line_id: str, body: SetPriceRequest,
               principal: Principal = Depends(current_principal),
               session: Session = Depends(get_session)):
-    q = _get_quote(session, quote_id, principal.organization_id)
+    q = _get_editable(session, principal, quote_id)
     ln = _get_line(q, line_id)
     store.set_price(ln, body.price)
     return _saved(session, principal, q)
@@ -579,7 +670,7 @@ def set_price(quote_id: str, line_id: str, body: SetPriceRequest,
 def delete_line(quote_id: str, line_id: str,
                 principal: Principal = Depends(current_principal),
                 session: Session = Depends(get_session)):
-    q = _get_quote(session, quote_id, principal.organization_id)
+    q = _get_editable(session, principal, quote_id)
     try:
         store.delete_line(q, line_id)
     except KeyError:
@@ -591,7 +682,7 @@ def delete_line(quote_id: str, line_id: str,
 def apply_discount(quote_id: str, body: DiscountRequest,
                    principal: Principal = Depends(current_principal),
                    session: Session = Depends(get_session)):
-    q = _get_quote(session, quote_id, principal.organization_id)
+    q = _get_editable(session, principal, quote_id)
     selected = [ln for ln in q.lines if ln.id in set(body.lineIds)]
     n = store.apply_discount(selected, body.percent)
     result = _saved(session, principal, q)
@@ -604,7 +695,7 @@ def create_item(quote_id: str, line_id: str,
                 principal: Principal = Depends(current_principal),
                 zoho: ZohoService = Depends(zoho_for_quote),
                 session: Session = Depends(get_session)):
-    q = _get_quote(session, quote_id, principal.organization_id)
+    q = _get_editable(session, principal, quote_id)
     ln = _get_line(q, line_id)
     if not ln.supplyCode:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Line has no supply product to create")
@@ -624,7 +715,7 @@ def create_estimate(quote_id: str,
                     principal: Principal = Depends(current_principal),
                     books: QuoteBooks = Depends(books_for_quote),
                     session: Session = Depends(get_session)):
-    q = _get_quote(session, quote_id, principal.organization_id)
+    q = _get_editable(session, principal, quote_id)
     blockers = store.blockers(q)
     if blockers:
         return EstimateResponse(
@@ -657,6 +748,15 @@ def create_estimate(quote_id: str,
             ok=False,
             message="Choose a customer before sending — the quote is written "
                     "into their books.")
+    missing = quote_fields.missing_required(
+        quote_fields.definitions_for(session, principal.organization_id), q.fields)
+    if missing:
+        # The organization made these mandatory. Named, so the desk fills in
+        # the right box rather than reading "details missing".
+        return EstimateResponse(
+            ok=False,
+            message=(f"{len(missing)} detail(s) this organization requires on every "
+                     f"quote are missing: {', '.join(missing)}."))
 
     org = principal.organization_id
 
@@ -820,8 +920,21 @@ def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
     the customer holds what is on screen.
     """
     out = q.to_dict(principal.is_manager_or_owner)
-    sent = quote_service.latest_document(session, principal.organization_id,
-                                         quote_id=q.id)
+    org = principal.organization_id
+    policy = approvals.get_policy(session, org)
+    out["owner"] = None if not q.ownerId else {
+        "id": q.ownerId,
+        "name": _names(session, principal, [q.ownerId]).get(q.ownerId, "")}
+    # Whether *this* reader may change it — the screen disables what the
+    # server would refuse, in the same words `_get_editable` uses.
+    out["canEdit"] = quote_workspace.may_edit(
+        q, user_id=principal.user_id, role=principal.role, policy=policy)
+    # The organization's mandatory details this quote has not answered. On
+    # the quote rather than only in the send's refusal, so the form can mark
+    # them before anybody presses the button.
+    out["missingFields"] = quote_fields.missing_required(
+        quote_fields.definitions_for(session, org), q.fields)
+    sent = quote_service.latest_document(session, org, quote_id=q.id)
     out["estimate"] = None if sent is None else {
         "number": sent.external_document_number,
         "lineCount": sent.line_count,

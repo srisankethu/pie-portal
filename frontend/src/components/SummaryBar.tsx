@@ -21,8 +21,12 @@ export function SummaryBar({
   onDiscount,
   onCreateEstimate,
   busy,
+  readOnly = false,
   gateBlockedReason }: {
   quote: Quote;
+  /** The reader may not change this quote: the discount and the send are
+   *  disabled, and the send says whose quote it is. */
+  readOnly?: boolean;
   selectedCount: number;
   onDiscount: (pct: number) => void;
   onCreateEstimate: () => void;
@@ -103,6 +107,7 @@ export function SummaryBar({
             sx={TOUCH}
             title="Apply a 10% discount to the selected lines"
             onClick={() => onDiscount(10)}
+            disabled={readOnly}
           >
             Apply 10% discount
           </Button>
@@ -129,7 +134,9 @@ export function SummaryBar({
         variant={sent && quote.estimate!.current ? "outlined" : "contained"}
         sx={TOUCH}
         title={
-          gateBlockedReason ?? (!hasLines
+          readOnly
+            ? `Only ${quote.owner?.name || "the owner"} can send this quote.`
+            : gateBlockedReason ?? (!hasLines
             ? "Add lines before creating the estimate"
             : sent && quote.estimate!.current
               ? `This quote is already Zoho estimate ${quote.estimate!.number}. `
@@ -139,7 +146,7 @@ export function SummaryBar({
                 : "Create a Zoho estimate from the current quote")
         }
         onClick={onCreateEstimate}
-        disabled={busy || !hasLines || !!gateBlockedReason
+        disabled={busy || readOnly || !hasLines || !!gateBlockedReason
                   || (sent && quote.estimate!.current)}
       >
         {busy

@@ -1,7 +1,7 @@
 """Pydantic request/response bodies for the portal API."""
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field
 
@@ -30,6 +30,18 @@ class SetCustomerRequest(BaseModel):
 
     customer: str
     customer_id: Optional[str] = None
+
+
+class SetFieldsRequest(BaseModel):
+    """Quote-level details, keyed by the organization's field definitions."""
+
+    fields: dict[str, Any]
+
+
+class SetOwnerRequest(BaseModel):
+    """Hand the quote to another member of the organization."""
+
+    user_id: str
 
 
 class IntakeRequest(BaseModel):

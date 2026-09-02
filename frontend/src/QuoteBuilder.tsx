@@ -31,6 +31,12 @@ import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogContentText from "@mui/material/DialogContentText";
+import DialogTitle from "@mui/material/DialogTitle";
+import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
@@ -43,7 +49,8 @@ import { CompanyRequired, api } from "./api";
 import type { QuoteCompany } from "./api";
 import { CompanyPicker } from "./components/CompanyPicker";
 import { CustomerPicker } from "./components/CustomerPicker";
-import type { Line, Quote } from "./types";
+import { QuoteDetails } from "./components/QuoteDetails";
+import type { Line, Quote, QuoteFieldDefinition, QuoteOwner } from "./types";
 import { IntakeModal } from "./components/IntakeModal";
 import { SupplyDrawer } from "./components/SupplyDrawer";
 import { LineGrid } from "./components/LineGrid";
@@ -141,6 +148,12 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
    *  for a *new* quote — so an organization reading a single company's books
    *  never meets it. */
   const [companyChoice, setCompanyChoice] = useState<QuoteCompany[] | null>(null);
+  // The organization's quote-level fields. Read once per mount: Settings is
+  // where they change, and a builder open across that edit re-reads on its
+  // next visit.
+  const [definitions, setDefinitions] = useState<QuoteFieldDefinition[]>([]);
+  /** Handing the quote over: who it can go to, once asked for. */
+  const [handover, setHandover] = useState<{ members: QuoteOwner[]; to: string } | null>(null);
   // Why the last attempt to send was refused. Held on the screen rather than
   // flashed, and cleared by the next change to the quote — which is exactly
   // when the sentence might stop being true.
@@ -176,6 +189,16 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       .catch((e) => { if (!cancelled) setLoadError((e as Error).message); });
     return () => { cancelled = true; };
   }, [id, t, navigate]);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.fieldDefinitions(t)
+      .then((d) => { if (!cancelled) setDefinitions(d); })
+      // No definitions is a panel that does not render, not an error worth a
+      // banner: the lines are the work, the details are alongside them.
+      .catch(() => { if (!cancelled) setDefinitions([]); });
+    return () => { cancelled = true; };
+  }, [t]);
 
   useEffect(() => {
     // A refusal describes the quote as it was. Any change to the quote may have
@@ -292,6 +315,28 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       setQuote(q);
       setPickerOpen(false);
       flash(q.note ?? `${q.number} is for ${c.name}`, "success");
+    });
+
+  /** Save the quote-level details. Not through `guard`: the panel shows the
+   *  refusal beside the field it is about, which a snackbar cannot. */
+  const saveFields = async (fields: Record<string, string | number>) => {
+    setQuote(await api.setFields(t, quote!.id, fields));
+  };
+
+  const openHandover = () =>
+    guard(async () => {
+      const members = await api.assignees(t);
+      setHandover({ members: members.filter((m) => m.id !== quote!.ownerId),
+                    to: "" });
+    });
+
+  const handOver = () =>
+    guard(async () => {
+      if (!handover?.to) return;
+      const q = await api.setOwner(t, quote!.id, handover.to);
+      setQuote(q);
+      setHandover(null);
+      flash(q.note ?? "Handed over", "success");
     });
 
   if (!quote) {
@@ -428,6 +473,11 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   const hasLines = quote.lines.length > 0;
   // Empty is the default, and the header treats it as a question still open.
   const hasCustomer = quote.customer.trim().length > 0;
+  // The server's answer to "may this person change it" — the same rule every
+  // mutation enforces with a 403, applied here so the refusal is never the
+  // first thing somebody sees.
+  const readOnly = !quote.canEdit;
+  const ownerName = quote.owner?.name || "its owner";
 
   return (
     <Box>
@@ -447,7 +497,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
               New quote
             </Button>
             <Button variant="contained" size="small" sx={TOUCH}
-                    onClick={() => setIntakeOpen(true)}>
+                    onClick={() => setIntakeOpen(true)} disabled={readOnly}>
               Paste RFQ
             </Button>
           </>
@@ -488,9 +538,11 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
               variant="text"
               size="small"
               onClick={() => setPickerOpen(true)}
+              disabled={readOnly}
               sx={{ ...TOUCH, p: 0, justifyContent: "flex-start",
                     textTransform: "none", lineHeight: 1.4,
-                    fontFamily: "var(--font-heading)", fontWeight: 600 }}
+                    fontFamily: "var(--font-heading)", fontWeight: 600,
+                    "&.Mui-disabled": { color: "text.primary" } }}
             >
               {quote.customer}
             </Button>
@@ -501,11 +553,34 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
               size="small"
               color="warning"
               onClick={() => setPickerOpen(true)}
+              disabled={readOnly}
               sx={{ ...TOUCH, textTransform: "none" }}
             >
-              Choose customer
+              {readOnly ? "No customer yet" : "Choose customer"}
             </Button>
           )}
+        </Box>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="overline" color="text.secondary" sx={{ display: "block", lineHeight: 1.3 }}>
+            Owner
+          </Typography>
+          {/* Whose quote this is. Every quote has one — whoever started it —
+              and only they change it, plus managers where the policy allows.
+              The owner (or a manager) can hand it over from here. */}
+          <Button
+            type="button"
+            variant="text"
+            size="small"
+            onClick={openHandover}
+            disabled={readOnly || busy}
+            title={readOnly ? undefined : "Hand this quote to somebody else"}
+            sx={{ ...TOUCH, p: 0, justifyContent: "flex-start",
+                  textTransform: "none", lineHeight: 1.4,
+                  fontFamily: "var(--font-heading)", fontWeight: 600,
+                  "&.Mui-disabled": { color: "text.primary" } }}
+          >
+            {quote.owner?.name || "—"}
+          </Button>
         </Box>
         <Box sx={{ flex: 1 }} />
         {/* When the server last wrote this quote. Every change is written
@@ -598,6 +673,37 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         </Alert>
       )}
 
+      {/* Whose quote this is, when it is not the reader's to change. An
+          `Alert` rather than a disabled screen with no explanation: every
+          control below is greyed for a reason, and this is the reason. */}
+      {readOnly && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          <AlertTitle>This quote belongs to {ownerName}</AlertTitle>
+          You can read it. Only {ownerName}
+          {session.role === "SALESPERSON" ? " or a manager" : ""} can change or send
+          it — ask them, or have it handed to you.
+        </Alert>
+      )}
+
+      <QuoteDetails
+        quote={quote}
+        definitions={definitions}
+        readOnly={readOnly}
+        onSave={saveFields}
+      />
+
+      {/* The organization's mandatory details this quote has not answered.
+          Named, next to the grid, because the send refuses on exactly these
+          and "details missing" is not a sentence anybody can act on. */}
+      {hasLines && quote.missingFields.length > 0 && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          <AlertTitle>
+            {quote.missingFields.length} required detail(s) before this quote can be sent
+          </AlertTitle>
+          {quote.missingFields.join(", ")} — fill them in under Quote details above.
+        </Alert>
+      )}
+
       {/* The lines are in and nobody has said whose they are. Said here,
           beside the grid, because this is the point at which it starts to
           matter: pricing reads the customer's history, the books to send into
@@ -674,6 +780,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           <LineGrid
             lines={visible}
             mgmt={mgmt}
+            readOnly={readOnly}
             intel={ci.byLineId}
             selectedIds={selection}
             onSelectionChange={setSelectedIds}
@@ -722,6 +829,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
 
       <SummaryBar
         quote={quote}
+        readOnly={readOnly}
         selectedCount={selectedCount}
         onDiscount={doDiscount}
         onCreateEstimate={doEstimate}
@@ -739,7 +847,9 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         busy={busy || ci.loading}
       />
 
-      {intakeOpen && <IntakeModal onClose={() => setIntakeOpen(false)} onSubmit={doIntake} />}
+      {intakeOpen && !readOnly && (
+        <IntakeModal onClose={() => setIntakeOpen(false)} onSubmit={doIntake} />
+      )}
       {drawerLine && (
         <SupplyDrawer
           line={drawerLine}
@@ -760,8 +870,36 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           onClose={() => setDrawerLineId(null)}
           onSelect={doSelect}
           onRevert={doRevert}
+          readOnly={readOnly}
         />
       )}
+
+      {/* Handing the quote over. The list is the organization's active
+          members, minus the current owner. */}
+      <Dialog open={handover !== null} onClose={() => setHandover(null)} fullWidth maxWidth="xs">
+        <DialogTitle>Hand {quote.number} to somebody else</DialogTitle>
+        <DialogContent>
+          <DialogContentText sx={{ mb: 2 }}>
+            They become the owner: the one person who can change or send it,
+            apart from a manager where your policy allows. You keep read access.
+          </DialogContentText>
+          <TextField
+            select fullWidth size="small" label="New owner"
+            value={handover?.to ?? ""}
+            onChange={(e) => setHandover((h) => h && { ...h, to: e.target.value })}
+          >
+            {(handover?.members ?? []).map((m) => (
+              <MenuItem key={m.id} value={m.id}>{m.name}</MenuItem>
+            ))}
+          </TextField>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setHandover(null)}>Cancel</Button>
+          <Button variant="contained" disabled={busy || !handover?.to} onClick={handOver}>
+            Hand over
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Choosing — or changing — the customer re-resolves the lines already
           on the quote under that customer's identity scope, and the server

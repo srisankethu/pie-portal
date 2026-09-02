@@ -1094,7 +1094,22 @@ export interface OrgPolicy {
   below_cost_requires_owner: boolean;
   allow_self_approval: boolean;
   escalation_creates_approval: boolean;
+  /** Every quote has an owner and only the owner changes it; this is the one
+   *  widening — managers and owners may change any quote. */
+  managers_may_edit_any_quote: boolean;
   updated_at: string | null;
+}
+
+/** The organization's quote-level fields as the settings screen edits them.
+ *  Same shape the builder reads (`types.QuoteFieldDefinition`); `key` is
+ *  absent on a field being added, and the server mints one from the label. */
+export interface QuoteFieldSpec {
+  key?: string;
+  label: string;
+  kind: "TEXT" | "MULTILINE" | "NUMBER" | "DATE" | "CHOICE";
+  required: boolean;
+  choices: string[];
+  builtin?: boolean;
 }
 
 export interface ThresholdView {

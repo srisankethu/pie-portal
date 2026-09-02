@@ -1,4 +1,4 @@
-import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PackFit, PayloadsReport, PlatformSession, PlatformUser, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PackFit, PayloadsReport, PlatformSession, PlatformUser, QuoteFieldSpec, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -969,6 +969,17 @@ export const papi = {
 
   updatePolicy: (t: string, body: Partial<OrgPolicy>) =>
     req<OrgPolicy>("/api/v1/admin/policy", { method: "PATCH", body: JSON.stringify(body) }, t),
+
+  /** The quote-level fields the organization asks for. Managers read; an
+   *  owner replaces the whole list (`PUT`), in order. */
+  getQuoteFields: (t: string) =>
+    req<{ fields: QuoteFieldSpec[]; kinds: string[]; can_manage: boolean }>(
+      "/api/v1/admin/quote-fields", {}, t),
+
+  updateQuoteFields: (t: string, fields: QuoteFieldSpec[]) =>
+    req<{ fields: QuoteFieldSpec[]; kinds: string[]; can_manage: boolean }>(
+      "/api/v1/admin/quote-fields",
+      { method: "PUT", body: JSON.stringify({ fields }) }, t),
 
   /** Owner only. Validated as a whole policy, not as a diff — one edit that is
    *  fine alone can invert the floor ladder against what is already saved. */

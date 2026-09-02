@@ -760,7 +760,8 @@ LOST; WON and LOST are terminal ("a margin analysis has already counted it").
    the organization — number, customer (or "No customer yet"), line count,
    selling total, who started it and who last changed it — with a status
    chip computed on the server by the same functions the send runs
-   (`quote_workspace.readiness`): Empty · Needs attention · Needs a customer ·
+   (`quote_workspace.readiness`): Empty · Needs attention · Details missing ·
+   Needs a customer ·
    Needs approval · Awaiting approval · Ready to send · Sent. Filters group
    those into "Needs work", "Awaiting approval", "Ready to send", "Sent".
 2. "New quote" → `POST /api/v1/quotes` with **no customer** creates the draft
@@ -768,6 +769,18 @@ LOST; WON and LOST are terminal ("a margin analysis has already counted it").
    books is asked which) and opens it at `#/quotes/:id`. The header shows the
    number, a **Choose customer** control while none is chosen, and a
    "Saved hh:mm" chip that says when the server last wrote the row.
+   **Every quote has an owner** — whoever started it — shown in the header;
+   only the owner changes or sends it, plus managers and owners where the
+   policy flag *Managers and owners may change any quote* is on (default on).
+   Anybody else opens it read-only, with a banner naming the owner, and every
+   mutation answers 403 in the owner's name. The owner (or a permitted
+   manager) hands it over from the header (`PUT /api/v1/quotes/{id}/owner`).
+   **Quote details** sit under the header: the organization's fields
+   (Settings → Quote fields; built-in customer reference, valid until,
+   payment terms, delivery terms, notes, plus any custom text / paragraph /
+   number / date / choice field), saved per field on commit
+   (`PUT /api/v1/quotes/{id}/fields`). Required ones are marked, the missing
+   ones named in an alert, and the send refuses by name until they are filled.
 3. The customer is chosen when the desk knows — before or after the RFQ is
    pasted — through the **customer picker** (server-side debounced search of
    the directory, `GET /api/v1/accounts?q=…`) → `PUT /api/v1/quotes/{id}/customer`
@@ -1605,7 +1618,9 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/admin/margin-policy/backtest` | owner | Read-only replay of every recorded quote line against a variant approval/review floor before saving it; reports newly-gated, no-longer-gated,… |
 | POST | `/api/v1/admin/me/password` | signed-in | Change own password with current-password proof; revokes ALL sessions and returns a fresh token+cookie so the caller stays signed in |
 | GET | `/api/v1/admin/policy` | manager/owner | Approval policy toggles + full margin policy description (fields, versions, defaults) + fixed analysis internals; can_manage flags owner |
-| PATCH | `/api/v1/admin/policy` | owner | Toggle the five approval-policy flags (require_approval_for_quotes, below_cost_requires_owner, require_approval_below_review_floor,… |
+| PATCH | `/api/v1/admin/policy` | owner | Toggle the six policy flags (require_approval_for_quotes, below_cost_requires_owner, require_approval_below_review_floor, managers_may_edit_any_quote,… |
+| GET | `/api/v1/admin/quote-fields` | manager+ | The organization's quote-level field definitions, kinds, and whether the caller may edit them |
+| PUT | `/api/v1/admin/quote-fields` | owner | Replace the field list in order; a field left out is hidden, never deleted; 400 names a definition that cannot be rendered |
 | GET | `/api/v1/admin/users` | manager/owner | List all members of the org (ended memberships included, greyed in UI); returns roles list and can_manage (true only for OWNER) |
 | POST | `/api/v1/admin/users` | owner | Add a member: create identity (409 if email exists anywhere) + membership; temporary password returned exactly once; must_change_password set |
 | PATCH | `/api/v1/admin/users/{user_id}` | owner | Change name/role/active(login)/member(this-org membership); refuses self role-change, self-deactivation, self-removal, and orphaning the last active… |
@@ -1784,11 +1799,15 @@ shims, are mounted but are not flows and are not listed here.
 | POST | `/api/v1/quote-intelligence/snapshot` | signed-in | Freeze the re-derived assessment (with optional override reason/code) into the append-only quote_decisions trail; releases no-longer-needed… |
 | GET | `/api/v1/quote-intelligence/thresholds` | signed-in | The pricing policy in force: band edges + tolerance for everyone; target/min/floor margins for managers/owners |
 | POST | `/api/v1/quote-support` | signed-in | QUOTE_CONTEXT decision support: deterministic facts + separated AI recommendation; persists a decision for later accept/modify/reject |
-| GET | `/api/v1/quotes` | signed-in | The workspace: every draft in the organization with number, customer, line count, selling total, who started/changed it, and the send gate's readiness |
+| GET | `/api/v1/quotes` | signed-in | The workspace: every draft in the organization with number, customer, owner, line count, selling total, who changed it, whether this reader may edit it, and the send gate's readiness |
+| GET | `/api/v1/quotes/assignees` | signed-in | Who a quote can be handed to: the organization's active members, id and name only |
+| GET | `/api/v1/quotes/field-definitions` | signed-in | The quote-level fields this organization asks for (built-in plus custom), which are required, for the builder to render |
 | POST | `/api/v1/quotes` | signed-in | Create a draft — customer optional and empty by default; number minted from the org's sequence (QB-0001…); stamped with the principal's organization_id |
 | DELETE | `/api/v1/quotes/{quote_id}` | signed-in | Remove an unsent draft; 409 once a document has been written for it |
 | GET | `/api/v1/quotes/{quote_id}` | signed-in | Read one quote, serialized via Quote.to_dict(mgmt) — economics/marginFloor/MFLOOR absent for a salesperson; 'estimate' block joined from the… |
 | PUT | `/api/v1/quotes/{quote_id}/customer` | signed-in | Say who the quote is for, or change it; lines already on it are re-resolved under the customer's identity scope, typed prices kept where the product is unchanged |
+| PUT | `/api/v1/quotes/{quote_id}/fields` | signed-in | Save the quote-level details, checked against the definitions (400 naming the field otherwise); required ones are judged at the send |
+| PUT | `/api/v1/quotes/{quote_id}/owner` | signed-in | Hand the quote to another member; owner or a permitted manager only |
 | POST | `/api/v1/quotes/{quote_id}/discount` | signed-in | Apply a percentage discount to selected line ids, off the current quoted rate; returns 'applied' count |
 | POST | `/api/v1/quotes/{quote_id}/estimate` | signed-in | The send: blocker/unpriced refusals naming lines, assess_and_record snapshot, quote_submission_block (incl. screen's below-floor lines), fingerprint… |
 | POST | `/api/v1/quotes/{quote_id}/intake` | signed-in | Paste RFQ text: AI reading with regex fallback, per-line pie-parser resolution + Zoho enrichment, AI_CALL audit, optional enquiry-corpus capture… |

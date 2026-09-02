@@ -165,6 +165,11 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("decisions", models.Decision),
     ("approval_requests", models.ApprovalRequest),
     ("quote_drafts", models.QuoteDraft),
+    # Which details this organization asks for on every quote, and which it
+    # made mandatory. Exported rather than excluded as configuration: it is
+    # the shape of their own quote form, and the values on `quote_drafts`
+    # above are unreadable without the labels and kinds this table gives them.
+    ("quote_field_definitions", models.QuoteFieldDefinition),
     ("quote_decisions", models.QuoteDecision),
     ("quote_outcomes", models.QuoteOutcome),
     # Which quotes went out, into whose ledger, under which document number.

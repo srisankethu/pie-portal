@@ -249,12 +249,16 @@ const CARD_TINT: Record<"blocked" | "attention", string> = {
  *  this is a `TextField`, always open, committing on blur and on Enter.
  */
 function LineCard({
-  line, intel, mgmt, selected, onToggle, onOpen, onSetPrice,
+  line, intel, mgmt, readOnly = false, selected, onToggle, onOpen, onSetPrice,
   onDeleteLine, onCreateItem, onConfirmReading,
 }: {
   line: Line;
   intel?: LineIntelligence;
   mgmt: boolean;
+  /** The reader may not change this quote — see `Quote.canEdit`. The rate
+   *  field, the remove, create and accept controls are withheld, because a
+   *  control that only ever answers 403 is worse than none. */
+  readOnly?: boolean;
   selected: boolean;
   onToggle: (id: string) => void;
   onOpen: (id: string) => void;
@@ -307,13 +311,15 @@ function LineCard({
             </CodeCell>
           </Box>
         </Box>
-        <IconButton
-          aria-label={`Remove ${line.reqCode} from this quote`}
-          onClick={() => onDeleteLine(line.id)}
-          sx={TOUCH}
-        >
-          <DeleteOutlineOutlined fontSize="small" />
-        </IconButton>
+        {!readOnly && (
+          <IconButton
+            aria-label={`Remove ${line.reqCode} from this quote`}
+            onClick={() => onDeleteLine(line.id)}
+            sx={TOUCH}
+          >
+            <DeleteOutlineOutlined fontSize="small" />
+          </IconButton>
+        )}
       </Stack>
 
       <Field label="Supply product">
@@ -327,7 +333,7 @@ function LineCard({
                 <StatusChip label={line.sel === "MANUAL" ? "manual" : "user set"}
                             tone={line.sel === "MANUAL" ? "warn" : "neutral"} dense />
               )}
-              {line.inBooks === false && (
+              {line.inBooks === false && !readOnly && (
                 <Button size="small" sx={TOUCH} onClick={() => onCreateItem(line.id)}>
                   + Create in Zoho
                 </Button>
@@ -377,6 +383,7 @@ function LineCard({
             },
           }}
           onBlur={(e) => commit(e.target.value)}
+          disabled={readOnly}
           onKeyDown={(e) => {
             if (e.key === "Enter") (e.target as HTMLInputElement).blur();
           }}
@@ -423,10 +430,12 @@ function LineCard({
               interpreted: {line.reading}
             </Typography>
           ) : null}
-          <Button size="small" variant="outlined" sx={{ ...TOUCH, mt: 0.5 }}
-                  onClick={() => onConfirmReading(line.id)}>
-            Accept
-          </Button>
+          {!readOnly && (
+            <Button size="small" variant="outlined" sx={{ ...TOUCH, mt: 0.5 }}
+                    onClick={() => onConfirmReading(line.id)}>
+              Accept
+            </Button>
+          )}
         </Box>
       )}
     </Card>
@@ -454,6 +463,7 @@ function Field({
 export function LineGrid({
   lines,
   mgmt,
+  readOnly = false,
   intel,
   selectedIds,
   onSelectionChange,
@@ -464,6 +474,9 @@ export function LineGrid({
   onConfirmReading }: {
   lines: Line[];
   mgmt: boolean;
+  /** The reader may not change this quote — see `Quote.canEdit`. The rate
+   *  cell stops being editable and the per-line controls are withheld. */
+  readOnly?: boolean;
   intel: Record<string, LineIntelligence>;
   selectedIds: string[];
   onSelectionChange: (ids: string[]) => void;
@@ -556,7 +569,7 @@ export function LineGrid({
                     : "Chosen from the resolved candidates rather than taken automatically."}
                 />
               )}
-              {l.inBooks === false && (
+              {l.inBooks === false && !readOnly && (
                 <Button
                   variant="text" size="small"
                   // The 66px row has the height for a full tap target; the
@@ -592,8 +605,8 @@ export function LineGrid({
       // price is the human's to set. Enter commits, Tab moves down the quote,
       // Escape abandons — none of which the blur-only text input it replaces
       // could do.
-      editable: true,
-      cellClass: "ag-num qb-editable",
+      editable: !readOnly,
+      cellClass: readOnly ? "ag-num" : "ag-num qb-editable",
       context: { noRowClick: true },
       headerTooltip: "The rate you are quoting. A resolved line opens at the "
         + "catalogue rate so a long tender is not a column of typing — that is "
@@ -675,10 +688,12 @@ export function LineGrid({
                 </Typography>
               ) : null}
             </Stack>
-            <Button size="small" variant="outlined"
-                    onClick={() => onConfirmReading(p.data!.id)}>
-              Accept
-            </Button>
+            {!readOnly && (
+              <Button size="small" variant="outlined"
+                      onClick={() => onConfirmReading(p.data!.id)}>
+                Accept
+              </Button>
+            )}
           </Stack>
         );
       },
@@ -693,7 +708,7 @@ export function LineGrid({
       headerName: "", ...fixed(52), sortable: false, filter: false,
       resizable: false, context: { noRowClick: true },
       cellRenderer: (p: { data?: Row }) =>
-        p.data ? (
+        p.data && !readOnly ? (
           <Tooltip title={`Remove ${p.data.reqCode} from this quote`}>
             <IconButton
               size="small"
@@ -706,7 +721,7 @@ export function LineGrid({
           </Tooltip>
         ) : null,
     },
-  ], [mgmt, onCreateItem, onDeleteLine]);
+  ], [mgmt, readOnly, onCreateItem, onDeleteLine]);
 
   return (
     <DataGrid<Row>
@@ -735,6 +750,7 @@ export function LineGrid({
           line={r}
           intel={r.intel}
           mgmt={mgmt}
+          readOnly={readOnly}
           selected={selectedIds.includes(r.id)}
           onToggle={toggle}
           onOpen={onOpen}

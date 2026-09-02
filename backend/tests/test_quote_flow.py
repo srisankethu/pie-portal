@@ -126,10 +126,9 @@ def test_a_forged_token_is_refused(client):
 
 
 def test_a_quote_is_invisible_to_another_tenant(client):
-    """The quote store is one process-wide dict with enumerable ids and no tenant
-    column of its own, so the org check at each read seam is the whole of quote
-    authorization. Without it a signed-in user from any tenant could read — or
-    mutate — another tenant's quote by guessing its id, cost and margin included
+    """The org check at each read seam is the whole of quote authorization.
+    Without it a signed-in user from any tenant could read — or mutate —
+    another tenant's quote by naming its id, cost and margin included
     (``to_dict`` gates economics on the *reader's* role, so a cross-tenant owner
     would receive them). A foreign id must be indistinguishable from an unknown
     one: 404, not 403.
@@ -589,15 +588,16 @@ def test_a_restart_does_not_make_a_sent_quote_look_unsent(client, mgmt_hdr):
     anything had happened was gone, and the obvious move was to press send
     again.
     """
-    from app import store as store_mod
+    from app import quote_workspace
 
     with _books(client, _StubBooks()):
         qid = _clean_quote(client, mgmt_hdr)
         sent = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert sent["ok"] is True
 
-    # The process forgets everything it held about this quote's send.
-    quote = store_mod.store.get(qid)
+    # The working object holds nothing about this quote's send.
+    with client.Maker() as s:
+        quote = quote_workspace.load(s, "org_pie", qid)
     assert not hasattr(quote, "estimateNumber"), (
         "the in-memory copy is back, and it is the one that lies after a restart")
 
@@ -687,18 +687,14 @@ def test_a_sent_quote_is_still_sent_after_the_process_forgets_it(client, mgmt_hd
     undo what it had just asked for, on every send, for ever. Clearing the
     in-memory quote store is what a restart does to this state.
     """
-    from app import store as store_mod
-
     with _books(client, _StubBooks()):
         qid = _clean_quote(client, mgmt_hdr)
         first = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
         assert first["ok"] is True and first["documentNumber"]
 
-        # The process forgets. The ledger does not.
-        quote = store_mod.store.get(qid)
-        quote.estimateNumber = None
-        quote.estimateFingerprint = None
-
+        # Every request re-reads the quote from its row, so there is no
+        # in-process copy to forget — a restart between the two presses
+        # changes nothing about what the second one reads.
         again = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
 
     assert again["ok"] is True

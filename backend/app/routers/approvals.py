@@ -21,7 +21,7 @@ from sqlalchemy.orm import Session
 
 from .. import approvals
 from ..approvals import ApprovalError, NotAuthorized, RationaleRequired
-from ..store import store
+from .. import quote_workspace
 from ..authz import Principal, current_principal
 from ..commercial.policy import load_for_org
 from ..commercial.quote_service import QuoteLineInput, assess_quote
@@ -106,9 +106,9 @@ def request_quote_line_approval(
         lines=[QuoteLineInput(line_id=body.line_id, product_ref=body.product,
                               qty=body.qty, proposed_price=body.proposed_price,
                               family=body.family,
-                              item_master_cost=store.line_cost(
-                                  body.quote_id, body.line_id,
-                                  principal.organization_id))],
+                              item_master_cost=quote_workspace.line_cost(
+                                  session, principal.organization_id,
+                                  body.quote_id, body.line_id))],
         th=th)
     intel = result.lines[0]
 
@@ -196,7 +196,7 @@ def decide_approval(
     return approvals.to_dict(row, principal, policy, names)
 
 
-def _below_floor_lines(quote_id: str, org: str) -> dict[str, str]:
+def _below_floor_lines(session: Session, quote_id: str, org: str) -> dict[str, str]:
     """The open quote's below-floor lines, or nothing if it is not this tenant's.
 
     The same argument the send endpoint passes, so this window shows what that
@@ -204,13 +204,13 @@ def _below_floor_lines(quote_id: str, org: str) -> dict[str, str]:
     worst to be on the receiving end of: the button was enabled, said "Create
     Zoho estimate", and returned a 403 when pressed.
 
-    ``below_floor`` is a margin predicate, so the org check is not optional: the
-    store is process-wide and its ids are guessable, and a foreign quote_id must
-    read as empty — never as another tenant's below-floor set — exactly as an
-    unknown id does.
+    ``below_floor`` is a margin predicate, so the org check is not optional:
+    ``quote_workspace.load`` answers a foreign quote_id exactly as it answers
+    an unknown one, and this must read as empty — never as another tenant's
+    below-floor set.
     """
-    quote = store.get(quote_id)
-    if quote is None or quote.organizationId != org:
+    quote = quote_workspace.load(session, org, quote_id)
+    if quote is None:
         return {}
     return {ln.id: ln.reqCode for ln in quote.lines if ln.economics().below_floor}
 
@@ -229,7 +229,8 @@ def quote_gate(
     """
     org = principal.organization_id
     blocked = approvals.quote_submission_block(
-        session, org, quote_id, also_requiring=_below_floor_lines(quote_id, org))
+        session, org, quote_id,
+        also_requiring=_below_floor_lines(session, quote_id, org))
     rows = list(session.scalars(
         select(models.ApprovalRequest)
         .where(models.ApprovalRequest.organization_id == org,

@@ -177,11 +177,40 @@ export interface MarginFloor {
   floor: number;
 }
 
+/** What a draft is waiting on — the server's vocabulary, from
+ *  `quote_workspace.READINESS`. Decided by the same functions the send runs,
+ *  so a row reading READY is one the send would accept. */
+export type QuoteReadiness =
+  | "EMPTY" | "NEEDS_ATTENTION" | "NO_CUSTOMER" | "SENT"
+  | "AWAITING_APPROVAL" | "NEEDS_APPROVAL" | "READY";
+
+/** One row of the quote workspace: a draft, whose it is, and what it waits on.
+ *  Nothing here is cost — `total` is the quote's own selling total. */
+export interface QuoteDraftSummary {
+  id: string;
+  number: string;
+  /** Empty until somebody chooses — see `Quote.customer`. */
+  customer: string;
+  customerId: string | null;
+  lineCount: number;
+  unpriced: number;
+  total: number;
+  readiness: QuoteReadiness;
+  sent: { number: string; systemLabel: string; current: boolean } | null;
+  createdBy: string;
+  updatedBy: string;
+  createdAt: string | null;
+  updatedAt: string | null;
+}
+
 export interface Quote {
   id: string;
+  /** Who the quote is for. **Empty by default**: a quote starts with no
+   *  customer and gains one when the desk chooses, so the screen must treat
+   *  "" as a question still open rather than as a name. */
   customer: string;
   /** The platform's id for the customer, when one was picked rather than typed.
-   *  Null on a quote started before the picker existed, or from a draft. */
+   *  Null until a customer is chosen, or on a quote started from a typed name. */
   customerId: string | null;
   /** Which connected company this quote is raised from, and therefore whose
    *  decoded catalogue every line on it resolved against. Null where the
@@ -194,6 +223,9 @@ export interface Quote {
    *  and what a person searches Zoho for when a send fails in a way the screen
    *  cannot resolve. */
   reference: string;
+  /** When the server last wrote this quote's row. Every change is written
+   *  through before it is answered, so this is also "when it was last
+   *  changed" — there is no separate save. */
   savedAt: string | null;
   lines: Line[];
   summary: QuoteSummary;

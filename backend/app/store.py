@@ -1,4 +1,4 @@
-"""In-memory quote + line state, with role-gated serialization.
+"""The quote being worked on, and the mutations the desk performs on it.
 
 A ``Quote`` is a list of ``Line``s built from a pasted RFQ. Each line carries
 the pie-parser resolution plus the Zoho-derived commercial facts, and derives
@@ -7,18 +7,21 @@ its own status (the design's READY / NEEDS ATTENTION / NOT IN BOOKS / NO PRICE
 but only serialized for a management principal — the sales client never receives
 them.
 
-State lives in process memory (single-node demo). A real deployment persists
-quotes; the shape here is the persistence contract.
+**Where a quote lives.** In ``quote_drafts``, through ``quote_workspace`` —
+loaded into these dataclasses for a request and written back at the end of
+it. It used to live in a process-wide dict on this module, which gave every
+restart a clean slate, every browser one draft of its own, and nobody a list
+of what the desk was working on. This module is deliberately database-free —
+it imports pricing, the engine and the books adapter, and nothing else — so
+the row-to-dataclass half is ``quote_workspace``'s, and ``to_state`` /
+``from_state`` below are the contract between them.
 """
 from __future__ import annotations
 
 import itertools
 import re
-import threading
-import time
 import uuid
-from dataclasses import dataclass, field
-from decimal import Decimal
+from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
 from . import pricing
@@ -36,18 +39,15 @@ _REL_LABELS = {
     "NONE": "—",
 }
 
+#: Line ids. Unique within a process, and made unique across restarts by the
+#: random tail ``_line_id`` appends: a line is keyed by ``QuoteDecision`` and
+#: ``ApprovalRequest`` rows for as long as the quote lives, which is now longer
+#: than the process that minted it.
 _ids = itertools.count(1)
 
-#: Distinguishes this process's ids from the last one's.
-#:
-#: Quotes live in memory and their ids restarted at ``q1`` on every boot, which
-#: was harmless while nothing outside this module remembered them. It is not
-#: harmless now: sending a quote writes ``QuoteDecision`` and ``QuoteOutcome``
-#: rows keyed on the quote id, and the approval gate judges a quote by the
-#: snapshots filed under its id. After a restart, a brand-new ``q1`` would
-#: inherit the previous ``q1``'s snapshots and be refused — or worse, be
-#: approved — on the strength of a quote nobody in the room had ever seen.
-_RUN = f"{int(time.time()):x}"
+
+def _line_id() -> str:
+    return f"l{next(_ids)}-{uuid.uuid4().hex[:6]}"
 
 
 def sales_tax_rate() -> float:
@@ -499,20 +499,47 @@ class Line:
             base["economics"] = econ.to_dict()
         return base
 
+    # ── persistence ──────────────────────────────────────────────────────────
+    def to_state(self) -> Dict[str, Any]:
+        """Every field, cost included — the server's own copy.
+
+        Not ``to_dict``: that is the role-gated view for a screen, and it
+        derives status and flags that would only have to be dropped on the
+        way back in. This is the row, and the row may hold cost because the
+        gate is applied on the way out (``to_dict(mgmt)``), never on the way
+        in.
+        """
+        return asdict(self)
+
+    @classmethod
+    def from_state(cls, state: Dict[str, Any]) -> "Line":
+        """The inverse of ``to_state``, tolerant of fields this version does
+        not know — a row written by a newer build must still open."""
+        known = {f.name for f in fields(cls)}
+        data = {k: v for k, v in state.items() if k in known}
+        data["candidates"] = [_candidate_from_state(c)
+                              for c in (data.get("candidates") or [])]
+        return cls(**data)
+
+
+def _candidate_from_state(state: Dict[str, Any]) -> Candidate:
+    known = {f.name for f in fields(Candidate)}
+    return Candidate(**{k: v for k, v in state.items() if k in known})
+
 
 @dataclass
 class Quote:
     id: str
     customer: str
     number: str
-    #: The tenant that owns this quote. The store is one process-wide dict keyed
-    #: only by ``quote_id``, and the ids are enumerable (``q{run}-{counter}``),
-    #: so without this every read seam authorized on the caller's *session* but
-    #: never on the quote's *tenant*: another org's owner could pass a guessed id
-    #: to ``GET /api/v1/quotes/{id}``, ``/intake``, the approval gate or
-    #: ``quote-intelligence/assess`` and read — or mutate — it, cost and margin
-    #: included. Stamped at ``create`` from ``principal.organization_id`` and
-    #: checked at every seam (``_get_quote``, ``line_cost``, ``_below_floor_lines``).
+    #: The tenant that owns this quote. Every read seam checks it — a
+    #: signed-in user from any tenant could otherwise name another tenant's
+    #: quote id on ``GET /api/v1/quotes/{id}``, ``/intake``, the approval gate
+    #: or ``quote-intelligence/assess`` and read — or mutate — it, cost and
+    #: margin included. The ids are UUIDs now rather than an enumerable
+    #: counter, which narrows the guess and changes nothing about the rule:
+    #: stamped at creation from ``principal.organization_id`` and checked in
+    #: ``quote_workspace.load``, which every seam goes through.
     organizationId: str = ""
     #: Which connected company this quote is raised from, and therefore whose
     #: decoded catalogue its lines resolve against.
@@ -548,6 +575,21 @@ class Quote:
     def customer_ref(self) -> str:
         """What to resolve this quote's customer by. Id if we have it."""
         return self.customerId or self.customer
+
+    @property
+    def has_customer(self) -> bool:
+        """Whether anybody has said who this quote is for.
+
+        Empty is the default now — a quote opens with no customer and the desk
+        chooses one — so every path that needs a customer (pricing history,
+        the books to send into, the send itself) asks this rather than reading
+        a placeholder name as if it were one.
+        """
+        return bool(self.customerId or self.customer.strip())
+
+    def lines_state(self) -> List[Dict[str, Any]]:
+        """The lines as the row stores them — see ``Line.to_state``."""
+        return [ln.to_state() for ln in self.lines]
 
     def to_dict(self, mgmt: bool) -> Dict[str, Any]:
         line_dicts = [ln.to_dict(mgmt) for ln in self.lines]
@@ -712,58 +754,13 @@ def _priced_fingerprint(quote: "Quote") -> str:
 
 
 class QuoteStore:
-    """Process-wide quote registry."""
+    """The operations the desk performs on a quote.
 
-    def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._quotes: Dict[str, Quote] = {}
-
-    def get(self, quote_id: str) -> Optional[Quote]:
-        return self._quotes.get(quote_id)
-
-    def line_cost(self, quote_id: str, line_id: str,
-                  organization_id: str) -> Optional[Decimal]:
-        """The landed cost this server already holds against one quote line.
-
-        Read by the assessment path so the gate is judging the same cost the
-        grid is showing. One accessor rather than the same three-line lookup in
-        the approvals router and the quote-intelligence router, because "where
-        does a quote line's cost come from" is exactly the question that had two
-        answers in the first place.
-
-        Server-held, never requester-supplied: the cost arrived from the books at
-        intake and lives here, so passing it into an assessment is not the same
-        thing as trusting a number in a request body.
-
-        ``organization_id`` is required and enforced: this returns a *cost*, and
-        the store is not tenant-scoped, so a caller passing another org's
-        ``quote_id`` would otherwise read that tenant's landed cost. A mismatch
-        is treated exactly like an unknown quote — ``None`` — so a foreign id is
-        indistinguishable from one that never existed.
-        """
-        quote = self._quotes.get(quote_id)
-        if quote is None or quote.organizationId != organization_id:
-            return None
-        line = next((row for row in quote.lines if row.id == line_id), None)
-        if line is None or line.cost is None:
-            return None
-        # `Decimal(str(...))` rather than `Decimal(float)`: money is Decimal (§1),
-        # and the binary-float detour is how 420.0 becomes 419.99999999999994.
-        return Decimal(str(line.cost))
-
-    def create(self, customer: str, customer_id: Optional[str] = None,
-               organization_id: str = "",
-               connection_id: Optional[str] = None) -> Quote:
-        with self._lock:
-            qid = f"q{_RUN}-{next(_ids)}"
-            num = f"QB-{int(time.time()) % 100000:05d}"
-            q = Quote(id=qid, customer=customer or "New customer", number=num,
-                      organizationId=organization_id,
-                      connectionId=connection_id,
-                      customerId=customer_id or None,
-                      reference=f"{num}-{uuid.uuid4().hex[:8]}")
-            self._quotes[qid] = q
-            return q
+    Stateless. It used to be the registry as well — one dict of every quote
+    the process had seen — and ``get`` / ``create`` / ``line_cost`` lived
+    here. They are ``quote_workspace``'s now, where a session can reach the
+    row; what is left is the working object and what may be done to it.
+    """
 
     # ── line construction ────────────────────────────────────────────────────
     def build_lines(self, rows: List[Dict[str, Any]], zoho: ZohoService,
@@ -781,7 +778,7 @@ class QuoteStore:
                                                   mapping_store,
                                                   connection_id=connection_id)
             ln = Line(
-                id=f"l{next(_ids)}",
+                id=_line_id(),
                 proposed=bool(row.get("proposed")),
                 reading=str(row.get("reading") or ""),
                 raw=row["raw"],
@@ -826,8 +823,7 @@ class QuoteStore:
         new = self.build_lines(rows or _split_rfq(text), zoho, customer_scope,
                                bands, mapping_store,
                                connection_id=quote.connectionId)
-        with self._lock:
-            quote.lines.extend(new)
+        quote.lines.extend(new)
         return new
 
     def _enrich_from_zoho(self, ln: Line, zoho: ZohoService,
@@ -911,12 +907,59 @@ class QuoteStore:
         ln.priceSource = "USER" if price is not None else "LIST"
 
     def delete_line(self, quote: Quote, line_id: str) -> Line:
-        with self._lock:
-            line = next((ln for ln in quote.lines if ln.id == line_id), None)
-            if line is None:
-                raise KeyError(line_id)
-            quote.lines.remove(line)
-            return line
+        line = next((ln for ln in quote.lines if ln.id == line_id), None)
+        if line is None:
+            raise KeyError(line_id)
+        quote.lines.remove(line)
+        return line
+
+    def set_customer(self, quote: Quote, customer: str,
+                     customer_id: Optional[str], zoho: ZohoService,
+                     customer_scope: Optional[str] = None,
+                     bands: Optional[Bands] = None,
+                     mapping_store: Any = None) -> int:
+        """Point the quote at a customer, re-resolving what is already on it.
+
+        The quote opens with no customer and the desk chooses one — often
+        after the RFQ has been pasted, because the enquiry is what arrived and
+        the customer is who it is from. So the lines already on the quote
+        were resolved with no identity scope, and they are resolved again
+        here under the customer's: a confirmed mapping filed for this
+        customer, or an equivalence the engine only proposes within their
+        scope, is exactly what choosing them is supposed to bring in.
+
+        Re-resolved from ``reqCode`` — the request as the engine normalised it
+        — not from the line's *previous* answer. Feeding a derived supply code
+        back in as the next resolution's input is the composition CLAUDE.md
+        §1 forbids, and the request is the one operand that never composes.
+
+        What a person put on a line survives when it still applies: a price
+        they typed stays where the same product came back, and a reading they
+        confirmed stays confirmed. A substitution they chose does not — it
+        was a choice among that scope's candidates, and this is a new scope.
+        Returns how many typed prices were carried over, for the sentence the
+        screen says.
+        """
+        quote.customer = customer.strip()
+        quote.customerId = customer_id or None
+        if not quote.lines:
+            return 0
+        rows = [{"raw": ln.raw, "code": ln.reqCode, "qty": ln.reqQty,
+                 "proposed": ln.proposed, "reading": ln.reading}
+                for ln in quote.lines]
+        fresh = self.build_lines(rows, zoho, customer_scope, bands, mapping_store,
+                                 connection_id=quote.connectionId)
+        kept = 0
+        for old, new in zip(quote.lines, fresh):
+            # Same id: the snapshots and approval requests filed under this
+            # line are about this request, and the request has not changed.
+            new.id = old.id
+            if (old.priceSource == "USER" and old.quoted is not None
+                    and new.supplyCode == old.supplyCode):
+                new.quoted, new.priceSource = old.quoted, "USER"
+                kept += 1
+        quote.lines[:] = fresh
+        return kept
 
     def apply_discount(self, lines: List[Line], pct: float) -> int:
         """Take ``pct`` off the rate each line is currently quoting.

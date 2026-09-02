@@ -33,6 +33,7 @@ describe("pathFor", () => {
     expect(pathFor("customer", "cst_1")).toBe(PATTERN.account.replace(":id", "cst_1"));
     expect(pathFor("customerItem", "cst_1", "prd_2")).toBe(
       PATTERN.customerItem.replace(":id", "cst_1").replace(":itemId", "prd_2"));
+    expect(pathFor("quotes", "q_1")).toBe(PATTERN.quote.replace(":id", "q_1"));
   });
 
   it("percent-encodes an id, because customer ids are not all url-safe", () => {

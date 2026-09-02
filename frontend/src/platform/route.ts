@@ -151,6 +151,9 @@ export const PATTERN = {
   detail: "/decision/:id",
   account: "/account/:id",
   customerItem: "/account/:id/item/:itemId",
+  /** One draft in the quote workspace — the Quote Builder open on it. Bare
+   *  `/quotes` is the workspace itself: every draft, and the way to start one. */
+  quote: "/quotes/:id",
 } as const;
 
 /** The path that used to serve the account picker. Redirected rather than
@@ -163,6 +166,7 @@ const PARAMETERISED: readonly (readonly [string, Screen])[] = [
   [PATTERN.customerItem, "customerItem"],
   [PATTERN.account, "customer"],
   [PATTERN.detail, "detail"],
+  [PATTERN.quote, "quotes"],
 ] as const;
 
 /** Screens whose `PATH` entry is an alias, so they must never be found by a
@@ -177,6 +181,7 @@ export function pathFor(screen: Screen, id?: string, itemId?: string): string {
     return `/account/${enc(id)}/item/${enc(itemId)}`;
   }
   if (screen === "customer" && id) return `/account/${enc(id)}`;
+  if (screen === "quotes" && id) return `/quotes/${enc(id)}`;
   return PATH[screen];
 }
 

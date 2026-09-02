@@ -9,11 +9,22 @@
  * whatever preceded the platform rather than out of the builder.
  *
  * Now it is a route inside the shell, on the platform's own session: same nav,
- * same user, same sign-out, and `/quotes` is a link somebody can send.
+ * same user, same sign-out, and `/quotes/<id>` is a link somebody can send.
  *
- * The draft still survives navigation — it is written to `localStorage` on
- * every change and read back on mount — which is what made a mode flag look
- * necessary in the first place.
+ * **The draft is a row on the server, not a copy in this browser.** It used
+ * to be written to `localStorage` on every change and read back on mount,
+ * which is what made a mode flag look necessary in the first place — and
+ * which also meant one draft per browser, invisible to everyone else, with
+ * the lines behind it gone from the server on the next restart. Every change
+ * is written through before it is answered now, so there is no Save button:
+ * the chip in the header says when the row was last written, and the same
+ * quote is open on whichever desk opens it.
+ *
+ * **A quote opens with no customer.** The enquiry is what arrived; who it is
+ * from is a question the desk answers when it has the answer, and it is
+ * answered here — in place, re-resolving the lines already pasted — rather
+ * than by starting over. The builder used to open every quote against one
+ * literal name, and then against whichever name the last draft carried.
  */
 import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
@@ -26,9 +37,9 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { useSnackbar } from "notistack";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 
-import { CompanyRequired, api, clearDraftQuote, loadDraftQuote, saveDraftQuote } from "./api";
+import { CompanyRequired, api } from "./api";
 import type { QuoteCompany } from "./api";
 import { CompanyPicker } from "./components/CompanyPicker";
 import { CustomerPicker } from "./components/CustomerPicker";
@@ -39,10 +50,12 @@ import { LineGrid } from "./components/LineGrid";
 import { NARROW_BREAKPOINT } from "./platform/DataGrid";
 import { QuoteOutcomeBar } from "./components/QuoteOutcomeBar";
 import { SummaryBar } from "./components/SummaryBar";
-import { EmptyState, FilterChip, FilterPanel, LoadingState, SectionHeader, TOUCH }
+import { EmptyState, ErrorState, FilterChip, FilterPanel, LoadingState, SectionHeader, TOUCH }
   from "./platform/kit";
 import { abilityFor } from "./platform/ability";
+import { PATH, pathFor } from "./platform/route";
 import type { PlatformSession } from "./platform/types";
+import { formatTime } from "./when";
 import { useQuoteIntelligence } from "./useQuoteIntelligence";
 
 const FILTERS: [string, string][] = [
@@ -72,14 +85,6 @@ const SUB =
   + "Quote context shows this customer's own price history and — for managers — the "
   + "cost and margin. A resolved line opens at the catalogue rate, marked “list” "
   + "until you price it; the number that goes out is yours.";
-
-/** Said once per page load, not once per visit to this screen.
- *
- * Resuming is a fact worth announcing when the browser was closed and reopened.
- * Announcing it again every time somebody comes back from Approvals — which is
- * a mount, now that this is a route — is noise, and the status chip in the
- * header says it anyway. */
-let resumeAnnounced = false;
 
 function passesFilter(l: Line, f: string, flagged: Set<string>): boolean {
   switch (f) {
@@ -111,8 +116,15 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   // that answers this, so the answer here cannot drift from the nav's.
   const mgmt = abilityFor(session).can("read", "economics");
   const navigate = useNavigate();
+  // Which draft this is. The URL carries it, so the same quote opens on
+  // whichever desk follows the link — there is no other source.
+  const { id } = useParams<{ id: string }>();
 
   const [quote, setQuote] = useState<Quote | null>(null);
+  // Why the draft could not be opened: it was removed, or it is not this
+  // organization's, or the request failed. Held so the screen can say so
+  // and offer the way back, rather than sitting on skeletons.
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [filter, setFilter] = useState("ALL");
   const [search, setSearch] = useState("");
   // Ids, not a `Record<id, boolean>`: the grid speaks ids, the discount call
@@ -122,14 +134,13 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   const [intakeOpen, setIntakeOpen] = useState(false);
   const [drawerLineId, setDrawerLineId] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  // Open when there is no quote to work on, and on demand from the header.
+  // The customer question, on demand from the header — and offered, not
+  // forced, when the quote has none yet.
   const [pickerOpen, setPickerOpen] = useState(false);
-  /** The company question, open only when the server refused to choose one —
-   *  so an organization reading a single company's books never meets it. Holds
-   *  the customer as well, because the retry is the same action continued. */
-  const [companyChoice, setCompanyChoice] = useState<
-    { companies: QuoteCompany[]; customer: { id: string; name: string } } | null>(null);
-  const [draftStatus, setDraftStatus] = useState<string | null>(null);
+  /** The company question, open only when the server refused to choose one
+   *  for a *new* quote — so an organization reading a single company's books
+   *  never meets it. */
+  const [companyChoice, setCompanyChoice] = useState<QuoteCompany[] | null>(null);
   // Why the last attempt to send was refused. Held on the screen rather than
   // flashed, and cleared by the next change to the quote — which is exactly
   // when the sentence might stop being true.
@@ -150,34 +161,23 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
     [enqueueSnackbar],
   );
 
-  // Resume the saved draft, or start a quote. Runs on mount rather than on
-  // sign-in: the session is already established by the time this screen exists.
+  // Open the draft the URL names. Without an id there is nothing to open, and
+  // the workspace is where one is chosen or started.
   useEffect(() => {
-    if (quote) return;
-    const draft = loadDraftQuote();
-    if (draft) {
-      setQuote(draft);
-      setDraftStatus("Resumed draft");
-      if (!resumeAnnounced) {
-        resumeAnnounced = true;
-        flash("Resumed your last draft");
-      }
+    if (!id) {
+      navigate(PATH.quotes, { replace: true });
       return;
     }
-    // Ask who the quote is for rather than opening one against a literal.
-    // This used to be `createQuote(t, "Pitti Engineering Ltd")`, so every quote
-    // in the product was for one customer and the header's "Customer" was a
-    // label with nothing behind it. A quote cannot be priced without knowing
-    // whose price history to read, so it is the first question, not a setting.
-    setPickerOpen(true);
-  }, [quote, t, flash]);
+    let cancelled = false;
+    setQuote(null);
+    setLoadError(null);
+    api.getQuote(t, id)
+      .then((q) => { if (!cancelled) setQuote(q); })
+      .catch((e) => { if (!cancelled) setLoadError((e as Error).message); });
+    return () => { cancelled = true; };
+  }, [id, t, navigate]);
 
   useEffect(() => {
-    if (!quote) return;
-    saveDraftQuote(quote);
-    setDraftStatus(
-      `Saved ${new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })}`,
-    );
     // A refusal describes the quote as it was. Any change to the quote may have
     // answered it, and a stale blocker is worse than none.
     setSendBlock(null);
@@ -204,26 +204,30 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
     );
   }, [quote, filter, search, flaggedLines]);
 
-  const saveDraft = () => {
-    if (!quote) return;
-    saveDraftQuote(quote);
-    setDraftStatus(`Saved ${new Date().toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })}`);
-    flash("Draft saved locally");
-  };
-
-  /** Abandon the draft and open a fresh quote.
+  /** Start another draft and open it. This one stays in the workspace as it
+   *  is — nothing is abandoned, which is what "New quote" used to mean here.
    *
-   *  The way out of a finished quote, which used to be "sign out" — the only
-   *  control that cleared the draft, and it also ended the session. */
-  const startNewQuote = () => {
-    clearDraftQuote();
-    setSelectedIds([]);
-    setFilter("ALL");
-    setSearch("");
-    setDraftStatus(null);
-    setQuote(null);   // the effect above opens the next one
-    flash("Started a new quote");
-  };
+   *  The company is decided at creation, once, and the server refuses to
+   *  choose where the organization reads several books: ask, then retry. */
+  const startNewQuote = (connectionId?: string) =>
+    guard(async () => {
+      let q: Quote;
+      try {
+        q = await api.createQuote(t, "", undefined, connectionId);
+      } catch (e) {
+        if (e instanceof CompanyRequired) {
+          setCompanyChoice(e.companies);
+          return;
+        }
+        throw e;
+      }
+      setCompanyChoice(null);
+      setSelectedIds([]);
+      setFilter("ALL");
+      setSearch("");
+      navigate(pathFor("quotes", q.id));
+      flash(`Started ${q.number}`);
+    });
 
   const clearSelection = () => {
     setSelectedIds([]);
@@ -272,85 +276,36 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   // control they pressed. `guard` reports it through `flash`, like every other
   // action on this screen.
 
-  /** Start a quote for a customer. Also how the header changes customer: each
-   *  line remembers the identity scope it was resolved under, so re-pointing an
-   *  existing quote would leave those resolutions filed against the previous
-   *  customer. A new quote is the honest answer, and the confirm says so.
+  /** Say who this quote is for — or change it — in place.
    *
-   *  The dialog closes when the quote *lands*, not on the press, so the rule
-   *  has no race in it: open exactly while there is no quote to work on. */
-  const startQuote = (c: { id: string; name: string },
-                      connectionId?: string) =>
+   *  The server resolves the lines already on the quote again under the new
+   *  customer's identity scope and says what it kept, so a quote pasted
+   *  before the customer was known is honest about whose it is. Changing the
+   *  customer used to start a new quote and discard this one, because each
+   *  line remembers the scope it was resolved under; re-resolving is the
+   *  answer to that, not abandonment.
+   *
+   *  The dialog closes when the change *lands*, not on the press. */
+  const chooseCustomer = (c: { id: string; name: string }) =>
     guard(async () => {
-      let q: Quote;
-      try {
-        q = await api.createQuote(t, c.name, c.id, connectionId);
-      } catch (e) {
-        // Not an error to report: the organization reads several companies'
-        // books, each with its own decoded item master, and the server refuses
-        // to choose. Ask, then retry with the answer — the customer picker
-        // stays up underneath so cancelling returns to where they were.
-        if (e instanceof CompanyRequired) {
-          setCompanyChoice({ companies: e.companies, customer: c });
-          return;
-        }
-        throw e;
-      }
-      clearDraftQuote();
+      const q = await api.setCustomer(t, quote!.id, c.name, c.id);
       setQuote(q);
-      setSelectedIds([]);
-      setDraftStatus(null);
       setPickerOpen(false);
-      setCompanyChoice(null);
-      flash(`Quote ${q.number} for ${c.name}`, "success");
+      flash(q.note ?? `${q.number} is for ${c.name}`, "success");
     });
 
   if (!quote) {
     return (
       <Box>
         <SectionHeader title="Quote Builder" sub={SUB} />
-        {/* Skeletons while the dialog is up — it is about to be answered and a
-            page that grows underneath costs somebody their place. Closed, they
-            would be a lie: nothing is loading, the screen is waiting to be
-            asked again. */}
-        {pickerOpen ? (
-          <LoadingState rows={3} label="Choose who this quote is for…" />
+        {loadError ? (
+          <ErrorState
+            title="This quote could not be opened"
+            error={loadError}
+            onRetry={() => navigate(PATH.quotes)}
+          />
         ) : (
-          <EmptyState
-            title="No quote open"
-            reason="A quote is priced against one customer's own price history,
-                    so it starts by choosing who it is for."
-            action={
-              <Button variant="contained" onClick={() => setPickerOpen(true)}>
-                Choose a customer
-              </Button>
-            }
-          />
-        )}
-        {/* Cancellable, and this is what it returns to. It used to have no way
-            out on the grounds that there was nothing behind it — true of the
-            page, and the wrong conclusion: an organization whose directory is
-            empty got a dialog it could not satisfy, over a backdrop that swallows
-            the nav, which is a locked screen rather than a firm question. */}
-        <CustomerPicker
-          open={pickerOpen}
-          session={session}
-          busy={busy}
-          title="Who is this quote for?"
-          note="Pricing reads this customer's own history, so the quote needs to
-                know whose. Start typing a name."
-          onPick={startQuote}
-          onCancel={() => setPickerOpen(false)}
-        />
-        {companyChoice && (
-          <CompanyPicker
-            open
-            busy={busy}
-            companies={companyChoice.companies}
-            customer={companyChoice.customer.name}
-            onPick={(id) => startQuote(companyChoice.customer, id)}
-            onCancel={() => setCompanyChoice(null)}
-          />
+          <LoadingState rows={3} label="Opening the quote…" />
         )}
       </Box>
     );
@@ -471,6 +426,8 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
 
   const selectedCount = selection.length;
   const hasLines = quote.lines.length > 0;
+  // Empty is the default, and the header treats it as a question still open.
+  const hasCustomer = quote.customer.trim().length > 0;
 
   return (
     <Box>
@@ -479,9 +436,14 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         sub={SUB}
         actions={
           <>
-            {/* The two things this screen is opened to do, so they carry a
-                full tap target like the controls below them. */}
-            <Button variant="outlined" size="small" sx={TOUCH} onClick={startNewQuote}>
+            {/* Back to the list, then the two things this screen is opened
+                to do — all with a full tap target like the controls below. */}
+            <Button variant="text" size="small" sx={TOUCH}
+                    onClick={() => navigate(PATH.quotes)}>
+              All quotes
+            </Button>
+            <Button variant="outlined" size="small" sx={TOUCH}
+                    onClick={() => startNewQuote()} disabled={busy}>
               New quote
             </Button>
             <Button variant="contained" size="small" sx={TOUCH}
@@ -492,10 +454,11 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         }
       />
 
-      {/* Which quote this is, and whether the draft is safe. A `Paper` strip
-          rather than the brand bar this used to occupy: the shell above already
-          says who is signed in and what the product is called, and repeating it
-          here was half of why the screen felt like a different application. */}
+      {/* Which quote this is, whose it is, and when the row was last written.
+          A `Paper` strip rather than the brand bar this used to occupy: the
+          shell above already says who is signed in and what the product is
+          called, and repeating it here was half of why the screen felt like a
+          different application. */}
       <Paper
         variant="outlined"
         sx={{
@@ -515,28 +478,43 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           <Typography variant="overline" color="text.secondary" sx={{ display: "block", lineHeight: 1.3 }}>
             Customer
           </Typography>
-          {/* A control, not a caption. There was no way to change the
-              customer at all before this. */}
-          <Button
-            type="button"
-            variant="text"
-            size="small"
-            onClick={() => setPickerOpen(true)}
-            sx={{ ...TOUCH, p: 0, justifyContent: "flex-start",
-                  textTransform: "none", lineHeight: 1.4,
-                  fontFamily: "var(--font-heading)", fontWeight: 600 }}
-          >
-            {quote.customer}
-          </Button>
+          {/* A control, not a caption — and, until somebody answers, the
+              question itself. A quote opens with no customer; this is where
+              one is chosen, and it reads as a thing still to do rather than
+              as a blank. */}
+          {hasCustomer ? (
+            <Button
+              type="button"
+              variant="text"
+              size="small"
+              onClick={() => setPickerOpen(true)}
+              sx={{ ...TOUCH, p: 0, justifyContent: "flex-start",
+                    textTransform: "none", lineHeight: 1.4,
+                    fontFamily: "var(--font-heading)", fontWeight: 600 }}
+            >
+              {quote.customer}
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              variant="outlined"
+              size="small"
+              color="warning"
+              onClick={() => setPickerOpen(true)}
+              sx={{ ...TOUCH, textTransform: "none" }}
+            >
+              Choose customer
+            </Button>
+          )}
         </Box>
         <Box sx={{ flex: 1 }} />
-        {draftStatus && (
-          <Chip size="small" variant="outlined" label={draftStatus} />
+        {/* When the server last wrote this quote. Every change is written
+            through before it is answered, so there is no Save button to
+            press and nothing that lives only in this browser. */}
+        {quote.savedAt && (
+          <Chip size="small" variant="outlined"
+                label={`Saved ${formatTime(quote.savedAt)}`} />
         )}
-        <Button variant="text" size="small" sx={TOUCH} onClick={saveDraft}
-                disabled={!hasLines}>
-          Save draft
-        </Button>
       </Paper>
 
       {/* Chips, matching the decision queue's filter row. These select what the
@@ -617,6 +595,27 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           </AlertTitle>
           Lowest margin {(quote.marginFloor.worst * 100).toFixed(1)}% — review before creating the
           estimate.
+        </Alert>
+      )}
+
+      {/* The lines are in and nobody has said whose they are. Said here,
+          beside the grid, because this is the point at which it starts to
+          matter: pricing reads the customer's history, the books to send into
+          are the customer's, and both are unanswerable until this is. */}
+      {hasLines && !hasCustomer && (
+        <Alert
+          severity="info"
+          sx={{ mb: 2 }}
+          action={
+            <Button color="inherit" size="small" onClick={() => setPickerOpen(true)}>
+              Choose customer
+            </Button>
+          }
+        >
+          <AlertTitle>This quote has no customer yet</AlertTitle>
+          Price history and the books it is sent into are the customer's, so the
+          quote cannot be sent until one is chosen. Lines already here are
+          resolved again for them.
         </Alert>
       )}
 
@@ -764,29 +763,32 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         />
       )}
 
-      {/* Changing the customer starts a new quote rather than re-pointing this
-          one — each line remembers the identity scope it was resolved under,
-          and silently wrong is worse than plainly starting again. */}
+      {/* Choosing — or changing — the customer re-resolves the lines already
+          on the quote under that customer's identity scope, and the server
+          says what it kept. Cancellable, and this is what it returns to: a
+          quote with no customer is a quote with a question open, not a locked
+          screen. */}
       <CustomerPicker
         open={pickerOpen}
         session={session}
         busy={busy}
-        title="Change customer"
+        title={hasCustomer ? "Change customer" : "Who is this quote for?"}
         note={quote.lines.length
-          ? `This quote has ${quote.lines.length} line(s) resolved for `
-            + `${quote.customer}. Choosing another customer starts a new quote; `
-            + `the current one is not kept.`
-          : "Pricing reads this customer's own history."}
-        onPick={startQuote}
+          ? `This quote has ${quote.lines.length} line(s)`
+            + (hasCustomer ? ` resolved for ${quote.customer}` : "")
+            + `. They are resolved again for the customer you choose; prices `
+            + `you typed are kept where the same product comes back.`
+          : "Pricing reads this customer's own history. Start typing a name."}
+        onPick={chooseCustomer}
         onCancel={() => setPickerOpen(false)}
       />
       {companyChoice && (
         <CompanyPicker
           open
           busy={busy}
-          companies={companyChoice.companies}
-          customer={companyChoice.customer.name}
-          onPick={(id) => startQuote(companyChoice.customer, id)}
+          companies={companyChoice}
+          customer=""
+          onPick={(cid) => startNewQuote(cid)}
           onCancel={() => setCompanyChoice(null)}
         />
       )}

@@ -510,13 +510,16 @@ def test_a_decision_records_which_catalogue_resolved_it(client):
     that names no company; it is not the answer for one that does.
     """
     import piesupport
+    from app import quote_workspace
     from app.pie_service import pie_service
-    from app.store import store
 
     company = piesupport.company_id("cx_qi_catalogue")
     piesupport.give_company_a_catalogue(company)
-    quote = store.create("Acme Engineering", organization_id=ORG,
-                         connection_id=company)
+    with client.Maker() as s:
+        quote = quote_workspace.create(s, ORG, user_id=None,
+                                       customer="Acme Engineering",
+                                       connection_id=company)
+        s.commit()
 
     _snapshot(client, MANAGER, [_line("L1")], quote_id=quote.id)
     s = client.Maker()

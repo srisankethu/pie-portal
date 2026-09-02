@@ -102,6 +102,24 @@ describe("SupplyDrawer caveats", () => {
     expect(screen.queryByText(/Before you choose/i)).not.toBeInTheDocument();
   });
 
+  it("labels a retrieved candidate as nearest by description, never as a match", () => {
+    // `backend/tests/test_pie_service.py` pins that such a record is POSSIBLE,
+    // unscored and never selected; this pins that the person is told which
+    // kind of candidate they are looking at.
+    renderDrawer(lineWithCaveats({
+      candidates: [
+        candidate({ code: "2035689", desc: "KSOM INSERT OFPT-ENGB R=1.2", unverified: false }),
+        candidate({ code: "5642232", desc: "VSM11 MILLING INSERT R=1.2 MM",
+                    score: null, unverified: false, retrieved: true,
+                    reason: "Nearest catalogue description to this text (0.71 similar), not a ranked match." }),
+      ],
+      notes: [],
+    }));
+
+    expect(screen.getAllByText("nearest by description")).toHaveLength(1);
+    expect(screen.getByText(/not a ranked match/)).toBeTruthy();
+  });
+
   it("does not present an unverified candidate as selected supply", () => {
     // The server decides this; the drawer must not contradict it by drawing a
     // selection the response does not carry.

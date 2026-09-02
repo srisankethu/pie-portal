@@ -83,9 +83,18 @@ _APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 #:                    being it. CLAUDE.md §3 already asserts this package
 #:                    "imports neither commercial/ nor ai/" — it was prose, and
 #:                    nothing checked it.
+#: ``retrieval/``     nearest-neighbour search over a decoded catalogue, the
+#:                    candidate generator beneath the rule engine's ranking.
+#:                    Its embedding is a hashed n-gram model and not a hosted
+#:                    one *because* of this list: ``catalog`` and
+#:                    ``pie_service`` import it, and every deterministic
+#:                    package imports those, so a retrieval layer that reached
+#:                    ``ai/`` would carry the whole of ``commercial/`` with it.
+#:                    A neural embedder belongs behind the same protocol,
+#:                    injected from a layer that may reach interpretation.
 DETERMINISTIC = ("attribution", "commercial", "context", "domain", "enquiry",
                  "identity", "ingestion", "master_health", "messaging",
-                 "observability", "signals", "state", "trust")
+                 "observability", "retrieval", "signals", "state", "trust")
 
 #: The packages deliberately *outside* ``DETERMINISTIC``, each with the reason
 #: it is out. A package silently omitted from an opt-in list is the same defect

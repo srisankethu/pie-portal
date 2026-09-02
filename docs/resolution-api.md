@@ -149,7 +149,8 @@ two handles.
     "ruleset_checksum": "f67131512eb97513",
     "company": "cn_7f21a9",
     "input_semantics": "IDENTITY",
-    "outcome": "AUTO_MATCH"
+    "outcome": "AUTO_MATCH",
+    "retrieval": null
   },
   "notes": []
 }
@@ -179,6 +180,21 @@ much was actually checked to support it. The line is
 drawn where the Quote Builder draws it, deliberately — an API that abstained
 where the screen answered would make "did PIE resolve this?" depend on who
 asked.
+
+**`found_by: "retrieval"` is an option, never a match.** On a requirement the
+engine could not rank — a series named in words, a request with no ISO code in
+it — the catalogue is also searched by *description*: the records whose text
+reads most like the line are compared by the engine and, where its gates do
+not reject them, listed among `alternatives` with `found_by: "retrieval"`,
+`relationship: "POSSIBLE"` and a null `equivalence_score`. Nothing ranked such
+a record and nothing selects it: `resolution` is never one of them, and a line
+whose only candidates were retrieved abstains with `AMBIGUOUS`. Every
+alternative the engine ranked says `found_by: "ranking"`. `engine.retrieval`
+says whether that search ran — which model id, over how many records, offering
+how many — and is null where it did not, which reads as "not searched" and
+never as "nothing near". The model is a deterministic hashed n-gram embedding
+built beside the catalogue, so the same catalogue and model id retrieve the
+same records; see `docs/per-company-catalogues.md` §12.
 
 Free text takes the other shape. `"cnmg 1204 08 tn2000 - 10 nos"` is a
 requirement rather than an identifier, so `input_semantics` is `REQUIREMENT`,

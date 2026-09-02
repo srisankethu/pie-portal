@@ -262,6 +262,12 @@ backend/app/
                  each ended. Canonical, not derived — a re-sync rebuilds
                  nothing here. Raw customer text; never imports ai/.
   identity/      Cross-connector record linking. Never merges, only links.
+  retrieval/     Nearest-neighbour search over a decoded catalogue: a
+                 candidate generator beneath the rule engine's ranking, never
+                 a scorer of fit. Hashed n-gram embedding — deterministic and
+                 offline, so a catalogue and a model id fix the neighbours.
+                 Imported by catalog.py and pie_service.py, which every
+                 deterministic package imports: never imports ai/.
   trust/         Tenant keys, name vault, pseudonyms, break-glass, disclosure,
                  erasure. Infrastructure — imports neither commercial/ nor ai/.
   routers/       HTTP mapping and role scoping. Thin — no money arithmetic.

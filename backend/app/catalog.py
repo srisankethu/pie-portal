@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from . import clock
+from . import clock, retrieval
 from .config import settings
 
 log = logging.getLogger("pie_portal.catalog")
@@ -543,6 +543,12 @@ def company_catalog_state(session: Any, org: str, connection_id: str) -> Dict[st
             "ingest": getattr(s, "ingest", None),
         } for s in sources],
         "stale": stale,
+        # The nearest-neighbour index beside the catalogue, if one has been
+        # built: which model, over how many records, and whether it still
+        # describes the file on disk. None before the first build or when the
+        # index could not be written — the catalogue itself is unaffected, and
+        # the next resolution builds the index it needs.
+        "retrieval": retrieval.describe(path) if on_disk else None,
     }
 
 
@@ -580,6 +586,7 @@ def build_for_company(session: Any, org: str, connection_id: str,
         try:
             combine = combined_corpus(sources, pack_path, tmp_corpus)
             result = run_parse(tmp_corpus, pack_path, out)
+            _index_for_retrieval(out)
         finally:
             # The bytes are in the rows; nothing is lost by removing them here,
             # and leaving a tenant's item master in /tmp is a disclosure.
@@ -612,6 +619,22 @@ def build_for_company(session: Any, org: str, connection_id: str,
     row.built_at = clock.now()
     session.flush()
     return company_catalog_state(session, org, connection_id)
+
+
+def _index_for_retrieval(out: Path) -> None:
+    """Build the catalogue's nearest-neighbour index, and never fail the build.
+
+    The index is derived from the file just written, and ``retrieval`` rebuilds
+    a missing or stale one on first use — so a failure here costs the first
+    resolution a rebuild, where failing the build would cost the company its
+    catalogue. Logged at warning, and visible on the screen as a catalogue
+    with no index.
+    """
+    try:
+        retrieval.ensure_index(out)
+    except Exception:  # noqa: BLE001 — the catalogue is the deliverable
+        log.warning("retrieval index for %s could not be built; it will be "
+                    "rebuilt on first use", out, exc_info=True)
 
 
 def prepare_source(raw: bytes, filename: str = "", content_type: str = "",

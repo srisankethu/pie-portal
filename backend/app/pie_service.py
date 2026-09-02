@@ -26,6 +26,7 @@ from typing import Any, Dict, List, Optional
 
 from . import cache as cache_module
 from . import catalog as catalog_module
+from . import retrieval
 from .catalog import catalog_stamp
 from .config import settings
 
@@ -155,13 +156,21 @@ class Candidate:
     #: published component of it — see that method. ``None`` where the engine
     #: did not supply it.
     rank_tier: Optional[List[Any]] = None
+    #: Found by nearest-neighbour retrieval over the catalogue's descriptions
+    #: (``app/retrieval``) rather than by the engine's ranked pass. The engine
+    #: still compared it — a record its gates reject is never offered — but
+    #: nothing ranked it, so it carries no ``score``, is always ``POSSIBLE``,
+    #: and is never the supply product. Carried so a screen can say which of
+    #: the two a candidate is, because "the nearest description" and "the
+    #: technical equivalent" must not read alike.
+    retrieved: bool = False
 
     def to_dict(self) -> Dict[str, Any]:
         return {
             "code": self.code, "desc": self.desc, "rel": self.rel,
             "grade": self.grade, "brand": self.brand, "score": self.score,
             "reason": self.reason, "attributes": self.attributes,
-            "unverified": self.unverified,
+            "unverified": self.unverified, "retrieved": self.retrieved,
         }
 
 
@@ -179,6 +188,11 @@ class Resolution:
     semantics: str                  # IDENTITY | REQUIREMENT | MIXED
     notes: List[str] = field(default_factory=list)
     pie_offline: bool = False
+    #: Provenance of the retrieval pass, when one ran: the index's model id,
+    #: how many records it searched and how many it offered. None where
+    #: retrieval did not run — an exact identity, an ambiguity, no index — so
+    #: absence reads as "not searched" and never as "nothing near".
+    retrieval: Optional[Dict[str, Any]] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -188,6 +202,7 @@ class Resolution:
             "candidates": [c.to_dict() for c in self.candidates],
             "outcome": self.outcome, "semantics": self.semantics,
             "notes": self.notes, "pie_offline": self.pie_offline,
+            "retrieval": self.retrieval,
         }
 
 
@@ -296,6 +311,11 @@ class _View:
     version: str
     index: Any
     sources: Any = None
+    #: The nearest-neighbour index, loaded on the first requirement that could
+    #: use it — a sync never needs it, for the same reason ``sources`` is lazy.
+    #: ``None`` is not yet tried; ``False`` is tried and unavailable, remembered
+    #: so a missing index is not re-attempted per line.
+    retriever: Any = None
 
 
 class PieService:
@@ -691,6 +711,8 @@ class PieService:
                 # the index/sources split exists to avoid.
                 view.sources = mod._build_sources(
                     self._make_args("", catalog_path=view.path))
+            if view.retriever is None:
+                view.retriever = self._load_retriever(view)
 
             key = self._cache_key(text, customer_scope, mapping_store, view.version)
             result = self._cached_result(key)
@@ -849,6 +871,13 @@ class PieService:
         # auto-selected.
         if ref_cand is not None:
             cands = cands + [ref_cand]
+        # Nearest-by-description records, appended after everything the engine
+        # ranked. Computed here, before the decision below is taken on
+        # ``cands`` alone, so a retrieved record can never be ``top`` and never
+        # changes whether the ranking discriminated. They are extra options for
+        # the person, compared by the engine but never chosen by it.
+        retrieved, retrieval_info = self._retrieved(
+            view, text, result, exclude={c.code for c in cands})
         if (cands and self._is_discriminating(cands) and outcome != "UNRESOLVED"
                 and not cands[0].unverified
                 # Appending the reference last is not enough on its own: when
@@ -858,8 +887,9 @@ class PieService:
                 and cands[0] is not ref_cand):
             top = cands[0]
             desc = self._requirement_desc(text, top)
-            return Resolution(text, text, desc, top.rel, top.code, cands,
-                              outcome, semantics, notes)
+            return Resolution(text, text, desc, top.rel, top.code,
+                              cands + retrieved, outcome, semantics, notes,
+                              retrieval=retrieval_info)
         if cands:
             # Two different reasons to abstain, and they must not be reported as
             # one: a tie means the ranking could not choose, while a vacuous
@@ -881,12 +911,128 @@ class PieService:
                            brand=c.brand, score=c.score, reason=c.reason,
                            attributes=c.attributes, unverified=c.unverified,
                            rank_tier=c.rank_tier)
-                 for c in cands],
-                outcome, semantics, notes)
+                 for c in cands] + retrieved,
+                outcome, semantics, notes, retrieval=retrieval_info)
+
+        # (3r) The engine ranked nothing, and retrieval found records whose
+        #      descriptions read like this text and that the engine's gates
+        #      did not reject. Shown as options to choose from, under the same
+        #      abstention as a tie: nothing here was matched, so nothing here
+        #      is selected. The note says which of the two happened — a person
+        #      told "not resolved" beside four plausible products would
+        #      otherwise read them as the engine's shortlist.
+        if retrieved:
+            notes.append(
+                "The engine could not rank any catalogue record for this "
+                "request. The options shown are the catalogue descriptions "
+                "nearest to this text, compared by the engine but not matched "
+                "by it — pick the intended product before quoting.")
+            return Resolution(
+                text, text, "Not resolved — choose the intended product",
+                "AMBIGUOUS", None, retrieved, outcome, semantics, notes,
+                retrieval=retrieval_info)
 
         # (4) Nothing resolved -> UNRESOLVED (no PIE match).
         return Resolution(text, text, "No PIE match", "UNRESOLVED", None, [],
-                          outcome, semantics, notes)
+                          outcome, semantics, notes, retrieval=retrieval_info)
+
+    # ── retrieval: nearest descriptions as extra options ─────────────────────
+    @staticmethod
+    def _load_retriever(view: "_View") -> Any:
+        """This company's nearest-neighbour index, or ``False`` if there is none.
+
+        Built here when the catalogue predates the index or a build could not
+        write one, because the index is derived from the catalogue and nothing
+        else — the same reason a missing catalogue is a state and a missing
+        index is not. ``False`` rather than raising: retrieval is beneath the
+        engine's answer, and a line must resolve exactly as before without it.
+        """
+        if settings.RETRIEVAL_TOP_K <= 0:
+            return False
+        try:
+            return retrieval.ensure_index(view.path)
+        except Exception:  # noqa: BLE001 — retrieval must not take the line down
+            log.warning("retrieval index for %s unavailable; resolving without "
+                        "nearest-neighbour candidates", view.path, exc_info=True)
+            return False
+
+    @staticmethod
+    def _compare_geometry(spec: Dict[str, Any],
+                          record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """The engine's own comparison of one record against the decoded
+        request, as the dict ``GeometryComparison.to_dict`` emits — the same
+        function, the same tolerance model and the same gates the ranking
+        uses, so a retrieved record is judged by exactly what a ranked one is.
+        ``None`` when the engine cannot be reached, which the caller treats as
+        "not compared" rather than "compared and fine"."""
+        try:
+            from equivalence.distance import compare_geometry  # noqa: PLC0415
+        except ImportError:
+            return None
+        return compare_geometry(spec, record).to_dict()
+
+    def _retrieved(self, view: Optional["_View"], text: str,
+                   result: Dict[str, Any], exclude: set,
+                   ) -> tuple[List[Candidate], Optional[Dict[str, Any]]]:
+        """Nearest-by-description records the engine's gates accept, as
+        POSSIBLE candidates, plus the provenance of the search.
+
+        Every record is put through :meth:`_compare_geometry` against the spec
+        the engine decoded from this text (``understood_spec.engine_spec``): a
+        gated-out record — a milling insert for a turning request, a reamer
+        for an end mill — is dropped, and one the engine could not compare on
+        any dimension is marked unverified, exactly as a ranked suggestion
+        would be. What the comparison never does is promote: the relationship
+        is POSSIBLE whatever it scored, because similarity of *text* is not
+        evidence of fit and the engine did not rank this record above the
+        ones it did not offer.
+
+        Empty, with no provenance, when there is no index or the search fails:
+        retrieval sits beneath the engine's answer and must never change it.
+        """
+        retriever = getattr(view, "retriever", None) if view is not None else None
+        if not retriever or not text:
+            return [], None
+        try:
+            hits = retriever.search(text, k=settings.RETRIEVAL_TOP_K, exclude=exclude)
+            spec = ((result.get("understood_spec") or {}).get("engine_spec")) or {}
+            out: List[Candidate] = []
+            for hit in hits:
+                rec = self._record(view, hit.record_id)
+                if rec is None:
+                    continue
+                geo = self._compare_geometry(spec, rec)
+                if geo is not None and geo.get("gated_out"):
+                    continue
+                # Read through the same predicate a ranked suggestion is read
+                # through; the comparison dict names its matches differently
+                # from a suggestion, and this is the one place that knows it.
+                unverified = geo is None or self._unverified({
+                    "dimensionally_vacuous": geo.get("dimensionally_vacuous"),
+                    "dimensions_compared": geo.get("dimensions_compared"),
+                    "field_breakdown": geo.get("field_matches"),
+                })
+                reason = (f"Nearest catalogue description to this text "
+                          f"({hit.similarity:.2f} similar), not a ranked match. ")
+                if unverified:
+                    reason += ("No dimension of the request could be compared "
+                               "against this record. ")
+                elif geo is not None and geo.get("explanation"):
+                    reason += f"Engine comparison: {geo['explanation']}. "
+                out.append(Candidate(
+                    code=hit.record_id,
+                    desc=rec.get("description_raw") or rec.get("description")
+                    or hit.record_id,
+                    rel="POSSIBLE", grade=rec.get("grade"), brand=rec.get("brand"),
+                    score=None, reason=reason.strip(),
+                    attributes=_attributes_of(rec), unverified=unverified,
+                    retrieved=True))
+            stamp = retriever.stamp
+            return out, {"model_id": stamp.model_id, "searched": stamp.records,
+                         "offered": len(out)}
+        except Exception:  # noqa: BLE001 — beneath the answer, never above it
+            log.exception("retrieval failed for %r; resolving without it", text)
+            return [], None
 
     def _candidates_from_suggestions(
         self, suggestions: List[Dict[str, Any]], bands: Bands,

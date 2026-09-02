@@ -847,6 +847,18 @@ export interface CompanyCatalogue {
    *  or removed. Still a real catalogue with a real stamp, just not built from
    *  what this company now holds. Out of date, not wrong. */
   stale: boolean;
+  /** The nearest-neighbour index beside the catalogue: which embedding model
+   *  built it, over how many records, and whether it still describes the file
+   *  on disk. Null before the first build, or when the build could not write
+   *  it — the next resolution builds one. The catalogue itself is unaffected
+   *  either way; retrieval only ever adds options beneath the engine's own. */
+  retrieval: {
+    model_id: string;
+    dim: number;
+    records: number;
+    current: boolean;
+    min_similarity: number;
+  } | null;
 }
 
 export interface CompanyCatalogues {

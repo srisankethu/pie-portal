@@ -185,6 +185,11 @@ def _product(cand: Candidate, *, with_provenance: bool,
         # the half that explains it.
         "comparison_complete": not cand.unverified,
         "explanation": cand.reason or None,
+        # How this record came to be offered. ``ranking`` is the engine's own
+        # scored pass over the catalogue; ``retrieval`` is nearest-by-
+        # description, compared by the engine afterwards but never ranked by
+        # it — such a record is always POSSIBLE and is never the answer.
+        "found_by": "retrieval" if cand.retrieved else "ranking",
     }
     if record is not None:
         out["record_confidence"] = record.get("row_confidence")
@@ -231,7 +236,8 @@ def _document(text: str, *, status: str, resolution: Optional[dict],
               semantics: str, outcome: str, notes: list[str],
               identity_proposal: Optional[dict] = None,
               commercial: Optional[dict] = None,
-              connection_id: Optional[str] = None) -> dict:
+              connection_id: Optional[str] = None,
+              retrieval: Optional[dict] = None) -> dict:
     """The one shape every answer takes, resolved or not.
 
     Same keys in every case, including the abstentions: a caller should be able
@@ -257,6 +263,12 @@ def _document(text: str, *, status: str, resolution: Optional[dict],
             "company": connection_id,
             "input_semantics": semantics,
             "outcome": outcome,
+            # The nearest-neighbour pass, when one ran: which model searched
+            # how many records and offered how many. Null where it did not run
+            # — an exact identity, an abstention before the engine, no index —
+            # which reads as "not searched", never as "nothing near". An
+            # alternative it offered says so itself, in ``found_by``.
+            "retrieval": retrieval,
         },
         "notes": notes,
     }
@@ -525,6 +537,7 @@ def resolve(session: Session, principal: Principal, *, text: str,
                 "The resolution engine failed on this input. This is not a "
                 "statement about the product.", []),
             semantics=res.semantics, outcome=res.outcome, notes=res.notes,
+            retrieval=res.retrieval,
             connection_id=company)
 
     alternatives = [_product(c, with_provenance=False)
@@ -554,6 +567,7 @@ def resolve(session: Session, principal: Principal, *, text: str,
             text, status="RESOLVED", resolution=resolution,
             alternatives=alternatives, abstention=None,
             semantics=res.semantics, outcome=res.outcome, notes=res.notes,
+            retrieval=res.retrieval,
             connection_id=company,
             identity_proposal=_identity_proposal(res), commercial=commercial)
 
@@ -575,6 +589,7 @@ def resolve(session: Session, principal: Principal, *, text: str,
                 "The resolution engine returned an answer this server could "
                 "not describe. This is not a statement about the product.", []),
             semantics=res.semantics, outcome=res.outcome, notes=res.notes,
+            retrieval=res.retrieval,
             connection_id=company)
 
     # No ``supplyCode``, so the engine itself abstained. Every candidate is an
@@ -600,6 +615,7 @@ def resolve(session: Session, principal: Principal, *, text: str,
                 "quote alone.",
                 list(res.notes)),
             semantics=res.semantics, outcome=res.outcome, notes=res.notes,
+            retrieval=res.retrieval,
             connection_id=company,
             identity_proposal=proposal)
 
@@ -613,6 +629,7 @@ def resolve(session: Session, principal: Principal, *, text: str,
                 "choose between them. They are returned ranked; pick one.",
                 list(res.notes)),
             semantics=res.semantics, outcome=res.outcome, notes=res.notes,
+            retrieval=res.retrieval,
             connection_id=company)
 
     return _document(
@@ -622,4 +639,5 @@ def resolve(session: Session, principal: Principal, *, text: str,
             "The catalogue was searched and holds nothing matching this text.",
             list(res.notes)),
         semantics=res.semantics, outcome=res.outcome, notes=res.notes,
+            retrieval=res.retrieval,
             connection_id=company)

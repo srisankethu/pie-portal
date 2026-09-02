@@ -509,3 +509,92 @@ default §1 forbids.
   the item master is a question `item_master` cannot answer, and concatenating a
   "Discontinued" tab into the catalogue is worse than reading one sheet. It is
   logged, not surfaced. A sheet picker is the obvious fix if a real file needs it.
+
+## 12. Retrieval: the nearest descriptions as extra options (built)
+
+§10 answered "the pack does not read my file". This answers the next thing a
+person says: "the engine could not read my *line*". The rule engine resolves a
+requirement by decoding the text to a spec and scoring every record against
+it, which is exact and explainable and blind to anything the pack has no
+grammar for. Two lines from the shipped corpus show the two ways that bites:
+
+- `VSM11 milling insert r1.2` decodes to *milling insert, R = 1.2*. Every
+  R = 1.2 milling insert in the catalogue scores 1.0, the ranking ties dozens,
+  and `TOP_N` cuts the list at six KSOM inserts. The three records that
+  actually say `VSM11` are never shown.
+- `12mm carbide drill through coolant for stainless` decodes to *drill,
+  12 mm*. The engine ranks the 12 mm drills correctly, but the four words that
+  said which drill — `through coolant`, `stainless` — are not in the spec and
+  cannot move the ranking.
+
+`app/retrieval` asks a different question of the same catalogue: *which
+records' descriptions read most like this text?* It is a **candidate generator
+and nothing more**, and the lines that keep it one are the whole design:
+
+1. **The engine compares every retrieved record.** Each goes through
+   `equivalence.distance.compare_geometry` against the spec the engine decoded
+   from the text — the same function, gates and tolerance model the ranking
+   uses. A record the gates reject (a reamer whose description happens to
+   contain the insert code) is dropped. One the engine could not compare on any
+   dimension is `unverified`, exactly as a ranked suggestion would be.
+2. **Similarity never becomes a relationship.** A retrieved record is
+   `POSSIBLE` whatever it scored, carries no `score`, and is flagged
+   `retrieved`. §1's "an equivalence score is policy, never an identity" is
+   about the engine's own geometry score; a text-similarity score is further
+   from an identity than that, and it is never persisted as anything.
+3. **Never the answer.** Retrieved records are appended after the engine's
+   ranked suggestions, and the auto-selection decision in `pie_service._map`
+   is taken on the ranked list *before* they are appended. When the engine
+   ranked nothing and retrieval found something, the line is `AMBIGUOUS` with a
+   note saying the options are nearest descriptions, not a shortlist — the
+   same abstention a tie gets, with its own sentence so the reader knows which
+   of the two happened.
+4. **Deterministic, stamped, and offline.** The embedding is a hashed
+   character-n-gram model (`retrieval/embedder.py`): no learned vocabulary, no
+   network, no dependency, `zlib.crc32` rather than Python's per-process salted
+   `hash`. The index (`retrieval.jsonl`, beside `products.jsonl`) is stamped
+   with the model id, the dimension and the SHA-256 of the catalogue it was
+   built from; a stamp that does not describe the file or the model is
+   rebuilt, and an unreadable file is rebuilt rather than trusted. The same
+   catalogue through the same model produces the same bytes and the same
+   neighbours, in this process or the next — `test_retrieval` pins it, which
+   is what lets a retrieved option be explained months later the way a ranked
+   one already can.
+5. **A floor, chosen against the corpus.** Every text has a least-unlike
+   record. Below `MIN_SIMILARITY` (0.2) nothing is offered: on the shipped
+   corpus a paraphrase of a real description sits near 0.7, the drill request
+   above near 0.28, and `6205 2RS C3 bearing` at 0.13. The bearing and the
+   drill are both pinned, so a change to the model or the floor that lets one
+   through or shuts the other out fails a test rather than a quote.
+
+The index is built at the end of `catalog.build_for_company` and never fails a
+build — the catalogue is the deliverable and the index is derived from it — so
+a build that could not write one, or a catalogue built before this existed,
+gets its index on the first requirement line instead. On the shipped 6,717-row
+corpus: 2.7 s to build, 11 MB on disk, 0.75 s to load, single-digit
+milliseconds a search. The screen's fact panel shows the model id and record
+count as provenance, and says when the index is behind the catalogue.
+
+Off switch: `PIE_RETRIEVAL_TOP_K=0`. The engine's own answer is byte-identical
+either way; retrieval only ever adds options beneath it.
+
+**Layering.** `retrieval/` is in `test_layer_boundaries.DETERMINISTIC`, and
+that is not a formality: `catalog.py` and `pie_service.py` import it, every
+deterministic package imports those, and the closure test walks every import.
+A retrieval layer that reached `ai/` — a hosted embedding behind a BYOK key —
+would carry the whole of `commercial/` with it. That is why the first embedder
+is local and why a neural one is the next slice rather than this one: it plugs
+in behind the same `features` protocol, injected from a layer that may reach
+interpretation, with its own model id on the stamp so two indexes are never
+read as one.
+
+**What "learning" means here, and what it does not.** The catalogue is
+nomenclature; the price columns are dropped at the door (§10) and nothing in
+this package sees them. The index learns nothing from use in this slice. The
+hook for that is already in the schema: a confirmed customer-code mapping
+(`identity.confirm_proposed_identity`, §1's gate) is a person asserting "their
+phrase means this product", and the natural next step is to index that phrase
+as an alias of the record — so the next time the customer writes it, retrieval
+finds the product by the words they use. That is a person's confirmation
+entering an index, not a model inferring an identity, and it keeps the gate
+where it is.

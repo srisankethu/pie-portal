@@ -184,6 +184,15 @@ export function SupplyDrawer({
                       same tone table. Two spellings of one term is how a line
                       reads AMBIGUOUS in amber on the grid and in grey here. */}
                   <StatusChip label={c.rel} tone={relTone(c.rel)} dense />
+                  {/* A retrieved record sits beside ranked ones and must not
+                      read as one: "nearest description" is a statement about
+                      text, and the chip says so where the score would be. */}
+                  {c.retrieved && (
+                    <StatusChip
+                      label="nearest by description" tone="neutral" dense
+                      tip="Found because its catalogue description reads like this line, then compared by the engine. Not ranked, not a match — an option to consider."
+                    />
+                  )}
                   {c.score !== null && (
                     <span className="text-muted" style={{ fontSize: 11 }}>
                       match {(c.score * 100).toFixed(0)}%

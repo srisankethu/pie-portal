@@ -38,9 +38,11 @@ from .embedder import HashedNgramEmbedder
 
 log = logging.getLogger("pie_portal.retrieval")
 
-#: The file format. Bump when the layout below changes; an index in an older
-#: format is rebuilt, never misread.
-FORMAT = 1
+#: The file format. Bump when the layout below changes *or* when the text a
+#: record is indexed by changes (``TEXT_FIELDS``): an index built over less
+#: text still describes the same catalogue and model, so the stamp alone would
+#: read it as current. An index in an older format is rebuilt, never misread.
+FORMAT = 2
 
 #: Below this cosine similarity a neighbour is not offered at all. The floor is
 #: what keeps "6205 2RS C3 bearing" from surfacing a carbide insert as its
@@ -60,10 +62,10 @@ MIN_SIMILARITY = 0.2
 #: decode rather than the product.
 TEXT_FIELDS = (
     "record_id", "description_raw", "description", "grade", "brand", "series",
-    "product_family", "product_subfamily", "iso_shape", "coating",
-    "coating_process", "chipbreaker", "cutting_dia_mm", "corner_radius_mm",
-    "edge_length_mm", "thickness_mm", "flute_count", "shank_dia_mm", "loc_mm",
-    "oal_mm",
+    "product_family", "product_subfamily", "iso_shape", "applications",
+    "coating", "coating_process", "chipbreaker", "cutting_dia_mm",
+    "corner_radius_mm", "edge_length_mm", "thickness_mm", "flute_count",
+    "shank_dia_mm", "loc_mm", "oal_mm",
 )
 
 
@@ -73,9 +75,11 @@ def document_text(record: Mapping[str, Any]) -> str:
     seen: set = set()
     for field_name in TEXT_FIELDS:
         value = record.get(field_name)
-        if value in (None, ""):
+        if value in (None, "", [], {}):
             continue
-        text = str(value)
+        # ``applications`` is a list of ISO groups (``["P", "M"]``); one token
+        # each, so a learned "SS means M" can expand a query to reach it.
+        text = " ".join(str(v) for v in value) if isinstance(value, (list, tuple)) else str(value)
         # ``description`` duplicates ``description_raw`` on most records;
         # indexing it twice would double-weight it against the decoded slots.
         if text in seen:

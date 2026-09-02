@@ -562,8 +562,11 @@ def test_retrieved_records_are_appended_after_the_ranking_and_never_selected():
     assert all("not a ranked match" in c.reason for c in retrieved)
     assert not any(c.unverified for c in retrieved), (
         "the engine compared three dimensions; the record was verified")
-    assert res.retrieval == {"model_id": "hashed-ngram/1", "searched": 4, "offered": 2,
-                             "aliases_searched": 0, "aliases_offered": 0}
+    assert {k: res.retrieval[k] for k in ("model_id", "searched", "offered",
+                                          "aliases_searched", "aliases_offered")} == {
+        "model_id": "hashed-ngram/1", "searched": 4, "offered": 2,
+        "aliases_searched": 0, "aliases_offered": 0}
+    assert res.retrieval["vocabulary"] == [] and res.retrieval["vocabulary_pairs"] == 0
 
 
 def test_a_record_the_engine_gates_out_is_never_offered_by_retrieval():
@@ -887,3 +890,68 @@ def test_a_past_choice_is_offered_as_a_past_choice_not_a_confirmation():
     assert "quoted this product before" in first.reason
     assert "confirmed" not in first.reason
     assert res.retrieval["aliases_offered"] == 1
+
+
+# ── the learned vocabulary, applied ──────────────────────────────────────────
+#
+# Five past quotes said "BOHRER" means a solid-carbide drill at this tenant.
+# The engine has no word for it, so the sixth line decodes to nothing; the
+# vocabulary widens the description search so the drills come up, says why
+# beside each, and reports the evidence on the line. It never scores and never
+# selects: the line abstains exactly as it did, with better options.
+
+def _bohrer_store(n=3, scope=PITTI):
+    return _Store([(scope, f"bohrer {8 + i}mm", "4149315", "phrase") for i in range(n)])
+
+
+def test_a_learned_word_widens_the_search_and_explains_itself():
+    from app.pie_service import Bands
+
+    res = pie_service._map(
+        "bohrer 12mm", _requirement([], {}, outcome="UNRESOLVED"),
+        Bands.default(), view=_view_with([_DRILL, _TURNING, _TURNING_2, _REAMER]),
+        customer_scope=OTHER, mapping_store=_bohrer_store())
+
+    assert res.supplyCode is None and res.rel == "AMBIGUOUS"
+    offered = [c for c in res.candidates if c.retrieved and c.alias is None]
+    assert offered and offered[0].code == "4149315"
+    assert "usually means here" in offered[0].reason
+    assert "product_family=solid_carbide_drill" in offered[0].reason
+    readings = {(h["token"], h["field"], h["value"], h["scope"])
+                for h in res.retrieval["vocabulary"]}
+    assert ("BOHRER", "product_family", "solid_carbide_drill", "tenant") in readings
+    assert res.retrieval["vocabulary_pairs"] == 3
+
+
+def test_too_few_choices_teach_nothing_and_say_so():
+    from app.pie_service import Bands
+
+    res = pie_service._map(
+        "bohrer 12mm", _requirement([], {}, outcome="UNRESOLVED"),
+        Bands.default(), view=_view_with([_DRILL, _TURNING]),
+        customer_scope=OTHER, mapping_store=_bohrer_store(n=2))
+
+    assert res.retrieval["vocabulary"] == []
+    assert res.retrieval["vocabulary_pairs"] == 2
+
+
+def test_the_vocabulary_is_memoised_per_store_and_catalogue(monkeypatch):
+    from app import retrieval
+    from app.pie_service import Bands
+
+    builds = []
+    real = retrieval.Vocabulary
+
+    def counting(pairs, *a, **k):
+        builds.append(1)
+        return real(pairs, *a, **k)
+
+    monkeypatch.setattr(retrieval, "Vocabulary", counting)
+    pie_service._vocabularies.clear()
+    store = _bohrer_store()
+    view = _view_with([_DRILL, _TURNING])
+    for _ in range(3):
+        pie_service._map("bohrer 12mm", _requirement([], {}, outcome="UNRESOLVED"),
+                         Bands.default(), view=view, customer_scope=OTHER,
+                         mapping_store=store)
+    assert len(builds) == 1

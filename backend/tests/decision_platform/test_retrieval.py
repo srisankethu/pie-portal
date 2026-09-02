@@ -263,3 +263,120 @@ def test_a_phrase_alias_keeps_its_kind_and_a_code_keeps_the_default():
     assert hit.record_id == "4149315" and hit.kind == "phrase"
     assert hit.alias == "12mm drill for SS"
     assert index.search("c", "pitti 7781")[0].kind == "code"
+
+
+# ── the learned vocabulary ───────────────────────────────────────────────────
+from app.retrieval import Vocabulary  # noqa: E402
+from app.retrieval.vocabulary import MIN_SHARE, MIN_SUPPORT, words  # noqa: E402
+
+DRILL = {"record_id": "4149315", "product_family": "solid_carbide_drill",
+         "applications": ["P", "M"], "coating": "TiAlN"}
+DRILL_2 = {"record_id": "4151229", "product_family": "solid_carbide_drill",
+           "applications": ["M"]}
+INSERT = {"record_id": "2001174", "product_family": "turning_insert",
+          "applications": ["P"], "iso_shape": "C"}
+
+
+def _pairs(n, scope, text, record):
+    return [(scope, text, record) for _ in range(n)]
+
+
+def test_words_keep_what_can_carry_meaning():
+    assert words("12mm BOHRER for SS, 10 pcs urgent") == ["BOHRER", "SS"]
+    assert words("CNMG 120408 KCP25") == ["CNMG", "KCP"]
+    assert words("") == []
+
+
+def test_a_word_means_nothing_until_enough_choices_agree():
+    few = Vocabulary(_pairs(MIN_SUPPORT - 1, "cust-a", "bohrer 12mm", DRILL))
+    assert few.hints("bohrer 10mm") == []
+
+    enough = Vocabulary(_pairs(MIN_SUPPORT, "cust-a", "bohrer 12mm", DRILL))
+    hints = enough.hints("bohrer 10mm")
+    assert [(h.token, h.field, h.value) for h in hints] == [
+        ("BOHRER", "applications", "M"), ("BOHRER", "applications", "P"),
+        ("BOHRER", "coating", "TiAlN"),
+        ("BOHRER", "product_family", "solid_carbide_drill")]
+    assert all(h.support == MIN_SUPPORT and h.agreeing == MIN_SUPPORT for h in hints)
+
+
+def test_a_word_used_for_several_things_is_not_read_as_any_of_them():
+    mixed = Vocabulary(_pairs(3, "c", "tool for SS", DRILL) + _pairs(3, "c", "tool for SS", INSERT))
+    hints = {(h.token, h.field, h.value) for h in mixed.hints("tool")}
+    # "TOOL" splits 3/3 between drill and insert — below MIN_SHARE either way.
+    assert not any(h[0] == "TOOL" and h[1] == "product_family" for h in hints)
+    # "SS" went with M-group in only half the pairs; not read either.
+    assert not any(h[0] == "SS" and h[2] == "M" for h in hints)
+    assert 3 / 6 < MIN_SHARE
+
+
+def test_a_customers_own_usage_outranks_the_tenants():
+    """At the tenant "SS" is read as M-group; one customer uses it for
+    something else often enough that their reading is their own."""
+    tenant = (_pairs(6, "cust-a", "drill for SS", DRILL)
+              + _pairs(3, "cust-b", "insert for SS", INSERT))
+    vocab = Vocabulary(tenant)
+
+    for_a = {(h.field, h.value, h.scope) for h in vocab.hints("SS 8mm", "cust-a")}
+    assert ("applications", "M", "customer") in for_a
+    for_b = {(h.field, h.value, h.scope) for h in vocab.hints("SS 8mm", "cust-b")}
+    assert ("product_family", "turning_insert", "customer") in for_b
+    assert not any(v == "M" for _, v, _ in for_b)
+    # An unlinked line, or a customer with no history, gets the tenant's reading.
+    for_nobody = {(h.field, h.value, h.scope) for h in vocab.hints("SS 8mm", None)}
+    assert ("applications", "M", "tenant") in for_nobody
+    for_new = {(h.field, h.value, h.scope) for h in vocab.hints("SS 8mm", "cust-z")}
+    assert ("applications", "M", "tenant") in for_new
+
+
+def test_hints_are_the_same_whatever_order_the_pairs_arrive_in():
+    pairs = (_pairs(4, "a", "bohrer 12", DRILL) + _pairs(2, "b", "bohrer 8", DRILL_2)
+             + _pairs(3, "a", "insert", INSERT))
+    assert Vocabulary(pairs).hints("bohrer", "a") == Vocabulary(list(reversed(pairs))).hints("bohrer", "a")
+
+
+def test_expansion_reaches_the_records_that_carry_the_attribute():
+    """The point of a hint: "BOHRER" is no catalogue word, so by itself it
+    retrieves nothing; expanded with what it was learned to mean, the drills
+    come up."""
+    catalogue = RetrievalIndex.build([
+        {**DRILL, "description_raw": "SC DRILL 12mm/.4724/ 5xD COOLANT"},
+        {**INSERT, "description_raw": "CNMG 120408-49 - TN2000"}])
+    vocab = Vocabulary(_pairs(3, "c", "bohrer 12mm", DRILL))
+    hints = vocab.hints("bohrer 12mm", "c")
+
+    bare = catalogue.search("bohrer 12mm")
+    widened = catalogue.search(" ".join(["bohrer 12mm", *Vocabulary.expansion(hints)]))
+    assert [h.record_id for h in widened][:1] == ["4149315"]
+    assert not bare or widened[0].similarity > bare[0].similarity
+
+
+def test_agreement_is_read_off_the_records_own_attributes():
+    vocab = Vocabulary(_pairs(3, "c", "bohrer", DRILL))
+    hints = vocab.hints("bohrer", "c")
+    assert {h.field for h in Vocabulary.agreeing(hints, DRILL_2)} == {"applications", "product_family"}
+    # The drill was rated for P as well, so a P-group insert honestly agrees on
+    # that one fact and nothing else — agreement is per attribute, not "same
+    # kind of tool".
+    assert {(h.field, h.value) for h in Vocabulary.agreeing(hints, INSERT)} == {
+        ("applications", "P")}
+
+
+def test_a_hint_carries_its_evidence_on_the_wire():
+    vocab = Vocabulary(_pairs(4, "c", "bohrer", DRILL) + _pairs(1, "c", "bohrer", INSERT))
+    (hint,) = [h for h in vocab.hints("bohrer", "c") if h.field == "product_family"]
+    assert hint.to_dict() == {"token": "BOHRER", "field": "product_family",
+                              "value": "solid_carbide_drill", "support": 5,
+                              "agreeing": 4, "share": 0.8, "scope": "customer"}
+    assert "4 of 5 quotes" in hint.sentence()
+
+
+def test_an_index_in_an_older_format_is_rebuilt(tmp_path):
+    path = _catalogue(tmp_path)
+    ensure_index(path)
+    index_file = index_path_for(path)
+    lines = index_file.read_text(encoding="utf-8").splitlines(keepends=True)
+    stamp = json.loads(lines[0])
+    stamp["format"] = 1
+    index_file.write_text(json.dumps(stamp) + "\n" + "".join(lines[1:]), encoding="utf-8")
+    assert ensure_index(path).stamp.format == retrieval.index.FORMAT

@@ -50,7 +50,7 @@ from sqlalchemy.orm import Session
 
 from .. import approvals
 from ..authz import Principal, can_view_customer, current_principal
-from ..store import store
+from .. import quote_workspace
 from ..commercial.policy import load_for_org
 from ..commercial.quote_service import (
     AmbiguousQuoteDocument,
@@ -234,9 +234,11 @@ def _may_record_erp_quote(session: Session, principal: Principal,
 #: The one answer a salesperson gets for every ``quote_id`` that is not one of
 #: theirs: a quote priced on another desk, a quote nobody attributed, and an id
 #: that names nothing at all. Identical for the same reason
-#: ``_NO_SUCH_ERP_QUOTE`` is — and here the ids are *generated*, not typed:
-#: ``store`` mints them ``q{run}-{counter}``, so a refusal that told a live
-#: quote from an empty id would enumerate the run with two nested loops.
+#: ``_NO_SUCH_ERP_QUOTE`` is — and here the ids are *generated*, not typed.
+#: They were once ``q{run}-{counter}``, so a refusal that told a live quote
+#: from an empty id would have enumerated the run with two nested loops; they
+#: are UUIDs now, and the refusal stays identical because a rule that depends
+#: on the id being hard to guess is a rule waiting for the next id scheme.
 _NO_SUCH_PLATFORM_QUOTE = (
     "No quote on your list answers to that id. A quote priced for an account "
     "you do not hold is recorded by whoever holds it.")
@@ -322,14 +324,14 @@ def _holds_platform_quote(session: Session, principal: Principal,
     can see is refused to them.
 
     Two candidates were considered and are not used. ``QuoteDraft.salesperson_id``
-    is the obvious one and it is **dead**: nothing in ``app/`` writes that table
-    — ``trust/erasure`` is its only reference — so it attributes no quote in
-    practice and reading it would be a scope rule that is empty every time.
-    ``store.Quote.customerId`` is live but cannot be evidence: the store is
-    per-process and its ids carry a run marker, so after a restart every earlier
-    ``quote_id`` is simply absent from it, and absence there is not evidence of
-    anything (§1). It is also ``Optional`` — a quote raised against a typed name
-    holds none.
+    is the obvious one, and it now records who *started* a draft — but the
+    workspace is shared by design (``quote_workspace``): a colleague may open,
+    price and send a draft somebody else started, and the person who sent it is
+    the one this scope should follow, which is what clause 2 already reads.
+    ``store.Quote.customerId`` is live and persisted, and is still not read
+    here: it is ``Optional`` — a quote starts with no customer and may be sent
+    against a typed name — so a rule on it would be empty for exactly the
+    walk-in case clause 2 exists for.
 
     **When none of them attributes the quote, the caller says what that means**
     — and every caller but one says False. The benign default is to let the
@@ -433,14 +435,15 @@ def _validate(body: AssessRequest | SnapshotRequest, *, what: str) -> None:
     _reject_price_sweep(list(body.lines))
 
 
-def _inputs(body: AssessRequest, org: str, *, holds_quote: bool) -> list[QuoteLineInput]:
+def _inputs(session: Session, body: AssessRequest, org: str, *,
+            holds_quote: bool) -> list[QuoteLineInput]:
     """The assessment's line inputs, including the server-held cost per line.
 
     ``holds_quote`` decides whether the named quote's costs are read at all, and
     it is a required keyword because getting it wrong is silent. ``line_cost``
     is scoped to the *organization* and says so — it refuses another tenant's
-    ``quote_id`` — but the store is one process-wide dict with enumerable ids
-    (``store.py`` ``Quote.organizationId``), so inside one book a salesperson
+    ``quote_id`` — but the workspace is shared across the organization
+    (``quote_workspace``), so inside one book a salesperson
     could name any desk's quote and borrow the cost sitting on its line.
 
     That is not the accepted residual §1 licenses. The accepted one is that a
@@ -470,7 +473,8 @@ def _inputs(body: AssessRequest, org: str, *, holds_quote: bool) -> list[QuoteLi
                        # one there is no server-held line to read a cost from
                        # and the assessment falls back to bills alone, which is
                        # exactly what a caller who does not hold it now gets.
-                       item_master_cost=(store.line_cost(body.quote_id, ln.line_id, org)
+                       item_master_cost=(quote_workspace.line_cost(
+                                             session, org, body.quote_id, ln.line_id)
                                          if holds_quote else None))
         for ln in body.lines
     ]
@@ -497,7 +501,7 @@ def assess(
         session, org,
         customer_ref=_visible_customer_ref(session, principal,
                                            body.customer.strip()),
-        lines=_inputs(body, org, holds_quote=holds_quote), as_of=body.as_of)
+        lines=_inputs(session, body, org, holds_quote=holds_quote), as_of=body.as_of)
     refs = {ln.line_id: ln.product for ln in body.lines}
 
     # Withheld unless this reader holds the quote. ``_visible_customer_ref``
@@ -578,17 +582,17 @@ def snapshot(
 
     org = principal.organization_id
     customer_ref = _visible_customer_ref(session, principal, body.customer.strip())
-    quote = store.get(body.quote_id.strip())
+    quote = quote_workspace.load(session, org, body.quote_id.strip())
     result, rows = assess_and_record(
         session, org, quote_id=body.quote_id.strip(), customer_ref=customer_ref,
         # The company whose catalogue resolved these lines, read off the quote
-        # this assessment is about. None where the quote is not in this
-        # process's store — an honest "not recorded" rather than a guess.
+        # this assessment is about. None where the quote is not in the
+        # workspace — an honest "not recorded" rather than a guess.
         connection_id=quote.connectionId if quote is not None else None,
         lines=[QuoteLineInput(line_id=ln.line_id, product_ref=ln.product, qty=ln.qty,
                               proposed_price=ln.proposed_price, family=ln.family,
-                              item_master_cost=store.line_cost(body.quote_id,
-                                                               ln.line_id, org))
+                              item_master_cost=quote_workspace.line_cost(
+                                  session, org, body.quote_id, ln.line_id))
                for ln in body.lines],
         user_id=principal.user_id,
         overrides={ln.line_id: (ln.override_reason, ln.override_reason_code)

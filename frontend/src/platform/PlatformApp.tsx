@@ -70,6 +70,7 @@ import "./viz/viz.css";
  * and `Patterns` are each a set of views somebody moves between.
  */
 const QuoteBuilder = lazy(() => import("../QuoteBuilder"));
+const QuoteWorkspace = lazy(() => import("../QuoteWorkspace"));
 const ApprovalsScreen = lazy(() =>
   import("./AdminScreens").then((m) => ({ default: m.ApprovalsScreen })));
 const SettingsScreen = lazy(() =>
@@ -1248,12 +1249,16 @@ export default function PlatformApp() {
             <Route path={PATH.retrospective} element={<RetrospectiveScreen session={session} />} />
 
             {/* ── QUOTES ──
-                The Quote Builder itself, not a door in front of it. It used to
-                be a second application behind a button here: clicking through
-                replaced the whole shell, asked for a second sign-in, and then
-                showed a different name in a different brand bar. It is a screen
-                like any other now, on this session. */}
-            <Route path={PATH.quotes} element={<QuoteBuilder session={session} />} />
+                The workspace — every draft in the organization — and, under
+                an id, the Quote Builder open on one of them. The builder used
+                to be a second application behind a button here: clicking
+                through replaced the whole shell, asked for a second sign-in,
+                and showed a different name in a different brand bar. It is a
+                screen like any other now, on this session, and it opens on a
+                draft the whole desk can see rather than on the one copy this
+                browser kept. */}
+            <Route path={PATH.quotes} element={<QuoteWorkspace session={session} />} />
+            <Route path={PATTERN.quote} element={<QuoteBuilder session={session} />} />
 
             {/* ── DATA & CONNECTION ── */}
             <Route path={PATH.data} element={<DataScreen session={session} onSynced={load} />} />

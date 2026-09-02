@@ -63,7 +63,8 @@ SALES_MANAGER + OWNER.
 | `#/account/:id` | One account: timeline, commercial (mgmt), open decisions | all | How this relationship is doing |
 | `#/account/:id/item/:itemId` | Customer × item drill-down | mgmt (server 403s SALES) | One relationship's economics |
 | `#/accounts` | redirect → `#/customers` | all | Saved-link redirect |
-| `#/quotes` | **Quote Builder** | all | Build, price, and send a quote |
+| `#/quotes` | **Quotes** (the workspace) | all | Every draft in the organization; start one, send a ready one |
+| `#/quotes/:id` | **Quote Builder** | all | Build, price, and send one quote |
 | `#/weather` | Commercial weather | mgmt | Which parts of the business need attention |
 | `#/opportunities` | Opportunity radar | mgmt | Where money is on the table |
 | `#/lost-revenue` | Lost revenue by cause | mgmt | What stopped, and why |
@@ -736,40 +737,59 @@ distinct from zero** everywhere ("none recorded" ≠ ₹0).
 
 The Quote Builder is the negotiation desk: paste an RFQ, resolve every line to
 a quote-ready product, price it against the customer's own history, send the
-estimate into their books, and record what happened. State is split three
-ways, and it matters: the quote and its lines live in **process memory**
-(server restart empties them; line mutations then 404), everything durable —
-snapshots, sent documents, outcomes, confirmed identity mappings, approval
-requests — is database rows, and the browser keeps a **localStorage draft**
-that survives navigation and restart (a sent quote never looks unsent because
-the sent state is re-joined from persisted rows).
+estimate into their books, and record what happened. Every quote is a row in
+`quote_drafts` (`app/quote_workspace.py`): the lines go back to the row on
+every mutation before the response is answered, so the same draft is open on
+whichever desk opens it, a server restart forgets nothing, and there is no
+Save button and no copy in the browser. Everything else durable — snapshots,
+sent documents, outcomes, confirmed identity mappings, approval requests —
+is its own row keyed on the quote id, and the sent state is re-joined from
+those rows on every read (a sent quote never looks unsent).
+
+Quotes are numbered `QB-0001`, `QB-0002`, … per organization, from a
+sequence the row carries and a unique constraint guards; a removed draft
+does not give its number back.
 
 Quote lifecycle: `DRAFT → SENT → WON | LOST` — DRAFT may also go straight to
 LOST; WON and LOST are terminal ("a margin analysis has already counted it").
 
-### 7.1 Open the desk and start a quote
+### 7.1 The workspace, and starting a quote
 
 **Path.**
-1. `#/quotes` first tries to resume the saved draft ("Resumed your last
-   draft"). Otherwise the **customer picker** opens automatically: server-side
-   debounced search of the directory (`GET /api/v1/accounts?q=…`).
-2. Picking an account → `POST /api/v1/quotes` creates the quote carrying both
-   name and customer id (identically-named customers in different books stay
-   apart). Header shows quote number, customer (a button — clicking it
-   reopens the picker as "Change customer"), draft-saved chip, Save draft,
-   New quote, Paste RFQ.
+1. `#/quotes` is the workspace: `GET /api/v1/quotes` lists every draft in
+   the organization — number, customer (or "No customer yet"), line count,
+   selling total, who started it and who last changed it — with a status
+   chip computed on the server by the same functions the send runs
+   (`quote_workspace.readiness`): Empty · Needs attention · Needs a customer ·
+   Needs approval · Awaiting approval · Ready to send · Sent. Filters group
+   those into "Needs work", "Awaiting approval", "Ready to send", "Sent".
+2. "New quote" → `POST /api/v1/quotes` with **no customer** creates the draft
+   (the company is decided here, once; an organization reading several
+   books is asked which) and opens it at `#/quotes/:id`. The header shows the
+   number, a **Choose customer** control while none is chosen, and a
+   "Saved hh:mm" chip that says when the server last wrote the row.
+3. The customer is chosen when the desk knows — before or after the RFQ is
+   pasted — through the **customer picker** (server-side debounced search of
+   the directory, `GET /api/v1/accounts?q=…`) → `PUT /api/v1/quotes/{id}/customer`
+   carrying both name and customer id (identically-named customers in
+   different books stay apart). Lines already on the quote are resolved again
+   under that customer's identity scope; a price the desk typed is kept where
+   the same product came back, and the response's `note` says how many.
+   The same control changes the customer later, in place.
 
-**Branches.** Picker cancelled → "No quote open" empty state with a reopen
-button (an empty directory is never a locked screen) · empty directory → a
-second probe distinguishes *nothing synced* (managers get a "Data &
-connection" button) from *everything inactive*; a salesperson's empty reads
-"No accounts are assigned to you yet" · accounts fetch fails → error state
-with retry · changing customer on a quote with lines → warned: a **new** quote
-starts and the current one is not kept (each line remembers the identity scope
-it resolved under) · "New quote" → draft cleared, picker reopens · any guarded
-action failing → the server's sentence as a snackbar.
-**Ends.** Quote open with the empty grid · draft resumed · abandoned at the
-picker · create failed.
+**Branches.** A draft "Ready to send" can be sent from the list ("Send")
+without opening it — the same endpoint as the builder's button · "Remove"
+on an unsent draft asks first; a sent quote refuses removal (409, it is a
+record) · empty directory in the picker → a second probe distinguishes
+*nothing synced* (managers get a "Data & connection" button) from
+*everything inactive*; a salesperson's empty reads "No accounts are assigned
+to you yet" · accounts fetch fails → error state with retry · a quote with
+lines and no customer shows an info alert beside the grid, and the send
+refuses with "Choose a customer before sending" · a draft removed underneath
+an open builder → "This quote could not be opened", back to the list · any
+guarded action failing → the server's sentence as a snackbar.
+**Ends.** Draft open with the empty grid · customer chosen · sent from the
+list · removed.
 
 ### 7.2 Paste an RFQ: intake, resolution, enrichment
 
@@ -1006,11 +1026,14 @@ None of these change price or product.
 
 ### 7.11 Draft persistence
 
-Every quote change writes the whole quote to localStorage and updates the
-"Saved HH:MM" chip; the next visit restores it instead of opening the picker.
-The draft is abandoned only by "New quote" or changing customer. After a
-backend restart the draft still renders but line mutations 404 (the in-memory
-quote is gone); sent state and outcome survive from persisted rows.
+Every quote change is written to the draft's row (`quote_drafts`) before the
+response is answered; the "Saved HH:MM" chip in the header is the server's
+`savedAt`, and there is no Save button and no copy in the browser (the old
+`localStorage` key is removed on the next visit to the workspace). The same
+draft opens on whichever desk follows its link, "New quote" starts another
+without touching this one, and a backend restart changes nothing. "Remove"
+archives the row — the number is never minted again — and is refused on a
+quote that has been sent.
 ---
 
 ## 8. The outcome and value loop
@@ -1761,8 +1784,11 @@ shims, are mounted but are not flows and are not listed here.
 | POST | `/api/v1/quote-intelligence/snapshot` | signed-in | Freeze the re-derived assessment (with optional override reason/code) into the append-only quote_decisions trail; releases no-longer-needed… |
 | GET | `/api/v1/quote-intelligence/thresholds` | signed-in | The pricing policy in force: band edges + tolerance for everyone; target/min/floor margins for managers/owners |
 | POST | `/api/v1/quote-support` | signed-in | QUOTE_CONTEXT decision support: deterministic facts + separated AI recommendation; persists a decision for later accept/modify/reject |
-| POST | `/api/v1/quotes` | signed-in | Create a quote for a customer (name + optional customer_id); stamped with the principal's organization_id |
+| GET | `/api/v1/quotes` | signed-in | The workspace: every draft in the organization with number, customer, line count, selling total, who started/changed it, and the send gate's readiness |
+| POST | `/api/v1/quotes` | signed-in | Create a draft — customer optional and empty by default; number minted from the org's sequence (QB-0001…); stamped with the principal's organization_id |
+| DELETE | `/api/v1/quotes/{quote_id}` | signed-in | Remove an unsent draft; 409 once a document has been written for it |
 | GET | `/api/v1/quotes/{quote_id}` | signed-in | Read one quote, serialized via Quote.to_dict(mgmt) — economics/marginFloor/MFLOOR absent for a salesperson; 'estimate' block joined from the… |
+| PUT | `/api/v1/quotes/{quote_id}/customer` | signed-in | Say who the quote is for, or change it; lines already on it are re-resolved under the customer's identity scope, typed prices kept where the product is unchanged |
 | POST | `/api/v1/quotes/{quote_id}/discount` | signed-in | Apply a percentage discount to selected line ids, off the current quoted rate; returns 'applied' count |
 | POST | `/api/v1/quotes/{quote_id}/estimate` | signed-in | The send: blocker/unpriced refusals naming lines, assess_and_record snapshot, quote_submission_block (incl. screen's below-floor lines), fingerprint… |
 | POST | `/api/v1/quotes/{quote_id}/intake` | signed-in | Paste RFQ text: AI reading with regex fallback, per-line pie-parser resolution + Zoho enrichment, AI_CALL audit, optional enquiry-corpus capture… |

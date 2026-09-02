@@ -36,7 +36,8 @@ import pytest
 from app.config import settings
 from app.domain import models
 from app.seed import SEED_PASSWORD
-from app.store import Line, store
+from app import quote_workspace
+from app.store import Line
 
 ORG = settings.DEFAULT_ORG_ID
 SALES = "r.nair@pie.example"
@@ -91,13 +92,16 @@ def another_desks_quote(session):
     assert session.query(models.CostRecord).filter_by(
         organization_id=ORG, product_id="p-uncosted").count() == 0
 
-    quote = store.create("Beta Works", customer_id="c2", organization_id=ORG)
+    quote = quote_workspace.create(session, ORG, user_id="usr_manager",
+                                   customer="Beta Works", customer_id="c2")
     quote.lines.append(Line(
         id="L1", raw="UNCOSTED-WIDGET x10", reqCode="UNCOSTED-WIDGET",
         reqDesc="UNCOSTED-WIDGET", reqQty=10, rel="EXACT",
         supplyCode="UNCOSTED-WIDGET", candidates=[], outcome="OK",
         semantics="EXACT"))
     quote.lines[0].cost = BORROWED_COST
+    quote_workspace.save(session, quote, "usr_manager")
+    session.commit()
     return quote
 
 
@@ -141,14 +145,16 @@ def test_the_desk_that_holds_the_quote_still_gets_its_own_line_cost(
                                external_id="p-uncosted2",
                                name="UNCOSTED-WIDGET", active=True))
     session.commit()
-    mine = store.create("Acme Engineering", customer_id="c1",
-                        organization_id=ORG)
+    mine = quote_workspace.create(session, ORG, user_id="usr_manager",
+                                  customer="Acme Engineering", customer_id="c1")
     mine.lines.append(Line(
         id="L1", raw="UNCOSTED-WIDGET x10", reqCode="UNCOSTED-WIDGET",
         reqDesc="UNCOSTED-WIDGET", reqQty=10, rel="EXACT",
         supplyCode="UNCOSTED-WIDGET", candidates=[], outcome="OK",
         semantics="EXACT"))
     mine.lines[0].cost = BORROWED_COST
+    quote_workspace.save(session, mine, "usr_manager")
+    session.commit()
 
     # A manager is never narrowed, so this reads the line cost and the verdict
     # moves across the boundary the cost implies.

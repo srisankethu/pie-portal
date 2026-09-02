@@ -1684,16 +1684,68 @@ class CostRecord(Base):
 
 
 class QuoteDraft(Base):
-    """Transient input for QUOTE_CONTEXT (§4). Lines stored as JSON."""
+    """A quote the desk is working on — the Quote Builder's own row.
+
+    The builder's quotes used to live in one process-wide dict (``store.py``)
+    with a copy of the last one in the browser's ``localStorage``. That gave
+    each person exactly one draft, visible to nobody else, gone from the server
+    on the next restart, and numbered from a truncated clock. This table is the
+    workspace instead: every draft in the organization, in one place, for
+    everyone in it. The table was designed as "transient input for
+    QUOTE_CONTEXT" and never written; ``quote_workspace`` is its writer now.
+
+    **Canonical, not derived.** A draft exists in no ERP until it is sent, so
+    a re-sync rebuilds nothing here — which is why it is not ``state/``.
+
+    ``lines`` is the whole line list as ``store.Line.to_state`` writes it,
+    cost included: the row is read back into the same dataclass and the
+    role gate is applied on the way *out* (``Line.to_dict(mgmt)``), never on
+    the way in. It is the server's copy, and the server may hold cost.
+
+    ``sequence`` is what the number is made from: per organization, from 1,
+    never reused, and unique by constraint so two desks starting a quote in
+    the same instant cannot both be QB-0042.
+    """
 
     __tablename__ = "quote_drafts"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "sequence",
+                         name="uq_quote_drafts_org_sequence"),
+    )
 
     quote_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
     organization_id: Mapped[str] = mapped_column(String(64), index=True)
-    customer_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: Nullable on purpose: a quote starts with no customer and gains one when
+    #: the desk chooses. Empty is the honest default — the builder used to
+    #: open every quote against one literal name.
+    customer_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    #: The name to print, and what a typed (unpicked) customer resolves by.
+    customer_name: Mapped[str] = mapped_column(String(255), default="")
+    #: Who started the draft. It is a shared workspace, so this attributes
+    #: rather than scopes: a colleague may open, price and send it.
     salesperson_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    #: Who last changed it, so the list can say "R. Nair, 10:42".
+    updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: The number the desk quotes by — ``QB-0042`` — and the integer it was
+    #: minted from. See the class docstring for the uniqueness argument.
+    number: Mapped[str] = mapped_column(String(32), default="")
+    sequence: Mapped[int] = mapped_column(Integer, default=0)
+    #: Which connected company's catalogue resolves every line on this quote.
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: The key any ERP document for this quote is written under — the whole of
+    #: the send's idempotency (``store.Quote.reference``).
+    reference: Mapped[str] = mapped_column(String(64), default="")
     lines: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+    #: Removed from the workspace, and when. A row rather than a delete, for
+    #: the number: it is minted as ``max(sequence) + 1`` over this table, so a
+    #: deleted QB-0042 would hand its number to the next draft, and two quotes
+    #: behind one number in somebody's notes is the defect the sequence exists
+    #: to end. An archived draft is invisible to every read and holds its
+    #: number for good.
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 # ── Signal (immutable deterministic fact, §6) ────────────────────────────────

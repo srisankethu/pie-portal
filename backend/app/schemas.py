@@ -7,7 +7,10 @@ from pydantic import BaseModel, Field
 
 
 class CreateQuoteRequest(BaseModel):
-    customer: str = "New customer"
+    #: Empty by default, and empty means *no customer yet* — never a
+    #: placeholder. It used to default to "New customer", a literal the quote
+    #: then carried as though somebody had chosen it.
+    customer: str = ""
     #: The platform's id for the picked customer. Optional because a quote can
     #: still be started from a typed name — but when it is present, every
     #: downstream resolution is an exact lookup instead of a tolerant name
@@ -20,6 +23,13 @@ class CreateQuoteRequest(BaseModel):
     #: has no choice to make; with several, the server refuses rather than
     #: picking (see ``resolution.company_for``).
     connection_id: Optional[str] = None
+
+
+class SetCustomerRequest(BaseModel):
+    """Who a quote is for, said after it was started — or changed."""
+
+    customer: str
+    customer_id: Optional[str] = None
 
 
 class IntakeRequest(BaseModel):

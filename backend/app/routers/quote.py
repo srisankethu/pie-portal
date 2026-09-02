@@ -25,7 +25,7 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from .. import approvals, enquiry, resolution
+from .. import approvals, enquiry, quote_workspace, resolution
 from ..authz import Principal, current_principal
 from ..commercial import policy as policy_service, quote_service
 from ..domain.enums import QuoteOutcomeStatus
@@ -42,6 +42,7 @@ from ..schemas import (
     EstimateResponse,
     IntakeRequest,
     SelectSupplyRequest,
+    SetCustomerRequest,
     SetPriceRequest,
 )
 from ..pie_service import Bands
@@ -57,20 +58,31 @@ log = logging.getLogger("pie_portal.quote")
 router = APIRouter(prefix="/api/v1/quotes", tags=["quotes"])
 
 
-def _get_quote(quote_id: str, org: str) -> Quote:
+def _get_quote(session: Session, quote_id: str, org: str) -> Quote:
     """The quote, only if it belongs to this tenant.
 
-    The store is one process-wide dict with enumerable ids and no tenant
-    column of its own, so the org check is the whole of quote authorization:
-    without it a signed-in user from any tenant could read or mutate another
-    tenant's quote by guessing its id. A foreign (or absent) id is a 404 —
-    the two are deliberately indistinguishable, so the endpoint never confirms
-    that some other org's quote exists.
+    Read from ``quote_drafts`` for this request — it is the workspace's row,
+    not a process-wide object — and the org check is the whole of quote
+    authorization: without it a signed-in user from any tenant could read or
+    mutate another tenant's quote by naming its id. A foreign (or absent) id
+    is a 404 — the two are deliberately indistinguishable, so the endpoint
+    never confirms that some other org's quote exists.
     """
-    q = store.get(quote_id)
-    if q is None or q.organizationId != org:
+    q = quote_workspace.load(session, org, quote_id)
+    if q is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Quote not found")
     return q
+
+
+def _saved(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
+    """Write the quote back to its row, then answer with it.
+
+    The one line every mutation ends on. The row is what the next request —
+    on this desk or a colleague's — reads, so a mutation that answered
+    without writing would be a change only the person who made it ever saw.
+    """
+    quote_workspace.save(session, q, principal.user_id)
+    return _view(session, principal, q)
 
 
 @dataclass(frozen=True)
@@ -127,7 +139,14 @@ def books_for_quote(quote_id: str,
         return QuoteBooks(zoho=select_zoho_service())
 
     org = principal.organization_id
-    quote = _get_quote(quote_id, org)
+    quote = _get_quote(session, quote_id, org)
+    if not quote.has_customer:
+        # Not an error — a quote starts this way. But there is no set of books
+        # to read a price from until somebody says whose quote it is, and the
+        # reason should say that rather than "'' matches no customer".
+        return QuoteBooks(zoho=select_zoho_service(reason=(
+            "This quote has no customer yet, so no set of books can be "
+            "identified. Choose a customer to read live prices and stock.")))
     customer = quote_service.resolve_customer(session, org, quote.customer_ref)
     if customer is None:
         return QuoteBooks(zoho=select_zoho_service(reason=(
@@ -186,6 +205,18 @@ def _get_line(quote: Quote, line_id: str) -> Line:
     return ln
 
 
+@router.get("")
+def list_quotes(principal: Principal = Depends(current_principal),
+                session: Session = Depends(get_session)):
+    """The workspace: every draft in the organization and what each is waiting on.
+
+    Shared across the organization by design — see ``quote_workspace``. The
+    list carries each quote's own selling total and the send gate's answer,
+    and nothing derived from cost.
+    """
+    return {"quotes": quote_workspace.list_drafts(session, principal.organization_id)}
+
+
 @router.post("")
 def create_quote(body: CreateQuoteRequest,
                  principal: Principal = Depends(current_principal),
@@ -198,6 +229,10 @@ def create_quote(body: CreateQuoteRequest,
     answers is ``resolution.company_for``'s decision, not this router's — the
     same function the resolution API refuses through, so both surfaces agree on
     what an unnamed company means when the org reads several books.
+
+    The customer is optional, and empty is the default: the enquiry is what
+    arrived, and who it is from is a question the desk answers when it has
+    the answer — ``PUT /{quote_id}/customer`` below.
     """
     try:
         company = resolution.company_for(session, principal.organization_id,
@@ -205,8 +240,10 @@ def create_quote(body: CreateQuoteRequest,
     except resolution.CompanyNotNamed as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
                             {"message": str(e), "companies": e.companies})
-    q = store.create(body.customer, body.customer_id, principal.organization_id,
-                     connection_id=company)
+    q = quote_workspace.create(session, principal.organization_id,
+                               user_id=principal.user_id,
+                               customer=body.customer, customer_id=body.customer_id,
+                               connection_id=company)
     return _view(session, principal, q)
 
 
@@ -215,7 +252,69 @@ def get_quote(quote_id: str,
               principal: Principal = Depends(current_principal),
               session: Session = Depends(get_session)):
     return _view(session, principal,
-                 _get_quote(quote_id, principal.organization_id))
+                 _get_quote(session, quote_id, principal.organization_id))
+
+
+@router.delete("/{quote_id}")
+def delete_quote(quote_id: str,
+                 principal: Principal = Depends(current_principal),
+                 session: Session = Depends(get_session)):
+    """Remove a draft from the workspace.
+
+    Only a draft. A quote that has produced a document in somebody's ledger
+    is a record — ``quote_documents`` and the outcome row key on its id — and
+    removing the draft would leave that document with nothing on this side
+    to explain it. The list shows it as sent instead.
+
+    "Remove" is an archive stamp on the row rather than a DELETE, so the
+    number it was given is never minted again (``quote_workspace.delete``).
+    """
+    org = principal.organization_id
+    _get_quote(session, quote_id, org)
+    if quote_service.latest_document(session, org, quote_id=quote_id) is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This quote has been sent, so it stays on record. Only an unsent "
+            "draft can be removed.")
+    quote_workspace.delete(session, org, quote_id, principal.user_id)
+    return {"ok": True}
+
+
+@router.put("/{quote_id}/customer")
+def set_customer(quote_id: str, body: SetCustomerRequest,
+                 principal: Principal = Depends(current_principal),
+                 session: Session = Depends(get_session)):
+    """Say who this quote is for — or change your mind.
+
+    The lines already on the quote are resolved again under the customer's
+    identity scope (``store.set_customer`` says what survives that and why),
+    so the quote is honest about which customer its resolutions were made
+    for. This used to be impossible: changing the customer started a new
+    quote and discarded the current one.
+
+    Same books binding as every other line mutation: the re-resolution reads
+    live price and stock for the *new* customer's company, which is what
+    ``books_for_quote`` resolves from the customer — so the customer is
+    written first and the adapter is chosen after.
+    """
+    org = principal.organization_id
+    q = _get_quote(session, quote_id, org)
+    if not body.customer.strip() and not body.customer_id:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST,
+                            "Name the customer this quote is for.")
+    q.customer, q.customerId = body.customer.strip(), body.customer_id or None
+    quote_workspace.save(session, q, principal.user_id)
+    books = books_for_quote(quote_id, principal, session)
+    kept = store.set_customer(q, body.customer, body.customer_id, books.zoho,
+                              _customer_scope(session, principal, q.customer_ref),
+                              _bands(session, principal),
+                              _mapping_store(session, principal))
+    out = _saved(session, principal, q)
+    if q.lines:
+        out["note"] = (
+            f"{len(q.lines)} line(s) resolved again for {q.customer}"
+            + (f" — {kept} price(s) you typed kept." if kept else "."))
+    return out
 
 
 @router.post("/{quote_id}/intake")
@@ -223,7 +322,7 @@ def intake(quote_id: str, body: IntakeRequest,
            principal: Principal = Depends(current_principal),
            zoho: ZohoService = Depends(zoho_for_quote),
            session: Session = Depends(get_session)):
-    q = _get_quote(quote_id, principal.organization_id)
+    q = _get_quote(session, quote_id, principal.organization_id)
     if not body.text.strip():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "No RFQ text provided")
     # Read the enquiry into rows first. This is the one place in the quote
@@ -284,7 +383,7 @@ def intake(quote_id: str, body: IntakeRequest,
     # enquiry arrived. After the audit entry above and before the response,
     # because a capture that refuses must not change what the quote returns.
     captured = _capture_enquiry(session, principal, body, quote_id)
-    return {**_view(session, principal, q),
+    return {**_saved(session, principal, q),
             # How the lines were produced, so the screen can say "read from
             # your message — check each line" rather than presenting a model's
             # reading as though somebody had typed it.
@@ -361,7 +460,8 @@ def _quote_customer_ref(session: Session, principal: Principal,
     exact rows this table is for — or writing a guess into a key.
     """
     try:
-        return _get_quote(quote_id, principal.organization_id).customer_ref or ""
+        return _get_quote(session, quote_id,
+                          principal.organization_id).customer_ref or ""
     except HTTPException:
         return ""
 
@@ -387,9 +487,10 @@ def _customer_scope(session: Session, principal: Principal,
 
 @router.get("/{quote_id}/lines/{line_id}/options")
 def line_options(quote_id: str, line_id: str,
-                 principal: Principal = Depends(current_principal)):
+                 principal: Principal = Depends(current_principal),
+                 session: Session = Depends(get_session)):
     """Ranked supply candidates for a line (the design's supply drawer)."""
-    q = _get_quote(quote_id, principal.organization_id)
+    q = _get_quote(session, quote_id, principal.organization_id)
     ln = _get_line(q, line_id)
     return {
         "lineId": ln.id,
@@ -406,11 +507,11 @@ def select_supply(quote_id: str, line_id: str, body: SelectSupplyRequest,
                   principal: Principal = Depends(current_principal),
                   zoho: ZohoService = Depends(zoho_for_quote),
                   session: Session = Depends(get_session)):
-    q = _get_quote(quote_id, principal.organization_id)
+    q = _get_quote(session, quote_id, principal.organization_id)
     ln = _get_line(q, line_id)
     confirmed = _confirm_identity(session, principal, q, ln, body.code)
     store.select_supply(ln, body.code, zoho, manual=body.manual)
-    out = _view(session, principal, q)
+    out = _saved(session, principal, q)
     if confirmed:
         # Worth saying out loud: the person has just taught the system something
         # permanent, and a change with no feedback reads as a change that did
@@ -459,38 +560,41 @@ def confirm_reading(quote_id: str, line_id: str,
     knows what was meant — and because a confirmation queue that only a manager
     can clear is a quote that waits for a manager.
     """
-    q = _get_quote(quote_id, principal.organization_id)
+    q = _get_quote(session, quote_id, principal.organization_id)
     store.confirm_reading(_get_line(q, line_id))
-    return _view(session, principal, q)
+    return _saved(session, principal, q)
 
 
 @router.post("/{quote_id}/lines/{line_id}/price")
 def set_price(quote_id: str, line_id: str, body: SetPriceRequest,
               principal: Principal = Depends(current_principal),
               session: Session = Depends(get_session)):
-    q = _get_quote(quote_id, principal.organization_id)
+    q = _get_quote(session, quote_id, principal.organization_id)
     ln = _get_line(q, line_id)
     store.set_price(ln, body.price)
-    return _view(session, principal, q)
+    return _saved(session, principal, q)
 
 
 @router.delete("/{quote_id}/lines/{line_id}")
 def delete_line(quote_id: str, line_id: str,
                 principal: Principal = Depends(current_principal),
                 session: Session = Depends(get_session)):
-    q = _get_quote(quote_id, principal.organization_id)
-    store.delete_line(q, line_id)
-    return _view(session, principal, q)
+    q = _get_quote(session, quote_id, principal.organization_id)
+    try:
+        store.delete_line(q, line_id)
+    except KeyError:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Line not found")
+    return _saved(session, principal, q)
 
 
 @router.post("/{quote_id}/discount")
 def apply_discount(quote_id: str, body: DiscountRequest,
                    principal: Principal = Depends(current_principal),
                    session: Session = Depends(get_session)):
-    q = _get_quote(quote_id, principal.organization_id)
+    q = _get_quote(session, quote_id, principal.organization_id)
     selected = [ln for ln in q.lines if ln.id in set(body.lineIds)]
     n = store.apply_discount(selected, body.percent)
-    result = _view(session, principal, q)
+    result = _saved(session, principal, q)
     result["applied"] = n
     return result
 
@@ -500,7 +604,7 @@ def create_item(quote_id: str, line_id: str,
                 principal: Principal = Depends(current_principal),
                 zoho: ZohoService = Depends(zoho_for_quote),
                 session: Session = Depends(get_session)):
-    q = _get_quote(quote_id, principal.organization_id)
+    q = _get_quote(session, quote_id, principal.organization_id)
     ln = _get_line(q, line_id)
     if not ln.supplyCode:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Line has no supply product to create")
@@ -509,7 +613,7 @@ def create_item(quote_id: str, line_id: str,
     # still worth looking at. The reason travels with it so the screen does not
     # have to say "something went wrong".
     failure = store.create_item(ln, zoho)
-    result = _view(session, principal, q)
+    result = _saved(session, principal, q)
     if failure:
         result["createItemError"] = failure
     return result
@@ -520,7 +624,7 @@ def create_estimate(quote_id: str,
                     principal: Principal = Depends(current_principal),
                     books: QuoteBooks = Depends(books_for_quote),
                     session: Session = Depends(get_session)):
-    q = _get_quote(quote_id, principal.organization_id)
+    q = _get_quote(session, quote_id, principal.organization_id)
     blockers = store.blockers(q)
     if blockers:
         return EstimateResponse(
@@ -543,6 +647,16 @@ def create_estimate(quote_id: str,
             message=(f"{len(unpriced)} line(s) have no rate yet: "
                      f"{_name_lines(unpriced)}."),
         )
+
+    if not q.has_customer:
+        # Nobody has said whose quote this is. The document is written into
+        # the customer's books and priced against their history, and neither
+        # exists for a quote with no customer — so the send stops here, before
+        # a snapshot is recorded against a customer reference of "".
+        return EstimateResponse(
+            ok=False,
+            message="Choose a customer before sending — the quote is written "
+                    "into their books.")
 
     org = principal.organization_id
 

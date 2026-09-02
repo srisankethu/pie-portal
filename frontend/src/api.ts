@@ -9,26 +9,24 @@
  * on one request is how a screen ends up displaying one person's name while
  * deciding what to show from another's role.
  */
-import type { EstimateResult, Quote } from "./types";
+import type { EstimateResult, Quote, QuoteDraftSummary } from "./types";
 import { authInit } from "./authFetch";
 
-const DRAFT_KEY = "pie_portal_draft";
+/** The key the builder used to keep one draft under in `localStorage`.
+ *
+ *  Drafts are rows on the server now — every one of them, for everyone in
+ *  the organization — so nothing reads this any more. It is removed on
+ *  load rather than left behind, because a stale copy of a quote that has
+ *  since been priced by a colleague is the kind of thing that gets pasted
+ *  into an email. */
+const LEGACY_DRAFT_KEY = "pie_portal_draft";
 
-export function loadDraftQuote(): Quote | null {
-  const raw = localStorage.getItem(DRAFT_KEY);
-  return raw ? (JSON.parse(raw) as Quote) : null;
-}
-
-export function saveDraftQuote(quote: Quote | null) {
-  if (!quote) {
-    localStorage.removeItem(DRAFT_KEY);
-    return;
+export function forgetLegacyDraft(): void {
+  try {
+    localStorage.removeItem(LEGACY_DRAFT_KEY);
+  } catch {
+    /* storage unavailable — nothing to forget */
   }
-  localStorage.setItem(DRAFT_KEY, JSON.stringify(quote));
-}
-
-export function clearDraftQuote() {
-  localStorage.removeItem(DRAFT_KEY);
 }
 
 /** One connected company, as the server names it when it refuses to choose. */
@@ -81,17 +79,36 @@ export const api = {
    *  whose decoded catalogue its lines resolve against. Omitted where the
    *  organization reads one company's books — the server answers without it,
    *  and refuses with `CompanyRequired` where there is a real choice. */
-  createQuote: (t: string, customer: string, customerId?: string,
+  createQuote: (t: string, customer = "", customerId?: string,
                 connectionId?: string) =>
     req<Quote>("/api/v1/quotes", {
       method: "POST",
       // The id travels with the name. Downstream resolution tries it first,
       // which is what keeps two books' identically-named customers apart.
+      // Both may be empty: a quote starts with no customer.
       body: JSON.stringify({ customer, customer_id: customerId ?? null,
                              connection_id: connectionId ?? null }),
     }, t),
 
+  /** The workspace: every draft in the organization. */
+  listQuotes: (t: string) =>
+    req<{ quotes: QuoteDraftSummary[] }>("/api/v1/quotes", {}, t)
+      .then((r) => r.quotes),
+
   getQuote: (t: string, id: string) => req<Quote>(`/api/v1/quotes/${id}`, {}, t),
+
+  /** Say who the quote is for, or change it. The server resolves the lines
+   *  already on the quote again under the new customer and says what it kept
+   *  in `note`. */
+  setCustomer: (t: string, id: string, customer: string, customerId?: string) =>
+    req<Quote>(`/api/v1/quotes/${id}/customer`, {
+      method: "PUT",
+      body: JSON.stringify({ customer, customer_id: customerId ?? null }),
+    }, t),
+
+  /** Remove an unsent draft. A sent quote is refused with the reason. */
+  deleteQuote: (t: string, id: string) =>
+    req<{ ok: boolean }>(`/api/v1/quotes/${id}`, { method: "DELETE" }, t),
 
   /** `channel` is what turns the pasted words into a corpus row. Sent only when
    *  the person said how the enquiry arrived — omitted, the server captures

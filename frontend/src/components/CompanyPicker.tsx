@@ -40,7 +40,7 @@ export function CompanyPicker({
       <DialogTitle>Which company is this quote from?</DialogTitle>
       <DialogContent>
         <DialogContentText sx={{ mb: 1 }}>
-          The quote for {customer} will be raised from one of your companies,
+          {customer ? `The quote for ${customer}` : "This quote"} will be raised from one of your companies,
           and its lines are decoded against that company&apos;s own item master.
         </DialogContentText>
         <List dense>

@@ -185,10 +185,14 @@ def test_rows_without_a_code_are_dropped_not_defaulted():
 # is not optional — a quote cannot leave with a line nobody confirmed.
 
 def _quote_with_a_read_line():
-    from app.store import QuoteStore
+    from app.store import Quote, QuoteStore
 
     st = QuoteStore()
-    q = st.create("ACME")
+    # The dataclass itself, not the workspace: this test is about the hold on
+    # a read line and needs no row behind the quote. ``store.create`` used to
+    # mint one in memory; minting is ``quote_workspace.create``'s now, and it
+    # takes a session.
+    q = Quote(id="q1", customer="ACME", number="QB-0001")
     rows = [reading.ProposedLine(code="CNMG 120408-MP", qty=50,
                                  verbatim="50 nos cnmg 120408 mp").to_row()]
     st.add_rfq(q, "", zoho=None, rows=rows)
@@ -266,9 +270,9 @@ def test_a_typed_line_is_never_held_for_confirmation():
     """The gate exists for what a model read. Somebody who typed the code has
     already done the checking, and stopping them would be friction with no
     risk behind it."""
-    from app.store import QuoteStore
+    from app.store import Quote, QuoteStore
 
     st = QuoteStore()
-    q = st.create("ACME")
+    q = Quote(id="q1", customer="ACME", number="QB-0001")
     st.add_rfq(q, "CNMG 120408-MP, 50", zoho=None)
     assert all(not ln.proposed for ln in q.lines)

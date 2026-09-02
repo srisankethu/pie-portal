@@ -1736,6 +1736,11 @@ class QuoteDraft(Base):
     #: the send's idempotency (``store.Quote.reference``).
     reference: Mapped[str] = mapped_column(String(64), default="")
     lines: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    #: Quote-level details, keyed by ``QuoteFieldDefinition.key`` — the
+    #: organization's own fields (customer reference, validity, payment terms,
+    #: and whatever it added) with the values this quote carries. Which of
+    #: them are mandatory is the definition's ``required``, judged at the send.
+    fields: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  onupdate=_now)
@@ -1746,6 +1751,48 @@ class QuoteDraft(Base):
     #: to end. An archived draft is invisible to every read and holds its
     #: number for good.
     archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+class QuoteFieldDefinition(Base):
+    """One quote-level field this organization asks for, and whether it must be
+    answered before a quote can be sent.
+
+    The builder used to carry no quote-level fields at all — customer and
+    lines, nothing else — so a business whose quotes must name the customer's
+    reference or a validity date had nowhere to put either, and nothing to
+    stop a quote going out without them. This table is the organization's
+    answer to both: each row is a field the Quote Builder renders, ``required``
+    is what the send enforces, and ``builtin`` rows are the handful every
+    distributor has (seeded per organization by ``quote_fields.definitions_for``)
+    while the rest are the organization's own.
+
+    Removing a custom field deactivates it rather than deleting it, so a draft
+    that already holds a value keeps the value and the label it was given.
+    """
+
+    __tablename__ = "quote_field_definitions"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "key", name="uq_quote_field_org_key"),
+    )
+
+    field_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: The slug values are stored under on the draft. Fixed for the life of
+    #: the field — renaming the label never moves a value.
+    key: Mapped[str] = mapped_column(String(48))
+    label: Mapped[str] = mapped_column(String(120))
+    #: ``TEXT`` | ``MULTILINE`` | ``NUMBER`` | ``DATE`` | ``CHOICE`` — see
+    #: ``quote_fields.KINDS``.
+    kind: Mapped[str] = mapped_column(String(16), default="TEXT")
+    required: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: For ``CHOICE``: the options, in order.
+    choices: Mapped[list[str]] = mapped_column(JSON, default=list)
+    position: Mapped[int] = mapped_column(Integer, default=0)
+    builtin: Mapped[bool] = mapped_column(Boolean, default=False)
+    active: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
 
 
 # ── Signal (immutable deterministic fact, §6) ────────────────────────────────
@@ -2338,6 +2385,11 @@ class OrgPolicy(Base):
     allow_self_approval: Mapped[bool] = mapped_column(Boolean, default=False)
     # Escalating a decision raises an approval request rather than closing it.
     escalation_creates_approval: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Every quote has an owner — whoever started it — and only the owner may
+    # change it. This is the one widening: managers and owners may change any
+    # quote in the organization. On by default, because a desk where the only
+    # person who can fix a quote is on leave is a desk that re-types quotes.
+    managers_may_edit_any_quote: Mapped[bool] = mapped_column(Boolean, default=True)
 
     updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,

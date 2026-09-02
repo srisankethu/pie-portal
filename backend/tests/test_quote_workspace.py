@@ -30,7 +30,7 @@ import piesupport
 from app import quote_workspace
 from app.db import get_session
 from app.domain import models  # noqa: F401  (populate metadata)
-from app.routers import platform_auth, quote
+from app.routers import admin, platform_auth, quote
 from app.seed import SEED_PASSWORD, ensure_org_and_users, provision_organization
 from app.store import Line
 
@@ -60,6 +60,7 @@ def client():
     api = FastAPI()
     api.include_router(platform_auth.router)
     api.include_router(quote.router)
+    api.include_router(admin.router)
 
     def _override():
         sess = Maker()
@@ -396,3 +397,187 @@ def test_readiness_is_ready_when_the_policy_does_not_require_approval(client, ow
         approvals.get_policy(s, ORG).require_approval_for_quotes = False
         s.commit()
     assert _readiness(client, owner, q["id"]) == "READY"
+
+
+# ── ownership ────────────────────────────────────────────────────────────────
+MANAGER = "m.rao@pie.example"
+
+
+@pytest.fixture()
+def manager(client):
+    return _hdr(client, MANAGER)
+
+
+def _second_salesperson(client) -> dict:
+    """Another salesperson in the same organization, signed in."""
+    from app import memberships
+    from app.domain.enums import Role
+    from app.passwords import hash_password
+
+    s = client.Maker()
+    s.add(models.User(user_id="usr_iyer", organization_id=ORG,
+                      email="k.iyer@pie.example", name="K. Iyer",
+                      role="SALESPERSON", password_hash=hash_password(SEED_PASSWORD),
+                      active=True, must_change_password=False))
+    s.flush()
+    memberships.add_member(s, organization_id=ORG, user_id="usr_iyer",
+                           role=Role.SALESPERSON)
+    s.commit()
+    s.close()
+    return _hdr(client, "k.iyer@pie.example")
+
+
+def test_whoever_starts_a_quote_owns_it(client, sales):
+    q = client.post("/api/v1/quotes", json={}, headers=sales).json()
+    assert q["owner"]["id"] == "usr_sales"
+    assert q["owner"]["name"]
+    assert q["canEdit"] is True
+    row = client.get("/api/v1/quotes", headers=sales).json()["quotes"][0]
+    assert row["ownerId"] == "usr_sales" and row["owner"] and row["canEdit"] is True
+
+
+def test_a_colleague_may_read_but_not_change_somebody_elses_quote(client, sales):
+    other = _second_salesperson(client)
+    q = client.post("/api/v1/quotes", json={}, headers=sales).json()
+    _seed_lines(client, q["id"], _line("L1"))
+
+    got = client.get(f"/api/v1/quotes/{q['id']}", headers=other)
+    assert got.status_code == 200
+    assert got.json()["canEdit"] is False
+    assert client.get("/api/v1/quotes", headers=other).json()["quotes"][0]["canEdit"] is False
+
+    refusals = [
+        client.post(f"/api/v1/quotes/{q['id']}/lines/L1/price", json={"price": 1},
+                    headers=other),
+        client.post(f"/api/v1/quotes/{q['id']}/intake", json={"text": "2001174, 1"},
+                    headers=other),
+        client.put(f"/api/v1/quotes/{q['id']}/customer", json={"customer": "X"},
+                   headers=other),
+        client.put(f"/api/v1/quotes/{q['id']}/fields", json={"fields": {}},
+                   headers=other),
+        client.delete(f"/api/v1/quotes/{q['id']}/lines/L1", headers=other),
+        client.post(f"/api/v1/quotes/{q['id']}/discount",
+                    json={"lineIds": ["L1"], "percent": 5}, headers=other),
+        client.post(f"/api/v1/quotes/{q['id']}/estimate", headers=other),
+        client.delete(f"/api/v1/quotes/{q['id']}", headers=other),
+    ]
+    for r in refusals:
+        assert r.status_code == 403, (r.request.url, r.status_code, r.text)
+        assert "belongs to" in r.json()["detail"]
+    # And nothing moved.
+    assert client.get(f"/api/v1/quotes/{q['id']}", headers=sales).json()["lines"][0]["quoted"] == 500.0
+
+
+def test_a_manager_may_change_any_quote_while_the_policy_allows(client, sales, manager):
+    from app import approvals
+
+    q = client.post("/api/v1/quotes", json={}, headers=sales).json()
+    _seed_lines(client, q["id"], _line("L1"))
+    r = client.post(f"/api/v1/quotes/{q['id']}/lines/L1/price", json={"price": 450},
+                    headers=manager)
+    assert r.status_code == 200 and r.json()["canEdit"] is True
+
+    with client.Maker() as s:
+        approvals.get_policy(s, ORG).managers_may_edit_any_quote = False
+        s.commit()
+    r = client.post(f"/api/v1/quotes/{q['id']}/lines/L1/price", json={"price": 440},
+                    headers=manager)
+    assert r.status_code == 403
+    assert "or a manager" not in r.json()["detail"]
+    assert client.get(f"/api/v1/quotes/{q['id']}", headers=manager).json()["canEdit"] is False
+
+
+def test_the_owner_can_hand_the_quote_over(client, sales):
+    other = _second_salesperson(client)
+    q = client.post("/api/v1/quotes", json={}, headers=sales).json()
+    members = client.get("/api/v1/quotes/assignees", headers=sales).json()["members"]
+    new_owner = next(m for m in members if m["name"] == "K. Iyer")
+
+    r = client.put(f"/api/v1/quotes/{q['id']}/owner", json={"user_id": new_owner["id"]},
+                   headers=sales)
+    assert r.status_code == 200, r.text
+    assert r.json()["owner"]["id"] == new_owner["id"]
+    assert "K. Iyer" in r.json()["note"]
+    # The roles have swapped exactly.
+    assert client.get(f"/api/v1/quotes/{q['id']}", headers=sales).json()["canEdit"] is False
+    assert client.get(f"/api/v1/quotes/{q['id']}", headers=other).json()["canEdit"] is True
+    # A stranger to the organization cannot be given it.
+    r = client.put(f"/api/v1/quotes/{q['id']}/owner", json={"user_id": "nobody"},
+                   headers=other)
+    assert r.status_code == 400
+
+
+# ── fields ───────────────────────────────────────────────────────────────────
+def test_an_organization_starts_with_the_builtin_fields_none_required(client, owner):
+    r = client.get("/api/v1/quotes/field-definitions", headers=owner).json()["fields"]
+    assert [f["key"] for f in r] == ["customer_reference", "valid_until", "payment_terms",
+                                     "delivery_terms", "notes"]
+    assert all(f["builtin"] and not f["required"] for f in r)
+
+
+def test_an_owner_makes_fields_mandatory_and_adds_custom_ones(client, owner, sales):
+    admin = client.get("/api/v1/admin/quote-fields", headers=owner).json()
+    assert admin["can_manage"] is True
+    specs = admin["fields"]
+    specs[0]["required"] = True                              # customer reference
+    specs.append({"label": "Incoterm", "kind": "CHOICE", "required": True,
+                  "choices": ["EXW", "FOB", "CIF"]})
+    specs.append({"label": "Site contact", "kind": "TEXT"})
+    r = client.put("/api/v1/admin/quote-fields", json={"fields": specs}, headers=owner)
+    assert r.status_code == 200, r.text
+    keys = [f["key"] for f in r.json()["fields"]]
+    assert keys[-2:] == ["incoterm", "site_contact"]
+
+    # A salesperson sees the same definitions and may not edit them.
+    seen = client.get("/api/v1/quotes/field-definitions", headers=sales).json()["fields"]
+    assert [f["key"] for f in seen] == keys
+    assert client.put("/api/v1/admin/quote-fields", json={"fields": specs},
+                      headers=sales).status_code == 403
+
+    # The quote knows which mandatory details it is missing, and the send
+    # refuses by name until they are answered.
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=sales).json()
+    assert q["missingFields"] == ["Customer reference", "Incoterm"]
+    _seed_lines(client, q["id"], _line("L1"))
+    assert _readiness(client, sales, q["id"]) == "MISSING_DETAILS"
+    sent = client.post(f"/api/v1/quotes/{q['id']}/estimate", headers=sales).json()
+    assert sent["ok"] is False and "Customer reference, Incoterm" in sent["message"]
+
+    bad = client.put(f"/api/v1/quotes/{q['id']}/fields",
+                     json={"fields": {"incoterm": "DDP"}}, headers=sales)
+    assert bad.status_code == 400 and "Incoterm must be one of" in bad.json()["detail"]
+
+    r = client.put(f"/api/v1/quotes/{q['id']}/fields",
+                   json={"fields": {"customer_reference": "PO-778", "incoterm": "FOB",
+                                    "valid_until": "2026-10-01", "unknown": "x"}},
+                   headers=sales)
+    assert r.status_code == 200, r.text
+    assert r.json()["fields"] == {"customer_reference": "PO-778", "incoterm": "FOB",
+                                  "valid_until": "2026-10-01"}
+    assert r.json()["missingFields"] == []
+    assert _readiness(client, sales, q["id"]) == "READY"
+
+
+def test_a_removed_custom_field_keeps_its_value_on_old_drafts(client, owner):
+    specs = client.get("/api/v1/admin/quote-fields", headers=owner).json()["fields"]
+    specs.append({"label": "Site contact", "kind": "TEXT"})
+    client.put("/api/v1/admin/quote-fields", json={"fields": specs}, headers=owner)
+    q = client.post("/api/v1/quotes", json={}, headers=owner).json()
+    client.put(f"/api/v1/quotes/{q['id']}/fields",
+               json={"fields": {"site_contact": "Ravi"}}, headers=owner)
+
+    r = client.put("/api/v1/admin/quote-fields", json={"fields": specs[:-1]}, headers=owner)
+    assert [f["key"] for f in r.json()["fields"]] == [s["key"] for s in specs[:-1]]
+    assert client.get(f"/api/v1/quotes/{q['id']}", headers=owner).json()["fields"] == {
+        "site_contact": "Ravi"}
+
+
+def test_a_field_definition_is_refused_with_the_reason(client, owner):
+    specs = client.get("/api/v1/admin/quote-fields", headers=owner).json()["fields"]
+    r = client.put("/api/v1/admin/quote-fields",
+                   json={"fields": specs + [{"label": "Mode", "kind": "CHOICE"}]},
+                   headers=owner)
+    assert r.status_code == 400 and "at least one option" in r.json()["detail"]
+    r = client.put("/api/v1/admin/quote-fields",
+                   json={"fields": specs + [{"label": "", "kind": "TEXT"}]}, headers=owner)
+    assert r.status_code == 400

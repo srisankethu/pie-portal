@@ -37,7 +37,7 @@ from pydantic import BaseModel, Field, create_model, field_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import clock, approvals, memberships
+from .. import clock, approvals, memberships, quote_fields
 from ..authz import (Principal, current_principal, open_session,
                      require_manager_or_owner, require_owner,
                      revoke_all_sessions, set_session_cookie)
@@ -374,6 +374,7 @@ def _policy_dict(p: models.OrgPolicy) -> dict:
         "below_cost_requires_owner": p.below_cost_requires_owner,
         "allow_self_approval": p.allow_self_approval,
         "escalation_creates_approval": p.escalation_creates_approval,
+        "managers_may_edit_any_quote": p.managers_may_edit_any_quote,
         "updated_at": clock.iso(p.updated_at),
     }
 
@@ -565,6 +566,7 @@ class UpdatePolicy(BaseModel):
     below_cost_requires_owner: Optional[bool] = None
     allow_self_approval: Optional[bool] = None
     escalation_creates_approval: Optional[bool] = None
+    managers_may_edit_any_quote: Optional[bool] = None
 
 
 @router.patch("/policy")
@@ -581,3 +583,52 @@ def update_policy(
     log.info("policy updated org=%s by=%s", principal.organization_id,
              principal.user_id)
     return _policy_dict(policy)
+
+
+# ── quote fields ────────────────────────────────────────────────────────────
+class QuoteFieldSpec(BaseModel):
+    key: Optional[str] = None
+    label: str
+    kind: str = "TEXT"
+    required: bool = False
+    choices: list[str] = []
+
+
+class ReplaceQuoteFields(BaseModel):
+    fields: list[QuoteFieldSpec]
+
+
+@router.get("/quote-fields")
+def get_quote_fields(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """The quote-level fields this organization asks for and which are
+    mandatory. Managers read; an owner edits (``PUT``)."""
+    return {
+        "fields": [quote_fields.to_dict(d) for d in
+                   quote_fields.definitions_for(session, principal.organization_id)],
+        "kinds": list(quote_fields.KINDS),
+        "can_manage": principal.role is Role.OWNER,
+    }
+
+
+@router.put("/quote-fields")
+def replace_quote_fields(
+    body: ReplaceQuoteFields,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Make the organization's fields exactly this list, in this order. A
+    field left out is hidden rather than deleted — a draft may hold a value
+    under it (``quote_fields.replace_definitions``)."""
+    try:
+        rows = quote_fields.replace_definitions(
+            session, principal.organization_id,
+            [f.model_dump() for f in body.fields])
+    except quote_fields.FieldError as e:
+        raise HTTPException(http.HTTP_400_BAD_REQUEST, str(e))
+    log.info("quote fields updated org=%s by=%s n=%d", principal.organization_id,
+             principal.user_id, len(rows))
+    return {"fields": [quote_fields.to_dict(d) for d in rows],
+            "kinds": list(quote_fields.KINDS), "can_manage": True}

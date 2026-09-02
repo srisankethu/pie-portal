@@ -25,7 +25,8 @@ export function SupplyDrawer({
   onOpenPlatform,
   onClose,
   onSelect,
-  onRevert }: {
+  onRevert,
+  readOnly = false }: {
   line: Line;
   customer: string;
   /** The signed-in session's token, for the panels that call the platform. */
@@ -42,6 +43,9 @@ export function SupplyDrawer({
   onClose: () => void;
   onSelect: (code: string, manual: boolean) => void;
   onRevert: () => void;
+  /** The reader may not change this quote: the options are shown, the
+   *  select and revert controls are not. */
+  readOnly?: boolean;
 }) {
   const exactSelected = line.supplyCode === line.reqCode;
   const pricingDelta =
@@ -80,7 +84,7 @@ export function SupplyDrawer({
               Requested product remains visible. This line currently quotes an alternate supply product.
             </div>
           )}
-          {line.substituted && (
+          {line.substituted && !readOnly && (
             <Button
               variant="text" size="small"
               title="Revert this line to the originally requested product"
@@ -186,7 +190,7 @@ export function SupplyDrawer({
                     </span>
                   )}
                   <span style={{ flex: 1 }} />
-                  {!selected && (
+                  {!selected && !readOnly && (
                     <Button
                       variant="contained" size="small"
                       title={`Select ${c.code} as the supply product`}

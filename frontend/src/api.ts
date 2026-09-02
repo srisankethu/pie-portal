@@ -9,7 +9,8 @@
  * on one request is how a screen ends up displaying one person's name while
  * deciding what to show from another's role.
  */
-import type { EstimateResult, Quote, QuoteDraftSummary } from "./types";
+import type { EstimateResult, Quote, QuoteDraftSummary, QuoteFieldDefinition, QuoteOwner }
+  from "./types";
 import { authInit } from "./authFetch";
 
 /** The key the builder used to keep one draft under in `localStorage`.
@@ -109,6 +110,29 @@ export const api = {
   /** Remove an unsent draft. A sent quote is refused with the reason. */
   deleteQuote: (t: string, id: string) =>
     req<{ ok: boolean }>(`/api/v1/quotes/${id}`, { method: "DELETE" }, t),
+
+  /** The quote-level fields this organization asks for. */
+  fieldDefinitions: (t: string) =>
+    req<{ fields: QuoteFieldDefinition[] }>("/api/v1/quotes/field-definitions", {}, t)
+      .then((r) => r.fields),
+
+  /** Save the quote-level details. A value the definition refuses comes back
+   *  as an error naming the field; nothing is saved then. */
+  setFields: (t: string, id: string, fields: Record<string, string | number>) =>
+    req<Quote>(`/api/v1/quotes/${id}/fields`, {
+      method: "PUT", body: JSON.stringify({ fields }),
+    }, t),
+
+  /** Who a quote can be handed to. */
+  assignees: (t: string) =>
+    req<{ members: QuoteOwner[] }>("/api/v1/quotes/assignees", {}, t)
+      .then((r) => r.members),
+
+  /** Hand the quote to another member. */
+  setOwner: (t: string, id: string, userId: string) =>
+    req<Quote>(`/api/v1/quotes/${id}/owner`, {
+      method: "PUT", body: JSON.stringify({ user_id: userId }),
+    }, t),
 
   /** `channel` is what turns the pasted words into a corpus row. Sent only when
    *  the person said how the enquiry arrived — omitted, the server captures

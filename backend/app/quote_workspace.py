@@ -38,10 +38,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from . import approvals, clock
+from . import approvals, clock, memberships, quote_fields
 from .commercial import quote_service
 from .domain import models
-from .domain.enums import ApprovalKind, ApprovalStatus
+from .domain.enums import ApprovalKind, ApprovalStatus, Role
 from .ingestion import connections as conn
 from .store import Line, Quote, store
 
@@ -142,6 +142,8 @@ def save(session: Session, quote: Quote, user_id: Optional[str]) -> None:
     row.customer_id = quote.customerId or None
     row.customer_name = quote.customer
     row.lines = quote.lines_state()
+    row.fields = dict(quote.fields)
+    row.salesperson_id = quote.ownerId
     row.updated_by_user_id = user_id
     row.updated_at = now
     quote.savedAt = clock.iso(now)
@@ -209,17 +211,58 @@ def _to_quote(row: models.QuoteDraft) -> Quote:
         organizationId=row.organization_id, connectionId=row.connection_id,
         customerId=row.customer_id or None, reference=row.reference or "",
         lines=[Line.from_state(state) for state in (row.lines or [])],
-        savedAt=clock.iso(row.updated_at))
+        savedAt=clock.iso(row.updated_at),
+        ownerId=row.salesperson_id, fields=dict(row.fields or {}))
+
+
+# ── ownership ────────────────────────────────────────────────────────────────
+def may_edit(quote: Quote, *, user_id: str, role: Role,
+             policy: models.OrgPolicy) -> bool:
+    """Whether this person may change this quote.
+
+    The owner always may. A manager or owner of the organization may when the
+    policy says so (``managers_may_edit_any_quote``, on by default). Nobody
+    else: a colleague may read a draft, price nothing on it, and ask the owner.
+    A draft with no owner on record — one from before ownership was kept —
+    is editable by anyone who could read it, which is what it always was.
+    """
+    if quote.ownerId is None or quote.ownerId == user_id:
+        return True
+    return (role in (Role.SALES_MANAGER, Role.OWNER)
+            and bool(policy.managers_may_edit_any_quote))
+
+
+def set_owner(session: Session, org: str, quote: Quote, new_owner_id: str,
+              *, by_user_id: str) -> str:
+    """Hand the quote to another member of the organization; returns their name.
+
+    The new owner must hold an active membership here — a quote handed to
+    somebody who cannot open it is a quote nobody can change.
+    """
+    member = next((u for u in memberships.users_in(session, org)
+                   if u.user_id == new_owner_id), None)
+    if member is None:
+        raise LookupError("That person is not a member of this organization.")
+    quote.ownerId = member.user_id
+    save(session, quote, by_user_id)
+    return member.name or ""
+
+
+def assignees(session: Session, org: str) -> list[dict[str, str]]:
+    """Who a quote can be handed to: the organization's active members."""
+    return [{"id": u.user_id, "name": u.name or ""}
+            for u in memberships.users_in(session, org)]
 
 
 # ── the list ─────────────────────────────────────────────────────────────────
 #: What a draft is waiting on. The client maps these to words; the order here
 #: is the order they are decided in, and the first that applies wins.
-READINESS = ("EMPTY", "NEEDS_ATTENTION", "NO_CUSTOMER", "SENT",
+READINESS = ("EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER", "SENT",
              "AWAITING_APPROVAL", "NEEDS_APPROVAL", "READY")
 
 
-def list_drafts(session: Session, org: str) -> list[dict[str, Any]]:
+def list_drafts(session: Session, org: str, *, user_id: str = "",
+                role: Optional[Role] = None) -> list[dict[str, Any]]:
     """Every draft in the organization, newest change first, with what each
     is waiting on.
 
@@ -240,6 +283,7 @@ def list_drafts(session: Session, org: str) -> list[dict[str, Any]]:
     names = _user_names(session, org, {r.salesperson_id for r in rows}
                         | {r.updated_by_user_id for r in rows})
     policy = approvals.get_policy(session, org)
+    defs = quote_fields.definitions_for(session, org)
     out = []
     for row in rows:
         quote = _to_quote(row)
@@ -251,7 +295,11 @@ def list_drafts(session: Session, org: str) -> list[dict[str, Any]]:
             "lineCount": len(quote.lines),
             "unpriced": summary["unpriced"],
             "total": summary["grand"],
-            "readiness": readiness(session, org, quote, policy, sent),
+            "readiness": readiness(session, org, quote, policy, sent, defs),
+            "ownerId": quote.ownerId,
+            "owner": names.get(quote.ownerId or "", ""),
+            "canEdit": (may_edit(quote, user_id=user_id, role=role, policy=policy)
+                        if role is not None else False),
             "sent": None if sent is None else {
                 "number": sent.external_document_number,
                 "systemLabel": conn.system_label_for(sent.external_system),
@@ -267,12 +315,14 @@ def list_drafts(session: Session, org: str) -> list[dict[str, Any]]:
 
 def readiness(session: Session, org: str, quote: Quote,
               policy: models.OrgPolicy,
-              sent: Optional[models.QuoteDocument]) -> str:
+              sent: Optional[models.QuoteDocument],
+              defs: Optional[list[models.QuoteFieldDefinition]] = None) -> str:
     """What this draft is waiting on — one of ``READINESS``.
 
     The same tests the send runs, in the same order: technical blockers and
     unpriced lines first (``store.blockers``, the unpriced check), then the
-    approval gate (``approvals.quote_submission_block`` with the screen's own
+    organization's mandatory fields (``quote_fields.missing_required``), then
+    the customer, then the approval gate (``approvals.quote_submission_block`` with the screen's own
     below-floor lines, exactly as ``create_estimate`` passes them). A draft
     this reports READY is one the send would accept; one it reports
     NEEDS_APPROVAL is one the send would refuse with 403. "Approved" is not a
@@ -285,6 +335,10 @@ def readiness(session: Session, org: str, quote: Quote,
     if store.blockers(quote) or any(
             ln.supplyCode and ln.quoted is None for ln in quote.lines):
         return "NEEDS_ATTENTION"
+    if defs is None:
+        defs = quote_fields.definitions_for(session, org)
+    if quote_fields.missing_required(defs, quote.fields):
+        return "MISSING_DETAILS"
     if not quote.has_customer:
         return "NO_CUSTOMER"
     if sent is not None and sent.fingerprint == store.priced_fingerprint(quote):

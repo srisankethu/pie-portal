@@ -56,6 +56,7 @@ function draft(over: Partial<QuoteDraftSummary>): QuoteDraftSummary {
   return {
     id: "q1", number: "QB-0001", customer: "Pitti Engineering", customerId: "c1",
     lineCount: 3, unpriced: 0, total: 12000, readiness: "READY", sent: null,
+    ownerId: "u1", owner: "R. Nair", canEdit: true,
     createdBy: "R. Nair", updatedBy: "R. Nair",
     createdAt: "2026-09-02T08:00:00Z", updatedAt: "2026-09-02T08:00:00Z",
     ...over,
@@ -101,6 +102,9 @@ describe("QuoteWorkspace", () => {
       draft({ id: "q2", number: "QB-0002", readiness: "NEEDS_APPROVAL" }),
       draft({ id: "q3", number: "QB-0003", customer: "", customerId: null,
               readiness: "NO_CUSTOMER" }),
+      // Ready, but somebody else's: no Send and no Remove for this reader.
+      draft({ id: "q4", number: "QB-0004", readiness: "READY",
+              ownerId: "u2", owner: "K. Iyer", canEdit: false }),
     ]);
     mount();
 
@@ -109,6 +113,7 @@ describe("QuoteWorkspace", () => {
     // the same controls, and is the half of the screen a phone gets.
     await screen.findByText("QB-0001");
     expect(screen.getAllByRole("button", { name: "Send" })).toHaveLength(1);
+    expect(screen.getAllByRole("button", { name: "Remove" })).toHaveLength(3);
     expect(screen.getByText("Needs approval")).toBeInTheDocument();
     // The status chip and the customer cell say different things about the
     // same fact, so neither is mistaken for the other.

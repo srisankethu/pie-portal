@@ -570,6 +570,13 @@ class Quote:
     reference: str = ""
     lines: List[Line] = field(default_factory=list)
     savedAt: Optional[str] = None
+    #: Who owns this quote — whoever started it, until it is handed over. Only
+    #: the owner changes a quote, plus whoever the organization's policy lets
+    #: (``quote_workspace.may_edit``); the name is joined on by the router.
+    ownerId: Optional[str] = None
+    #: Quote-level details, keyed by the organization's field definitions —
+    #: ``quote_fields``. Stored as given; which are mandatory is judged there.
+    fields: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def customer_ref(self) -> str:
@@ -657,6 +664,8 @@ class Quote:
             # here, the person has the string to search for in Zoho.
             "reference": self.reference,
             "savedAt": self.savedAt,
+            "ownerId": self.ownerId,
+            "fields": dict(self.fields),
             "lines": line_dicts,
             "summary": {
                 "subtotal": round(subtotal, 2),

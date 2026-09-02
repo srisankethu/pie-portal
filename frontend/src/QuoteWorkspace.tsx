@@ -69,6 +69,11 @@ const READINESS: Record<QuoteReadiness, { label: string; tone: Tone; tip: string
     tip: "A line is unresolved, ambiguous, unconfirmed or unpriced. The send "
       + "refuses until every line is settled.",
   },
+  MISSING_DETAILS: {
+    label: "Details missing", tone: "warn",
+    tip: "A detail this organization requires on every quote is empty. Open "
+      + "the quote and fill it in under Quote details.",
+  },
   NO_CUSTOMER: {
     label: "Needs a customer", tone: "warn",
     tip: "The lines are ready but nobody has said whose quote this is. Choose "
@@ -100,9 +105,12 @@ const READINESS: Record<QuoteReadiness, { label: string; tone: Tone; tip: string
  *  desk asks "what is waiting on me", "what is waiting on a manager" and
  *  "what can go out", not for seven piles. */
 const FILTERS: [string, string, readonly QuoteReadiness[]][] = [
-  ["ALL", "All", ["EMPTY", "NEEDS_ATTENTION", "NO_CUSTOMER", "NEEDS_APPROVAL",
-                  "AWAITING_APPROVAL", "READY", "SENT"]],
-  ["WORK", "Needs work", ["EMPTY", "NEEDS_ATTENTION", "NO_CUSTOMER", "NEEDS_APPROVAL"]],
+  ["ALL", "All", ["EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER",
+                  "NEEDS_APPROVAL", "AWAITING_APPROVAL", "READY", "SENT"]],
+  ["MINE", "Mine", ["EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER",
+                    "NEEDS_APPROVAL", "AWAITING_APPROVAL", "READY", "SENT"]],
+  ["WORK", "Needs work", ["EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER",
+                          "NEEDS_APPROVAL"]],
   ["WAIT", "Awaiting approval", ["AWAITING_APPROVAL"]],
   ["READY", "Ready to send", ["READY"]],
   ["SENT", "Sent", ["SENT"]],
@@ -193,23 +201,30 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
       await load();
     });
 
+  // "Mine" is the one filter that is not a readiness: the quotes this
+  // person owns, whatever state they are in. Every quote has an owner now,
+  // and the owner is who the desk asks "where is that quote" of.
+  const inFilter = useCallback((r: QuoteDraftSummary, key: string) => {
+    const kinds = FILTERS.find(([k]) => k === key)?.[2] ?? FILTERS[0][2];
+    return kinds.includes(r.readiness) && (key !== "MINE" || r.ownerId === session.user_id);
+  }, [session.user_id]);
+
   const counts = useMemo(() => {
     const c: Record<string, number> = {};
-    for (const [key, , kinds] of FILTERS) {
-      c[key] = (rows ?? []).filter((r) => kinds.includes(r.readiness)).length;
+    for (const [key] of FILTERS) {
+      c[key] = (rows ?? []).filter((r) => inFilter(r, key)).length;
     }
     return c;
-  }, [rows]);
+  }, [rows, inFilter]);
 
   const visible = useMemo(() => {
     if (!rows) return [];
-    const kinds = FILTERS.find(([k]) => k === filter)?.[2] ?? FILTERS[0][2];
     const q = search.trim().toLowerCase();
     return rows.filter((r) =>
-      kinds.includes(r.readiness)
-      && (!q || [r.number, r.customer, r.createdBy, r.updatedBy, r.sent?.number]
+      inFilter(r, filter)
+      && (!q || [r.number, r.customer, r.owner, r.updatedBy, r.sent?.number]
         .filter(Boolean).join(" ").toLowerCase().includes(q)));
-  }, [rows, filter, search]);
+  }, [rows, filter, search, inFilter]);
 
   const open = useCallback(
     (q: QuoteDraftSummary) => navigate(pathFor("quotes", q.id)), [navigate]);
@@ -226,6 +241,7 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
             </Box>
           : customerLabel(p.data ?? { customer: "" }),
     }),
+    text("owner", "Owner", { minWidth: 140, flex: 0, width: 160 }),
     numeric("lineCount", "Lines", (v) => String(v), { width: 90, flex: 0 }),
     numeric("total", "Total", (v) => money(v), { width: 140, flex: 0 }),
     {
@@ -245,6 +261,11 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
     {
       headerName: "", width: 250, flex: 0, sortable: false, filter: false,
       cellClass: "ag-actions",
+      // The column carries its own controls, so a click in it must not also
+      // open the row. `stopPropagation` on the React event is not enough —
+      // ag-grid's row click is its own listener — which is why "Remove"
+      // opened the quote: the grid's rule is this flag, and it was missing.
+      context: { noRowClick: true },
       cellRenderer: (p: { data?: QuoteDraftSummary }) =>
         p.data ? (
           <Actions q={p.data} busy={busy} onOpen={open} onSend={send}
@@ -374,7 +395,9 @@ function changeLabel(q: QuoteDraftSummary): string {
 
 /** The controls a row carries. `Send` only where the server said READY —
  *  the same rule the builder's button follows — and `Remove` only while the
- *  draft is unsent, because a sent quote is a record. */
+ *  draft is unsent, because a sent quote is a record. Neither for a quote
+ *  this reader may not change (`canEdit`): every quote has an owner, and the
+ *  server would answer 403 in the owner's name. */
 function Actions({ q, busy, onOpen, onSend, onDelete }: {
   q: QuoteDraftSummary;
   busy: boolean;
@@ -387,14 +410,14 @@ function Actions({ q, busy, onOpen, onSend, onDelete }: {
       <Button size="small" variant="outlined" onClick={() => onOpen(q)}>
         Open
       </Button>
-      {q.readiness === "READY" && (
+      {q.readiness === "READY" && q.canEdit && (
         <Button size="small" variant="contained" disabled={busy}
                 onClick={() => onSend(q)}
                 title="Create the document in the customer's books">
           Send
         </Button>
       )}
-      {!q.sent && (
+      {!q.sent && q.canEdit && (
         <Button size="small" color="error" variant="text" disabled={busy}
                 onClick={() => onDelete(q)}>
           Remove
@@ -428,7 +451,8 @@ function DraftCard({ q, busy, onOpen, onSend, onDelete }: {
         {customerLabel(q)}
       </Typography>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-        {q.lineCount} line(s) · <CurrencyValue value={q.total} /> · {changeLabel(q)}
+        {q.lineCount} line(s) · <CurrencyValue value={q.total} />
+        {q.owner ? ` · ${q.owner}'s` : ""} · {changeLabel(q)}
       </Typography>
       <Box sx={{ mt: 1 }}>
         <Actions q={q} busy={busy} onOpen={onOpen} onSend={onSend} onDelete={onDelete} />

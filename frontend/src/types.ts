@@ -181,8 +181,29 @@ export interface MarginFloor {
  *  `quote_workspace.READINESS`. Decided by the same functions the send runs,
  *  so a row reading READY is one the send would accept. */
 export type QuoteReadiness =
-  | "EMPTY" | "NEEDS_ATTENTION" | "NO_CUSTOMER" | "SENT"
+  | "EMPTY" | "NEEDS_ATTENTION" | "MISSING_DETAILS" | "NO_CUSTOMER" | "SENT"
   | "AWAITING_APPROVAL" | "NEEDS_APPROVAL" | "READY";
+
+/** What a quote-level field can hold — the server's `quote_fields.KINDS`. */
+export type QuoteFieldKind = "TEXT" | "MULTILINE" | "NUMBER" | "DATE" | "CHOICE";
+
+/** One quote-level field the organization asks for. `required` is what the
+ *  send enforces; `builtin` rows keep their key and kind and can be hidden
+ *  but not removed. */
+export interface QuoteFieldDefinition {
+  key: string;
+  label: string;
+  kind: QuoteFieldKind;
+  required: boolean;
+  choices: string[];
+  builtin: boolean;
+}
+
+/** Who a quote belongs to. */
+export interface QuoteOwner {
+  id: string;
+  name: string;
+}
 
 /** One row of the quote workspace: a draft, whose it is, and what it waits on.
  *  Nothing here is cost — `total` is the quote's own selling total. */
@@ -197,6 +218,11 @@ export interface QuoteDraftSummary {
   total: number;
   readiness: QuoteReadiness;
   sent: { number: string; systemLabel: string; current: boolean } | null;
+  /** Whose it is, and whether *this* reader may change it — the server's
+   *  answer, in the same rule the mutations enforce. */
+  ownerId: string | null;
+  owner: string;
+  canEdit: boolean;
   createdBy: string;
   updatedBy: string;
   createdAt: string | null;
@@ -227,6 +253,19 @@ export interface Quote {
    *  through before it is answered, so this is also "when it was last
    *  changed" — there is no separate save. */
   savedAt: string | null;
+  /** Whoever started the quote, until it is handed over. Only the owner
+   *  changes a quote, plus managers where the policy allows. */
+  ownerId: string | null;
+  owner: QuoteOwner | null;
+  /** Whether this reader may change the quote. The server refuses every
+   *  mutation with a 403 naming the owner otherwise; the screen disables the
+   *  same controls so the refusal is never the first thing somebody sees. */
+  canEdit: boolean;
+  /** Quote-level details, keyed by the organization's field definitions. */
+  fields: Record<string, string | number>;
+  /** Labels of the mandatory details this quote has not answered. The send
+   *  refuses while this is non-empty. */
+  missingFields: string[];
   lines: Line[];
   summary: QuoteSummary;
   filterCounts: Record<string, number>;

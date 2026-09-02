@@ -38,6 +38,7 @@ import { DataGrid, type ColDef } from "./DataGrid";
 import { EmptyState, ErrorState, LoadingState, MetricCard, StatusChip, type Tone } from "./kit";
 import { policyProblems } from "./policySchema";
 import { Bp, Labelled } from "./ui";
+import { QuoteFieldsSection } from "./QuoteFieldsSection";
 import { money, moneySymbol } from "../money";
 
 /**
@@ -2135,6 +2136,10 @@ export function SettingsScreen(
             ["escalation_creates_approval",
              "Escalating a decision raises a request",
              "Off, escalation only marks the decision and nobody is told."],
+            ["managers_may_edit_any_quote",
+             "Managers and owners may change any quote",
+             "Every quote has an owner — whoever started it — and only the owner "
+             + "changes it. On, a manager can too; off, only a handover can."],
           ] as [keyof OrgPolicy, string, string][]).map(([key, label, help]) => (
             <label key={key} className={`st-switch ${canManage ? "" : "readonly"}`}>
               <input
@@ -2150,6 +2155,11 @@ export function SettingsScreen(
             </label>
           ))}
         </Bp>
+      )}
+
+      {/* ── quote fields (owner-editable) ── */}
+      {!isSales && policy && (
+        <QuoteFieldsSection token={session.token} canManage={canManage} />
       )}
 
       {/* ── margin policy (owner-editable) ── */}

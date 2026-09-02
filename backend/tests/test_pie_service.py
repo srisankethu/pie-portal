@@ -562,7 +562,8 @@ def test_retrieved_records_are_appended_after_the_ranking_and_never_selected():
     assert all("not a ranked match" in c.reason for c in retrieved)
     assert not any(c.unverified for c in retrieved), (
         "the engine compared three dimensions; the record was verified")
-    assert res.retrieval == {"model_id": "hashed-ngram/1", "searched": 4, "offered": 2}
+    assert res.retrieval == {"model_id": "hashed-ngram/1", "searched": 4, "offered": 2,
+                             "aliases_searched": 0, "aliases_offered": 0}
 
 
 def test_a_record_the_engine_gates_out_is_never_offered_by_retrieval():
@@ -668,3 +669,200 @@ def test_a_series_named_in_words_is_surfaced_by_retrieval():
     ranked = [c for c in res.candidates if not c.retrieved]
     assert res.candidates[:len(ranked)] == ranked, "a retrieved record was ranked"
     assert res.retrieval and res.retrieval["model_id"] == "hashed-ngram/1"
+
+
+# ── aliases: a customer's confirmed codes, near-missed ──────────────────────
+#
+# The engine resolves an exact confirmed code authoritatively and retrieval
+# never sees it. These are about the line that is *almost* that code — with a
+# quantity after it, a hyphen dropped — which the engine cannot read as the
+# code. The confirmed record is offered, through the same comparison and under
+# the same refusals as any retrieved record, and only to the customer whose
+# confirmation it was.
+
+class _Store:
+    """The two methods of ``OrgMappingStore`` the retrieval pass reads."""
+
+    def __init__(self, rows, fingerprint="fp1"):
+        self._rows = rows
+        self._fp = fingerprint
+
+    def aliases(self):
+        return list(self._rows)
+
+    def fingerprint(self):
+        return self._fp
+
+
+PITTI = "identity-pitti"
+OTHER = "identity-other"
+
+
+def test_a_near_miss_of_a_confirmed_code_offers_the_confirmed_record():
+    from app.pie_service import Bands
+
+    store = _Store([(PITTI, "PITTI-7781", "2001174")])
+    res = pie_service._map(
+        "PITTI 7781 x 10 pcs", _requirement([], {}, outcome="UNRESOLVED"),
+        Bands.default(), view=_view_with([_TURNING, _TURNING_2, _DRILL]),
+        customer_scope=PITTI, mapping_store=store)
+
+    assert res.rel == "AMBIGUOUS" and res.supplyCode is None
+    first = res.candidates[0]
+    assert first.code == "2001174" and first.retrieved and first.alias == "PITTI-7781"
+    assert first.rel == "POSSIBLE" and first.score is None
+    assert "this customer confirmed" in first.reason
+    assert res.retrieval["aliases_searched"] == 1
+    assert res.retrieval["aliases_offered"] == 1
+    # Found through the code, reported once, as the confirmation.
+    assert [c.code for c in res.candidates].count("2001174") == 1
+
+
+def test_another_customers_code_is_another_customers_part():
+    from app.pie_service import Bands
+
+    store = _Store([(PITTI, "PITTI-7781", "2001174")])
+    for scope in (OTHER, None):
+        res = pie_service._map(
+            "PITTI 7781 x 10 pcs", _requirement([], {}, outcome="UNRESOLVED"),
+            Bands.default(), view=_view_with([_TURNING, _DRILL]),
+            customer_scope=scope, mapping_store=store)
+        assert not any(c.alias for c in res.candidates), scope
+        assert res.retrieval["aliases_offered"] == 0
+        assert res.retrieval["aliases_searched"] == 0, (
+            "an unscoped line, or another customer, must search no aliases")
+
+
+def test_a_confirmed_record_the_engine_already_ranked_is_not_offered_again():
+    from app.pie_service import Bands
+
+    store = _Store([(PITTI, "PITTI-7781", "2001174")])
+    res = pie_service._map(
+        "PITTI 7781",
+        _requirement([_suggestion("2001174", 0.9, unverified=False, dims=3)],
+                     {"product_family": "turning_insert"}),
+        Bands.default(), view=_view_with([_TURNING, _TURNING_2]),
+        customer_scope=PITTI, mapping_store=store)
+
+    assert [c.code for c in res.candidates].count("2001174") == 1
+    assert not next(c for c in res.candidates if c.code == "2001174").retrieved
+
+
+def test_a_confirmed_code_for_a_record_not_in_this_catalogue_offers_nothing():
+    """The mapping is the organization's; the catalogue is one company's. A
+    confirmed record another company's item master carries is not this
+    company's to quote."""
+    from app.pie_service import Bands
+
+    store = _Store([(PITTI, "PITTI-7781", "9999999")])
+    res = pie_service._map(
+        "PITTI 7781 x 10", _requirement([], {}, outcome="UNRESOLVED"),
+        Bands.default(), view=_view_with([_TURNING]),
+        customer_scope=PITTI, mapping_store=store)
+
+    assert not any(c.code == "9999999" for c in res.candidates)
+
+
+def test_the_alias_index_is_memoised_by_the_store_fingerprint(monkeypatch):
+    from app import retrieval
+    from app.pie_service import Bands
+
+    builds = []
+    real = retrieval.AliasIndex
+
+    def counting(rows, *a, **k):
+        builds.append(1)
+        return real(rows, *a, **k)
+
+    monkeypatch.setattr(retrieval, "AliasIndex", counting)
+    pie_service._alias_indexes.clear()
+    same = _Store([(PITTI, "PITTI-7781", "2001174")], fingerprint="fp-same")
+    for _ in range(3):
+        pie_service._map("PITTI 7781 x 10", _requirement([], {}, outcome="UNRESOLVED"),
+                         Bands.default(), view=_view_with([_TURNING]),
+                         customer_scope=PITTI, mapping_store=same)
+    assert len(builds) == 1, "one store, one index — not one per line"
+
+    changed = _Store([(PITTI, "PITTI-7781", "2559490")], fingerprint="fp-changed")
+    res = pie_service._map("PITTI 7781 x 10", _requirement([], {}, outcome="UNRESOLVED"),
+                           Bands.default(), view=_view_with([_TURNING, _TURNING_2]),
+                           customer_scope=PITTI, mapping_store=changed)
+    assert len(builds) == 2
+    assert res.candidates[0].code == "2559490", "a correction must be seen at once"
+
+
+def test_a_store_without_aliases_is_simply_not_searched():
+    from app.pie_service import Bands
+
+    class _Old:
+        def lookup(self, _identifier):
+            return None
+
+    res = pie_service._map(
+        "PITTI 7781 x 10", _requirement([], {}, outcome="UNRESOLVED"),
+        Bands.default(), view=_view_with([_TURNING]),
+        customer_scope=PITTI, mapping_store=_Old())
+    assert res.retrieval["aliases_searched"] == 0
+
+
+def test_a_confirmed_code_near_missed_on_a_quote_is_offered_to_that_customer():
+    """End to end: a real confirmation, the real store, the real engine.
+
+    The exact code resolves authoritatively and retrieval never runs; the
+    near miss is answered by nothing the engine can rank, and the confirmed
+    record is offered — to this customer, and not to another."""
+    from sqlalchemy.orm import sessionmaker
+
+    import dbsupport
+    from app.identity import service as identity_service
+    from app.identity.mapping_store import OrgMappingStore
+
+    session = sessionmaker(bind=dbsupport.fresh_engine())()
+    try:
+        identity_service.confirm_code_mapping(
+            session, "org_test", identity_id=PITTI, code="PITTI-7781",
+            target_record_id="2001174", source_ref="quote q1 line l1", user_id="u1")
+        store = OrgMappingStore(session, "org_test")
+    finally:
+        session.close()
+
+    exact = pie_service.resolve("PITTI-7781", customer_scope=PITTI,
+                                mapping_store=store, connection_id=COMPANY)
+    assert exact.rel == "EXACT" and exact.supplyCode == "2001174"
+    assert exact.retrieval is None
+
+    near = pie_service.resolve("PITTI 7781 x 10 pcs urgent", customer_scope=PITTI,
+                               mapping_store=store, connection_id=COMPANY)
+    assert near.supplyCode is None
+    offered = [c for c in near.candidates if c.alias == "PITTI-7781"]
+    assert offered and offered[0].code == "2001174" and offered[0].rel == "POSSIBLE"
+    assert near.retrieval["aliases_offered"] == 1
+
+    other = pie_service.resolve("PITTI 7781 x 10 pcs urgent", customer_scope=OTHER,
+                                mapping_store=store, connection_id=COMPANY)
+    assert not any(c.alias for c in other.candidates)
+
+
+def test_a_confirmed_code_survives_a_gate_the_engine_read_off_the_code_itself():
+    """Against the real catalogue the engine reads "PITTI" as an ISO P-shape,
+    and the confirmed insert is a C-shape — so the same gate that rightly
+    drops a description neighbour would drop the one record the customer
+    meant. A confirmation is stronger evidence than a shape guessed from the
+    code's own letters: the record is kept, unverified, with the engine's
+    objection stated."""
+    from app.pie_service import Bands
+
+    store = _Store([(PITTI, "PITTI-7781", "2001174")])
+    spec = {"iso_shape": "P", "product_family": "turning_insert"}
+    res = pie_service._map(
+        "PITTI 7781 x 10 pcs", _requirement([], spec, outcome="UNRESOLVED"),
+        Bands.default(), view=_view_with([_TURNING, _TURNING_2]),
+        customer_scope=PITTI, mapping_store=store)
+
+    offered = [c for c in res.candidates if c.alias == "PITTI-7781"]
+    assert offered and offered[0].code == "2001174"
+    assert offered[0].unverified and offered[0].rel == "POSSIBLE"
+    assert "different geometry" in offered[0].reason
+    assert "iso_shape" in offered[0].reason
+    # The description neighbour with the same shape mismatch is still dropped.
+    assert not any(c.code == "2559490" for c in res.candidates)

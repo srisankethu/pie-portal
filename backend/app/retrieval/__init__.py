@@ -29,12 +29,18 @@ retrieved candidate be explained months later. A neural embedder plugs in
 behind the same ``features`` protocol; the index is stamped with the model that
 built it so two indexes are never read as one.
 
+``aliases.py`` is the one place the index learns from people: a customer's
+confirmed codes, searched for that customer only, so a near miss of a code
+somebody already confirmed is offered back — as an option, never as the
+answer.
+
 Deterministic by contract: listed in ``test_layer_boundaries.DETERMINISTIC`` and
 imported by ``catalog`` and ``pie_service``, both of which the deterministic
 packages import, so nothing here may reach ``ai/``.
 """
 from __future__ import annotations
 
+from .aliases import AliasHit, AliasIndex
 from .embedder import HashedNgramEmbedder, tokens
 from .index import (
     MIN_SIMILARITY,
@@ -48,6 +54,7 @@ from .index import (
 )
 
 __all__ = [
-    "MIN_SIMILARITY", "HashedNgramEmbedder", "Hit", "RetrievalIndex", "Stamp",
+    "MIN_SIMILARITY", "AliasHit", "AliasIndex", "HashedNgramEmbedder", "Hit",
+    "RetrievalIndex", "Stamp",
     "describe", "document_text", "ensure_index", "index_path_for", "tokens",
 ]

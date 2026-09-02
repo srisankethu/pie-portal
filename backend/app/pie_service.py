@@ -164,6 +164,12 @@ class Candidate:
     #: the two a candidate is, because "the nearest description" and "the
     #: technical equivalent" must not read alike.
     retrieved: bool = False
+    #: The confirmed customer code this retrieved record was found through,
+    #: when it was — a near miss of a code this customer already confirmed
+    #: means this product (``app/retrieval/aliases``). Still ``retrieved``,
+    #: still POSSIBLE, still never selected: the confirmation answered an
+    #: exact question once, and this line is not that question.
+    alias: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -171,6 +177,7 @@ class Candidate:
             "grade": self.grade, "brand": self.brand, "score": self.score,
             "reason": self.reason, "attributes": self.attributes,
             "unverified": self.unverified, "retrieved": self.retrieved,
+            "alias": self.alias,
         }
 
 
@@ -335,6 +342,12 @@ class PieService:
         # catalogue from being re-attempted once per row of a 15,000-item sync.
         self._views: "OrderedDict[str, Optional[_View]]" = OrderedDict()
         self._view_lock = threading.Lock()
+        # Alias indexes over confirmed codes, keyed by the mapping store's
+        # fingerprint — the same value the resolution cache keys on, because
+        # it changes exactly when the set of confirmed codes does. Bounded and
+        # small: a store is one organization's snapshot, and a 200-line quote
+        # must not build the same index 200 times.
+        self._alias_indexes: "OrderedDict[str, Any]" = OrderedDict()
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def _ensure_module(self):
@@ -727,7 +740,9 @@ class PieService:
                     # resolution that shared its ``attributes`` dict would let
                     # one quote's edit change another's.
                     _resolution_cache.set(key, copy.deepcopy(result))
-            return self._map(text, result, bands or Bands.default(), view)
+            return self._map(text, result, bands or Bands.default(), view,
+                             customer_scope=customer_scope,
+                             mapping_store=mapping_store)
         except Exception:  # noqa: BLE001 — deliberate: isolate engine failures
             log.exception("pie-parser resolution failed for %r", text)
             return Resolution(
@@ -739,7 +754,9 @@ class PieService:
 
     # ── mapping: engine output -> portal Resolution ──────────────────────────
     def _map(self, text: str, result: Dict[str, Any], bands: Bands,
-             view: Optional["_View"] = None) -> Resolution:
+             view: Optional["_View"] = None, *,
+             customer_scope: Optional[str] = None,
+             mapping_store: Any = None) -> Resolution:
         res = result.get("resolution", {}) or {}
         outcome = res.get("outcome", "UNRESOLVED")
         semantics = res.get("input_semantics", "REQUIREMENT")
@@ -877,7 +894,8 @@ class PieService:
         # changes whether the ranking discriminated. They are extra options for
         # the person, compared by the engine but never chosen by it.
         retrieved, retrieval_info = self._retrieved(
-            view, text, result, exclude={c.code for c in cands})
+            view, text, result, exclude={c.code for c in cands},
+            customer_scope=customer_scope, mapping_store=mapping_store)
         if (cands and self._is_discriminating(cands) and outcome != "UNRESOLVED"
                 and not cands[0].unverified
                 # Appending the reference last is not enough on its own: when
@@ -971,8 +989,33 @@ class PieService:
             return None
         return compare_geometry(spec, record).to_dict()
 
+    def _alias_index(self, mapping_store: Any) -> Any:
+        """The alias index over this store's confirmed codes, or None.
+
+        Memoised by the store's fingerprint. A store that cannot be
+        fingerprinted — a test double, a future store of another shape — is
+        indexed afresh each time rather than not at all: the index is cheap,
+        and refusing it would silently drop a feature for exactly the callers
+        least able to notice.
+        """
+        rows = getattr(mapping_store, "aliases", None)
+        if not callable(rows):
+            return None
+        key = self._mapping_fingerprint(mapping_store)
+        if key is not None and key in self._alias_indexes:
+            self._alias_indexes.move_to_end(key)
+            return self._alias_indexes[key]
+        index = retrieval.AliasIndex(rows())
+        if key is not None:
+            self._alias_indexes[key] = index
+            while len(self._alias_indexes) > 8:
+                self._alias_indexes.popitem(last=False)
+        return index
+
     def _retrieved(self, view: Optional["_View"], text: str,
-                   result: Dict[str, Any], exclude: set,
+                   result: Dict[str, Any], exclude: set, *,
+                   customer_scope: Optional[str] = None,
+                   mapping_store: Any = None,
                    ) -> tuple[List[Candidate], Optional[Dict[str, Any]]]:
         """Nearest-by-description records the engine's gates accept, as
         POSSIBLE candidates, plus the provenance of the search.
@@ -994,27 +1037,59 @@ class PieService:
         if not retriever or not text:
             return [], None
         try:
-            hits = retriever.search(text, k=settings.RETRIEVAL_TOP_K, exclude=exclude)
+            # This customer's confirmed codes first: a near miss of a code a
+            # person already confirmed is stronger evidence than a description
+            # that reads alike, so it is listed first and a record found both
+            # ways is reported as the confirmation. Nothing for a line with no
+            # customer — another customer's code is another customer's part.
+            aliases = self._alias_index(mapping_store) if customer_scope else None
+            alias_hits = (aliases.search(customer_scope, text,
+                                         k=settings.RETRIEVAL_TOP_K, exclude=exclude)
+                          if aliases is not None else [])
+            hits = retriever.search(
+                text, k=settings.RETRIEVAL_TOP_K,
+                exclude=set(exclude) | {h.record_id for h in alias_hits})
             spec = ((result.get("understood_spec") or {}).get("engine_spec")) or {}
             out: List[Candidate] = []
-            for hit in hits:
+            for hit in [*alias_hits, *hits]:
+                alias = getattr(hit, "alias", None)
                 rec = self._record(view, hit.record_id)
                 if rec is None:
                     continue
                 geo = self._compare_geometry(spec, rec)
+                gate_reason: Optional[str] = None
                 if geo is not None and geo.get("gated_out"):
-                    continue
+                    # A description neighbour the engine gates out is gone: the
+                    # text decoded to a family or shape and the record is not
+                    # it. A *confirmed code* is different evidence. The spec
+                    # here was decoded from a line that is mostly the code —
+                    # "PITTI 7781 x 10" read as an ISO P-shape — and a person
+                    # already answered what that code means. Kept, unverified,
+                    # with the engine's objection stated beside the
+                    # confirmation, so the reader sees both and decides.
+                    if alias is None:
+                        continue
+                    gate_reason = str(geo.get("gate_reason") or "geometry differs")
                 # Read through the same predicate a ranked suggestion is read
                 # through; the comparison dict names its matches differently
                 # from a suggestion, and this is the one place that knows it.
-                unverified = geo is None or self._unverified({
+                unverified = geo is None or gate_reason is not None or self._unverified({
                     "dimensionally_vacuous": geo.get("dimensionally_vacuous"),
                     "dimensions_compared": geo.get("dimensions_compared"),
                     "field_breakdown": geo.get("field_matches"),
                 })
-                reason = (f"Nearest catalogue description to this text "
-                          f"({hit.similarity:.2f} similar), not a ranked match. ")
-                if unverified:
+                reason = (
+                    f"Near a code this customer confirmed as this product "
+                    f"({alias!r}, {hit.similarity:.2f} similar to this line), "
+                    f"not the confirmed code itself. "
+                    if alias is not None else
+                    f"Nearest catalogue description to this text "
+                    f"({hit.similarity:.2f} similar), not a ranked match. ")
+                if gate_reason is not None:
+                    reason += (f"The engine read this line's own words as a "
+                               f"different geometry ({gate_reason}); the "
+                               f"confirmation is the stronger evidence, but check. ")
+                elif unverified:
                     reason += ("No dimension of the request could be compared "
                                "against this record. ")
                 elif geo is not None and geo.get("explanation"):
@@ -1026,10 +1101,17 @@ class PieService:
                     rel="POSSIBLE", grade=rec.get("grade"), brand=rec.get("brand"),
                     score=None, reason=reason.strip(),
                     attributes=_attributes_of(rec), unverified=unverified,
-                    retrieved=True))
+                    retrieved=True, alias=alias))
             stamp = retriever.stamp
             return out, {"model_id": stamp.model_id, "searched": stamp.records,
-                         "offered": len(out)}
+                         "offered": len(out),
+                         # The confirmed codes searched for this customer, and
+                         # how many of the offers came through one. Zero when
+                         # the line names no customer or the customer has none
+                         # confirmed — searched, and nothing to search.
+                         "aliases_searched": (aliases.count(customer_scope)
+                                              if aliases is not None else 0),
+                         "aliases_offered": sum(1 for c in out if c.alias is not None)}
         except Exception:  # noqa: BLE001 — beneath the answer, never above it
             log.exception("retrieval failed for %r; resolving without it", text)
             return [], None

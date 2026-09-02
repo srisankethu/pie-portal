@@ -187,9 +187,13 @@ def _product(cand: Candidate, *, with_provenance: bool,
         "explanation": cand.reason or None,
         # How this record came to be offered. ``ranking`` is the engine's own
         # scored pass over the catalogue; ``retrieval`` is nearest-by-
-        # description, compared by the engine afterwards but never ranked by
-        # it — such a record is always POSSIBLE and is never the answer.
-        "found_by": "retrieval" if cand.retrieved else "ranking",
+        # description, and ``confirmed_code`` is near a code this customer
+        # confirmed means this product — both compared by the engine
+        # afterwards but never ranked by it, so such a record is always
+        # POSSIBLE and is never the answer. ``confirmed_code`` carries the code.
+        "found_by": ("confirmed_code" if cand.alias is not None
+                     else "retrieval" if cand.retrieved else "ranking"),
+        "confirmed_code": cand.alias,
     }
     if record is not None:
         out["record_confidence"] = record.get("row_confidence")

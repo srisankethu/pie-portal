@@ -826,3 +826,26 @@ def test_a_line_that_did_not_search_by_description_says_so(env):
     client = _client(app, _key(session).secret)
 
     assert _post(client).json()["engine"]["retrieval"] is None
+
+
+def test_an_alternative_near_a_confirmed_code_names_the_code(env, monkeypatch):
+    app, maker, session, svc = env
+    monkeypatch.setattr(svc, "resolve", lambda *a, **k: _resolution(
+        candidates=[
+            Candidate(code="2576285", desc="A", rel="EXACT"),
+            Candidate(code="2001174", desc="CNMG 120408-49 - TN2000", rel="POSSIBLE",
+                      score=None, retrieved=True, alias="PITTI-7781",
+                      reason="Near a code this customer confirmed as this product.")],
+        retrieval={"model_id": "hashed-ngram/1", "searched": 6717, "offered": 1,
+                   "aliases_searched": 3, "aliases_offered": 1}))
+    client = _client(app, _key(session).secret)
+
+    body = _post(client).json()
+
+    alt = body["alternatives"][0]
+    assert alt["found_by"] == "confirmed_code"
+    assert alt["confirmed_code"] == "PITTI-7781"
+    assert alt["relationship"] == "POSSIBLE"
+    assert body["resolution"]["found_by"] == "ranking"
+    assert body["resolution"]["confirmed_code"] is None
+    assert body["engine"]["retrieval"]["aliases_offered"] == 1

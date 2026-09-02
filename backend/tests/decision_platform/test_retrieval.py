@@ -205,3 +205,51 @@ def test_the_floor_separates_a_bearing_from_a_request_written_in_words():
     top = records[hits[0].record_id]
     assert top["product_family"] == "solid_carbide_drill"
     assert top["cutting_dia_mm"] == 12
+
+
+# ── confirmed codes as aliases ───────────────────────────────────────────────
+from app.retrieval import AliasIndex  # noqa: E402
+
+
+ALIASES = [
+    ("cust-a", "PITTI-7781", "2001174"),
+    ("cust-a", "PITTI-7782", "5642232"),
+    ("cust-b", "PART-0042", "4149315"),
+]
+
+
+def test_an_alias_answers_only_the_customer_who_confirmed_it():
+    index = AliasIndex(ALIASES)
+    assert index.aliases == 3
+    hits = index.search("cust-a", "pitti 7781 x 10")
+    assert hits and hits[0].record_id == "2001174" and hits[0].alias == "PITTI-7781"
+    assert index.search("cust-b", "pitti 7781 x 10") == []
+    assert index.search(None, "pitti 7781 x 10") == []
+    assert index.search("cust-a", "") == []
+    assert index.search("nobody", "part 0042") == []
+
+
+def test_alias_hits_are_deterministic_and_order_independent():
+    a = AliasIndex(ALIASES)
+    b = AliasIndex(list(reversed(ALIASES)))
+    for text in ("pitti 7781", "7782", "pitti"):
+        assert a.search("cust-a", text) == b.search("cust-a", text)
+
+
+def test_two_codes_for_one_record_yield_one_hit_through_the_nearer_code():
+    index = AliasIndex([("c", "PITTI-7781", "2001174"), ("c", "OLD-REF-7781", "2001174")])
+    hits = index.search("c", "old ref 7781")
+    assert [h.record_id for h in hits] == ["2001174"]
+    assert hits[0].alias == "OLD-REF-7781"
+
+
+def test_exclusion_and_the_floor_apply_to_aliases_too():
+    index = AliasIndex(ALIASES)
+    assert index.search("cust-a", "pitti 7781", exclude={"2001174"})[:1] != [
+        h for h in index.search("cust-a", "pitti 7781")[:1]]
+    assert index.search("cust-a", "stainless steel hex nut M8") == []
+
+
+def test_blank_rows_are_skipped_not_indexed():
+    index = AliasIndex([("c", "", "1"), ("", "X", "1"), ("c", "X", ""), ("c", "X-1", "1")])
+    assert index.aliases == 1

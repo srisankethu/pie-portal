@@ -26,6 +26,11 @@ export interface Candidate {
    *  its gates reject is never offered — but nothing ranked it, so it has no
    *  `score`, is always `POSSIBLE`, and is never the selected supply. */
   retrieved?: boolean;
+  /** The confirmed customer code this retrieved record was found through: the
+   *  line is a near miss of a code this customer already confirmed means this
+   *  product. Still retrieved, still `POSSIBLE`, still never selected — the
+   *  confirmation answered an exact question once, and this line is not it. */
+  alias?: string | null;
 }
 
 export interface Economics {

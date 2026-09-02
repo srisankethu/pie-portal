@@ -590,11 +590,47 @@ read as one.
 
 **What "learning" means here, and what it does not.** The catalogue is
 nomenclature; the price columns are dropped at the door (§10) and nothing in
-this package sees them. The index learns nothing from use in this slice. The
-hook for that is already in the schema: a confirmed customer-code mapping
-(`identity.confirm_proposed_identity`, §1's gate) is a person asserting "their
-phrase means this product", and the natural next step is to index that phrase
-as an alias of the record — so the next time the customer writes it, retrieval
-finds the product by the words they use. That is a person's confirmation
-entering an index, not a model inferring an identity, and it keeps the gate
-where it is.
+this package sees them. The one place the index learns from people is
+`retrieval/aliases.py`, and it learns from exactly one act: a confirmed
+customer-code mapping (`identity.confirm_proposed_identity`, §1's gate) — a
+person asserting "this customer's code means this product".
+
+The engine already reads those exactly: the same code, from the same customer,
+resolves authoritatively and retrieval never sees it. What the alias index
+adds is the *near miss* — `PITTI 7781 x 10 pcs urgent` for a confirmed
+`PITTI-7781`, a hyphen dropped, a label in front — which the engine cannot read
+as the code and would otherwise answer with nothing the customer meant. The
+confirmed record is offered, listed before description neighbours because a
+person's confirmation is stronger evidence than a description that reads
+alike, flagged with the code it matched (`alias` on the candidate,
+`found_by: "confirmed_code"` on the API), and under every refusal above:
+compared by the engine, POSSIBLE, unscored, never selected.
+
+Three rules that keep it honest:
+
+- **A customer's codes answer only that customer.** A code is meaningful
+  inside the relationship that confirmed it; another customer's `PART-0042` is
+  a different part. A line with no linked customer searches no aliases, and the
+  provenance says so (`aliases_searched: 0`).
+- **A confirmed record another company's item master carries is not this
+  company's to quote.** The mapping is the organization's, the catalogue is one
+  company's, and a record the catalogue does not hold is dropped like any
+  other.
+- **The gate does not move.** Selecting the offered record on that line is a
+  substitution on one quote, as it always was; nothing here files a mapping,
+  and the exact code still needs the exact answer to be recorded.
+- **The engine's hard gate is stated, not obeyed, for a confirmed code.** On
+  the shipped corpus the engine reads `PITTI 7781 x 10` as an ISO P-shape and
+  the confirmed insert is a C-shape, so the gate that rightly drops a
+  description neighbour would drop the one record the customer meant. A
+  shape guessed from the letters of a customer's own code is weaker evidence
+  than the person who confirmed the code, so the record is kept — unverified,
+  with the engine's objection written beside the confirmation for the reader
+  to weigh. Description neighbours, which carry no confirmation, keep the gate.
+
+The alias index is built from `OrgMappingStore.aliases()` — the same snapshot
+the engine's authoritative lookup reads — and memoised in `pie_service` by the
+store's fingerprint, the value the resolution cache already keys on, so a
+correction is seen on the next line and a 200-line quote builds it once. It is
+small (an organization's confirmed codes are hundreds of short strings) and
+deterministic like the catalogue index.

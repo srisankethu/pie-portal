@@ -189,7 +189,11 @@ not reject them, listed among `alternatives` with `found_by: "retrieval"`,
 `relationship: "POSSIBLE"` and a null `equivalence_score`. Nothing ranked such
 a record and nothing selects it: `resolution` is never one of them, and a line
 whose only candidates were retrieved abstains with `AMBIGUOUS`. Every
-alternative the engine ranked says `found_by: "ranking"`. `engine.retrieval`
+alternative the engine ranked says `found_by: "ranking"`. A third value,
+`found_by: "confirmed_code"`, is a near miss of a code this customer confirmed
+means this product — `confirmed_code` carries the code — offered under the
+same terms: the exact code resolves as an identity; a line that is almost it
+gets the record as an option, for that customer only. `engine.retrieval`
 says whether that search ran — which model id, over how many records, offering
 how many — and is null where it did not, which reads as "not searched" and
 never as "nothing near". The model is a deterministic hashed n-gram embedding

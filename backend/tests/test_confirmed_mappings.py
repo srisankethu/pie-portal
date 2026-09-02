@@ -232,3 +232,17 @@ def test_two_stores_over_different_mappings_still_fingerprint_differently(
     store_after = OrgMappingStore(session, ORG)
 
     assert store_before.fingerprint() != store_after.fingerprint()
+
+
+def test_the_store_hands_its_active_rows_to_retrieval_as_aliases(session):
+    """Same snapshot, same fingerprint: what the engine resolves exactly and
+    what retrieval offers as near are one set of facts."""
+    _confirm(session, code="7781", target="2001174")
+    superseded = _confirm(session, code="7782", target="2001174")
+    _confirm(session, code="7782", target="6739214")     # supersedes the above
+    session.refresh(superseded)
+    assert superseded.active is False
+
+    store = OrgMappingStore(session, ORG)
+    assert store.aliases() == [(IDENTITY, "7781", "2001174"),
+                               (IDENTITY, "7782", "6739214")]

@@ -85,6 +85,18 @@ class OrgMappingStore:
     def __len__(self) -> int:
         return len(self._by_key)
 
+    def aliases(self) -> list[tuple[str, str, str]]:
+        """Every active mapping as ``(scope, code, record_id)``, for the
+        retrieval pass (``app/retrieval/aliases``) to index.
+
+        The same snapshot ``lookup`` answers from, so a code the engine would
+        resolve exactly and a code retrieval would offer as near are one set
+        of facts under one fingerprint. Sorted so the index built from it is
+        the same whatever order the rows were read in.
+        """
+        return sorted((row.identity_id, row.code, row.target_record_id)
+                      for row in self._by_key.values())
+
     def fingerprint(self) -> str:
         """A value that changes when what this store answers changes.
 

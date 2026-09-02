@@ -120,6 +120,20 @@ describe("SupplyDrawer caveats", () => {
     expect(screen.getByText(/not a ranked match/)).toBeTruthy();
   });
 
+  it("names the confirmed code a retrieved candidate was found through", () => {
+    renderDrawer(lineWithCaveats({
+      candidates: [
+        candidate({ code: "2001174", desc: "CNMG 120408-49 - TN2000",
+                    score: null, unverified: true, retrieved: true, alias: "PITTI-7781",
+                    reason: "Near a code this customer confirmed as this product." }),
+      ],
+      notes: [],
+    }));
+
+    expect(screen.getByText("near confirmed code PITTI-7781")).toBeTruthy();
+    expect(screen.queryByText("nearest by description")).not.toBeInTheDocument();
+  });
+
   it("does not present an unverified candidate as selected supply", () => {
     // The server decides this; the drawer must not contradict it by drawing a
     // selection the response does not carry.

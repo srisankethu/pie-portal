@@ -187,7 +187,13 @@ export function SupplyDrawer({
                   {/* A retrieved record sits beside ranked ones and must not
                       read as one: "nearest description" is a statement about
                       text, and the chip says so where the score would be. */}
-                  {c.retrieved && (
+                  {c.retrieved && c.alias && (
+                    <StatusChip
+                      label={`near confirmed code ${c.alias}`} tone="info" dense
+                      tip="This customer confirmed that code means this product. This line is close to that code but is not it, so the record is offered, not selected."
+                    />
+                  )}
+                  {c.retrieved && !c.alias && (
                     <StatusChip
                       label="nearest by description" tone="neutral" dense
                       tip="Found because its catalogue description reads like this line, then compared by the engine. Not ranked, not a match — an option to consider."

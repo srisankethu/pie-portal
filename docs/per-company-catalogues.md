@@ -663,3 +663,53 @@ its own. The same words chosen for a different product supersede the old row
 rather than stacking, so the newest choice is the one offered. There is no
 screen to retire an alias yet; superseding it by choosing again is the only
 correction, and that is the first thing to add if a wrong one proves sticky.
+
+### The learned vocabulary (built)
+
+A phrase alias is one customer's words beside one chosen record. Across a
+tenant's aliases those pairs add up to something more general, and
+`retrieval/vocabulary.py` counts it: which of the tenant's words go with which
+technical attributes of the records people chose — family, application group,
+coating, series, shape. At one tenant `SS` appeared in 41 requests and 39 of
+the chosen records were M-group; `BOHRER` appeared in 5 and all 5 were
+solid-carbide drills. That is the tenant's vocabulary, learned from the first
+pair, computed from one organization's rows only, and never shared.
+
+Three scopes, in order: the **customer's** own usage where that customer alone
+has enough pairs for the word (a customer whose `SS` means something else keeps
+their meaning); the **tenant's** usage across all its customers otherwise;
+nothing when neither has `MIN_SUPPORT` (3) pairs agreeing at `MIN_SHARE` (60%).
+A word used for several things is read as none of them.
+
+What a hint does, and what it may not do. It is evidence about *words*:
+
+- it widens the description search with the attribute's own tokens, so
+  `BOHRER 12MM` reaches the 12 mm drills once five quotes have said what
+  `BOHRER` means here — the engine has no grammar for the word, and without
+  this the line's options were the first six records by sort order;
+- it is written beside a retrieved candidate that agrees with it ("agrees with
+  what 'BOHRER' usually means here: product_family=solid_carbide_drill, 5 of
+  5"), and reported on the line with every count behind it
+  (`engine.retrieval.vocabulary`);
+- it never enters the engine's spec, never changes a relationship and never
+  selects. The geometry comparison stands between a word and a product exactly
+  where it stood.
+
+Deterministic: counts over sorted rows, named thresholds, ties broken by value,
+memoised per store fingerprint and catalogue in `pie_service`.
+
+**The bootstrap.** A tenant that has quoted through the platform already made
+the choices this learns from; they are in `quote_drafts.lines`. `python -m
+app.retrieval.backfill [--org X] [--dry-run]` replays them through the same
+writer the quote screen uses, under the same rules, so a backfilled alias
+differs from a live one only in its `source_ref`. `enquiry` lines are not
+pairs — a disposition names a quote, not a product — so they are not read.
+
+**What this is not, yet.** A hint could also enter the engine's *ranking*, by
+translating a learned word into one the pack's fuzzy decoder reads (`BOHRER`
+→ `drill`) before resolution, so the family gate applies and the ranking
+means something. That is the next step if the widened search proves to find
+the right records but the ranking keeps abstaining on them. It needs the
+resolution run twice on such lines and a canonical-word table per attribute,
+and it is deliberately not done here: the options layer is where learning is
+cheap to be wrong in.

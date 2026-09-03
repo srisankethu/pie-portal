@@ -354,6 +354,11 @@ class PieService:
         # small: a store is one organization's snapshot, and a 200-line quote
         # must not build the same index 200 times.
         self._alias_indexes: "OrderedDict[str, Any]" = OrderedDict()
+        # Learned vocabularies, keyed by the store's fingerprint *and* the
+        # catalogue: the pairs are a store's phrases beside this company's
+        # records, so the same phrases read against another company's
+        # catalogue are another vocabulary.
+        self._vocabularies: "OrderedDict[tuple, Any]" = OrderedDict()
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def _ensure_module(self):
@@ -980,6 +985,38 @@ class PieService:
                         "nearest-neighbour candidates", view.path, exc_info=True)
             return False
 
+    def _vocabulary(self, mapping_store: Any, view: "_View") -> Any:
+        """What this tenant's words mean against this company's catalogue,
+        or None without a store to learn from.
+
+        Built from the store's phrase aliases — a customer's words beside the
+        record a person chose — with each record's decoded attributes read
+        off this company's catalogue. Memoised by the store fingerprint and
+        the catalogue path, for the reason ``_alias_index`` gives; a store
+        that cannot be fingerprinted is learned from afresh each time.
+        """
+        rows = getattr(mapping_store, "aliases", None)
+        if not callable(rows):
+            return None
+        fingerprint = self._mapping_fingerprint(mapping_store)
+        key = (fingerprint, str(view.path)) if fingerprint is not None else None
+        if key is not None and key in self._vocabularies:
+            self._vocabularies.move_to_end(key)
+            return self._vocabularies[key]
+        pairs = []
+        for scope, text, record_id, *rest in rows():
+            if (rest[0] if rest else "code") != "phrase":
+                continue                     # a code carries no words
+            rec = self._record(view, record_id)
+            if rec is not None:
+                pairs.append((scope, text, rec))
+        vocabulary = retrieval.Vocabulary(pairs)
+        if key is not None:
+            self._vocabularies[key] = vocabulary
+            while len(self._vocabularies) > 8:
+                self._vocabularies.popitem(last=False)
+        return vocabulary
+
     @staticmethod
     def _compare_geometry(spec: Dict[str, Any],
                           record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -1052,8 +1089,16 @@ class PieService:
             alias_hits = (aliases.search(customer_scope, text,
                                          k=settings.RETRIEVAL_TOP_K, exclude=exclude)
                           if aliases is not None else [])
+            # What this tenant's — or this customer's — words usually mean,
+            # as counts over past choices. Widens the description search with
+            # the attribute's own tokens, so "BOHRER 12MM" reaches the drills
+            # once five quotes have said BOHRER means a drill here. Evidence
+            # about words: it never enters the engine's spec and never scores.
+            vocabulary = self._vocabulary(mapping_store, view)
+            hints = vocabulary.hints(text, customer_scope) if vocabulary else []
+            expanded = " ".join([text, *retrieval.Vocabulary.expansion(hints)])
             hits = retriever.search(
-                text, k=settings.RETRIEVAL_TOP_K,
+                expanded, k=settings.RETRIEVAL_TOP_K,
                 exclude=set(exclude) | {h.record_id for h in alias_hits})
             spec = ((result.get("understood_spec") or {}).get("engine_spec")) or {}
             out: List[Candidate] = []
@@ -1109,6 +1154,11 @@ class PieService:
                                "against this record. ")
                 elif geo is not None and geo.get("explanation"):
                     reason += f"Engine comparison: {geo['explanation']}. "
+                agreed = retrieval.Vocabulary.agreeing(hints, rec)
+                if agreed:
+                    reason += ("Agrees with what " + ", ".join(
+                        f"{h.token!r} usually means here ({h.field}={h.value}, "
+                        f"{h.agreeing} of {h.support})" for h in agreed) + ". ")
                 out.append(Candidate(
                     code=hit.record_id,
                     desc=rec.get("description_raw") or rec.get("description")
@@ -1120,6 +1170,11 @@ class PieService:
             stamp = retriever.stamp
             return out, {"model_id": stamp.model_id, "searched": stamp.records,
                          "offered": len(out),
+                         # The learned readings applied to this line, with the
+                         # counts behind each — so a reader can see why the
+                         # search was widened and argue with the evidence.
+                         "vocabulary": [h.to_dict() for h in hints],
+                         "vocabulary_pairs": vocabulary.pairs if vocabulary else 0,
                          # The confirmed codes searched for this customer, and
                          # how many of the offers came through one. Zero when
                          # the line names no customer or the customer has none

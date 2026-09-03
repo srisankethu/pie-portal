@@ -30,9 +30,11 @@ behind the same ``features`` protocol; the index is stamped with the model that
 built it so two indexes are never read as one.
 
 ``aliases.py`` is the one place the index learns from people: a customer's
-confirmed codes, searched for that customer only, so a near miss of a code
-somebody already confirmed is offered back — as an option, never as the
-answer.
+confirmed codes and quoted phrases, searched for that customer only, so a near
+miss of something somebody already chose is offered back — as an option, never
+as the answer. ``vocabulary.py`` is what those choices add up to: which of a
+tenant's words go with which technical attributes, as counts, used to widen a
+search and to explain a candidate — never to score one.
 
 Deterministic by contract: listed in ``test_layer_boundaries.DETERMINISTIC`` and
 imported by ``catalog`` and ``pie_service``, both of which the deterministic
@@ -42,6 +44,7 @@ from __future__ import annotations
 
 from .aliases import AliasHit, AliasIndex
 from .embedder import HashedNgramEmbedder, tokens
+from .vocabulary import Hint, Vocabulary
 from .index import (
     MIN_SIMILARITY,
     Hit,
@@ -54,7 +57,7 @@ from .index import (
 )
 
 __all__ = [
-    "MIN_SIMILARITY", "AliasHit", "AliasIndex", "HashedNgramEmbedder", "Hit",
-    "RetrievalIndex", "Stamp",
+    "MIN_SIMILARITY", "AliasHit", "AliasIndex", "HashedNgramEmbedder", "Hint",
+    "Hit", "RetrievalIndex", "Stamp", "Vocabulary",
     "describe", "document_text", "ensure_index", "index_path_for", "tokens",
 ]

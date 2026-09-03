@@ -39,7 +39,6 @@ import { useTheme } from "@mui/material/styles";
 import MenuIcon from "@mui/icons-material/Menu";
 import AutoStoriesOutlined from "@mui/icons-material/AutoStoriesOutlined";
 import FlagOutlined from "@mui/icons-material/FlagOutlined";
-import HandshakeOutlined from "@mui/icons-material/HandshakeOutlined";
 import ScienceOutlined from "@mui/icons-material/ScienceOutlined";
 import RequestQuoteOutlined from "@mui/icons-material/RequestQuoteOutlined";
 import FactCheckOutlined from "@mui/icons-material/FactCheckOutlined";
@@ -98,7 +97,6 @@ export const GROUP_LABEL: Record<NavGroup, string> = {
 const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   home: AutoStoriesOutlined,
   list: FlagOutlined,
-  negotiate: HandshakeOutlined,
   simulate: ScienceOutlined,
   quotes: RequestQuoteOutlined,
   quoteOutcomes: ScoreboardOutlined,

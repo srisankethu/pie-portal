@@ -12,7 +12,7 @@ Conventions used throughout:
 
 - Routes are hash paths (`#/decisions`) — the SPA uses hash routing so the API
   and bundle can be served by one FastAPI app. The Quote Builder lives at
-  `#/quotes`; `#/negotiate` is a different screen (the negotiation-floor desk).
+  `#/quotes`.
 - Roles are the backend's names: **SALESPERSON**, **SALES_MANAGER**, **OWNER**
   (`authz.py`). The frontend mirror (`platform/ability.ts`) only decides what is
   *offered*; the server is always the authority, and cost/margin are **absent
@@ -86,7 +86,6 @@ SALES_MANAGER + OWNER.
 | `#/dependency` | Both-ends dependency | all (supplier side mgmt) | What the book leans on |
 | `#/targets` | Supplier target wall | mgmt | Where each principal's number stands |
 | `#/item-lines` | Item-line placement queue | mgmt | Place items into lines |
-| `#/negotiate` | Negotiation desk | all (cost figure mgmt) | What can I give, measured against the floor |
 | `#/quote-outcomes` | Won & lost (+ pricing panel mgmt) | all (scoped) | Win/loss rates and reasons |
 | `#/unanswered-quotes` | Unanswered quotes worklist | all (scoped) | Quotes with no recorded outcome |
 | `#/what-pie-changed` | Attribution: value ledger (+ owner report) | mgmt (owner panels inside) | What the platform changed |
@@ -726,7 +725,6 @@ the cost fields.
 | **Dependency** `#/dependency` | all (supplier side mgmt) | Company scope → revenue-share vs receivables-share top-fives → principal rows draw spend and downstream revenue on one track with target pace → customer rows open accounts; "Targets" button opens the editor | targets via editor |
 | **Supplier targets** `#/targets` | mgmt | Bullet chart per principal (done vs pace marker), scheme value secured + next rung, "still winnable" (sum of uplifts, never earned rebates); behind = amber + words → add/edit targets and rebate slabs (`PUT/DELETE /insight/targets`) | targets |
 | **Item lines** `#/item-lines` | mgmt | "Needs placing" queue ordered by the revenue it carries → inline select places an item into a line (`PUT /insight/catalogue/{id}`; override survives re-sync; "reset" returns to automatic sources); source chips (OVERRIDE/ZOHO/HSN/VENDOR/NONE) | placements |
-| **Negotiate** `#/negotiate` | all (cost figure mgmt) | Closed-set pickers (account → that account's items → status/tool family) + quantity, agreed price, and the give levers (customer discount, vendor concession, third-party payment — disabled with an explanation on government/PSU/defence accounts — toolkit spend at half, payment timing, target contribution) → "Work it out" → `POST /insight/negotiate`: floor per unit, contribution above floor, CAF after gives, earned-if-paid-at-timing, "free to give", hold-price; warnings; nothing persisted. `negotiable:false` prints the server's reason as the headline | nothing persisted |
 
 Every write in this table follows one idiom: commit on blur/Enter, failure as
 an alert line with the value unchanged, refetch after success, and **clear is
@@ -735,7 +733,7 @@ distinct from zero** everywhere ("none recorded" ≠ ₹0).
 
 ## 7. The quoting loop (`#/quotes`)
 
-The Quote Builder is the negotiation desk: paste an RFQ, resolve every line to
+The Quote Builder is where a quote is negotiated: paste an RFQ, resolve every line to
 a quote-ready product, price it against the customer's own history, send the
 estimate into their books, and record what happened. Every quote is a row in
 `quote_drafts` (`app/quote_workspace.py`): the lines go back to the row on
@@ -1740,7 +1738,6 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/insight/msme-capture-backlog` | manager/owner | Which suppliers are worth establishing status for, ranked |
 | PUT | `/api/v1/insight/msme-status` | manager/owner | Record a supplier's established MSME position (no writer on the Statutory screen itself) |
 | GET | `/api/v1/insight/msme-watchlist` | manager/owner | Bills near/past the MSME 45-day cliff, with basis and amount at risk |
-| POST | `/api/v1/insight/negotiate` | signed-in | Deterministic deal arithmetic against the floor: contribution, CAF, collection factor, free-to-give, hold price, warnings, third-party legality |
 | GET | `/api/v1/insight/opportunities` | manager/owner | Opportunity radar: money at stake × evidence confidence |
 | GET | `/api/v1/insight/order-to-cash` | signed-in | Order→invoice→payment cycle by stage with unknown reasons and measurement rule |
 | GET | `/api/v1/insight/pass-through` | manager/owner | Cost pass-through pricing view (no frontend consumer found — API-only) |

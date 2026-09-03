@@ -98,13 +98,15 @@ The boundary of this rule, stated because it is real rather than because it is
 comfortable. A line's negotiation floor and its `recommended` price are both
 cost × a policy multiplier, and a salesperson needs both to do the job; anyone
 willing to do the algebra recovers cost from either. That is **accepted, not
-engineered around** — coarsening those numbers would blunt the one screen this
-role uses to decide rather than to read. So the rule is: no cost or margin
+engineered around** — coarsening those numbers would blunt the screens this
+role uses to decide rather than to read. (The negotiation desk, once the
+clearest case, has been removed; the floor and `recommended` still reach the
+Quote Builder and the quote-intelligence assessment, and the rule is theirs.) So the rule is: no cost or margin
 *field*, no count or flag that answers a margin question, and no new number
 whose only purpose is economics. The rule is *not* that cost is unrecoverable.
 Two corollaries, and they point in opposite directions: do not "fix" a leak by
-degrading the negotiation desk, and do not wave a new field through on the
-grounds that cost is derivable anyway.
+degrading the figures a salesperson decides with, and do not wave a new field
+through on the grounds that cost is derivable anyway.
 
 **Money is `Decimal`.** Margin is a ratio (`0.24`), never a percentage. Movement
 is percentage points (`_pp`). Aggregated margin is `Σ gross_profit ÷ Σ revenue`,

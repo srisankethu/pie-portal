@@ -632,12 +632,6 @@ export const papi = {
     req<unknown>(`/api/v1/insight/targets/${encodeURIComponent(targetId)}`,
       { method: "DELETE" }, t),
 
-  // The negotiation desk. A POST because it computes on what the salesperson
-  // is proposing, not on what is stored — nothing is persisted by asking.
-  negotiate: (t: string, body: Record<string, unknown>) =>
-    req<Record<string, unknown>>("/api/v1/insight/negotiate",
-      { method: "POST", body: JSON.stringify(body) }, t),
-
   simulationScenarios: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/simulate/scenarios", {}, t),
 

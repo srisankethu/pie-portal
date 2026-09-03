@@ -64,9 +64,6 @@ export type Screen =
    *  alike — that screen assigns an item to a business line, this one is the
    *  pie-parser decode of the manufacturer's own part numbers. */
   | "decodedCatalog"
-  /** The negotiation desk: the one screen a salesperson uses to decide rather
-   *  than to read. */
-  | "negotiate"
   /** Which quotes were won, which were lost, and why — the outcome half of the
    *  quoting loop, which the platform recorded and never read. */
   | "quoteOutcomes"
@@ -135,7 +132,6 @@ export const PATH: Record<Screen, string> = {
   targets: "/targets",
   catalogue: "/item-lines",
   decodedCatalog: "/decoded-catalogue",
-  negotiate: "/negotiate",
   quoteOutcomes: "/quote-outcomes",
   unrecordedQuotes: "/unanswered-quotes",
   attribution: "/what-pie-changed",
@@ -237,7 +233,6 @@ export function vizPath(route: string): string {
     stock: "stock",
     gmroi: "gmroi",
     supply: "supply",
-    negotiate: "negotiate",
     "quote-outcomes": "quoteOutcomes",
     "unanswered-quotes": "unrecordedQuotes",
     // The two names the *needs-you* tiles carry. They were missing, and the

@@ -1076,13 +1076,15 @@ def test_the_payment_series_is_keyed_by_invoice_month_not_payment_month():
     assert by_label["Jun 2026"]["settled"] == 0
 
 
-# ── the negotiation desk, in CAF ────────────────────────────────────────────
+# ── deal arithmetic, in CAF ─────────────────────────────────────────────────
 #
-# The currency changed: the desk used to pay a share of price realisation
-# against what a customer last paid, and now measures contribution above a
-# published floor. These tests are written against the property that made the
-# change worth making — a salesperson can compute every figure here themselves,
-# from a price and a floor, with no cost anywhere in the payload.
+# ``commercial.incentive.assess`` measures a deal's contribution above a
+# published floor (it used to pay a share of price realisation against what a
+# customer last paid). The negotiation desk that fronted it has been removed;
+# the arithmetic still prices every quote line, and these tests are written
+# against the property that made the floor worth publishing — a salesperson
+# can compute every figure here themselves, from a price and a floor, with no
+# cost anywhere in the payload.
 ON = date(2026, 8, 5)
 
 

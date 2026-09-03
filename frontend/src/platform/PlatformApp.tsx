@@ -145,8 +145,6 @@ const GmroiScreen = lazy(() =>
   import("./viz/Gmroi").then((m) => ({ default: m.GmroiScreen })));
 const SupplyScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.SupplyScreen })));
-const NegotiateScreen = lazy(() =>
-  import("./viz/Negotiate").then((m) => ({ default: m.NegotiateScreen })));
 
 const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
   SALESPERSON: { title: "Today", sub: "Decisions that need you, most urgent first", nav: "Today" },
@@ -898,9 +896,6 @@ export default function PlatformApp() {
       // A decision detail page has no nav entry of its own; it belongs to the
       // queue it was opened from, and the sidebar should say so.
       alsoCurrentFor: ["detail"] },
-    // Every role: it is the salesperson's own screen, and a manager needs to
-    // see what their team is proposing.
-    { key: "negotiate", label: "Negotiate", group: "decide" },
     ...(ability.can("read", "simulation")
       ? ([{ key: "simulate", label: "Simulator", group: "decide" }] as NavItem[])
       : []),
@@ -1232,7 +1227,6 @@ export default function PlatformApp() {
             <Route path={PATH.dependency} element={<DependencyScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.targets} element={<TargetWallScreen session={session} />} />
             <Route path={PATH.catalogue} element={<CatalogueScreen session={session} />} />
-            <Route path={PATH.negotiate} element={<NegotiateScreen session={session} />} />
             <Route path={PATH.quoteOutcomes} element={<QuoteOutcomesScreen session={session} />} />
             <Route path={PATH.unrecordedQuotes} element={<UnrecordedQuotesScreen session={session} />} />
 

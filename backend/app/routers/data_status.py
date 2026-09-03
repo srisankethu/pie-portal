@@ -986,20 +986,16 @@ def sync_run_log_text(
 
 def _company_dict(session: Session, connection: models.ZohoConnection,
                   principal: Principal) -> dict[str, Any]:
-    """One connected company and the state of its catalogue."""
+    """One connected company: every catalogue it keeps, and the union it
+    resolves against."""
     from .. import catalog
 
-    pack = catalog.pack_for(connection)
     return {
         "connection_id": connection.connection_id,
         "label": connection.label or "",
         "enabled": connection.enabled,
-        "pack_id": (connection.config or {}).get("pie_pack") or None,
-        # A pack id stored against a pack this engine no longer ships resolves
-        # to None rather than to a guess — the pin can move under a stored
-        # choice, and answering from a different pack would make the stamp lie.
-        "pack_resolved": bool(pack),
-        **catalog.company_catalog_state(
+        "scope": "company",
+        **catalog.company_state(
             session, principal.organization_id, connection.connection_id),
     }
 
@@ -1009,7 +1005,8 @@ def catalog_companies(
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Every connected company, its chosen pack, and its catalogue's state.
+    """Every connected company, each of its catalogues with its chosen pack
+    and state, and the union each company resolves against.
 
     Readable by any signed-in user, like `/catalog` and `/status`: which
     catalogue answered a resolution is the same entitlement as knowing when the
@@ -1022,12 +1019,13 @@ def catalog_companies(
         "scope": "company",
         "companies": [_company_dict(session, c, principal)
                       for c in list_connections(session, principal.organization_id)],
-        # What a company may choose from. Chosen, never uploaded — a pack is
+        # What a catalogue may choose from. Chosen, never uploaded — a pack is
         # regexes the engine runs over every row, and accepting one from a
         # tenant is accepting arbitrary patterns to execute.
         "packs": catalog.available_packs(),
         "source": catalog.source_state(),
         "max_corpus_bytes": catalog.MAX_CORPUS_BYTES,
+        "max_catalogues": catalog.MAX_CATALOGUES,
         "can_manage": principal.role is Role.OWNER,
     }
 
@@ -1109,9 +1107,122 @@ def _company(session: Session, principal: Principal, connection_id: str):
                             "No such company in this organization.") from e
 
 
-@router.post("/catalog/companies/{connection_id}/corpus")
+def _catalogue(session: Session, principal: Principal, connection_id: str,
+               catalogue_key: str):
+    """One of this company's catalogues, or a 404 that confirms nothing.
+
+    The company is checked first, so a connection from another tenant reads as
+    "no such company" — the same answer an invented id gets — rather than as a
+    catalogue lookup that could tell the two apart.
+    """
+    from .. import catalog
+
+    connection = _company(session, principal, connection_id)
+    row = catalog.catalogue_row(session, principal.organization_id, connection_id,
+                                catalogue_key)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "This company has no catalogue by that key.")
+    return connection, row
+
+
+class CatalogueRequest(BaseModel):
+    """A new catalogue: the manufacturer's name, and optionally the pack that
+    decodes their price lists."""
+
+    name: str
+    pack_id: Optional[str] = None
+
+
+@router.post("/catalog/companies/{connection_id}/catalogues")
+def create_company_catalogue(
+    connection_id: str,
+    body: CatalogueRequest,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Add a catalogue to this company — one per manufacturer it sells.
+
+    A distributor carries Kennametal and YG-1 and more, and each one's price
+    lists decode through that manufacturer's own pack, so each is its own
+    catalogue: its own files, its own pack, its own build. The company
+    resolves against all of them at once. Nothing is uploaded or built here;
+    this defines the catalogue the files and the build then belong to.
+
+    Refused with the reason when the name yields no key, the key is already in
+    use, the company is at its ceiling, or the pack is one the engine does not
+    ship — a stored definition that cannot build would leave a person with a
+    catalogue and no statement of why.
+    """
+    from .. import catalog
+
+    connection = _company(session, principal, connection_id)
+    try:
+        catalog.create_catalogue(session, principal.organization_id, connection_id,
+                                 body.name, pack_id=body.pack_id)
+    except catalog.CatalogueError as e:
+        raise HTTPException(e.status, str(e)) from e
+    return _company_dict(session, connection, principal)
+
+
+class CatalogueRenameRequest(BaseModel):
+    """The name a catalogue is shown under."""
+
+    name: str
+
+
+@router.patch("/catalog/companies/{connection_id}/catalogues/{catalogue_key}")
+def rename_company_catalogue(
+    connection_id: str,
+    catalogue_key: str,
+    body: CatalogueRenameRequest,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Rename a catalogue. The key — its address on disk and in every corpus
+    row — stays; only what the screen calls it changes. The migrated
+    catalogue arrives with no name and is shown under its key until it is
+    given one here."""
+    from .. import catalog
+
+    connection = _company(session, principal, connection_id)
+    try:
+        catalog.rename_catalogue(session, principal.organization_id, connection_id,
+                                 catalogue_key, body.name)
+    except catalog.CatalogueError as e:
+        raise HTTPException(e.status, str(e)) from e
+    return _company_dict(session, connection, principal)
+
+
+@router.delete("/catalog/companies/{connection_id}/catalogues/{catalogue_key}")
+def remove_company_catalogue(
+    connection_id: str,
+    catalogue_key: str,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Stop this company resolving against one manufacturer's catalogue.
+
+    Its files are superseded rather than deleted, on the same reasoning as
+    every other change to a corpus; its decoded output goes, being derived;
+    and the union is refreshed at once, because a manufacturer this company no
+    longer sells must not keep answering until somebody rebuilds.
+    """
+    from .. import catalog
+
+    connection = _company(session, principal, connection_id)
+    try:
+        catalog.delete_catalogue(session, principal.organization_id, connection_id,
+                                 catalogue_key)
+    except catalog.CatalogueError as e:
+        raise HTTPException(e.status, str(e)) from e
+    return _company_dict(session, connection, principal)
+
+
+@router.post("/catalog/companies/{connection_id}/catalogues/{catalogue_key}/corpus")
 def upload_company_corpus(
     connection_id: str,
+    catalogue_key: str,
     request: Request,
     filename: str = "",
     source_key: str = "",
@@ -1119,7 +1230,7 @@ def upload_company_corpus(
     payload: bytes = Body(default=b""),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Store one of the files this company's catalogue is built from.
+    """Store one of the files this catalogue is built from.
 
     The bytes are kept as a row rather than a file. The container filesystem is
     ephemeral — `railway.json` declares no volume — and today that costs
@@ -1135,11 +1246,15 @@ def upload_company_corpus(
 
     * named — this file *is* that source. Only that one is superseded, so
       uploading a second price list leaves the item master alone. This is how a
-      company builds one catalogue out of several exports.
-    * absent — the older meaning: replace the whole export. Every live source is
-      superseded. Kept because "Replace export" on a company with one file is
-      still the common action, and silently turning it into "add a second file"
-      would leave a company resolving against a merge it never asked for.
+      catalogue is built out of several exports.
+    * absent — the older meaning: replace the whole export. Every live source
+      of this catalogue is superseded. Kept because "Replace export" on a
+      catalogue with one file is still the common action, and silently turning
+      it into "add a second file" would leave a company resolving against a
+      merge it never asked for.
+
+    Scoped to one catalogue: a Kennametal price list goes into the Kennametal
+    catalogue and supersedes nothing in YG-1's.
 
     CSV or Excel. A workbook is read with ``openpyxl``, which is already a
     dependency; ``python-multipart`` is still not, because the browser sends the
@@ -1148,7 +1263,7 @@ def upload_company_corpus(
     from .. import catalog
     from ..ingestion.item_master import ItemMasterError
 
-    connection = _company(session, principal, connection_id)
+    connection, _row = _catalogue(session, principal, connection_id, catalogue_key)
 
     # The declared length first, so an oversize body is refused by its header
     # rather than after it has been read. The real ceiling belongs at the proxy;
@@ -1169,14 +1284,15 @@ def upload_company_corpus(
     content_type = (request.headers.get("content-type") or "")[:128]
     key = (source_key or name)[:128]
 
-    live = catalog.current_corpora(session, principal.organization_id, connection_id)
-    # Counted before the file is read, so a company at the ceiling is told so
+    live = catalog.current_corpora(session, principal.organization_id, connection_id,
+                                   catalogue_key)
+    # Counted before the file is read, so a catalogue at the ceiling is told so
     # rather than made to wait for the read of a file that will be refused.
     if source_key and len(live) >= catalog.MAX_SOURCES and not any(
             catalog.source_key_of(s) == key for s in live):
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            f"This company already has {len(live)} source files, which is the "
+            f"This catalogue already has {len(live)} source files, which is the "
             f"limit of {catalog.MAX_SOURCES}. Replace one of them, or remove "
             f"one first.")
 
@@ -1195,6 +1311,7 @@ def upload_company_corpus(
     session.add(models.CompanyCorpus(
         organization_id=principal.organization_id,
         connection_id=connection_id,
+        catalogue_key=catalogue_key,
         source_key=key,
         filename=name,
         content_type=content_type,
@@ -1211,8 +1328,8 @@ def upload_company_corpus(
 
 
 def _source(session: Session, principal: Principal, connection_id: str,
-            source_key: str):
-    """One of this company's live sources, by key.
+            catalogue_key: str, source_key: str):
+    """One of this catalogue's live sources, by key.
 
     Scoped through ``current_corpora``, which puts the organization in the query
     rather than checking it afterwards — a key from another tenant reads as
@@ -1221,11 +1338,11 @@ def _source(session: Session, principal: Principal, connection_id: str,
     from .. import catalog
 
     for row in catalog.current_corpora(session, principal.organization_id,
-                                       connection_id):
+                                       connection_id, catalogue_key):
         if catalog.source_key_of(row) == source_key:
             return row
     raise HTTPException(status.HTTP_404_NOT_FOUND,
-                        "This company has no source file by that name.")
+                        "This catalogue has no source file by that name.")
 
 
 class SourceMappingRequest(BaseModel):
@@ -1236,9 +1353,11 @@ class SourceMappingRequest(BaseModel):
     grade: Optional[str] = None
 
 
-@router.put("/catalog/companies/{connection_id}/sources/{source_key}/mapping")
+@router.put("/catalog/companies/{connection_id}/catalogues/{catalogue_key}"
+            "/sources/{source_key}/mapping")
 def set_source_mapping(
     connection_id: str,
+    catalogue_key: str,
     source_key: str,
     body: SourceMappingRequest,
     principal: Principal = Depends(require_owner),
@@ -1259,8 +1378,8 @@ def set_source_mapping(
     from .. import catalog
     from ..ingestion.item_master import ItemMasterError
 
-    connection = _company(session, principal, connection_id)
-    row = _source(session, principal, connection_id, source_key)
+    connection, _row = _catalogue(session, principal, connection_id, catalogue_key)
+    row = _source(session, principal, connection_id, catalogue_key, source_key)
     wanted = {"record_id": body.record_id, "description": body.description,
               "grade": body.grade or None}
     try:
@@ -1274,14 +1393,16 @@ def set_source_mapping(
     return _company_dict(session, connection, principal)
 
 
-@router.delete("/catalog/companies/{connection_id}/sources/{source_key}")
+@router.delete("/catalog/companies/{connection_id}/catalogues/{catalogue_key}"
+               "/sources/{source_key}")
 def remove_company_source(
     connection_id: str,
+    catalogue_key: str,
     source_key: str,
     principal: Principal = Depends(require_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Stop building this company's catalogue from one of its files.
+    """Stop building this catalogue from one of its files.
 
     Superseded, not deleted, on the same reasoning as an upload: a catalogue
     built from this source keeps a real referent for what its stamp names. The
@@ -1289,20 +1410,21 @@ def remove_company_source(
     changes what a build *would* read, and rebuilding here would replace what a
     company resolves against as a side effect of tidying a file list.
     """
-    connection = _company(session, principal, connection_id)
-    row = _source(session, principal, connection_id, source_key)
+    connection, _row = _catalogue(session, principal, connection_id, catalogue_key)
+    row = _source(session, principal, connection_id, catalogue_key, source_key)
     row.superseded_at = clock.now()
     session.flush()
     return _company_dict(session, connection, principal)
 
 
-@router.get("/catalog/companies/{connection_id}/pack-fit")
+@router.get("/catalog/companies/{connection_id}/catalogues/{catalogue_key}/pack-fit")
 def company_pack_fit(
     connection_id: str,
+    catalogue_key: str,
     principal: Principal = Depends(require_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Try every shipped pack against a sample of this company's files.
+    """Try every shipped pack against a sample of this catalogue's files.
 
     A pack identifier says nothing about whether it reads a given export, so
     this reports the parser's own counts for each one and lets a person choose
@@ -1315,72 +1437,75 @@ def company_pack_fit(
     """
     from .. import catalog
 
-    _company(session, principal, connection_id)
-    return catalog.pack_fit(session, principal.organization_id, connection_id)
+    _catalogue(session, principal, connection_id, catalogue_key)
+    return catalog.pack_fit(session, principal.organization_id, connection_id,
+                            catalogue_key=catalogue_key)
 
 
 class CompanyPackRequest(BaseModel):
-    """Which of the shipped org-layer packs decodes this company's export."""
+    """Which of the shipped org-layer packs decodes this catalogue's files."""
 
     pack_id: str
 
 
-@router.put("/catalog/companies/{connection_id}/pack")
+@router.put("/catalog/companies/{connection_id}/catalogues/{catalogue_key}/pack")
 def set_company_pack(
     connection_id: str,
+    catalogue_key: str,
     body: CompanyPackRequest,
     principal: Principal = Depends(require_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Choose the pack this company decodes through.
+    """Choose the pack this catalogue decodes through.
 
     An id, validated against what the pinned engine ships. Refused rather than
     stored when it names nothing: a stored choice that resolves to no pack
-    would leave the company unable to build with no statement of why.
+    would leave the catalogue unable to build with no statement of why.
     """
     from .. import catalog
 
-    connection = _company(session, principal, connection_id)
+    connection, row = _catalogue(session, principal, connection_id, catalogue_key)
     known = {p["id"] for p in catalog.available_packs()}
     if body.pack_id not in known:
         raise HTTPException(
             status.HTTP_400_BAD_REQUEST,
             f"No pack called {body.pack_id!r} ships with this engine. "
             f"Available: {', '.join(sorted(known)) or 'none'}.")
-    # Assigned, not mutated: SQLAlchemy only sees a JSON column change when the
-    # dict identity changes.
-    connection.config = {**(connection.config or {}), "pie_pack": body.pack_id}
+    row.pack_choice = body.pack_id
     session.flush()
     return _company_dict(session, connection, principal)
 
 
-@router.post("/catalog/companies/{connection_id}/build")
+@router.post("/catalog/companies/{connection_id}/catalogues/{catalogue_key}/build")
 def build_company_catalog(
     connection_id: str,
+    catalogue_key: str,
     principal: Principal = Depends(require_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Decode this company's stored corpus through its chosen pack.
+    """Decode this catalogue's stored files through its chosen pack, and
+    refresh the union the company resolves against.
 
     Synchronous, on a measurement rather than an assumption: the shipped
     6,717-row corpus parses and writes in under two seconds in-process, and
-    the retrieval index built beside it (``app/retrieval``) takes under three
-    more, so there is no job to poll and no long-running database write to
-    phase-commit — the response carries the finished result.
+    the retrieval index built beside the union (``app/retrieval``) takes under
+    three more, so there is no job to poll and no long-running database write
+    to phase-commit — the response carries the finished result.
     """
     from .. import catalog
     from ..ingestion.item_master import ItemMasterError
 
-    connection = _company(session, principal, connection_id)
-    pack = catalog.pack_for(connection)
+    connection, row = _catalogue(session, principal, connection_id, catalogue_key)
+    pack = catalog.pack_for(row)
     if pack is None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "This company has no pack chosen, so there is nothing to decode "
-            "its export with. Choose one first.")
+            "This catalogue has no pack chosen, so there is nothing to decode "
+            "its files with. Choose one first.")
     try:
         catalog.build_for_company(session, principal.organization_id,
-                                  connection_id, pack, actor=principal.user_id)
+                                  connection_id, pack, actor=principal.user_id,
+                                  catalogue_key=catalogue_key)
     except FileNotFoundError as e:
         raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
     except ItemMasterError as e:

@@ -237,14 +237,15 @@ def test_the_shipped_corpus_seeds_the_first_company_and_it_resolves(maker, tmp_p
     corpus = catalog.current_corpus(s, ORG, SLS)
     assert corpus is not None
     assert corpus.size_bytes == settings.PIE_CORPUS.stat().st_size
-    # The pack it was decoded through, chosen for the company rather than left
-    # unset — a corpus with no pack builds nothing.
-    connection = s.get(models.ZohoConnection, SLS)
-    assert catalog.pack_for(connection) is not None
+    # The pack it was decoded through, chosen for the catalogue rather than
+    # left unset — a corpus with no pack builds nothing.
+    row = catalog.catalogue_row(s, ORG, SLS, catalog.DEFAULT_CATALOGUE)
+    assert catalog.pack_for(row) is not None
 
     built = catalog.ensure_company_catalogues(s)
     s.commit()
-    assert built == [{"organization_id": ORG, "connection_id": SLS}]
+    assert built == [{"organization_id": ORG, "connection_id": SLS,
+                      "catalogue_key": catalog.DEFAULT_CATALOGUE}]
     pie_service.reload(SLS)
     assert pie_service.resolve("2001174", connection_id=SLS).rel == "EXACT"
     piesupport.forget_company_catalogue(SLS)

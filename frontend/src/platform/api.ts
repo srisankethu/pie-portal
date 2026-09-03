@@ -103,6 +103,14 @@ function noteAuthLoss(status: number): void {
   }
 }
 
+/** One catalogue's address. Every per-catalogue call goes through it, so the
+ *  nesting is spelled once — a second spelling is the one that forgets to
+ *  encode a key with a slash in it. */
+function catalogueUrl(connectionId: string, catalogueKey: string): string {
+  return `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}`
+    + `/catalogues/${encodeURIComponent(catalogueKey)}`;
+}
+
 async function req<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
   const res = await fetch(path, authInit(opts, token));
   if (!res.ok) {
@@ -732,20 +740,47 @@ export const papi = {
   retrievalReport: (t: string) =>
     req<RetrievalReport>("/api/v1/data/catalog/retrieval-report", {}, t),
 
-  /** Store a company's item-master export.
+  /** Add a catalogue to one company — one per manufacturer it sells. The
+   *  server turns the name into the key; the pack may be chosen now or
+   *  later. Refused with the reason when the name yields no key (422), the
+   *  key is taken or the company is at its ceiling (409), or the pack is one
+   *  the engine does not ship (400). Returns the whole company, because the
+   *  union changed shape. */
+  createCompanyCatalogue: (t: string, connectionId: string,
+                           body: { name: string; pack_id?: string | null }) =>
+    req<CompanyCatalogue>(
+      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/catalogues`,
+      { method: "POST", body: JSON.stringify(body) }, t),
+
+  /** Rename a catalogue. The key — its address on disk and in every union
+   *  row — stays; only what the screen calls it changes. */
+  renameCompanyCatalogue: (t: string, connectionId: string, catalogueKey: string,
+                           name: string) =>
+    req<CompanyCatalogue>(
+      catalogueUrl(connectionId, catalogueKey),
+      { method: "PATCH", body: JSON.stringify({ name }) }, t),
+
+  /** Stop this company resolving against one manufacturer. Its files are
+   *  superseded rather than deleted; the union is refreshed at once, so the
+   *  manufacturer stops answering without waiting for a rebuild. */
+  removeCompanyCatalogue: (t: string, connectionId: string, catalogueKey: string) =>
+    req<CompanyCatalogue>(
+      catalogueUrl(connectionId, catalogueKey), { method: "DELETE" }, t),
+
+  /** Store one file of a catalogue's export.
    *
    *  Sent as a raw body rather than a multipart form: the server takes the
    *  bytes directly, so this needs no `python-multipart` on the backend — the
    *  dependency `master_health/__init__.py` refuses stays refused. `File` is
    *  a `Blob`, so `body: file` streams it without reading it into a string. */
-  /** `sourceKey` names which of the company's files this one is, so uploading
+  /** `sourceKey` names which of the catalogue's files this one is, so uploading
    *  a second price list replaces that source and leaves the item master
    *  alone. Omitted, the server keeps the older meaning and replaces the whole
-   *  export — which is what "Replace export" on a single-file company means. */
-  uploadCompanyCorpus: (t: string, connectionId: string, file: File,
-                        sourceKey?: string) =>
+   *  export — which is what "Replace export" on a single-file catalogue means. */
+  uploadCompanyCorpus: (t: string, connectionId: string, catalogueKey: string,
+                        file: File, sourceKey?: string) =>
     req<CompanyCatalogue>(
-      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/corpus`
+      `${catalogueUrl(connectionId, catalogueKey)}/corpus`
       + `?filename=${encodeURIComponent(file.name)}`
       + (sourceKey ? `&source_key=${encodeURIComponent(sourceKey)}` : ""),
       { method: "POST", body: file,
@@ -754,41 +789,41 @@ export const papi = {
   /** Correct which columns of one source file the parse reads. Refused when it
    *  names a column the file does not have, so a mapping that cannot build is
    *  never stored. */
-  setSourceMapping: (t: string, connectionId: string, sourceKey: string,
+  setSourceMapping: (t: string, connectionId: string, catalogueKey: string,
+                     sourceKey: string,
                      mapping: { record_id: string; description: string;
                                 grade?: string | null }) =>
     req<CompanyCatalogue>(
-      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}`
+      `${catalogueUrl(connectionId, catalogueKey)}`
       + `/sources/${encodeURIComponent(sourceKey)}/mapping`,
       { method: "PUT", body: JSON.stringify(mapping) }, t),
 
   /** Stop building from one file. Superseded, not deleted, and the built
    *  catalogue is left alone — it goes OUT OF DATE until somebody rebuilds. */
-  removeCompanySource: (t: string, connectionId: string, sourceKey: string) =>
+  removeCompanySource: (t: string, connectionId: string, catalogueKey: string,
+                        sourceKey: string) =>
     req<CompanyCatalogue>(
-      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}`
+      `${catalogueUrl(connectionId, catalogueKey)}`
       + `/sources/${encodeURIComponent(sourceKey)}`,
       { method: "DELETE" }, t),
 
-  /** Try every shipped pack against a sample of this company's files, so the
+  /** Try every shipped pack against a sample of this catalogue's files, so the
    *  pack is chosen on the parser's own counts rather than on its name. */
-  companyPackFit: (t: string, connectionId: string) =>
-    req<PackFit>(
-      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/pack-fit`,
-      {}, t),
+  companyPackFit: (t: string, connectionId: string, catalogueKey: string) =>
+    req<PackFit>(`${catalogueUrl(connectionId, catalogueKey)}/pack-fit`, {}, t),
 
-  /** Choose which shipped pack decodes this company's export. */
-  setCompanyPack: (t: string, connectionId: string, packId: string) =>
+  /** Choose which shipped pack decodes this catalogue's export. */
+  setCompanyPack: (t: string, connectionId: string, catalogueKey: string,
+                   packId: string) =>
     req<CompanyCatalogue>(
-      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/pack`,
+      `${catalogueUrl(connectionId, catalogueKey)}/pack`,
       { method: "PUT", body: JSON.stringify({ pack_id: packId }) }, t),
 
-  /** Decode this company's stored corpus. Synchronous; the response is the
-   *  finished state. */
-  buildCompanyCatalog: (t: string, connectionId: string) =>
+  /** Decode this catalogue's stored corpus and refresh the company's union.
+   *  Synchronous; the response is the company's finished state. */
+  buildCompanyCatalog: (t: string, connectionId: string, catalogueKey: string) =>
     req<CompanyCatalogue>(
-      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/build`,
-      { method: "POST" }, t),
+      `${catalogueUrl(connectionId, catalogueKey)}/build`, { method: "POST" }, t),
 
   /** Choose the automatic pull's cadence, in hours; 0 switches it off. */
   setAutoSync: (t: string, hours: number) =>

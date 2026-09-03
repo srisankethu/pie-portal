@@ -27,7 +27,6 @@ from typing import Any, Dict, List, Optional
 from . import cache as cache_module
 from . import catalog as catalog_module
 from . import retrieval
-from .catalog import catalog_stamp
 from .config import settings
 
 log = logging.getLogger("pie_portal.pie")
@@ -176,6 +175,13 @@ class Candidate:
     #: engine never reads and which asserts nothing. One flag on the wire so a
     #: screen does not say "confirmed" about a choice.
     alias_kind: Optional[str] = None
+    #: Which of the company's catalogues this record came from — the
+    #: manufacturer's catalogue key (``kennametal``, ``yg-1``), read off the
+    #: union record. A company resolves against every catalogue it has built
+    #: at once, and "which manufacturer's product is this" is part of what a
+    #: provenanced answer has to say. ``None`` where the record could not be
+    #: read back, never a guess.
+    catalogue: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -184,6 +190,7 @@ class Candidate:
             "reason": self.reason, "attributes": self.attributes,
             "unverified": self.unverified, "retrieved": self.retrieved,
             "alias": self.alias, "alias_kind": self.alias_kind,
+            "catalogue": self.catalogue,
         }
 
 
@@ -217,18 +224,6 @@ class Resolution:
             "notes": self.notes, "pie_offline": self.pie_offline,
             "retrieval": self.retrieval,
         }
-
-
-def _read_catalog_version(path: Optional[Path]) -> str:
-    """The ruleset checksum stamped on the catalogue's rows.
-
-    Read from the first record rather than recomputed — ``catalog_stamp`` is
-    the one reader of that fact; this narrows its answer to the field the
-    cache key and provenance stamps need.
-    """
-    if path is None:
-        return ""
-    return str(catalog_stamp(Path(path)).get("ruleset_checksum") or "")
 
 
 #: ``pack_families``' memo, keyed by pack path. Kept per path because packs
@@ -310,7 +305,13 @@ MAX_RESIDENT_CATALOGUES = 3
 
 @dataclass
 class _View:
-    """One company's loaded catalogue.
+    """One company's loaded catalogue: the union of every catalogue it has built.
+
+    ``path`` is the union file ``catalog.union_catalogue`` keeps current, and
+    ``version`` is that union's version — one catalogue's own ruleset checksum
+    where a company has one, a hash over every member's stamp where it has
+    several. ``catalogues`` says which manufacturers' catalogues are in it,
+    for the provenance a resolution reports.
 
     ``sources`` is built lazily and separately from ``index``: a sync asks only
     "is this SKU a catalogue record?", and making every item pull construct the
@@ -332,6 +333,9 @@ class _View:
     #: The dense re-ranker, when a model directory is configured; ``False``
     #: once tried and unavailable, like ``retriever``.
     reranker: Any = None
+    #: The catalogues the union was made from, as ``catalog.union_catalogue``
+    #: reports them: key, name, pack, stamp and record count each.
+    catalogues: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class PieService:
@@ -412,9 +416,9 @@ class PieService:
     def reload(self, connection_id: Optional[str] = None) -> None:
         """Forget what was loaded for one company, so the next use re-reads it.
 
-        Called after that company's catalogue is rebuilt. Everything dropped is
-        downstream of its one file: the index, the resolver's sources, and the
-        version read off its first record. The remembered *failure* goes with
+        Called after one of that company's catalogues is rebuilt or removed
+        (``catalog.refresh_union``). Everything dropped is downstream of the
+        union file: the index, the resolver's sources, and the version. The remembered *failure* goes with
         it — that memo exists so a missing catalogue is not re-tried per row,
         and a rebuild is precisely the event that makes retrying right again.
 
@@ -489,19 +493,25 @@ class PieService:
                     sys.path.insert(0, root)
                 from identity.store import AuthoritativeIndex  # noqa: PLC0415
 
-                path = catalog_module.company_catalog_path(connection_id)
-                if not path.exists():
+                # The union of every catalogue this company has built, made
+                # current from the files on disk. A company resolves against
+                # all of its manufacturers at once; which one answered is
+                # carried on each union record as `catalogue_key`.
+                union = catalog_module.union_catalogue(connection_id)
+                if union is None:
                     # Not an error and not a warning: a company that has not
-                    # built its catalogue yet is an ordinary state the screens
+                    # built a catalogue yet is an ordinary state the screens
                     # report. Logging it per row would bury the real failures.
                     log.info("no catalogue built for connection %s", connection_id)
                     self._views[connection_id] = None
                     return None
-                view = _View(path=path,
-                             version=_read_catalog_version(path),
-                             index=AuthoritativeIndex.from_jsonl(path))
-                log.info("catalogue loaded for connection %s from %s (ruleset %s)",
-                         connection_id, path, view.version or "unknown")
+                view = _View(path=union.path,
+                             version=union.version,
+                             index=AuthoritativeIndex.from_jsonl(union.path),
+                             catalogues=union.catalogues)
+                log.info("catalogue loaded for connection %s from %s (%d catalogue(s), "
+                         "version %s)", connection_id, union.path,
+                         len(union.catalogues), view.version or "unknown")
             except Exception:  # noqa: BLE001 — a sync must not fail on this
                 log.warning("catalogue for connection %s could not be loaded; "
                             "item links will be left unresolved",
@@ -585,19 +595,28 @@ class PieService:
         return rec if isinstance(rec, dict) else None
 
     def catalog_version(self, connection_id: Optional[str] = None) -> str:
-        """The ruleset checksum of the catalogue this company resolves against.
+        """The version of the catalogue this company resolves against.
 
-        pie-parser derives it from the input bytes plus the pack's own checksum,
-        which is what makes a rerun reproducible — and it is the one fact that
-        explains, months later, why the same RFQ text resolved to a different
-        product than it does today. It is uniform across a build, so reading it
-        from the first record is exact rather than a sample.
+        With one catalogue it is that catalogue's ruleset checksum: pie-parser
+        derives it from the input bytes plus the pack's own checksum, which is
+        what makes a rerun reproducible — and it is the one fact that explains,
+        months later, why the same RFQ text resolved to a different product
+        than it does today. With several it is a hash over every member's key,
+        ruleset checksum and run id (``catalog.union_catalogue``), which moves
+        when any of them is rebuilt; :meth:`catalogues` names the members.
 
         Empty when this company has no catalogue. Never raises: provenance must
         not be the thing that fails a quote.
         """
         view = self._view(connection_id)
         return view.version if view else ""
+
+    def catalogues(self, connection_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Which manufacturers' catalogues this company resolves against, each
+        with its key, name, pack and stamp — the members behind
+        :meth:`catalog_version`. Empty when it has none."""
+        view = self._view(connection_id)
+        return [dict(c) for c in view.catalogues] if view else []
 
     def _make_args(self, text: str,
                    customer_scope: Optional[str] = None,
@@ -761,9 +780,16 @@ class PieService:
             result = run(text)
             result = self._with_ranking_reading(
                 text, result, run, view, customer_scope, mapping_store)
-            return self._map(text, result, bands or Bands.default(), view,
-                             customer_scope=customer_scope,
-                             mapping_store=mapping_store)
+            resolution = self._map(text, result, bands or Bands.default(), view,
+                                   customer_scope=customer_scope,
+                                   mapping_store=mapping_store)
+            # Which of the company's catalogues each candidate came from, read
+            # off the union record. One place rather than one per branch of
+            # `_map`, so no path can forget it.
+            for cand in resolution.candidates:
+                rec = self._record(view, cand.code)
+                cand.catalogue = rec.get("catalogue_key") if rec else None
+            return resolution
         except Exception:  # noqa: BLE001 — deliberate: isolate engine failures
             log.exception("pie-parser resolution failed for %r", text)
             return Resolution(

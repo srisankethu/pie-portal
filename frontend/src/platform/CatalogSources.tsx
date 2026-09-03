@@ -1,4 +1,4 @@
-// The files one company's catalogue is decoded from, and how each one is read.
+// The files one catalogue is decoded from, and how each one is read.
 //
 // A company used to have exactly one item-master export, and replacing it was
 // the only thing that could be done to it. That is not how the exports arrive:
@@ -36,7 +36,7 @@ import Tooltip from "@mui/material/Tooltip";
 import type { ColDef } from "./DataGrid";
 import { DataGrid } from "./DataGrid";
 import { EmptyState, StatusChip } from "./kit";
-import type { CompanyCatalogue, CompanySource, SourceIngest } from "./types";
+import type { CompanyCatalogueEntry, CompanySource, SourceIngest } from "./types";
 import { Tip } from "./ui";
 import { formatDateTime } from "../when";
 
@@ -165,9 +165,13 @@ function MappingDialog({ source, onClose, onSave, busy }: {
   );
 }
 
-export function CatalogSources({ company, canManage, busy, onUpload, onMap,
-                                onRemove }: {
-  company: CompanyCatalogue;
+export function CatalogSources({ catalogue, label, canManage, busy, onUpload,
+                                onMap, onRemove }: {
+  catalogue: CompanyCatalogueEntry;
+  /** The company's label, for the grid's name: a company keeps one of these
+   *  per manufacturer, so the catalogue's own name alone does not say whose
+   *  files a screen reader is describing. */
+  label: string;
   canManage: boolean;
   busy: boolean;
   /** A key replaces that one file; no key replaces the whole export. */
@@ -187,9 +191,9 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
   const replacing = useRef<string | null>(null);
 
   // What the last build made of each file, keyed the way the rows are. Absent
-  // for a company that has not built yet, and for a file added since.
+  // for a catalogue that has not built yet, and for a file added since.
   const built = new Map<string, SourceIngest>(
-    (company.ingest?.sources ?? []).map((s) => [s.source_key ?? "", s]));
+    (catalogue.ingest?.sources ?? []).map((s) => [s.source_key ?? "", s]));
 
   const columns: ColDef<CompanySource>[] = [
     {
@@ -269,8 +273,8 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
         <b>Files this catalogue is built from</b>
         <Tip text="Every file here is merged into one catalogue. Where the same part number appears in two of them, the newest file's row is used and the overlap is counted — it is never quietly dropped, because two exports disagreeing about one product is something somebody has to know about." />
         <div style={{ flex: 1 }} />
-        {company.sources.length > 1 && (
-          <StatusChip label={`${company.sources.length} FILES`} tone="neutral" />
+        {catalogue.sources.length > 1 && (
+          <StatusChip label={`${catalogue.sources.length} FILES`} tone="neutral" />
         )}
         {canManage && (
           <Button size="small" variant="outlined" disabled={busy}
@@ -300,12 +304,12 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
              }} />
 
       <DataGrid<CompanySource>
-        rows={company.sources}
+        rows={catalogue.sources}
         columns={columns}
         getRowId={(r) => r.source_key}
         pageSize={10}
         filters={false}
-        ariaLabel={`Files ${company.label || company.connection_id} decodes`}
+        ariaLabel={`Files ${label || catalogue.connection_id} · ${catalogue.name || catalogue.catalogue_key} decodes`}
         empty={<EmptyState
           title="No export uploaded"
           reason="Item identity lookups and this company's RFQ line resolution answer UNKNOWN — not zero coverage — until a file is uploaded and decoded. A CSV or an Excel export of the item master is what this reads; price and stock columns in it are ignored."
@@ -339,13 +343,13 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
         )}
       />
 
-      {company.ingest && company.ingest.collisions > 0 && (
+      {catalogue.ingest && catalogue.ingest.collisions > 0 && (
         <Alert severity="info" sx={{ mt: 1 }}>
-          {company.ingest.collisions} part number
-          {company.ingest.collisions === 1 ? "" : "s"} appeared in more than one
+          {catalogue.ingest.collisions} part number
+          {catalogue.ingest.collisions === 1 ? "" : "s"} appeared in more than one
           file at the last build — the newest file&apos;s row was used for each.
-          {company.ingest.collision_examples.length > 0 &&
-            ` For example ${company.ingest.collision_examples.slice(0, 5).join(", ")}.`}
+          {catalogue.ingest.collision_examples.length > 0 &&
+            ` For example ${catalogue.ingest.collision_examples.slice(0, 5).join(", ")}.`}
         </Alert>
       )}
 

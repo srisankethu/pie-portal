@@ -36,6 +36,12 @@ export interface Candidate {
    *  person had quoted as this record for this customer — a past choice the
    *  engine never reads, which asserts nothing about this line. */
   alias_kind?: "code" | "phrase" | null;
+  /** Which of the company's catalogues — which manufacturer's — this record
+   *  came from, by the catalogue's key. A company resolves against every
+   *  catalogue it has built at once, so "which manufacturer's product is this"
+   *  is part of a provenanced answer. Null where the record could not be read
+   *  back, never a guess. */
+  catalogue?: string | null;
 }
 
 export interface Economics {

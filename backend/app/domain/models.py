@@ -5125,8 +5125,16 @@ class CompanyCorpus(Base):
     #: feature: one organization reading three Zoho books has three item
     #: masters, and they are not interchangeable.
     connection_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: Which of this company's *catalogues* this file feeds. A company keeps
+    #: several — Kennametal's price lists in one, YG-1's in another — each
+    #: decoded through its own pack into its own file, and a source belongs to
+    #: exactly one of them. Every row written before a company could have more
+    #: than one catalogue reads as the ``default`` catalogue's, which is what
+    #: the migration names the one it already had.
+    catalogue_key: Mapped[str] = mapped_column(String(64), default="default",
+                                               server_default="default")
 
-    #: Which of this company's sources this file *is*. A re-upload under the
+    #: Which of this catalogue's sources this file *is*. A re-upload under the
     #: same key supersedes that one file and leaves the others alone; a new key
     #: adds a source. Nullable because every row written before a company could
     #: have more than one predates the idea — those read as the unnamed source
@@ -5181,8 +5189,21 @@ class CompanyCatalogue(Base):
     from :class:`CompanyCorpus` at any time — which is exactly what makes it
     safe to lose.
 
-    One row per company: a rebuild replaces it. There is no history of
-    superseded catalogues here and there is not meant to be, on
+    **One row per catalogue, several catalogues per company.** A distributor
+    sells more than one manufacturer, and each manufacturer's price lists are
+    decoded through that manufacturer's pack: Kennametal's through ``zcnc``,
+    YG-1's through a YG-1 pack. So a company keeps a catalogue *per
+    manufacturer*, each a set of source files and a pack of its own, built into
+    its own ``products.jsonl`` under
+    ``data/catalogues/<connection_id>/<catalogue_key>/``. What the company
+    *resolves against* is the union of them, written beside those files by
+    ``catalog.union_catalogue`` and never stored here — it is derived from the
+    rows below and rebuilt whenever one of them changes.
+
+    The row exists **before the first build**: it is the catalogue's definition
+    — its key, its name, the pack chosen for it — and ``built_at`` is null until
+    a build stamps it. A rebuild replaces the stamp in place. There is no
+    history of superseded builds here and there is not meant to be, on
     ``customer_item_metrics``' reasoning — it is derived state, and the corpus
     rows behind it are the append-only half.
     """
@@ -5191,6 +5212,23 @@ class CompanyCatalogue(Base):
 
     organization_id: Mapped[str] = mapped_column(String(64), primary_key=True)
     connection_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    #: Which of the company's catalogues this is: a slug derived from the name
+    #: it was created under (``kennametal``, ``yg-1``), stable across renames
+    #: because the directory on disk and every corpus row carry it.
+    #: ``default`` is the one a company had before it could have several.
+    catalogue_key: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                               default="default",
+                                               server_default="default")
+    #: The name a person gave it, for the screen. Empty for a migrated row,
+    #: which the screen shows under its key.
+    name: Mapped[str] = mapped_column(String(255), default="", server_default="")
+    #: The pack *chosen* for this catalogue, as the identifier of one the
+    #: engine ships, resolved to a path by ``catalog.pack_for``. Distinct from
+    #: ``pack_id`` below, which is the engine's own stamp of the nomenclature
+    #: layer a build actually decoded through: the choice is a person's and
+    #: may name a pack the pin no longer has, in which case it resolves to
+    #: nothing rather than to a guess.
+    pack_choice: Mapped[Optional[str]] = mapped_column(String(255))
 
     #: Which corpus this was decoded from, and which pack decoded it. Both are
     #: part of the answer to "which catalogue answered", alongside the stamp.
@@ -5241,4 +5279,6 @@ class CompanyCatalogue(Base):
     schema_version: Mapped[Optional[str]] = mapped_column(String(32))
 
     built_by: Mapped[Optional[str]] = mapped_column(String(64))
-    built_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: Null until the first build: a row is a catalogue's definition first and
+    #: its build report second, and "never built" must not date itself.
+    built_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))

@@ -351,11 +351,13 @@ items link, so **NULL is the common case** and means "not known here", not "no
 such product".
 
 The decoded catalogue itself is not in the database, but the *corpus* it is
-built from is: one row per company (`company_corpora`), because an uploaded
-export has no other durable home on a container with an ephemeral disk. The
-parser runs over that corpus and writes
-`backend/data/catalogues/<connection_id>/products.jsonl` — gitignored, rebuilt
-from the row. Measured on the shipped corpus: **6,717 products, 13,264,167
+built from is: one row per uploaded file (`company_corpora`), filed under the
+company's catalogue it feeds — a company keeps one catalogue per manufacturer
+it sells — because an uploaded export has no other durable home on a
+container with an ephemeral disk. The parser runs over each catalogue's files
+and writes `backend/data/catalogues/<connection_id>/<catalogue_key>/products.jsonl`
+— gitignored, rebuilt from the rows — and the company resolves against the
+union of them under `_union/`. Measured on the shipped corpus: **6,717 products, 13,264,167
 bytes, 1.46 s**. `PieService` holds up to three companies' indexes in memory at
 once, least-recently-used, and answers only from the company a caller names.
 

@@ -55,6 +55,8 @@ def client():
     ensure_org_and_users(s)
     s.add(models.ZohoConnection(connection_id="cx_sls", organization_id="org_pie",
                                 label="SLS Engineers", zoho_organization_id="z1"))
+    s.add(models.CompanyCatalogue(organization_id="org_pie", connection_id="cx_sls",
+                                  catalogue_key="default", name=""))
     s.commit()
     s.close()
 
@@ -82,7 +84,7 @@ def _hdr(c, email="s.menon@pie.example"):
 
 
 def _upload(c, hdr, content, filename, source_key=None, ctype="text/csv"):
-    url = (f"/api/v1/data/catalog/companies/cx_sls/corpus"
+    url = (f"/api/v1/data/catalog/companies/cx_sls/catalogues/default/corpus"
            f"?filename={filename}")
     if source_key is not None:
         url += f"&source_key={source_key}"
@@ -103,8 +105,13 @@ def _price_list_xlsx(rows, headers=("Part No", "Item Description", "Grade",
     return buf.getvalue()
 
 
+def _cat(body):
+    """The company's one catalogue, out of the envelope every action returns."""
+    return next(x for x in body["catalogues"] if x["catalogue_key"] == "default")
+
+
 def _sources(body):
-    return {s["source_key"]: s for s in body["sources"]}
+    return {s["source_key"]: s for s in _cat(body)["sources"]}
 
 
 # ── the nomenclature-only invariant, checked on the artefacts ────────────────
@@ -125,18 +132,18 @@ def test_no_price_survives_from_an_uploaded_price_list(client, tmp_path,
     """
     monkeypatch.setattr(settings, "PIE_CATALOG", tmp_path / "products.jsonl")
     hdr = _hdr(client)
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
+    client.put("/api/v1/data/catalog/companies/cx_sls/catalogues/default/pack",
                json={"pack_id": "zcnc"}, headers=hdr)
     raw = _price_list_xlsx([
         [1234567, "SC DRILL 8.00MM 5XD COOLANT", "KC7315", PRICE, 12],
         [7654321, "INSERT ANSI/ISO TURNING CNMG 120408", "KCP25B", 812.00, 40],
     ])
     body = _upload(client, hdr, raw, "prices.xlsx", "prices.xlsx", XLSX).json()
-    assert body["sources"][0]["ingest"]["commercial_columns_dropped"] == [
+    assert _cat(body)["sources"][0]["ingest"]["commercial_columns_dropped"] == [
         "New ZCNC Price", "Stock Qty"]
 
-    built = client.post("/api/v1/data/catalog/companies/cx_sls/build",
-                        headers=hdr).json()
+    built = _cat(client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build",
+                             headers=hdr).json())
     assert built["records"] == 2
 
     s = client.Maker()
@@ -172,12 +179,12 @@ def test_an_excel_export_decodes_without_being_converted_first(client, tmp_path,
     """
     monkeypatch.setattr(settings, "PIE_CATALOG", tmp_path / "products.jsonl")
     hdr = _hdr(client)
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
+    client.put("/api/v1/data/catalog/companies/cx_sls/catalogues/default/pack",
                json={"pack_id": "zcnc"}, headers=hdr)
     raw = _price_list_xlsx([[1234567, "SC DRILL 8.00MM 5XD COOLANT", "KC7315",
                              PRICE, 1]])
     _upload(client, hdr, raw, "prices.xlsx", "prices.xlsx", XLSX)
-    client.post("/api/v1/data/catalog/companies/cx_sls/build", headers=hdr)
+    client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build", headers=hdr)
 
     decoded = catalog.company_catalog_path("cx_sls").read_text(encoding="utf-8")
     # `dump_stable_json` writes compact separators, so the key and value sit
@@ -201,7 +208,7 @@ def test_a_manufacturers_price_list_shape_decodes(client, tmp_path, monkeypatch)
     """
     monkeypatch.setattr(settings, "PIE_CATALOG", tmp_path / "products.jsonl")
     hdr = _hdr(client)
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
+    client.put("/api/v1/data/catalog/companies/cx_sls/catalogues/default/pack",
                json={"pack_id": "zcnc"}, headers=hdr)
 
     book = Workbook()
@@ -223,8 +230,8 @@ def test_a_manufacturers_price_list_shape_decodes(client, tmp_path, monkeypatch)
     assert ingest["rows_skipped_blank_key"] == 1          # the totals row
     assert ingest["commercial_columns_dropped"] == ["List Price (INR)"]
 
-    built = client.post("/api/v1/data/catalog/companies/cx_sls/build",
-                        headers=hdr).json()
+    built = _cat(client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build",
+                             headers=hdr).json())
     assert built["records"] == 1
     decoded = catalog.company_catalog_path("cx_sls").read_text(encoding="utf-8")
     assert "4210.5" not in decoded
@@ -336,15 +343,15 @@ def test_removing_a_source_leaves_the_built_catalogue_alone(client, tmp_path,
     _upload(client, hdr, header + b"B,SECOND TOOL,KC725M\n", "extra.csv", "extra")
 
     after = client.delete(
-        "/api/v1/data/catalog/companies/cx_sls/sources/extra", headers=hdr).json()
+        "/api/v1/data/catalog/companies/cx_sls/catalogues/default/sources/extra", headers=hdr).json()
     assert list(_sources(after)) == ["master"]
     # Nothing was built in this test, so there is nothing to be stale; the point
     # is that the removal did not build one either.
-    assert after["exists"] is False
-    assert after["built_at"] is None
+    assert _cat(after)["exists"] is False
+    assert _cat(after)["built_at"] is None
 
     gone = client.delete(
-        "/api/v1/data/catalog/companies/cx_sls/sources/extra", headers=hdr)
+        "/api/v1/data/catalog/companies/cx_sls/catalogues/default/sources/extra", headers=hdr)
     assert gone.status_code == 404
 
 
@@ -360,28 +367,28 @@ def test_a_removed_source_marks_the_catalogue_out_of_date(client, tmp_path,
     """
     monkeypatch.setattr(settings, "PIE_CATALOG", tmp_path / "products.jsonl")
     hdr = _hdr(client)
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
+    client.put("/api/v1/data/catalog/companies/cx_sls/catalogues/default/pack",
                json={"pack_id": "zcnc"}, headers=hdr)
     header = b"MM#,Material Description,Grade\n"
     _upload(client, hdr, header + b"A,SC DRILL 6.00MM 3XD,KC7315\n",
             "master.csv", "master")
     _upload(client, hdr, header + b"B,SC DRILL 8.00MM 5XD,KC7315\n",
             "extra.csv", "extra")
-    built = client.post("/api/v1/data/catalog/companies/cx_sls/build",
-                        headers=hdr).json()
+    built = _cat(client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build",
+                             headers=hdr).json())
     assert built["records"] == 2
     assert built["stale"] is False
     assert len(built["built_from"]) == 2
 
-    after = client.delete(
-        "/api/v1/data/catalog/companies/cx_sls/sources/master",
-        headers=hdr).json()
+    after = _cat(client.delete(
+        "/api/v1/data/catalog/companies/cx_sls/catalogues/default/sources/master",
+        headers=hdr).json())
     assert after["stale"] is True
     assert after["exists"] is True            # still a real catalogue
     assert after["records"] == 2              # and still the one that was built
 
-    rebuilt = client.post("/api/v1/data/catalog/companies/cx_sls/build",
-                          headers=hdr).json()
+    rebuilt = _cat(client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build",
+                               headers=hdr).json())
     assert rebuilt["stale"] is False
     assert rebuilt["records"] == 1
 
@@ -400,7 +407,7 @@ def test_the_newest_file_wins_a_collision_and_it_is_counted(client, tmp_path,
     """
     monkeypatch.setattr(settings, "PIE_CATALOG", tmp_path / "products.jsonl")
     hdr = _hdr(client)
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
+    client.put("/api/v1/data/catalog/companies/cx_sls/catalogues/default/pack",
                json={"pack_id": "zcnc"}, headers=hdr)
     header = b"MM#,Material Description,Grade\n"
     _upload(client, hdr, header + b"A,SC DRILL 6.00MM 3XD,KC7315\n",
@@ -408,8 +415,8 @@ def test_the_newest_file_wins_a_collision_and_it_is_counted(client, tmp_path,
     _upload(client, hdr, header + b"A,SC DRILL 8.00MM 5XD,KC7315\n",
             "revised.csv", "revised")
 
-    built = client.post("/api/v1/data/catalog/companies/cx_sls/build",
-                        headers=hdr).json()
+    built = _cat(client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build",
+                             headers=hdr).json())
     assert built["records"] == 1
     assert built["ingest"]["collisions"] == 1
     assert built["ingest"]["collision_examples"] == ["A"]
@@ -433,7 +440,7 @@ def test_a_file_with_its_own_column_names_builds_after_being_mapped(
     """
     monkeypatch.setattr(settings, "PIE_CATALOG", tmp_path / "products.jsonl")
     hdr = _hdr(client)
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
+    client.put("/api/v1/data/catalog/companies/cx_sls/catalogues/default/pack",
                json={"pack_id": "zcnc"}, headers=hdr)
     raw = ("Item Code,Legacy Ref,Particulars,Grade\n"
            "NEW-1,OLD-1,SC DRILL 8.00MM 5XD COOLANT,KC7315\n").encode()
@@ -443,7 +450,7 @@ def test_a_file_with_its_own_column_names_builds_after_being_mapped(
     assert guessed["description"] == "Particulars"
 
     fixed = client.put(
-        "/api/v1/data/catalog/companies/cx_sls/sources/odd/mapping",
+        "/api/v1/data/catalog/companies/cx_sls/catalogues/default/sources/odd/mapping",
         json={"record_id": "Legacy Ref", "description": "Particulars",
               "grade": "Grade"}, headers=hdr).json()
     assert _sources(fixed)["odd"]["mapping"]["record_id"] == "Legacy Ref"
@@ -451,7 +458,7 @@ def test_a_file_with_its_own_column_names_builds_after_being_mapped(
     # visible rather than merely stored.
     assert "Item Code" in _sources(fixed)["odd"]["ingest"]["dropped_columns"]
 
-    client.post("/api/v1/data/catalog/companies/cx_sls/build", headers=hdr)
+    client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build", headers=hdr)
     decoded = catalog.company_catalog_path("cx_sls").read_text(encoding="utf-8")
     assert "OLD-1" in decoded and "NEW-1" not in decoded
 
@@ -471,13 +478,13 @@ def test_a_build_names_the_file_it_could_not_read(client):
     because nothing reached the parser.
     """
     hdr = _hdr(client)
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
+    client.put("/api/v1/data/catalog/companies/cx_sls/catalogues/default/pack",
                json={"pack_id": "zcnc"}, headers=hdr)
     _upload(client, hdr, b"MM#,Material Description,Grade\nA,A TOOL,KC725M\n",
             "master.csv", "master")
     _upload(client, hdr, b"Item Code,Particulars\nB,B TOOL\n",
             "extra.csv", "extra")
-    client.put("/api/v1/data/catalog/companies/cx_sls/sources/extra/mapping",
+    client.put("/api/v1/data/catalog/companies/cx_sls/catalogues/default/sources/extra/mapping",
                json={"record_id": "Item Code", "description": "Particulars"},
                headers=hdr)
 
@@ -491,7 +498,7 @@ def test_a_build_names_the_file_it_could_not_read(client):
     s.commit()
     s.close()
 
-    r = client.post("/api/v1/data/catalog/companies/cx_sls/build", headers=hdr)
+    r = client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build", headers=hdr)
     assert r.status_code == 422
     detail = r.json()["detail"]
     assert detail.startswith("extra.csv:")
@@ -505,7 +512,7 @@ def test_a_mapping_naming_a_column_the_file_lacks_is_refused(client):
     raw = b"MM#,Material Description,Grade\nA,FIRST TOOL,KC725M\n"
     _upload(client, hdr, raw, "master.csv", "master")
     r = client.put(
-        "/api/v1/data/catalog/companies/cx_sls/sources/master/mapping",
+        "/api/v1/data/catalog/companies/cx_sls/catalogues/default/sources/master/mapping",
         json={"record_id": "Nope", "description": "Material Description"},
         headers=hdr)
     assert r.status_code == 422
@@ -564,7 +571,7 @@ def test_the_pack_trial_reports_the_parsers_counts_and_writes_nothing(
     _upload(client, hdr, header + b"A,SC DRILL 8.00MM 5XD COOLANT,KC7315\n",
             "master.csv", "master")
 
-    fit = client.get("/api/v1/data/catalog/companies/cx_sls/pack-fit",
+    fit = client.get("/api/v1/data/catalog/companies/cx_sls/catalogues/default/pack-fit",
                      headers=hdr).json()
     assert fit["available"] is True
     assert [p["pack_id"] for p in fit["packs"]] == ["zcnc"]
@@ -597,7 +604,7 @@ def test_the_pack_trial_says_why_it_has_nothing_to_try(client, monkeypatch):
     # org-layer pack says that instead — so what is asserted is the part that
     # is true of both: a reason is given, and it is not the file's fault.
     monkeypatch.setattr(catalog, "available_packs", list)
-    fit = client.get("/api/v1/data/catalog/companies/cx_sls/pack-fit",
+    fit = client.get("/api/v1/data/catalog/companies/cx_sls/catalogues/default/pack-fit",
                      headers=hdr).json()
     assert fit["available"] is False
     assert fit["packs"] == []
@@ -607,7 +614,7 @@ def test_the_pack_trial_says_why_it_has_nothing_to_try(client, monkeypatch):
     # A pack exists and the company has uploaded nothing: the other cause.
     monkeypatch.setattr(catalog, "available_packs",
                         lambda: [{"id": "zcnc", "path": "/nonexistent"}])
-    fit = client.get("/api/v1/data/catalog/companies/cx_sls/pack-fit",
+    fit = client.get("/api/v1/data/catalog/companies/cx_sls/catalogues/default/pack-fit",
                      headers=hdr).json()
     assert fit["available"] is False
     assert fit["packs"] == []
@@ -624,13 +631,13 @@ def test_the_source_actions_are_owner_only(client):
     for email in ("r.nair@pie.example", "m.rao@pie.example"):
         other = _hdr(client, email)
         assert client.delete(
-            "/api/v1/data/catalog/companies/cx_sls/sources/master",
+            "/api/v1/data/catalog/companies/cx_sls/catalogues/default/sources/master",
             headers=other).status_code == 403
         assert client.put(
-            "/api/v1/data/catalog/companies/cx_sls/sources/master/mapping",
+            "/api/v1/data/catalog/companies/cx_sls/catalogues/default/sources/master/mapping",
             json={"record_id": "MM#", "description": "Material Description"},
             headers=other).status_code == 403
-        assert client.get("/api/v1/data/catalog/companies/cx_sls/pack-fit",
+        assert client.get("/api/v1/data/catalog/companies/cx_sls/catalogues/default/pack-fit",
                           headers=other).status_code == 403
         # Reading stays open.
         assert client.get("/api/v1/data/catalog/companies",
@@ -645,6 +652,9 @@ def test_a_source_of_another_organization_reads_as_absent(client):
     s.add(models.ZohoConnection(connection_id="cx_other",
                                 organization_id="org_else",
                                 label="Someone Else", zoho_organization_id="z9"))
+    s.add(models.CompanyCatalogue(organization_id="org_else",
+                                  connection_id="cx_other",
+                                  catalogue_key="default", name=""))
     s.add(models.CompanyCorpus(organization_id="org_else",
                                connection_id="cx_other",
                                source_key="theirs", filename="theirs.csv",
@@ -653,5 +663,5 @@ def test_a_source_of_another_organization_reads_as_absent(client):
     s.close()
 
     assert client.delete(
-        "/api/v1/data/catalog/companies/cx_other/sources/theirs",
+        "/api/v1/data/catalog/companies/cx_other/catalogues/default/sources/theirs",
         headers=hdr).status_code == 404

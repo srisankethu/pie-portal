@@ -4,11 +4,14 @@ A catalogue is ``products.jsonl`` produced by pie-parser's ``run_parser`` over
 one company's item-master export. It is large (~13 MB) and deterministic, so it
 is gitignored and rebuilt from the corpus rather than committed.
 
-**One catalogue per connected company, and no deployment-wide default.** Each
-company decodes its own uploaded export through its own chosen org-layer pack,
-into ``data/catalogues/<connection_id>/``. A company that has uploaded nothing
-has no catalogue and resolves nothing — which is the honest answer, and the one
-thing that could be worse is answering from another company's.
+**Catalogues belong to a connected company, and there is no deployment-wide
+default.** A company keeps one catalogue *per manufacturer it sells* —
+Kennametal's price lists decoded through Kennametal's pack, YG-1's through
+YG-1's — each into ``data/catalogues/<connection_id>/<catalogue_key>/``, and it
+resolves against the **union** of them, written beside those files under
+``_union/``. A company that has uploaded nothing has no catalogue and resolves
+nothing — which is the honest answer, and the one thing that could be worse is
+answering from another company's.
 
 The corpus that ships inside the pinned submodule (``settings.PIE_CORPUS``,
 ``settings.PIE_PACK``) is the **seed**, not a runtime fallback: on start-up
@@ -26,9 +29,12 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import threading
 import time
+from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -214,7 +220,17 @@ def run_parse(corpus: Path, pack_path: Path, out: Path) -> Dict[str, Any]:
 # ── per connected company ────────────────────────────────────────────────────
 #
 # Everything above this line is generic: a parse, a stamp, and whether the
-# seed corpus is present. Everything below belongs to one connected company.
+# seed corpus is present. Everything below belongs to one connected company —
+# and, within it, to one of that company's catalogues.
+#
+# **A company keeps a catalogue per manufacturer.** A distributor sells
+# Kennametal and YG-1 and a dozen more, and each manufacturer's price lists
+# are decoded through that manufacturer's own pack. So a catalogue is the unit
+# of *building* — its own source files, its own pack, its own
+# ``products.jsonl`` — and the **union** of a company's built catalogues is
+# what that company *resolves against*. The union is derived from the members
+# and rebuilt whenever one of them changes; nothing is stored for it beyond
+# the file and a manifest saying which builds it was made from.
 
 
 #: What an uploaded corpus may weigh. The shipped corpus is 6,717 rows and a
@@ -223,26 +239,97 @@ def run_parse(corpus: Path, pack_path: Path, out: Path) -> Dict[str, Any]:
 #: the bytes are read into memory, not after.
 MAX_CORPUS_BYTES = 32 * 1024 * 1024
 
-#: How many files one company may keep as sources at once. A ceiling rather
+#: How many files one catalogue may keep as sources at once. A ceiling rather
 #: than a limit anyone should reach: a build reads every one of them on every
-#: rebuild, and a company with fifty price lists has a data problem the
-#: catalogue cannot fix. Refused by name, so the answer says what to do
+#: rebuild, and a catalogue with fifty price lists has a data problem the
+#: build cannot fix. Refused by name, so the answer says what to do
 #: (replace a source, or remove one) instead of failing at build time.
 MAX_SOURCES = 20
 
+#: How many catalogues one company may keep. Each is a manufacturer whose
+#: price lists this company decodes, and every one of them is read into the
+#: union the company resolves against — so the ceiling is a memory bound on
+#: that union, not a judgement about how many lines a distributor carries.
+MAX_CATALOGUES = 10
 
-def company_catalog_path(connection_id: str) -> Path:
-    """Where one company's decoded JSONL lives.
+#: The key of the one catalogue a company had before it could have several.
+#: Every corpus row and catalogue row written before then carries it.
+DEFAULT_CATALOGUE = "default"
 
-    Derived and rebuildable: the corpus row is the source of truth, so losing
-    this file costs a rebuild rather than the data. That is the property §1.1
-    of the design doc exists to preserve.
+#: The directory beside a company's catalogues that holds their union. Named
+#: so it cannot collide with a catalogue key, which never starts with an
+#: underscore (see :func:`catalogue_key_for`).
+UNION_DIR = "_union"
+
+#: The name a company's built catalogue carries beside its file, so the union
+#: can be assembled from the disk alone — at start-up, before any session, and
+#: in the resolver, which has none.
+CATALOGUE_SIDECAR = "catalogue.json"
+
+_KEY_STRIP = re.compile(r"[^a-z0-9]+")
+
+
+class CatalogueError(ValueError):
+    """A catalogue could not be created or removed, with the sentence saying why.
+
+    ``status`` is the HTTP status the router answers with, decided here where
+    the reason is known rather than re-derived from the message: a name that
+    yields no key is the caller's input (422), a key already in use or a
+    company at its ceiling is a conflict (409), a pack the engine does not ship
+    is a bad choice (400), a catalogue that is not there is not there (404).
     """
-    return settings.PIE_CATALOG.parent / "catalogues" / connection_id / "products.jsonl"
+
+    def __init__(self, message: str, status: int = 409) -> None:
+        super().__init__(message)
+        self.status = status
+
+
+def catalogue_key_for(name: str) -> str:
+    """The key a catalogue is created under, from the name a person gave it.
+
+    A slug rather than the name itself because the key is a directory on disk
+    and a path segment on the wire — ``Kennametal (2026)`` becomes
+    ``kennametal-2026`` — and it is fixed at creation: the directory and every
+    corpus row carry it, so a later rename must not move them. Refused when
+    nothing is left of the name, and when it would collide with the union's
+    own directory.
+    """
+    key = _KEY_STRIP.sub("-", (name or "").strip().lower()).strip("-")[:64].strip("-")
+    if not key:
+        raise CatalogueError(
+            "A catalogue needs a name with at least one letter or digit in it — "
+            "usually the manufacturer's, like Kennametal or YG-1.", status=422)
+    if key == UNION_DIR.strip("_") or key.startswith("_"):
+        raise CatalogueError(f"{name!r} is not a name a catalogue can have.",
+                             status=422)
+    return key
+
+
+def catalogue_dir(connection_id: str, catalogue_key: str = DEFAULT_CATALOGUE) -> Path:
+    """Where one of a company's catalogues keeps its decoded files."""
+    return settings.PIE_CATALOG.parent / "catalogues" / connection_id / catalogue_key
+
+
+def company_catalog_path(connection_id: str,
+                         catalogue_key: str = DEFAULT_CATALOGUE) -> Path:
+    """Where one of a company's catalogues has its decoded JSONL.
+
+    Derived and rebuildable: the corpus rows are the source of truth, so losing
+    this file costs a rebuild rather than the data. That is the property §1.1
+    of the design doc exists to preserve. One directory per catalogue, so a
+    company's Kennametal and YG-1 files sit beside each other and the union
+    beside both.
+    """
+    return catalogue_dir(connection_id, catalogue_key) / "products.jsonl"
+
+
+def union_catalog_path(connection_id: str) -> Path:
+    """The one file a company resolves against: every built catalogue, merged."""
+    return catalogue_dir(connection_id, UNION_DIR) / "products.jsonl"
 
 
 def available_packs() -> List[Dict[str, str]]:
-    """The org-layer packs the pinned engine ships, for a company to choose from.
+    """The org-layer packs the pinned engine ships, for a catalogue to choose from.
 
     Chosen, never uploaded. A pack is grammars and regexes the engine compiles
     and runs over every row of a corpus, so accepting one from a tenant means
@@ -263,16 +350,14 @@ def available_packs() -> List[Dict[str, str]]:
     return out
 
 
-def pack_for(connection: Any) -> Optional[Path]:
-    """The pack this company decodes through, or None if it has not chosen one.
+def resolve_pack(pack_id: Optional[str]) -> Optional[Path]:
+    """A pack identifier as a path, against what the engine ships — or None.
 
-    Stored on ``ZohoConnection.config["pie_pack"]`` as an *identifier*, resolved
-    to a path here against what the engine ships. An id naming a pack this
-    engine does not have resolves to None rather than to a guess: the pin can
-    move under a stored choice, and answering with a different pack than the one
-    recorded would make the stamp a lie.
+    An id naming a pack this engine does not have resolves to None rather than
+    to a guess: the pin can move under a stored choice, and answering with a
+    different pack than the one recorded would make the stamp a lie.
     """
-    chosen = ((connection.config or {}).get("pie_pack") or "").strip()
+    chosen = (pack_id or "").strip()
     if not chosen:
         return None
     for pack in available_packs():
@@ -281,8 +366,148 @@ def pack_for(connection: Any) -> Optional[Path]:
     return None
 
 
-def current_corpora(session: Any, org: str, connection_id: str) -> List[Any]:
-    """Every file this company's catalogue would be built from, oldest first.
+def pack_for(catalogue: Any) -> Optional[Path]:
+    """The pack one catalogue decodes through, or None if it has not chosen one.
+
+    Stored on ``CompanyCatalogue.pack_choice`` as an *identifier*, resolved to
+    a path here. It used to live on the company (``ZohoConnection.config``)
+    while a company had one catalogue; it is a fact about the catalogue, and
+    ``m1cats`` moved it.
+    """
+    if catalogue is None:
+        return None
+    return resolve_pack(getattr(catalogue, "pack_choice", None))
+
+
+def catalogue_rows(session: Any, org: str, connection_id: str) -> List[Any]:
+    """Every catalogue this company has defined, the default first, then by key.
+
+    Scoped to the organization in the query rather than checked after it: a
+    connection id from another tenant must read as "no catalogues" rather than
+    as a permission error that confirms one exists.
+    """
+    from sqlalchemy import select
+
+    from .domain import models
+
+    rows = list(session.scalars(
+        select(models.CompanyCatalogue)
+        .where(models.CompanyCatalogue.organization_id == org,
+               models.CompanyCatalogue.connection_id == connection_id)))
+    rows.sort(key=lambda r: (r.catalogue_key != DEFAULT_CATALOGUE, r.catalogue_key))
+    return rows
+
+
+def catalogue_row(session: Any, org: str, connection_id: str,
+                  catalogue_key: str) -> Any:
+    """One catalogue's row, or None. Organization-scoped, like the list."""
+    from .domain import models
+
+    row = session.get(models.CompanyCatalogue, (org, connection_id, catalogue_key))
+    return row
+
+
+def catalogue_rows_for_org(session: Any, org: str) -> List[Any]:
+    """Every catalogue of every company in this organization."""
+    from sqlalchemy import select
+
+    from .domain import models
+
+    return list(session.scalars(
+        select(models.CompanyCatalogue)
+        .where(models.CompanyCatalogue.organization_id == org)
+        .order_by(models.CompanyCatalogue.connection_id,
+                  models.CompanyCatalogue.catalogue_key)))
+
+
+def create_catalogue(session: Any, org: str, connection_id: str, name: str,
+                     pack_id: Optional[str] = None) -> Any:
+    """Define a new catalogue for this company: a name, and optionally a pack.
+
+    Nothing is built and nothing is uploaded here; the row is what the files
+    and the build then belong to. Refuses a name that yields no key, a key the
+    company already uses, and a pack the engine does not ship — each with the
+    sentence a person can act on, because a stored definition that cannot
+    build would leave them with a catalogue and no statement of why.
+    """
+    from .domain import models
+
+    key = catalogue_key_for(name)
+    if catalogue_row(session, org, connection_id, key) is not None:
+        raise CatalogueError(
+            f"This company already has a catalogue keyed {key!r}. Add files to "
+            f"that one, or choose a different name.")
+    existing = catalogue_rows(session, org, connection_id)
+    if len(existing) >= MAX_CATALOGUES:
+        raise CatalogueError(
+            f"This company already has {len(existing)} catalogues, which is the "
+            f"limit of {MAX_CATALOGUES}. Remove one first.")
+    if pack_id and resolve_pack(pack_id) is None:
+        known = ", ".join(p["id"] for p in available_packs()) or "none"
+        raise CatalogueError(
+            f"No pack called {pack_id!r} ships with this engine. Available: {known}.",
+            status=400)
+    row = models.CompanyCatalogue(
+        organization_id=org, connection_id=connection_id, catalogue_key=key,
+        name=(name or "").strip()[:255], pack_choice=(pack_id or None))
+    session.add(row)
+    session.flush()
+    return row
+
+
+def rename_catalogue(session: Any, org: str, connection_id: str,
+                     catalogue_key: str, name: str) -> Any:
+    """Give a catalogue a name a person will recognise — the migrated one
+    arrives as ``default`` with none. The key stays: it is the directory and
+    every corpus row's address, and a rename must not move them."""
+    row = catalogue_row(session, org, connection_id, catalogue_key)
+    if row is None:
+        raise CatalogueError("This company has no catalogue by that key.",
+                             status=404)
+    cleaned = (name or "").strip()
+    if not cleaned:
+        raise CatalogueError("A catalogue needs a name.", status=422)
+    row.name = cleaned[:255]
+    session.flush()
+    if row.built_at is not None:
+        write_sidecar(connection_id, catalogue_key, row.name, row.pack_choice,
+                      row.built_at, {k: getattr(row, k) for k in STAMP_FIELDS
+                                     if getattr(row, k, None) is not None},
+                      row.records)
+        refresh_union(connection_id)
+    return row
+
+
+def delete_catalogue(session: Any, org: str, connection_id: str,
+                     catalogue_key: str) -> None:
+    """Remove one of a company's catalogues: its definition, its files, and its
+    place in the union.
+
+    The source rows are **superseded, not deleted**, on the same reasoning as
+    every other change to a corpus: a build that happened keeps a real record
+    of what it was built from, and the bytes are the one thing that cannot be
+    recreated. The decoded files go — they are derived — and the union is
+    refreshed so the company stops resolving against this manufacturer at once
+    rather than at the next rebuild.
+    """
+    import shutil
+
+    row = catalogue_row(session, org, connection_id, catalogue_key)
+    if row is None:
+        raise CatalogueError("This company has no catalogue by that key.",
+                             status=404)
+    now = clock.now()
+    for source in current_corpora(session, org, connection_id, catalogue_key):
+        source.superseded_at = now
+    session.delete(row)
+    session.flush()
+    shutil.rmtree(catalogue_dir(connection_id, catalogue_key), ignore_errors=True)
+    refresh_union(connection_id)
+
+
+def current_corpora(session: Any, org: str, connection_id: str,
+                    catalogue_key: str = DEFAULT_CATALOGUE) -> List[Any]:
+    """Every file one catalogue would be built from, oldest first.
 
     Oldest first because that is the order :func:`combined_corpus` resolves
     collisions in: the newest source wins, so it must be written last.
@@ -300,20 +525,22 @@ def current_corpora(session: Any, org: str, connection_id: str) -> List[Any]:
         select(models.CompanyCorpus)
         .where(models.CompanyCorpus.organization_id == org,
                models.CompanyCorpus.connection_id == connection_id,
+               models.CompanyCorpus.catalogue_key == catalogue_key,
                models.CompanyCorpus.superseded_at.is_(None))
         .order_by(models.CompanyCorpus.uploaded_at.asc(),
                   models.CompanyCorpus.corpus_id.asc())))
 
 
-def current_corpus(session: Any, org: str, connection_id: str) -> Any:
-    """The newest of a company's sources, or None if it has uploaded none.
+def current_corpus(session: Any, org: str, connection_id: str,
+                   catalogue_key: str = DEFAULT_CATALOGUE) -> Any:
+    """The newest of a catalogue's sources, or None if it has none.
 
     Still meaningful with several: it is the file whose arrival a screen dates
     the export by, and the one a collision resolves in favour of. What it is
     *not* any more is the whole of what the catalogue was built from — that is
     :func:`current_corpora`, and the digest over it.
     """
-    sources = current_corpora(session, org, connection_id)
+    sources = current_corpora(session, org, connection_id, catalogue_key)
     return sources[-1] if sources else None
 
 
@@ -333,9 +560,9 @@ def sources_digest(sources: List[Any]) -> str:
 
     Over each source's key and content digest, sorted, so it is a property of
     the *set* rather than of the order it was assembled in. This is what makes
-    "out of date" answerable once a company has several files: adding a source,
-    replacing one and removing one all move this hash, and none of the three is
-    visible in a single ``corpus_id``.
+    "out of date" answerable once a catalogue has several files: adding a
+    source, replacing one and removing one all move this hash, and none of the
+    three is visible in a single ``corpus_id``.
     """
     parts = sorted(f"{source_key_of(s)}:{s.sha256}" for s in sources)
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
@@ -365,13 +592,13 @@ def combined_corpus(sources: List[Any], pack_path: Path, out: Path,
     Three things happen here, and the third is the one with teeth.
 
     *Normalisation* is per source, through the mapping stored with it, into the
-    column names this pack declares — so a company can build from an item
+    column names this pack declares — so a catalogue can build from an item
     master calling the part number ``MM#`` and a price list calling it
     ``Part No`` without either file being edited.
 
     *Streaming*: each source is read row by row and written straight to ``out``.
     Materialising them cost 394 MB of resident memory for one 33 MB file (see
-    ``ingestion.item_master.Table``), and a company may keep twenty.
+    ``ingestion.item_master.Table``), and a catalogue may keep twenty.
 
     *De-duplication* is by record id, and the newest source wins. This is not
     tidying. pie-parser's ``AuthoritativeIndex`` indexes identifiers per
@@ -462,17 +689,20 @@ def combined_corpus(sources: List[Any], pack_path: Path, out: Path,
     }
 
 
-def company_catalog_state(session: Any, org: str, connection_id: str) -> Dict[str, Any]:
-    """One company's catalogue: what is on disk, what built it, and what is missing.
+def company_catalog_state(session: Any, org: str, connection_id: str,
+                          catalogue_key: str = DEFAULT_CATALOGUE) -> Dict[str, Any]:
+    """One catalogue: what is on disk, what built it, and what is missing.
 
     ``exists: False`` is its own state and ``records`` stays ``None`` — a
-    company with no catalogue says nothing about coverage, and rendering that
-    as a zero is the benign default §1 forbids.
+    catalogue with no build says nothing about coverage, and rendering that
+    as a zero is the benign default §1 forbids. A row that has never been
+    built (``built_at`` null) is a *definition*: it reports its name and its
+    pack, and nothing a build would have stamped.
 
     ``stale`` is the one genuinely new fact: a catalogue built from a corpus
     that has since been superseded is still a real catalogue with a real stamp,
-    but it is no longer built from what the company last uploaded. Saying so is
-    the difference between "out of date" and "wrong", and only one of them is
+    but it is no longer built from what was last uploaded. Saying so is the
+    difference between "out of date" and "wrong", and only one of them is
     urgent.
 
     With several sources, staleness is a comparison of *digests over the set* —
@@ -481,15 +711,15 @@ def company_catalog_state(session: Any, org: str, connection_id: str) -> Dict[st
     called that catalogue current. It is kept as the fallback for a row built
     before the digest column existed, where it is still the honest answer.
     """
-    from .domain import models
-
-    row = session.get(models.CompanyCatalogue, (org, connection_id))
-    sources = current_corpora(session, org, connection_id)
+    row = catalogue_row(session, org, connection_id, catalogue_key)
+    built = row is not None and row.built_at is not None
+    sources = current_corpora(session, org, connection_id, catalogue_key)
     corpus = sources[-1] if sources else None
-    path = company_catalog_path(connection_id)
+    path = company_catalog_path(connection_id, catalogue_key)
     on_disk = path.exists()
+    pack = pack_for(row)
 
-    if not row or not sources:
+    if not built or not sources:
         stale = False
     elif row.corpus_digest:
         stale = row.corpus_digest != sources_digest(sources)
@@ -498,30 +728,39 @@ def company_catalog_state(session: Any, org: str, connection_id: str) -> Dict[st
 
     return {
         "connection_id": connection_id,
-        "scope": "company",
-        "exists": bool(row) and on_disk,
+        "catalogue_key": catalogue_key,
+        "name": (row.name if row else "") or "",
+        "scope": "catalogue",
+        # The pack *chosen* for this catalogue, and whether the pinned engine
+        # still ships it. A stored id the engine no longer has resolves to
+        # nothing rather than to a guess — the pin can move under a stored
+        # choice, and answering from a different pack would make the stamp
+        # lie. `stamp.pack_id` below is the engine's own record of what a
+        # build actually decoded through.
+        "pack_id": (row.pack_choice if row else None) or None,
+        "pack_resolved": pack is not None,
+        "exists": built and on_disk,
         # A row without its file is a rebuild waiting to happen, not a
         # catalogue. Named rather than silently treated as absent, because the
         # two have different fixes and only this one is free.
-        "built_but_missing_on_disk": bool(row) and not on_disk,
-        "records": row.records if (row and on_disk) else None,
-        "rows_read": row.rows_read if row else None,
-        "quarantined": row.quarantined if row else None,
-        "duration_s": row.duration_s if row else None,
-        "built_at": clock.iso(clock.aware(row.built_at)) if row else None,
-        "built_by": row.built_by if row else None,
-        "pack": row.pack if row else None,
-        "report": row.report if row else None,
+        "built_but_missing_on_disk": built and not on_disk,
+        "records": row.records if (built and on_disk) else None,
+        "rows_read": row.rows_read if built else None,
+        "quarantined": row.quarantined if built else None,
+        "duration_s": row.duration_s if built else None,
+        "built_at": clock.iso(clock.aware(row.built_at)) if built else None,
+        "built_by": row.built_by if built else None,
+        "pack": row.pack if built else None,
+        "report": row.report if built else None,
         "stamp": ({k: getattr(row, k) for k in STAMP_FIELDS
-                   if getattr(row, k, None) is not None} if row else {}),
+                   if getattr(row, k, None) is not None} if built else {}),
         # What merging the sources did, and — for a built catalogue — which
         # files it read. Kept out of `report`, which is the parser's own dict
         # served verbatim and must not gain fields the parser did not write.
-        "ingest": row.ingest if row else None,
-        "built_from": row.sources if row else None,
+        "ingest": row.ingest if built else None,
+        "built_from": row.sources if built else None,
         # The newest source, kept under its original name: a screen dates a
-        # company's export by the file that arrived last, and one caller
-        # (`master_health`) still asks for one file rather than the set.
+        # catalogue's export by the file that arrived last.
         "corpus": ({
             "corpus_id": corpus.corpus_id,
             "filename": corpus.filename,
@@ -543,18 +782,313 @@ def company_catalog_state(session: Any, org: str, connection_id: str) -> Dict[st
             "ingest": getattr(s, "ingest", None),
         } for s in sources],
         "stale": stale,
-        # The nearest-neighbour index beside the catalogue, if one has been
-        # built: which model, over how many records, and whether it still
-        # describes the file on disk. None before the first build or when the
-        # index could not be written — the catalogue itself is unaffected, and
-        # the next resolution builds the index it needs.
-        "retrieval": retrieval.describe(path) if on_disk else None,
+    }
+
+
+def company_state(session: Any, org: str, connection_id: str) -> Dict[str, Any]:
+    """Every catalogue this company has defined, and the union it resolves against.
+
+    The union is described from its manifest — which builds it holds, how
+    many records, how many part numbers two catalogues both claimed — and
+    ``None`` when nothing is built, which is the honest shape for a company
+    that resolves nothing.
+    """
+    return {
+        "catalogues": [company_catalog_state(session, org, connection_id,
+                                             row.catalogue_key)
+                       for row in catalogue_rows(session, org, connection_id)],
+        "union": union_state(connection_id),
+    }
+
+
+def _sidecar_path(connection_id: str, catalogue_key: str) -> Path:
+    return catalogue_dir(connection_id, catalogue_key) / CATALOGUE_SIDECAR
+
+
+def write_sidecar(connection_id: str, catalogue_key: str, name: str,
+                  pack_choice: Optional[str], built_at: Any,
+                  stamp: Dict[str, Any], records: int) -> None:
+    """What a built catalogue says about itself beside its file.
+
+    The union is assembled from the disk alone — in the resolver, which has no
+    session, and at start-up before any request — so the facts it needs
+    (which catalogue this is, when it was built, what stamp its rows carry)
+    travel with the file rather than only in the row.
+    """
+    payload = {
+        "catalogue_key": catalogue_key,
+        "name": name or "",
+        "pack_choice": pack_choice,
+        "built_at": clock.iso(clock.aware(built_at)) if built_at else None,
+        "stamp": dict(stamp),
+        "records": records,
+    }
+    path = _sidecar_path(connection_id, catalogue_key)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(payload, sort_keys=True, indent=1), encoding="utf-8")
+    os.replace(tmp, path)
+
+
+def built_catalogues(connection_id: str) -> List[Dict[str, Any]]:
+    """Every catalogue this company has on disk, from the directory alone.
+
+    Each is the sidecar's facts plus the file's size and modification time —
+    the two things that say whether the union made from it is still current.
+    A directory holding a ``products.jsonl`` without a sidecar (a catalogue
+    linked in by hand, or one built before sidecars existed) is still a
+    catalogue; its key is its directory and its stamp is read off its rows.
+    """
+    root = settings.PIE_CATALOG.parent / "catalogues" / connection_id
+    if not root.is_dir():
+        return []
+    out: List[Dict[str, Any]] = []
+    for entry in sorted(root.iterdir()):
+        if entry.name == UNION_DIR or entry.name.startswith("_") or not entry.is_dir():
+            continue
+        products = entry / "products.jsonl"
+        if not products.is_file():
+            continue
+        try:
+            meta = json.loads((entry / CATALOGUE_SIDECAR).read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            meta = {}
+        stat = products.stat()
+        out.append({
+            "catalogue_key": entry.name,
+            "name": str(meta.get("name") or ""),
+            "pack_choice": meta.get("pack_choice"),
+            "built_at": meta.get("built_at") or clock.iso(
+                clock.aware(datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc))),
+            "stamp": dict(meta.get("stamp") or catalog_stamp(products)),
+            "path": str(products),
+            "size": stat.st_size,
+            "mtime_ns": stat.st_mtime_ns,
+        })
+    return out
+
+
+@dataclass
+class UnionCatalogue:
+    """A company's built catalogues merged into the one file it resolves against."""
+
+    path: Path
+    #: What a resolution is stamped with: a hash over every member's key and
+    #: ``run_id``. The run id is pie-parser's own fingerprint of a build — the
+    #: input bytes plus the ruleset checksum — so this moves when any member
+    #: is rebuilt from different files or through a different pack, and stays
+    #: put across an identical rebuild. The ruleset checksum alone would not
+    #: do: it is the *pack's* hash, the same for two companies decoding
+    #: different item masters through ``zcnc``, and a resolution cache keyed
+    #: on it would hand one company the other's answer. Empty when any
+    #: member's stamp could not be read — and an empty version is never
+    #: cached, which is the safe direction.
+    version: str
+    records: int
+    #: Part numbers two catalogues both claimed inside one numbering space.
+    duplicates: int
+    duplicate_examples: List[str]
+    catalogues: List[Dict[str, Any]]
+
+
+_union_lock = threading.Lock()
+
+
+def _union_manifest_path(connection_id: str) -> Path:
+    return catalogue_dir(connection_id, UNION_DIR) / "union.json"
+
+
+def _members_fingerprint(members: List[Dict[str, Any]]) -> List[List[Any]]:
+    return [[m["catalogue_key"], m["size"], m["mtime_ns"]] for m in members]
+
+
+def _union_version(members: List[Dict[str, Any]]) -> str:
+    """See :attr:`UnionCatalogue.version`. One rule whatever the count, so the
+    value means the same thing for a company with one catalogue as for one
+    with five."""
+    run_ids = [str((m.get("stamp") or {}).get("run_id") or "") for m in members]
+    if not members or not all(run_ids):
+        return ""
+    parts = sorted(f"{m['catalogue_key']}:{r}" for m, r in zip(members, run_ids))
+    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
+
+
+def _read_manifest(connection_id: str) -> Optional[Dict[str, Any]]:
+    try:
+        return json.loads(_union_manifest_path(connection_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+
+
+def union_catalogue(connection_id: str) -> Optional[UnionCatalogue]:
+    """The file this company resolves against, made current if it is not.
+
+    Assembled from :func:`built_catalogues` — the disk, not the database — so
+    it can be built wherever a catalogue can be read: in the resolver, at
+    start-up, in a test that linked a file into place. ``None`` when the
+    company has no built catalogue, which is "resolves nothing" and must not
+    be an empty file that reads as a catalogue of nothing.
+
+    **De-duplicated across catalogues, and counted.** Two catalogues can claim
+    one part number inside the same numbering space — two Kennametal price
+    lists kept as two catalogues, say — and pie-parser's ``AuthoritativeIndex``
+    treats a duplicate identifier inside one namespace as a collision that
+    never resolves, exactly as it does inside one catalogue
+    (:func:`combined_corpus`). The most recently *built* catalogue wins, on the
+    same reasoning as newest-file-wins there, and the count is reported so a
+    person can see that two of their catalogues overlap. A part number two
+    manufacturers both use is not a duplicate: their records sit in different
+    namespaces and the engine reports a bare lookup of it as ambiguous, which
+    is the right answer.
+
+    Each union record carries ``catalogue_key`` — the one portal field added
+    to a decoded record — so a resolution can say which manufacturer's
+    catalogue answered without a second map to keep in step with the file.
+
+    Rebuilt only when a member's file has changed (size or modification time),
+    which the manifest beside the union records. Deterministic in the members,
+    so an identical rebuild produces identical bytes.
+    """
+    members = built_catalogues(connection_id)
+    out = union_catalog_path(connection_id)
+    with _union_lock:
+        if not members:
+            if out.exists():
+                import shutil
+                shutil.rmtree(out.parent, ignore_errors=True)
+            return None
+        manifest = _read_manifest(connection_id)
+        if (manifest and out.exists()
+                and manifest.get("members") == _members_fingerprint(members)):
+            return UnionCatalogue(
+                path=out, version=str(manifest.get("version") or ""),
+                records=int(manifest.get("records") or 0),
+                duplicates=int(manifest.get("duplicates") or 0),
+                duplicate_examples=list(manifest.get("duplicate_examples") or []),
+                catalogues=list(manifest.get("catalogues") or []))
+        return _write_union(connection_id, members, out)
+
+
+def _write_union(connection_id: str, members: List[Dict[str, Any]],
+                 out: Path) -> UnionCatalogue:
+    root = str(settings.PIE_PARSER_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    try:
+        from identity.store import record_namespace  # noqa: PLC0415
+    except ImportError:  # the engine is absent: the same rule, stated once more
+        def record_namespace(rec: Dict[str, Any]) -> str:  # type: ignore[misc]
+            return str(rec.get("org_id") or rec.get("pack_id")
+                       or rec.get("manufacturer") or rec.get("brand") or "")
+
+    # Newest build first, so the first record seen for a key is the one kept.
+    # The key breaks a tie between two builds stamped the same instant, so the
+    # outcome is a function of the members and never of directory order.
+    ordered = sorted(members, key=lambda m: (m["built_at"] or "", m["catalogue_key"]),
+                     reverse=True)
+    seen: set = set()
+    duplicates: Dict[str, str] = {}
+    records = 0
+    per_catalogue: List[Dict[str, Any]] = []
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        for member in ordered:
+            kept = 0
+            with Path(member["path"]).open("r", encoding="utf-8") as src:
+                for line in src:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    key = (str(record_namespace(rec)).strip().upper(),
+                           str(rec.get("record_id") or "").strip().upper())
+                    if key[1] and key in seen:
+                        duplicates.setdefault(key[1], member["catalogue_key"])
+                        continue
+                    seen.add(key)
+                    rec["catalogue_key"] = member["catalogue_key"]
+                    fh.write(json.dumps(rec, sort_keys=True, separators=(",", ":"))
+                             + "\n")
+                    kept += 1
+            records += kept
+            per_catalogue.append({
+                "catalogue_key": member["catalogue_key"],
+                "name": member["name"],
+                "pack_id": member["pack_choice"],
+                "built_at": member["built_at"],
+                "records": kept,
+                **{k: member["stamp"].get(k) for k in
+                   ("ruleset_checksum", "run_id", "pack_version", "org_id")
+                   if member["stamp"].get(k) is not None},
+            })
+    os.replace(tmp, out)
+    per_catalogue.sort(key=lambda c: (c["catalogue_key"] != DEFAULT_CATALOGUE,
+                                      c["catalogue_key"]))
+    union = UnionCatalogue(
+        path=out, version=_union_version(members), records=records,
+        duplicates=len(duplicates), duplicate_examples=sorted(duplicates)[:10],
+        catalogues=per_catalogue)
+    manifest = {
+        "members": _members_fingerprint(members),
+        "version": union.version, "records": union.records,
+        "duplicates": union.duplicates,
+        "duplicate_examples": union.duplicate_examples,
+        "catalogues": union.catalogues,
+    }
+    mtmp = _union_manifest_path(connection_id).with_suffix(".json.tmp")
+    mtmp.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
+    os.replace(mtmp, _union_manifest_path(connection_id))
+    log.info("union catalogue for connection %s: %d records from %d catalogue(s), "
+             "%d duplicated across them", connection_id, records, len(members),
+             len(duplicates))
+    return union
+
+
+def refresh_union(connection_id: str) -> Optional[UnionCatalogue]:
+    """Bring the union up to date after a build or a removal, and make the
+    resolver forget what it had loaded for this company.
+
+    The index beside the union is rebuilt here too rather than on the first
+    resolution, for the reason a build used to index its own file: three
+    seconds at build time, where a person is already waiting, is better than
+    three seconds on the first quote line.
+    """
+    union = union_catalogue(connection_id)
+    if union is not None:
+        _index_for_retrieval(union.path)
+    # Imported here rather than at the top: `pie_service` imports this module.
+    from .pie_service import pie_service  # noqa: PLC0415
+
+    pie_service.reload(connection_id)
+    return union
+
+
+def union_state(connection_id: str) -> Optional[Dict[str, Any]]:
+    """The union as the screen reports it, or None when nothing is built."""
+    union = union_catalogue(connection_id)
+    if union is None:
+        return None
+    return {
+        "records": union.records,
+        "version": union.version or None,
+        "duplicates": union.duplicates,
+        "duplicate_examples": union.duplicate_examples,
+        "catalogues": union.catalogues,
+        # The nearest-neighbour index beside the union, if one has been built:
+        # which model, over how many records, and whether it still describes
+        # the file on disk. None when the index could not be written — the
+        # union itself is unaffected, and the next resolution builds the index
+        # it needs.
+        "retrieval": retrieval.describe(union.path),
     }
 
 
 def build_for_company(session: Any, org: str, connection_id: str,
-                      pack_path: Path, actor: Optional[str] = None) -> Dict[str, Any]:
-    """Decode every file this company has uploaded, through its chosen pack.
+                      pack_path: Path, actor: Optional[str] = None,
+                      catalogue_key: str = DEFAULT_CATALOGUE) -> Dict[str, Any]:
+    """Decode every file one catalogue holds, through its pack, and refresh
+    the union the company resolves against.
 
     The merged corpus is written to a temporary file for the parse and removed
     after: pie-parser's ``CsvAdapter`` reads a path, and the durable copies are
@@ -563,9 +1097,9 @@ def build_for_company(session: Any, org: str, connection_id: str,
     survive.
 
     Stores the run report and the stamp as a row rather than a sidecar file,
-    for the same reason. Raises ``FileNotFoundError`` when the company has
-    uploaded nothing, which is a state to report rather than an error to log,
-    and ``ingestion.item_master.ItemMasterError`` when one of its files can no
+    for the same reason. Raises ``FileNotFoundError`` when the catalogue has
+    no files, which is a state to report rather than an error to log, and
+    ``ingestion.item_master.ItemMasterError`` when one of its files can no
     longer be read as a table — named per file, because "the build failed" over
     six sources is not something a person can act on.
     """
@@ -573,30 +1107,30 @@ def build_for_company(session: Any, org: str, connection_id: str,
 
     from .domain import models
 
-    sources = current_corpora(session, org, connection_id)
+    sources = current_corpora(session, org, connection_id, catalogue_key)
     if not sources:
         raise FileNotFoundError(
-            "This company has no item-master export on file. Upload one "
-            "before building its catalogue.")
+            "This catalogue has no price list or item-master export on file. "
+            "Upload one before building it.")
 
-    out = company_catalog_path(connection_id)
+    out = company_catalog_path(connection_id, catalogue_key)
     with _build_lock:
         tmpdir = tempfile.mkdtemp(prefix="pie-corpus-")
         tmp_corpus = Path(tmpdir) / "corpus.csv"
         try:
             combine = combined_corpus(sources, pack_path, tmp_corpus)
             result = run_parse(tmp_corpus, pack_path, out)
-            _index_for_retrieval(out)
         finally:
             # The bytes are in the rows; nothing is lost by removing them here,
             # and leaving a tenant's item master in /tmp is a disclosure.
             tmp_corpus.unlink(missing_ok=True)
             Path(tmpdir).rmdir()
 
-    row = session.get(models.CompanyCatalogue, (org, connection_id))
+    row = catalogue_row(session, org, connection_id, catalogue_key)
     if row is None:
         row = models.CompanyCatalogue(organization_id=org,
-                                      connection_id=connection_id)
+                                      connection_id=connection_id,
+                                      catalogue_key=catalogue_key)
         session.add(row)
     row.corpus_id = sources[-1].corpus_id
     row.corpus_digest = sources_digest(sources)
@@ -618,17 +1152,20 @@ def build_for_company(session: Any, org: str, connection_id: str,
     row.built_by = actor
     row.built_at = clock.now()
     session.flush()
-    return company_catalog_state(session, org, connection_id)
+    write_sidecar(connection_id, catalogue_key, row.name, row.pack_choice,
+                  row.built_at, result["stamp"], result["records"])
+    refresh_union(connection_id)
+    return company_catalog_state(session, org, connection_id, catalogue_key)
 
 
 def _index_for_retrieval(out: Path) -> None:
-    """Build the catalogue's nearest-neighbour index, and never fail the build.
+    """Build the union's nearest-neighbour index, and never fail the build.
 
     The index is derived from the file just written, and ``retrieval`` rebuilds
     a missing or stale one on first use — so a failure here costs the first
     resolution a rebuild, where failing the build would cost the company its
-    catalogue. Logged at warning, and visible on the screen as a catalogue
-    with no index.
+    catalogue. Logged at warning, and visible on the screen as a union with
+    no index.
     """
     try:
         retrieval.ensure_index(out)
@@ -643,7 +1180,7 @@ def prepare_source(raw: bytes, filename: str = "", content_type: str = "",
     """Read an upload as a table, settle its column mapping, and say what it holds.
 
     Called *before* the row is written rather than at build time: an upload that
-    is accepted and then fails to build leaves the company holding a file it
+    is accepted and then fails to build leaves the catalogue holding a file it
     cannot use and no message saying why. It lives here rather than in the
     router, which stays a mapping layer (§3).
 
@@ -671,8 +1208,9 @@ def prepare_source(raw: bytes, filename: str = "", content_type: str = "",
 
 
 def pack_fit(session: Any, org: str, connection_id: str,
-             sample_rows: int = 0) -> Dict[str, Any]:
-    """Try every shipped pack against a sample of this company's files.
+             sample_rows: int = 0,
+             catalogue_key: str = DEFAULT_CATALOGUE) -> Dict[str, Any]:
+    """Try every shipped pack against a sample of one catalogue's files.
 
     Which pack decodes an export is not a question a person can answer from a
     dropdown of identifiers — ``zcnc`` says nothing about whether it reads
@@ -696,13 +1234,13 @@ def pack_fit(session: Any, org: str, connection_id: str,
 
     sample_rows = sample_rows or item_master.SAMPLE_ROWS
     packs = available_packs()
-    sources = current_corpora(session, org, connection_id)
+    sources = current_corpora(session, org, connection_id, catalogue_key)
     if not packs:
         return {"available": False, "reason": source_state()["reason"] or (
             "This engine ships no org-layer packs."), "packs": []}
     if not sources:
         return {"available": False, "reason": (
-            "This company has no item-master export on file yet, so there is "
+            "This catalogue has no item-master export on file yet, so there is "
             "nothing to try a pack against."), "packs": []}
 
     out: List[Dict[str, Any]] = []
@@ -721,8 +1259,8 @@ def pack_fit(session: Any, org: str, connection_id: str,
                     # Reported against that pack rather than raised: a pack the
                     # engine ships but cannot run on this file is precisely
                     # what the trial is for, and it must not hide the others.
-                    log.info("pack %s could not decode %s: %s",
-                             pack["id"], connection_id, e)
+                    log.info("pack %s could not decode %s/%s: %s",
+                             pack["id"], connection_id, catalogue_key, e)
                     out.append({"pack_id": pack["id"],
                                 "error": f"{type(e).__name__}: {e}"})
                     continue
@@ -756,8 +1294,8 @@ def seed_company_catalogues(session: Any,
     catalogue built from ``settings.PIE_CORPUS``. Removing that default without
     putting it somewhere turns every quote line UNRESOLVED on deploy — a
     regression that looks exactly like the engine being down. So the corpus
-    becomes the first company's corpus, once, and the pack it was decoded
-    through becomes that company's pack.
+    becomes the first company's *default* catalogue's corpus, once, and the
+    pack it was decoded through becomes that catalogue's pack.
 
     Deliberately conservative, because it writes on somebody's behalf:
 
@@ -768,7 +1306,7 @@ def seed_company_catalogues(session: Any,
       first — because which of three legal entities sells this catalogue's
       product is a question this function cannot answer, and guessing three
       times is worse than guessing once;
-    * an existing ``pie_pack`` choice is left alone;
+    * an existing pack choice on that catalogue is left alone;
     * a missing corpus file seeds nothing and is not an error. The engine is
       optional in ``deploy/backend.Dockerfile``, so an image built without it
       has no seed to give — and that deployment was not resolving before this
@@ -802,6 +1340,7 @@ def seed_company_catalogues(session: Any,
         session.add(models.CompanyCorpus(
             organization_id=org,
             connection_id=first.connection_id,
+            catalogue_key=DEFAULT_CATALOGUE,
             # Keyed by its filename like any other source, so the company can
             # replace or remove the seed from the screen once it has its own
             # export. No mapping is stored: the shipped corpus uses the shipped
@@ -816,13 +1355,18 @@ def seed_company_catalogues(session: Any,
             content=raw,
             uploaded_by=actor,
         ))
-        # The pack the shipped corpus is decoded through, and only where the
-        # company has not chosen one. `pack_for` resolves an *identifier*
-        # against what this engine ships, so the id is what is stored.
-        if pack_for(first) is None:
-            config = dict(first.config or {})
-            config["pie_pack"] = settings.PIE_PACK.name
-            first.config = config
+        # The catalogue the seed belongs to, defined if it is not, and given the
+        # pack the shipped corpus is decoded through where none is chosen.
+        # `pack_for` resolves an *identifier* against what this engine ships,
+        # so the id is what is stored.
+        row = catalogue_row(session, org, first.connection_id, DEFAULT_CATALOGUE)
+        if row is None:
+            row = models.CompanyCatalogue(
+                organization_id=org, connection_id=first.connection_id,
+                catalogue_key=DEFAULT_CATALOGUE, name="")
+            session.add(row)
+        if pack_for(row) is None:
+            row.pack_choice = settings.PIE_PACK.name
         session.flush()
         log.info("seeded the shipped corpus to company %s of organization %s",
                  first.connection_id, org)
@@ -830,26 +1374,54 @@ def seed_company_catalogues(session: Any,
     return out
 
 
+def _adopt_legacy_file(connection_id: str, row: Any) -> None:
+    """Move a catalogue built before catalogues had directories into place.
+
+    Before a company could keep several, its one file was
+    ``catalogues/<connection_id>/products.jsonl``. Moved rather than rebuilt:
+    the bytes are the ones the row's stamp describes, a move costs nothing
+    where a rebuild costs a parse per company at boot, and the retrieval index
+    beside it is derived from those same bytes so it moves too. Only when the
+    new place is empty — a file already built there is newer knowledge.
+    """
+    root = settings.PIE_CATALOG.parent / "catalogues" / connection_id
+    legacy = root / "products.jsonl"
+    target = company_catalog_path(connection_id, DEFAULT_CATALOGUE)
+    if not legacy.is_file() or target.exists():
+        return
+    target.parent.mkdir(parents=True, exist_ok=True)
+    for name in ("products.jsonl", "products.quarantine.jsonl", "retrieval.jsonl"):
+        if (root / name).is_file():
+            os.replace(root / name, target.parent / name)
+    if row.built_at is not None:
+        write_sidecar(connection_id, DEFAULT_CATALOGUE, row.name, row.pack_choice,
+                      row.built_at, {k: getattr(row, k) for k in STAMP_FIELDS
+                                     if getattr(row, k, None) is not None},
+                      row.records)
+    log.info("adopted the pre-catalogue file for company %s into %s",
+             connection_id, target.parent)
+
+
 def ensure_company_catalogues(session: Any,
                               actor: str = "auto-build") -> List[Dict[str, Any]]:
-    """Build any company catalogue whose corpus is on record but whose file is not.
+    """Build any catalogue whose corpus is on record but whose file is not.
 
-    The catalogue is derived: the corpus row is durable and the JSONL is not,
+    The catalogue is derived: the corpus rows are durable and the JSONL is not,
     so a redeploy onto a container with a fresh disk arrives with every company
     holding a corpus and no catalogue. Rebuilding here is what makes that a
-    two-second start-up cost rather than an administrator noticing, days later,
-    that resolution has quietly stopped.
+    two-second start-up cost per catalogue rather than an administrator
+    noticing, days later, that resolution has quietly stopped.
 
-    Honours ``AUTO_BUILD_CATALOG``: with it off, a company reports NOT BUILT
+    Honours ``AUTO_BUILD_CATALOG``: with it off, a catalogue reports NOT BUILT
     and somebody builds it from the screen. Never falls back to another
     company's catalogue — that is the one outcome worse than an empty screen.
 
-    **Commits per company**, which is unusual for a function taking a session
+    **Commits per catalogue**, which is unusual for a function taking a session
     and is CLAUDE.md §4's rule rather than an exception to it: this is a
-    long-running write, a company is its natural boundary, and holding one
+    long-running write, a build is its natural boundary, and holding one
     transaction across several two-second parses is exactly the shape that made
     ``/api/health`` answer "database is locked" during a sync. It also means a
-    company that fails to build does not roll back the ones that succeeded.
+    catalogue that fails to build does not roll back the ones that succeeded.
     """
     from .domain import models
 
@@ -859,28 +1431,33 @@ def ensure_company_catalogues(session: Any,
         return []
 
     out: List[Dict[str, Any]] = []
-    for org, connection_id in session.execute(
+    for org, connection_id, catalogue_key in session.execute(
             select(models.CompanyCorpus.organization_id,
-                   models.CompanyCorpus.connection_id)
+                   models.CompanyCorpus.connection_id,
+                   models.CompanyCorpus.catalogue_key)
             .where(models.CompanyCorpus.superseded_at.is_(None))
             .distinct()):
-        if company_catalog_path(connection_id).exists():
+        row = catalogue_row(session, org, connection_id, catalogue_key)
+        if catalogue_key == DEFAULT_CATALOGUE and row is not None:
+            _adopt_legacy_file(connection_id, row)
+        if company_catalog_path(connection_id, catalogue_key).exists():
             continue
-        connection = session.get(models.ZohoConnection, connection_id)
-        pack = pack_for(connection) if connection is not None else None
+        pack = pack_for(row)
         if pack is None:
-            log.info("company %s has a corpus but no pack this engine ships; "
-                     "its catalogue is NOT BUILT until one is chosen",
-                     connection_id)
+            log.info("catalogue %s of company %s has files but no pack this engine "
+                     "ships; it is NOT BUILT until one is chosen",
+                     catalogue_key, connection_id)
             continue
         try:
-            build_for_company(session, org, connection_id, pack, actor=actor)
+            build_for_company(session, org, connection_id, pack, actor=actor,
+                              catalogue_key=catalogue_key)
             session.commit()
-        except Exception:  # noqa: BLE001 — one company must not stop the boot
-            log.exception("could not build the catalogue for company %s",
-                          connection_id)
+        except Exception:  # noqa: BLE001 — one catalogue must not stop the boot
+            log.exception("could not build catalogue %s for company %s",
+                          catalogue_key, connection_id)
             session.rollback()
             continue
-        log.info("built the catalogue for company %s", connection_id)
-        out.append({"organization_id": org, "connection_id": connection_id})
+        log.info("built catalogue %s for company %s", catalogue_key, connection_id)
+        out.append({"organization_id": org, "connection_id": connection_id,
+                    "catalogue_key": catalogue_key})
     return out

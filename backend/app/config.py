@@ -120,11 +120,12 @@ class Settings:
     # directory; the nomenclature layer is reached through the manifest and is
     # never named here.
     #
-    # This is a per-*company* choice, and it is stored per company:
-    # `zoho_connections.config["pie_pack"]` holds the id, resolved against what
-    # the engine ships by `catalog.pack_for`. What is left here is the default
-    # the seed uses and the fallback `master_health --pack` takes, naming the
-    # only org layer the pinned engine has.
+    # This is a per-*catalogue* choice, and it is stored per catalogue — a
+    # company keeps one catalogue per manufacturer it sells, and
+    # `company_catalogues.pack_choice` holds the id, resolved against what the
+    # engine ships by `catalog.pack_for`. What is left here is the default the
+    # seed uses and the fallback `master_health --pack` takes, naming the only
+    # org layer the pinned engine has.
     PIE_PACK: Path = _path_env("PIE_PACK",
                                PIE_PARSER_ROOT / "packs" / "org" / "zcnc")
 

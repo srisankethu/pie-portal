@@ -1,6 +1,6 @@
 # Per-company decoded catalogues
 
-**Status: built, both parts, plus §10.** PR 1 brought the tables, upload, pack
+**Status: built, both parts, plus §10, §12 and §13.** PR 1 brought the tables, upload, pack
 selection, per-company build and the screen; PR 2 was the cutover — the quote
 names its company, the resolution API gained its argument and its refusal, the
 shipped corpus became a *seed*, and the deployment-wide catalogue was removed.
@@ -509,6 +509,97 @@ default §1 forbids.
   the item master is a question `item_master` cannot answer, and concatenating a
   "Discontinued" tab into the catalogue is worse than reading one sheet. It is
   logged, not surfaced. A sheet picker is the obvious fix if a real file needs it.
+
+## 13. Several catalogues per company, one per manufacturer (built)
+
+**What was wrong.** A company had one catalogue: one set of files, one pack,
+one `products.jsonl`, and the pack was a fact about the *company*
+(`zoho_connections.config["pie_pack"]`). A distributor does not sell one
+manufacturer. Kennametal's price lists decode through Kennametal's pack and
+YG-1's through a YG-1 pack, and "which pack does this company use" has no
+single answer — so the second manufacturer's files either went into the
+wrong catalogue or nowhere.
+
+**The grain is now the catalogue.** `company_catalogues` is keyed
+`(organization_id, connection_id, catalogue_key)` and carries the catalogue's
+definition — `name`, `pack_choice` — as well as its build; a row exists from
+the moment a catalogue is *created* and `built_at` stays null until it is
+built. `company_corpora.catalogue_key` says which catalogue a file feeds. The
+key is a slug of the name given at creation (`Kennametal (2026)` →
+`kennametal-2026`), fixed for the catalogue's life because it is the directory
+on disk and every corpus row's address; a rename changes only the name.
+`m1cats` re-keys the table in place on Postgres (a batch recreate would have
+dropped `h2rls`'s policy), files every existing row under `default`, and
+copies the connection's pack choice onto that row; the app never reads the
+config key again.
+
+On disk: `data/catalogues/<connection_id>/<catalogue_key>/products.jsonl`
+with a `catalogue.json` sidecar (key, name, pack, build time, stamp) so the
+union below can be assembled from the disk alone. A file built before
+catalogues had directories is moved into `default/` at boot
+(`catalog._adopt_legacy_file`) — moved, not rebuilt: its bytes are the ones
+its row's stamp describes.
+
+**What a company resolves against is the union.** `catalog.union_catalogue`
+concatenates every built catalogue into
+`data/catalogues/<connection_id>/_union/products.jsonl`, and that one file is
+what `pie_service._view` loads and hands the engine as `pie_data`. The
+engine's identity step reads one file (`resolve_rfq._identity_resolver`), and
+a union file keeps that step exactly as it is — no engine change, no second
+index to keep in step. Each union record carries one portal field,
+`catalogue_key`, which is how a `Candidate` and the resolution API's
+`product.catalogue` say which manufacturer's catalogue answered;
+`engine.catalogues[]` lists the members with their own stamps.
+
+Two rules inside the union, both stated because they are policy:
+
+- **De-duplicated across catalogues, newest build wins, counted.** Two
+  catalogues through one pack share one identity namespace (pie-parser's
+  `record_namespace` is the org pack id), and `AuthoritativeIndex` treats a
+  duplicate inside one namespace as a collision that never resolves — so a
+  union that kept both rows would silently stop that part number resolving.
+  The most recently built catalogue's row is kept, on the same reasoning as
+  newest-file-wins inside a catalogue, and the count and examples are
+  reported on the screen. A part number two *manufacturers* both use sits in
+  two namespaces and is not a duplicate; a bare lookup of it is ambiguous,
+  which is the right answer. Refusing two catalogues per pack was considered
+  and rejected: it blocks a legitimate split (Kennametal and WIDIA as two
+  catalogues through `zcnc`) and it would have made this feature untestable
+  against the one pack that ships.
+- **The version is over run ids, not the ruleset checksum.**
+  `catalog_version` used to be the pack's own hash, identical for every
+  catalogue `zcnc` decodes — so two companies with different item masters
+  shared resolution-cache keys, and one could be served the other's answer.
+  The union's version is a hash over each member's `catalogue_key` and
+  `run_id` (input bytes plus ruleset), one rule whatever the count. It moves
+  when any member is rebuilt from different files or through a different
+  pack and stays put across an identical rebuild. The resolution API still
+  reports it under `engine.ruleset_checksum`; each catalogue's own checksum
+  is in `engine.catalogues[]`.
+
+The union is rebuilt when a member's file changes (size or mtime, recorded
+in `_union/union.json`), eagerly after every build and removal
+(`catalog.refresh_union`, which also drops the resident view — the
+`pie_service.reload` that nothing used to call after a build) and lazily on
+first load. The retrieval index and the dense sidecar are built beside the
+union, since the union is what is searched; the per-catalogue files carry
+none.
+
+**Screen and routes.** Every catalogue route nests under
+`/catalog/companies/{connection_id}/catalogues/{catalogue_key}/…`, with
+`POST …/catalogues` to define one, `PATCH` to rename and `DELETE` to remove
+(files superseded, never deleted; union refreshed at once). The Decoded
+catalogue screen shows a company as a surface holding one section per
+catalogue — its own files, pack, build and census — and the union's facts
+once. A source ceiling is per catalogue; `MAX_CATALOGUES` (10) bounds the
+union.
+
+**Accepted, and stated.** The union manifest is overwritten on every
+refresh, so a composite version on an append-only quote snapshot names *a*
+set of builds but cannot be decomposed once a member has been rebuilt; the
+per-line `catalogue` the API reports is the durable half. A replica that
+never reloaded serves its resident union until eviction, as it did the
+single file before.
 
 ## 12. Retrieval: the nearest descriptions as extra options (built)
 

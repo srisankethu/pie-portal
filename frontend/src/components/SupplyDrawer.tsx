@@ -227,10 +227,15 @@ export function SupplyDrawer({
                   )}
                 </div>
                 <div style={{ fontSize: 12.5, marginTop: 4 }}>{c.desc}</div>
-                {c.grade && (
+                {(c.grade || c.catalogue) && (
                   <div className="text-muted" style={{ fontSize: 11.5 }}>
-                    grade {c.grade}
+                    {c.grade ? `grade ${c.grade}` : ""}
                     {c.brand ? ` · ${c.brand}` : ""}
+                    {/* Which of the company's catalogues — which manufacturer's
+                        — this record is from. A company resolves against every
+                        catalogue it has built at once, so a part number's
+                        provenance is not complete without it. */}
+                    {c.catalogue ? ` · catalogue ${c.catalogue}` : ""}
                   </div>
                 )}
                 {c.reason && <div className="reason">{c.reason}</div>}

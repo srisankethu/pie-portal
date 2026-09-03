@@ -800,12 +800,22 @@ export interface PackFit {
   }[];
 }
 
-export interface CompanyCatalogue {
+/** One of a company's decoded catalogues: one manufacturer's files, decoded
+ *  through that manufacturer's pack.
+ *
+ *  A distributor sells Kennametal and YG-1 and more, and each one's price
+ *  lists decode through a different pack — so a company keeps one catalogue
+ *  per manufacturer, each with its own files, pack, build and stamp, and
+ *  resolves against the union of them (`CatalogueUnion`). The key is the
+ *  catalogue's address on disk and in every union row; the name is only what
+ *  the screen calls it, and may be empty for a catalogue migrated from before
+ *  names existed. */
+export interface CompanyCatalogueEntry {
   connection_id: string;
-  label: string;
-  enabled: boolean;
+  catalogue_key: string;
+  name: string;
   scope: string;
-  /** The pack id stored against this company, and whether the pinned engine
+  /** The pack id stored against this catalogue, and whether the pinned engine
    *  still ships it. A stored id the engine no longer has resolves to nothing
    *  rather than to a guess. */
   pack_id: string | null;
@@ -815,7 +825,7 @@ export interface CompanyCatalogue {
   /** A catalogue row whose file is gone: a rebuild waiting to happen, not an
    *  absent catalogue. Different fix, so it is its own field. */
   built_but_missing_on_disk: boolean;
-  /** null, never 0, when nothing is built — a company with no catalogue says
+  /** null, never 0, when nothing is built — a catalogue that is not built says
    *  nothing about coverage. */
   records: number | null;
   rows_read: number | null;
@@ -833,9 +843,9 @@ export interface CompanyCatalogue {
     uploaded_at: string;
     uploaded_by: string | null;
   } | null;
-  /** Every file this company's catalogue would be built from. One company can
-   *  keep several — an ERP item master, a manufacturer's range extension, a
-   *  price list — and the build merges them. */
+  /** Every file this catalogue would be built from. One catalogue can keep
+   *  several — an ERP item master, a manufacturer's range extension, a price
+   *  list — and the build merges them. */
   sources: CompanySource[];
   /** What merging them did, at the last build. Null before the first one. */
   ingest: CompanyCombine | null;
@@ -845,12 +855,41 @@ export interface CompanyCatalogue {
                 sha256: string }[] | null;
   /** Built from a set of sources that has since changed — one replaced, added
    *  or removed. Still a real catalogue with a real stamp, just not built from
-   *  what this company now holds. Out of date, not wrong. */
+   *  what this catalogue now holds. Out of date, not wrong. */
   stale: boolean;
-  /** The nearest-neighbour index beside the catalogue: which embedding model
-   *  built it, over how many records, and whether it still describes the file
-   *  on disk. Null before the first build, or when the build could not write
-   *  it — the next resolution builds one. The catalogue itself is unaffected
+}
+
+/** What one company actually resolves against: every built catalogue it
+ *  keeps, merged. Null when none is built, which is the honest shape for a
+ *  company that resolves nothing.
+ *
+ *  Described from the union's own manifest, never recounted here. A part
+ *  number two catalogues both claimed is a `duplicate` — the most recently
+ *  built catalogue's row is the one kept, and the count is reported because
+ *  that is a policy somebody has to know about. */
+export interface CatalogueUnion {
+  records: number;
+  version: string | null;
+  duplicates: number;
+  duplicate_examples: string[];
+  /** The built catalogues the union holds, with what each contributed after
+   *  duplicates were resolved — so a catalogue can be absent from here while
+   *  present on the company, if it is not built. */
+  catalogues: {
+    catalogue_key: string;
+    name: string;
+    pack_id: string | null;
+    built_at: string | null;
+    records: number;
+    ruleset_checksum?: string;
+    run_id?: string;
+    pack_version?: string;
+    org_id?: string;
+  }[];
+  /** The nearest-neighbour index beside the union: which embedding model
+   *  built it, over how many records, and whether it still describes the
+   *  file on disk. Null before the first build, or when the build could not
+   *  write it — the next resolution builds one. The union is unaffected
    *  either way; retrieval only ever adds options beneath the engine's own. */
   retrieval: {
     model_id: string;
@@ -859,6 +898,21 @@ export interface CompanyCatalogue {
     current: boolean;
     min_similarity: number;
   } | null;
+}
+
+/** One connected company: its catalogues, and the union they make.
+ *
+ *  Every mutating catalogue endpoint returns this whole envelope rather than
+ *  the one catalogue it touched, because a build or a removal changes the
+ *  union too — a screen that swapped in one entry would show a union from
+ *  before the change. */
+export interface CompanyCatalogue {
+  connection_id: string;
+  label: string;
+  enabled: boolean;
+  scope: string;
+  catalogues: CompanyCatalogueEntry[];
+  union: CatalogueUnion | null;
 }
 
 /** One remembered phrase: what a customer asked for in their own words and
@@ -913,6 +967,9 @@ export interface CompanyCatalogues {
   packs: { id: string; path: string }[];
   source: CatalogSource;
   max_corpus_bytes: number;
+  /** How many catalogues one company may keep. A ceiling, not a target — the
+   *  add control says when it is reached rather than failing on submit. */
+  max_catalogues: number;
   can_manage: boolean;
 }
 

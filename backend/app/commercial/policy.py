@@ -559,12 +559,13 @@ def load_for_org(session: Session, organization_id: str) -> CommercialThresholds
 
 def _family_vocabulary(session: Session,
                        organization_id: str) -> Optional[tuple]:
-    """Every family name this organization's companies can actually decode.
+    """Every family name this organization's catalogues can actually decode.
 
-    The union, not one company's, because a margin policy is the
-    organization's: a family that only the second company sells is still a
-    family this policy prices, and validating against a single pack would
-    refuse a name that decodes perfectly well for the company that uses it.
+    The union, not one catalogue's, because a margin policy is the
+    organization's: a family that only the second company — or only one
+    manufacturer's catalogue — sells is still a family this policy prices, and
+    validating against a single pack would refuse a name that decodes
+    perfectly well for the catalogue that uses it.
     Narrower than "accept anything": a name no company's pack declares still
     cannot be saved, which is the whole point of checking.
 
@@ -573,13 +574,15 @@ def _family_vocabulary(session: Session,
     refuse rather than wave the edit through.
     """
     from .. import catalog
-    from ..ingestion.connections import list_connections
     from ..pie_service import pack_families
 
     names: set = set()
     read_any = False
-    for connection in list_connections(session, organization_id):
-        pack = catalog.pack_for(connection)
+    # Every catalogue of every company: a company keeps one per manufacturer,
+    # each decoded through its own pack, and a family only YG-1's pack
+    # declares is still a family this policy prices.
+    for row in catalog.catalogue_rows_for_org(session, organization_id):
+        pack = catalog.pack_for(row)
         if pack is None:
             continue
         families = pack_families(pack)

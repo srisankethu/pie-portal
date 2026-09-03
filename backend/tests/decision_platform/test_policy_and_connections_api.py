@@ -68,8 +68,12 @@ def _connect_a_company(c, pack: str = ""):
     """
     s = c.Maker()
     s.add(models.ZohoConnection(connection_id="cx_policy", organization_id="org_pie",
-                                label="SLS Engineers", zoho_organization_id="zpack",
-                                config={"pie_pack": pack or settings.PIE_PACK.name}))
+                                label="SLS Engineers", zoho_organization_id="zpack"))
+    # The pack is a catalogue's, not the company's: a company keeps one
+    # catalogue per manufacturer, each decoded through its own pack.
+    s.add(models.CompanyCatalogue(organization_id="org_pie", connection_id="cx_policy",
+                                  catalogue_key="default", name="",
+                                  pack_choice=pack or settings.PIE_PACK.name))
     s.commit()
     s.close()
 

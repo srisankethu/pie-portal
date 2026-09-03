@@ -84,8 +84,10 @@ def test_a_stale_stored_family_key_does_not_block_unrelated_edits(session, monke
     # The vocabulary is the union of this organization's companies' packs, so
     # the organization needs a company before any family edit can be judged.
     session.add(models.ZohoConnection(connection_id="cx_stale", organization_id=org,
-                                      label="Stale Co", zoho_organization_id="zs",
-                                      config={"pie_pack": settings.PIE_PACK.name}))
+                                      label="Stale Co", zoho_organization_id="zs"))
+    session.add(models.CompanyCatalogue(organization_id=org, connection_id="cx_stale",
+                                        catalogue_key="default", name="",
+                                        pack_choice=settings.PIE_PACK.name))
     session.flush()
 
     # History: the override was saved under an older pack that declared the

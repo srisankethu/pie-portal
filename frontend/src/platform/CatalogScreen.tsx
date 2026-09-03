@@ -67,6 +67,7 @@ import { CatalogSources, fileSize, megabytes } from "./CatalogSources";
 import { ErrorState, LoadingState, PercentageValue, StatusChip } from "./kit";
 import type { CompanyCatalogue, CompanyCatalogues as View, PackFit,
               PlatformSession } from "./types";
+import { CatalogLearning } from "./CatalogLearning";
 import { Bp, Labelled, Tip } from "./ui";
 import { formatDateTime, since } from "../when";
 
@@ -608,6 +609,8 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
         {!view.can_manage && " Uploading and building are owner actions."}
         <Tip text="A quote resolves against the catalogue of the company it is raised from, and never against another company's — an answer from the wrong item master would carry a real provenance stamp for the wrong product." />
       </p>
+
+      <CatalogLearning session={session} />
     </div>
   );
 }

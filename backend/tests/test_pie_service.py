@@ -955,3 +955,105 @@ def test_the_vocabulary_is_memoised_per_store_and_catalogue(monkeypatch):
                          Bands.default(), view=view, customer_scope=OTHER,
                          mapping_store=store)
     assert len(builds) == 1
+
+
+# ── a learned word reaches the ranking ───────────────────────────────────────
+#
+# The vocabulary's readings widen the search beneath the ranking. One reading
+# may reach the ranking itself: a family the engine could not decode, when the
+# tenant's quotes have taught the word, is appended in the engine's own
+# vocabulary and the line resolved again. These pin when that happens, when it
+# does not, and that the reading is reported beside the ranking it changed.
+
+def _result(family=None):
+    spec = {"product_family": family} if family else {}
+    return _requirement([], spec, outcome="UNRESOLVED")
+
+
+def test_a_learned_family_is_given_to_the_ranking_only_when_the_engine_decoded_none():
+    store = _bohrer_store()
+    view = _view_with([_DRILL, _TURNING])
+    queries = []
+
+    def run(query):
+        queries.append(query)
+        return _result("solid_carbide_drill") if query.endswith(" drill") else _result()
+
+    out = pie_service._with_ranking_reading("bohrer 12mm", _result(), run, view, OTHER, store)
+    assert queries == ["bohrer 12mm drill"]
+    assert out["_ranking_reading"]["token"] == "BOHRER"
+    assert out["_ranking_reading"]["word"] == "drill"
+    assert out["understood_spec"]["engine_spec"]["product_family"] == "solid_carbide_drill"
+
+    # The engine already decoded a family: nothing is appended, nothing re-run.
+    queries.clear()
+    same = pie_service._with_ranking_reading(
+        "bohrer 12mm", _result("turning_insert"), run, view, OTHER, store)
+    assert queries == [] and "_ranking_reading" not in same
+
+
+def test_a_reading_the_engine_does_not_take_up_is_dropped():
+    """The word was appended and the engine still decoded no family, or a
+    different one: the first result stands and nothing claims a reading."""
+    store = _bohrer_store()
+    view = _view_with([_DRILL])
+
+    stubborn = pie_service._with_ranking_reading(
+        "bohrer 12mm", _result(), lambda q: _result(), view, OTHER, store)
+    assert "_ranking_reading" not in stubborn
+
+    other = pie_service._with_ranking_reading(
+        "bohrer 12mm", _result(), lambda q: _result("reamer"), view, OTHER, store)
+    assert "_ranking_reading" not in other
+
+
+def test_too_few_quotes_teach_the_ranking_nothing():
+    queries = []
+    out = pie_service._with_ranking_reading(
+        "bohrer 12mm", _result(), lambda q: queries.append(q) or _result("solid_carbide_drill"),
+        _view_with([_DRILL]), OTHER, _bohrer_store(n=2))
+    assert queries == [] and "_ranking_reading" not in out
+
+
+def test_the_reading_is_reported_beside_the_ranking_it_changed():
+    from app.pie_service import Bands
+
+    result = _result("solid_carbide_drill")
+    result["_ranking_reading"] = {"token": "BOHRER", "field": "product_family",
+                                  "value": "solid_carbide_drill", "support": 5,
+                                  "agreeing": 5, "share": 1.0, "scope": "tenant",
+                                  "word": "drill"}
+    res = pie_service._map("bohrer 12mm", result, Bands.default(),
+                           view=_view_with([_DRILL]), customer_scope=OTHER,
+                           mapping_store=_bohrer_store())
+    assert any("Read 'BOHRER' as drill" in n and "5 of 5 quotes" in n for n in res.notes)
+    assert res.retrieval["ranking_reading"]["word"] == "drill"
+
+
+def test_a_learned_word_makes_the_real_engine_rank_the_family():
+    """End to end: the engine has no grammar for BOHRER and decodes no family
+    from "bohrer 12mm"; taught by three quotes, it ranks 12 mm drills."""
+    from sqlalchemy.orm import sessionmaker
+
+    import dbsupport
+    from app.identity import service as identity_service
+    from app.identity.mapping_store import OrgMappingStore
+
+    session = sessionmaker(bind=dbsupport.fresh_engine())()
+    try:
+        for d in (8, 10, 12):
+            identity_service.record_phrase_alias(
+                session, "org_test", identity_id=PITTI, phrase=f"bohrer {d}mm",
+                target_record_id="4149315", source_ref="quote q1", user_id="u1")
+        store = OrgMappingStore(session, "org_test")
+    finally:
+        session.close()
+    res = pie_service.resolve("bohrer 12mm", customer_scope=OTHER,
+                              mapping_store=store, connection_id=COMPANY)
+
+    assert res.retrieval and res.retrieval.get("ranking_reading", {}).get("word") == "drill"
+    ranked = [c for c in res.candidates if not c.retrieved]
+    assert ranked, "the engine ranked nothing even with the family reading"
+    assert all(c.attributes.get("product_family") == "solid_carbide_drill" for c in ranked)
+    assert all(c.attributes.get("cutting_dia_mm") == 12 for c in ranked)
+    assert any("Read 'BOHRER' as drill" in n for n in res.notes)

@@ -329,6 +329,9 @@ class _View:
     #: ``None`` is not yet tried; ``False`` is tried and unavailable, remembered
     #: so a missing index is not re-attempted per line.
     retriever: Any = None
+    #: The dense re-ranker, when a model directory is configured; ``False``
+    #: once tried and unavailable, like ``retriever``.
+    reranker: Any = None
 
 
 class PieService:
@@ -738,19 +741,26 @@ class PieService:
             if view.retriever is None:
                 view.retriever = self._load_retriever(view)
 
-            key = self._cache_key(text, customer_scope, mapping_store, view.version)
-            result = self._cached_result(key)
-            if result is None:
-                args = self._make_args(text, customer_scope, mapping_store,
+            def run(query: str) -> Dict[str, Any]:
+                key = self._cache_key(query, customer_scope, mapping_store, view.version)
+                cached = self._cached_result(key)
+                if cached is not None:
+                    return cached
+                args = self._make_args(query, customer_scope, mapping_store,
                                        catalog_path=view.path)
-                result, _human = mod.run(args, view.sources)
+                fresh, _human = mod.run(args, view.sources)
                 if key is not None:
                     # A copy, so the object handed to ``_map`` below — and to
                     # every Candidate that keeps a reference into it — cannot
                     # be reached from the cache. A Line built from a cached
                     # resolution that shared its ``attributes`` dict would let
                     # one quote's edit change another's.
-                    _resolution_cache.set(key, copy.deepcopy(result))
+                    _resolution_cache.set(key, copy.deepcopy(fresh))
+                return fresh
+
+            result = run(text)
+            result = self._with_ranking_reading(
+                text, result, run, view, customer_scope, mapping_store)
             return self._map(text, result, bands or Bands.default(), view,
                              customer_scope=customer_scope,
                              mapping_store=mapping_store)
@@ -907,6 +917,15 @@ class PieService:
         retrieved, retrieval_info = self._retrieved(
             view, text, result, exclude={c.code for c in cands},
             customer_scope=customer_scope, mapping_store=mapping_store)
+        reading = result.get("_ranking_reading")
+        if reading:
+            notes.append(
+                f"Read {reading['token']!r} as {reading['word']} — "
+                f"{'this customer' if reading['scope'] == 'customer' else 'this tenant'}"
+                f"'s usage in {reading['agreeing']} of {reading['support']} quotes. "
+                f"The ranking below was made with that reading; confirm it fits.")
+            if retrieval_info is not None:
+                retrieval_info["ranking_reading"] = reading
         if (cands and self._is_discriminating(cands) and outcome != "UNRESOLVED"
                 and not cands[0].unverified
                 # Appending the reference last is not enough on its own: when
@@ -979,11 +998,56 @@ class PieService:
         if settings.RETRIEVAL_TOP_K <= 0:
             return False
         try:
-            return retrieval.ensure_index(view.path)
+            index = retrieval.ensure_index(view.path)
+            if view.reranker is None:
+                embedder = retrieval.embedder_from_settings(settings.EMBEDDER_MODEL_DIR)
+                view.reranker = (retrieval.DenseReranker(view.path, embedder)
+                                 if embedder is not None else False)
+            return index
         except Exception:  # noqa: BLE001 — retrieval must not take the line down
             log.warning("retrieval index for %s unavailable; resolving without "
                         "nearest-neighbour candidates", view.path, exc_info=True)
             return False
+
+    def _with_ranking_reading(self, text: str, result: Dict[str, Any], run: Any,
+                              view: "_View", customer_scope: Optional[str],
+                              mapping_store: Any) -> Dict[str, Any]:
+        """Give the engine's ranking one learned word, when it decoded no family.
+
+        The vocabulary's readings widen the *search* beneath the ranking; this
+        is the one place a reading reaches the ranking itself. Only when the
+        engine decoded no ``product_family`` from the text — a line it could
+        not place at all — and only a family reading whose family has a word
+        the engine's own fuzzy decoder reads (``FAMILY_WORDS``): the text is
+        resolved again with that word appended, so the engine applies its own
+        family gate and ranks within the family, and the second result is
+        used only if it did decode the family. The original text stays the
+        line's; the reading is written into the result so ``_map`` reports it
+        beside the ranking it changed. Nothing is invented: the engine still
+        decodes every dimension itself and still scores every record.
+        """
+        try:
+            spec = ((result.get("understood_spec") or {}).get("engine_spec")) or {}
+            if spec.get("product_family") or not text:
+                return result
+            vocabulary = self._vocabulary(mapping_store, view)
+            if vocabulary is None:
+                return result
+            reading = retrieval.Vocabulary.ranking_reading(
+                vocabulary.hints(text, customer_scope))
+            if reading is None:
+                return result
+            hint, word = reading
+            second = run(f"{text} {word}")
+            spec2 = ((second.get("understood_spec") or {}).get("engine_spec")) or {}
+            if spec2.get("product_family") != hint.value:
+                return result
+            second = dict(second)
+            second["_ranking_reading"] = {**hint.to_dict(), "word": word}
+            return second
+        except Exception:  # noqa: BLE001 — a reading must never take the line down
+            log.exception("could not apply a learned reading to the ranking for %r", text)
+            return result
 
     def _vocabulary(self, mapping_store: Any, view: "_View") -> Any:
         """What this tenant's words mean against this company's catalogue,
@@ -1100,6 +1164,12 @@ class PieService:
             hits = retriever.search(
                 expanded, k=settings.RETRIEVAL_TOP_K,
                 exclude=set(exclude) | {h.record_id for h in alias_hits})
+            # By meaning, when a dense model is configured: the same
+            # candidates, re-ordered by what the text means rather than how
+            # it is spelt. Provenance beside each; the score stays the engine's.
+            reranker = getattr(view, "reranker", None)
+            if reranker and hits:
+                hits = reranker.rerank(text, hits, lambda rid: self._record(view, rid))
             spec = ((result.get("understood_spec") or {}).get("engine_spec")) or {}
             out: List[Candidate] = []
             for hit in [*alias_hits, *hits]:
@@ -1131,8 +1201,11 @@ class PieService:
                     "field_breakdown": geo.get("field_matches"),
                 })
                 if alias is None:
+                    dense = getattr(hit, "dense_similarity", None)
                     reason = (f"Nearest catalogue description to this text "
-                              f"({hit.similarity:.2f} similar), not a ranked match. ")
+                              f"({hit.similarity:.2f} similar"
+                              + (f", {dense:.2f} by meaning" if dense is not None else "")
+                              + "), not a ranked match. ")
                 elif alias_kind == "phrase":
                     reason = (f"This customer was quoted this product before for "
                               f"{alias!r} ({hit.similarity:.2f} similar to this "
@@ -1175,6 +1248,7 @@ class PieService:
                          # search was widened and argue with the evidence.
                          "vocabulary": [h.to_dict() for h in hints],
                          "vocabulary_pairs": vocabulary.pairs if vocabulary else 0,
+                         "dense_model": reranker.model_id if reranker else None,
                          # The confirmed codes searched for this customer, and
                          # how many of the offers came through one. Zero when
                          # the line names no customer or the customer has none

@@ -43,6 +43,7 @@ packages import, so nothing here may reach ``ai/``.
 from __future__ import annotations
 
 from .aliases import AliasHit, AliasIndex
+from .dense import DenseEmbedder, DenseReranker, RerankedHit, embedder_from_settings
 from .embedder import HashedNgramEmbedder, tokens
 from .vocabulary import Hint, Vocabulary
 from .index import (
@@ -57,7 +58,8 @@ from .index import (
 )
 
 __all__ = [
-    "MIN_SIMILARITY", "AliasHit", "AliasIndex", "HashedNgramEmbedder", "Hint",
-    "Hit", "RetrievalIndex", "Stamp", "Vocabulary",
+    "MIN_SIMILARITY", "AliasHit", "AliasIndex", "DenseEmbedder", "DenseReranker",
+    "HashedNgramEmbedder", "Hint", "Hit", "RerankedHit", "RetrievalIndex", "Stamp",
+    "Vocabulary", "embedder_from_settings",
     "describe", "document_text", "ensure_index", "index_path_for", "tokens",
 ]

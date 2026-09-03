@@ -861,6 +861,51 @@ export interface CompanyCatalogue {
   } | null;
 }
 
+/** One remembered phrase: what a customer asked for in their own words and
+ *  the product a person put on the quote for it. Offered back beneath the
+ *  engine's ranking on a similar line; never an identity. */
+export interface PhraseAlias {
+  alias_id: string;
+  identity_id: string;
+  customer: string;
+  phrase: string;
+  target_record_id: string;
+  source_ref: string;
+  recorded_by: string | null;
+  created_at: string;
+}
+
+export interface PhraseAliases {
+  aliases: PhraseAlias[];
+  can_manage: boolean;
+}
+
+/** How the suggestion layers are doing, counted from this organization's
+ *  stored quotes. Every share is null, never 0, when there is nothing to take
+ *  a share of. See backend `app/retrieval/report.py`. */
+export interface RetrievalReport {
+  organization_id: string;
+  since: string | null;
+  drafts: number;
+  counts: {
+    lines: number; auto_selected: number; chosen_by_person: number;
+    chosen_from_ranking: number; chosen_from_retrieval: number;
+    chosen_from_confirmed_code: number; chosen_from_phrase: number;
+    typed_unoffered: number; left_open: number;
+  };
+  shares: {
+    found_beneath_ranking: number | null;
+    typed_unoffered: number | null;
+    auto_selected: number | null;
+  };
+  learned: {
+    phrase_aliases: number; confirmed_codes: number;
+    customers_with_aliases: number; training_pairs_floor: number;
+  };
+  triggers: { ranking: number; meaning: number };
+  readings: string[];
+}
+
 export interface CompanyCatalogues {
   scope: string;
   companies: CompanyCatalogue[];

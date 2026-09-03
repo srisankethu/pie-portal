@@ -50,6 +50,22 @@ ATTRIBUTE_FIELDS = (
     "coating", "coating_process", "material_class", "series", "grade",
 )
 
+#: A learned family, as the word the engine's own fuzzy decoder reads it by.
+#: These are terms from pie-parser's ``resolver/lookups/product_category.csv``
+#: whose category is one of the engine's real families — the only families a
+#: word can become a hard gate for. A family with no such word (a grooving
+#: insert, a drill tip) cannot be taught to the ranking this way, and is not.
+#: Written out rather than read from the engine's lookup: this is the portal's
+#: statement of which readings it will feed back, and a pack edit must not
+#: silently widen it.
+FAMILY_WORDS = {
+    "solid_carbide_drill": "drill",
+    "solid_carbide_endmill": "end mill",
+    "turning_insert": "turning insert",
+    "milling_insert": "milling insert",
+    "reamer": "reamer",
+}
+
 #: Words that are about the request rather than the product, and would
 #: otherwise learn whatever the tenant sells most of.
 STOPWORDS = frozenset({
@@ -191,6 +207,20 @@ class Vocabulary:
                 if tok not in extra:
                     extra.append(tok)
         return extra
+
+    @staticmethod
+    def ranking_reading(hints: Iterable[Hint]) -> Optional[Tuple[Hint, str]]:
+        """The one learned reading the engine's ranking may be given, if any:
+        a ``product_family`` hint whose family has a word the fuzzy decoder
+        reads, so the engine can apply its own family gate. The strongest
+        such hint, ties by family name. None when there is none — the
+        ranking is then left exactly as the engine made it."""
+        family_hints = sorted(
+            (h for h in hints if h.field == "product_family" and h.value in FAMILY_WORDS),
+            key=lambda h: (-h.agreeing, -h.support, h.value))
+        if not family_hints:
+            return None
+        return family_hints[0], FAMILY_WORDS[family_hints[0].value]
 
     @staticmethod
     def agreeing(hints: Iterable[Hint], record: Mapping[str, Any]) -> List[Hint]:

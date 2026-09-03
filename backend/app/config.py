@@ -136,6 +136,13 @@ class Settings:
     # 0 turns retrieval off; the engine's own answer is unchanged either way.
     RETRIEVAL_TOP_K: int = int(os.environ.get("PIE_RETRIEVAL_TOP_K", "5"))
 
+    # A directory holding model.onnx + tokenizer.json for a dense embedder
+    # that re-ranks retrieval candidates by meaning (app/retrieval/dense.py).
+    # Unset means none: retrieval matches on spelling, as before.
+    EMBEDDER_MODEL_DIR: Optional[Path] = (
+        Path(os.environ["PIE_EMBEDDER_MODEL_DIR"])
+        if os.environ.get("PIE_EMBEDDER_MODEL_DIR") else None)
+
     # Deployment environment. "production" turns on hard guards (real auth secret
     # required, demo-seed disabled). Anything else is treated as dev/test.
     APP_ENV: str = os.environ.get("APP_ENV", "development")

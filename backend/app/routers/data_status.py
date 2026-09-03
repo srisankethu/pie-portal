@@ -1032,6 +1032,72 @@ def catalog_companies(
     }
 
 
+@router.get("/catalog/aliases")
+def phrase_aliases(
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """What the system remembers for this organization's customers: every
+    active phrase alias, newest first, with the customer it was quoted for.
+
+    Managers may read it — it is the sales team's own vocabulary, and a
+    manager needs to see what a salesperson taught. Retiring one is an
+    owner's act, below.
+    """
+    from ..identity import service as identity_service
+
+    labels = {row.identity_id: row.label for row in session.scalars(
+        select(models.CustomerIdentity).where(
+            models.CustomerIdentity.organization_id == principal.organization_id))}
+    rows = identity_service.active_phrase_aliases(session, principal.organization_id)
+    rows.sort(key=lambda r: (r.created_at, r.alias_id), reverse=True)
+    return {
+        "aliases": [{
+            "alias_id": r.alias_id,
+            "identity_id": r.identity_id,
+            "customer": labels.get(r.identity_id) or r.identity_id,
+            "phrase": r.phrase,
+            "target_record_id": r.target_record_id,
+            "source_ref": r.source_ref,
+            "recorded_by": r.recorded_by_user_id,
+            "created_at": clock.iso(clock.aware(r.created_at)),
+        } for r in rows],
+        "can_manage": principal.role is Role.OWNER,
+    }
+
+
+@router.delete("/catalog/aliases/{alias_id}")
+def retire_phrase_alias(
+    alias_id: str,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Stop offering a remembered phrase. Deactivates; never deletes."""
+    from ..identity import service as identity_service
+
+    row = identity_service.retire_phrase_alias(
+        session, principal.organization_id, alias_id=alias_id,
+        user_id=principal.user_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND,
+                            "No such remembered phrase in this organization.")
+    return {"retired": row.alias_id}
+
+
+@router.get("/catalog/retrieval-report")
+def retrieval_report(
+    since: Optional[date] = None,
+    principal: Principal = Depends(require_manager_or_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """How the suggestion layers are doing for this organization, from the
+    quotes it has stored — the numbers the next investment decisions rest on.
+    See ``app/retrieval/report.py`` for what each one counts."""
+    from ..retrieval import report
+
+    return report.report_for(session, principal.organization_id, since=since)
+
+
 def _company(session: Session, principal: Principal, connection_id: str):
     """The caller's own connection, or a 404 that does not confirm it exists."""
     from ..ingestion.connections import ConnectionNotFound, get_connection

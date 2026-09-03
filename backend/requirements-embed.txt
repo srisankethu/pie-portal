@@ -1,0 +1,6 @@
+# Optional: a dense, meaning-aware embedder run locally (app/retrieval/dense.py).
+# Install only on a deployment that sets PIE_EMBEDDER_MODEL_DIR; without these
+# the hashed n-gram retrieval answers exactly as before.
+onnxruntime>=1.18
+tokenizers>=0.19
+numpy>=1.26

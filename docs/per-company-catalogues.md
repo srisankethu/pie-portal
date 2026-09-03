@@ -705,11 +705,96 @@ writer the quote screen uses, under the same rules, so a backfilled alias
 differs from a live one only in its `source_ref`. `enquiry` lines are not
 pairs — a disposition names a quote, not a product — so they are not read.
 
-**What this is not, yet.** A hint could also enter the engine's *ranking*, by
-translating a learned word into one the pack's fuzzy decoder reads (`BOHRER`
-→ `drill`) before resolution, so the family gate applies and the ranking
-means something. That is the next step if the widened search proves to find
-the right records but the ranking keeps abstaining on them. It needs the
-resolution run twice on such lines and a canonical-word table per attribute,
-and it is deliberately not done here: the options layer is where learning is
-cheap to be wrong in.
+**A reading reaching the ranking (built).** One learned reading may enter the
+engine's *ranking*, and only one kind: a `product_family` the engine could
+not decode from the text, when the tenant's quotes have taught the word and
+the family has a word the engine's own fuzzy decoder reads (`FAMILY_WORDS`:
+`BOHRER` → `drill`). `pie_service._with_ranking_reading` resolves the line
+again with that word appended; the second result is used only if the engine
+did decode that family from it, so the engine still applies its own gate and
+decodes every dimension itself. The line keeps its original text, the note
+says "Read 'BOHRER' as drill — this tenant's usage in 5 of 5 quotes; the
+ranking below was made with that reading", and `engine.retrieval.ranking_reading`
+carries the evidence. Everything else about the ranking — scores, bands,
+auto-selection, the discrimination and vacuity guards — is untouched: the
+engine was handed one word, in its own vocabulary, with the counts that
+justify it.
+
+### Measuring it (built)
+
+`GET /catalog/retrieval-report`, `python -m app.retrieval.report`, and the
+"Suggestions at work" panel on the Decoded catalogue screen count, from the
+quotes a tenant stored, what each layer is doing: of a person's choices on
+customer-linked requirement lines, how many took a record found beneath the
+ranking (retrieval, a confirmed code, a phrase), how many were typed in with
+nothing offered, how many the engine chose on its own; and how much has been
+learned. Two thresholds are printed beside the numbers as the reading: a fifth
+of choices found beneath the ranking says the ranking is the bottleneck; a
+fifth typed unoffered says the gap is meaning, and two thousand pairs is the
+floor for training on it. A share of nothing is `null`, never `0`.
+
+### Retiring a memory (built)
+
+"What the system remembers" on the same screen lists every active phrase
+alias with the customer, the words, the product and the quote it came from.
+A manager may read it; an owner may retire one. Retiring deactivates and
+audits (`PHRASE_ALIAS_RETIRED`); it never deletes, because the quote it came
+from still cites it. A retired phrase leaves the mapping store's snapshot and
+fingerprint at once, so the alias index is rebuilt on the next line.
+
+### A meaning-aware embedder (the seam is built; the model is yours)
+
+`retrieval/dense.py` is where a small language model plugs in. The protocol is
+a `model_id`, a `dim`, and `embed(texts) -> unit vectors`; `OnnxEmbedder`
+runs a sentence-embedding model exported to ONNX from a local directory —
+`model.onnx` and `tokenizer.json`, no network at build or quote time, the
+weights' hash as the model id on every stamp. `DenseReranker` re-orders the
+hashed index's candidates by cosine of dense vectors, **re-rank rather than
+replace**: the hashed index stays the candidate source because on codes and
+designations it is the better instrument, and scoring only the handful of
+candidates costs a few vector products. Record vectors are computed on first
+use and persisted beside the catalogue, named by model, so the next process
+reads them back. Downstream nothing changes: a re-ranked candidate is still
+compared by the engine, still POSSIBLE, still never selected; the dense
+similarity is carried as provenance ("0.81 by meaning"), never as the score.
+
+To turn it on: `pip install -r requirements-embed.txt`, put a model directory
+on the host, set `PIE_EMBEDDER_MODEL_DIR` to it, restart. Without those three
+the code path is inert and retrieval answers exactly as before.
+
+Which model. Any sentence-embedding model exportable to ONNX runs as is. A
+general one knows English, not the trade; the one worth having is tuned on the
+tenant's own pairs, and that is what `python -m app.retrieval.export_pairs
+--org X --catalogue <products.jsonl> --out pairs.jsonl` writes: one line per
+active phrase alias, the customer's words as the anchor and the chosen
+record's indexed text as the positive, one tenant per file — a model tuned
+on one tenant's pairs is that tenant's. The training is not in this codebase
+(it needs `torch` and `sentence-transformers`, far heavier than anything the
+backend runs) and is a one-off, offline:
+
+```
+pip install sentence-transformers optimum[exporters]
+python - <<'PY'
+from sentence_transformers import SentenceTransformer, InputExample, losses
+from torch.utils.data import DataLoader
+import json
+model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+pairs = [json.loads(l) for l in open("pairs.jsonl")]
+examples = [InputExample(texts=[p["anchor"], p["positive"]]) for p in pairs]
+loader = DataLoader(examples, shuffle=True, batch_size=32)
+model.fit(train_objectives=[(loader, losses.MultipleNegativesRankingLoss(model))],
+          epochs=3, warmup_steps=50)
+model.save("tuned")
+PY
+optimum-cli export onnx --model tuned --task feature-extraction model_dir/
+```
+
+`model_dir/` then holds `model.onnx` and `tokenizer.json`. Two thousand pairs
+is the floor below which this is not worth running; the report above says
+where a tenant stands.
+
+**Why the model could not be proven here.** The model host was not reachable
+from the environment this was built in and no tenant has two thousand pairs
+yet, so the seam is tested against a fake embedder that satisfies the
+protocol — re-ranking, persistence, provenance and the model id on the stamp
+are pinned; the quality of any particular model is not.

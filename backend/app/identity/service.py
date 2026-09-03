@@ -760,6 +760,29 @@ def record_phrase_alias(session: Session, organization_id: str, *,
     return row
 
 
+def retire_phrase_alias(session: Session, organization_id: str, *,
+                        alias_id: str, user_id: Optional[str] = None
+                        ) -> Optional[models.CustomerPhraseAlias]:
+    """Stop offering a remembered phrase. The eraser for ``record_phrase_alias``.
+
+    Deactivated, never deleted: the quote it came from still cites it, and a
+    memory that was wrong is worth being able to see. Audited like a
+    recording. ``None`` when the alias is not this organization's or is
+    already retired — one answer for both, so the endpoint above cannot
+    confirm another tenant's row exists.
+    """
+    row = session.get(models.CustomerPhraseAlias, alias_id)
+    if row is None or row.organization_id != organization_id or not row.active:
+        return None
+    row.active = False
+    session.flush()
+    record_event(session, organization_id, entity_type=CUSTOMER,
+                 identity_id=row.identity_id, action="PHRASE_ALIAS_RETIRED",
+                 actor=user_id or "SYSTEM",
+                 detail=f"{row.phrase_key!r} -> {row.target_record_id} retired")
+    return row
+
+
 def active_phrase_aliases(session: Session, organization_id: str
                           ) -> list[models.CustomerPhraseAlias]:
     return list(session.scalars(

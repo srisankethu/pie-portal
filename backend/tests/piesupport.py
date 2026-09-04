@@ -1,16 +1,19 @@
 """One decoded catalogue, lent to whichever company a test needs it for.
 
-Catalogues are per company now: ``pie_service`` resolves against
-``data/catalogues/<connection_id>/products.jsonl`` and against nothing else, so
-a test that wants a real resolution has to give its company a real catalogue.
-Decoding the shipped corpus takes ~1.7s, and the suite creates a fresh company
-per test — several hundred builds — so this builds it **once per worker** and
-links that file into each company's directory.
+Catalogues are per company now: ``pie_service`` resolves against the union of
+``data/catalogues/<connection_id>/<catalogue_key>/products.jsonl`` and against
+nothing else, so a test that wants a real resolution has to give its company a
+real catalogue. Decoding the shipped corpus takes ~1.7s, and the suite creates
+a fresh company per test — several hundred builds — so this builds it **once
+per worker** and links that file into each company's ``default`` catalogue.
 
 Linking rather than faking: ``run_parse`` is deterministic in its inputs, so
 the file every company here gets is byte-for-byte the file its own build would
 have produced from the same corpus and pack. What is shared is the cost, not
-the answer.
+the answer. The union a company resolves against is then assembled from that
+file exactly as it would be from a real build, and — being deterministic in
+its one member — its retrieval index is built once per worker too and linked
+beside each company's union.
 
 The corresponding *product* behaviour — a company inheriting the shipped corpus
 — is ``catalog.seed_company_catalogues``, and it is a different thing: it
@@ -25,6 +28,7 @@ from pathlib import Path
 from typing import Optional
 
 _built: Optional[Path] = None
+_union_index: Optional[Path] = None
 
 
 def worker() -> str:
@@ -73,28 +77,74 @@ def give_company_a_catalogue(connection_id: str) -> Path:
     that company, including a memoised *absence* — a company asked about before
     its catalogue existed is remembered as having none.
     """
-    from app import catalog
+    from app import catalog, retrieval
     from app.pie_service import pie_service
-
-    from app import retrieval
 
     source = shared_catalogue()
     target = catalog.company_catalog_path(connection_id)
     target.parent.mkdir(parents=True, exist_ok=True)
-    if target.exists() and target.samefile(source):
-        pie_service.reload(connection_id)
-        return target
-    # Renamed into place rather than unlinked and re-created: a reader that
-    # opens the path between those two steps gets no file at all, which is a
-    # company that has no catalogue for one unlucky test.
-    _link(source, target)
-    # The retrieval index too, built once beside the shared catalogue: it is
-    # derived from the file and the company would otherwise rebuild the same
-    # 11 MB on its first requirement line, once per company per worker.
-    retrieval.ensure_index(source)
-    _link(retrieval.index_path_for(source), retrieval.index_path_for(target))
+    if not (target.exists() and target.samefile(source)):
+        # Renamed into place rather than unlinked and re-created: a reader that
+        # opens the path between those two steps gets no file at all, which is
+        # a company that has no catalogue for one unlucky test.
+        _link(source, target)
+        # What a build writes beside its file, so the union can be assembled
+        # from the disk alone the way it is for a catalogue a person built.
+        catalog.write_sidecar(connection_id, catalog.DEFAULT_CATALOGUE,
+                              _row_for(source))
+    union = catalog.union_catalogue(connection_id)
+    assert union is not None
+    # The retrieval index too, built once per worker over this one-member
+    # union: it is derived from the file, and the company would otherwise
+    # rebuild the same 11 MB on its first requirement line, once per company
+    # per worker. Identical members make identical union bytes, which is what
+    # lets one index describe every company's union.
+    index = retrieval.index_path_for(union.path)
+    if not index.exists():
+        shared = _shared_union_index(union.path)
+        if shared is not None:
+            _link(shared, index)
     pie_service.reload(connection_id)
     return target
+
+
+class _row_for:
+    """What ``write_sidecar`` reads off a built catalogue's row, for a
+    catalogue that was linked into place rather than built.
+
+    The stamp and the run id are read from the linked file's own records, so
+    the union assembled from it carries the same version a real build's would
+    — which is the point of linking rather than faking: the file is
+    byte-for-byte what this company's own build would have produced.
+    """
+
+    def __init__(self, decoded: Path) -> None:
+        from app import catalog
+        from app.config import settings
+
+        stamp = catalog.catalog_stamp(decoded)
+        self.name = ""
+        self.built_at = None
+        self.records = 0
+        self.sources = [{"source_key": settings.PIE_CORPUS.name,
+                         "rule_set": settings.PIE_PACK.name, "stamp": stamp}]
+        for field in catalog.STAMP_FIELDS:
+            setattr(self, field, stamp.get(field))
+
+
+def _shared_union_index(union_path: Path) -> Optional[Path]:
+    global _union_index
+    from app import retrieval
+
+    if _union_index is None or not _union_index.exists():
+        staging = union_path.parent.parent.parent / "test-catalogues" / worker()
+        staging = staging / "union" / "products.jsonl"
+        staging.parent.mkdir(parents=True, exist_ok=True)
+        if not staging.exists():
+            _link(union_path, staging)
+        retrieval.ensure_index(staging)
+        _union_index = retrieval.index_path_for(staging)
+    return _union_index
 
 
 def _link(source: Path, target: Path) -> None:
@@ -107,13 +157,9 @@ def _link(source: Path, target: Path) -> None:
 
 
 def forget_company_catalogue(connection_id: str) -> None:
-    """Take a company's catalogue away again, memo included."""
+    """Take a company's catalogues away again, memo included."""
     from app import catalog
     from app.pie_service import pie_service
 
-    from app import retrieval
-
-    path = catalog.company_catalog_path(connection_id)
-    path.unlink(missing_ok=True)
-    retrieval.index_path_for(path).unlink(missing_ok=True)
+    shutil.rmtree(catalog.catalogue_dir(connection_id).parent, ignore_errors=True)
     pie_service.reload(connection_id)

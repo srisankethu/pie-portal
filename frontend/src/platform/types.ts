@@ -673,9 +673,13 @@ export interface CatalogReport {
   new_tokens_top: Record<string, number>;
 }
 
-/** Provenance stamped on every decoded record: which pack, which version,
- *  which ruleset checksum — the facts that say WHICH catalogue answered a
- *  resolution. */
+/** Provenance stamped on every decoded record: which nomenclature grammar,
+ *  which version, which ruleset checksum — the facts that say WHICH build
+ *  answered a resolution.
+ *
+ *  These are pie-parser's own field names (`StampInfo`), served verbatim, so
+ *  `pack_id` here is the engine's word for the grammar that decoded a row and
+ *  not the portal's — a file's decoder is its `rule_set`. */
 export interface CatalogStamp {
   pack_id?: string;
   pack_version?: string;
@@ -697,14 +701,17 @@ export interface CatalogSource {
   reason: string | null;
   pie_parser_root: string;
   corpus: string;
-  pack: string;
+  /** The rule set that seed file is decoded through — the one written against
+   *  it. Never a default for anything a company uploads. */
+  seed_rule_set: string;
 }
 
-/** Which of one uploaded file's columns hold the three things a pack reads.
+/** Which of one uploaded file's columns hold the three things a rule set
+ *  reads.
  *
- *  An organisation fact about that FILE, not about the pack: two exports of the
- *  same catalogue call the part number `MM#` and `Part No`, and the mapping is
- *  what lets both build without either being edited. */
+ *  A fact about that FILE, not about the rule set: two exports of the same
+ *  manufacturer's range call the part number `MM#` and `Part No`, and this is
+ *  what lets both decode without either being edited. */
 export interface SourceColumnMapping {
   record_id: string | null;
   description: string | null;
@@ -727,12 +734,6 @@ export interface SourceIngest {
   rows_read?: number;
   /** Rows with a part number and a description — what this file can contribute. */
   rows_kept?: number;
-  /** Rows this file actually contributed to the merged corpus, present only in
-   *  a build's own report. Lower than `rows_kept` where a newer file already
-   *  carried the same part numbers, and zero for a file every row of which is
-   *  superseded — which is worth seeing, since such a file is dead weight on
-   *  every rebuild. */
-  rows_emitted?: number;
   /** Rows with no part number or no description. A large number here usually
    *  means the wrong column is mapped, which is why it is shown. */
   rows_skipped_blank_key?: number;
@@ -754,15 +755,99 @@ export interface CompanySource {
   sha256: string;
   uploaded_at: string;
   uploaded_by: string | null;
-  /** Null where none was stated: the headers are read for a suggestion at
-   *  build time instead. */
-  mapping: SourceColumnMapping | null;
+  /** How THIS file is read and decoded. Every file carries its own — there
+   *  is no default decoder to fall back to — and it decodes nothing until a
+   *  person has saved it. */
+  decoding: SourceDecoding;
   ingest: SourceIngest | null;
+}
+
+/** Every shipped rule set run over the first rows of ONE file, with the
+ *  parser's own counts for each.
+ *
+ *  Every upload starts as an unknown format, so this is the evidence a person
+ *  confirms a decoding config against. Counts, never a score: ranking rule
+ *  sets by a number the portal invented would be the second parse-rate
+ *  calculation `catalog.run_parse` refuses to have, and one figure would hide
+ *  the distinction that actually decides the choice — a rule set that
+ *  classifies few rows is wrong for this file, one that errors could not read
+ *  it at all, and none of them reading it means a rule set has to be written
+ *  before this manufacturer can be decoded. */
+export interface SourceAnalysis {
+  sample_rows: number;
+  candidates: {
+    rule_set: string;
+    rows_read?: number;
+    classified?: number;
+    quarantined?: number;
+    report?: CatalogReport;
+    /** This rule set could not read this file. A result, not a failure of the
+     *  analysis — it is one of the answers the analysis exists to give. */
+    error?: string;
+  }[];
+  /** The rule set this file's own evidence chose, or null where several read
+   *  it or none did. A proposal, never a config: it decodes nothing until
+   *  somebody saves it. */
+  proposed: string | null;
+  /** Why there is no proposal, or why one is not the whole answer. Never an
+   *  empty candidate list that reads as "nothing fits". */
+  reason: string | null;
+}
+
+/** How one uploaded price list is read and decoded — its own, not the
+ *  catalogue's.
+ *
+ *  Two exports of the same range call the part number `MM#` and `Part No`,
+ *  and two manufacturers phrase a description differently, so both halves
+ *  belong to the FILE: which of its columns are read, and which shipped rule
+ *  set decodes its descriptions. `ready` is the one question a build asks —
+ *  saved, with a rule set this engine still ships. A proposal that was never
+ *  saved is not ready, however good it looked. */
+export interface SourceDecoding {
+  columns: SourceColumnMapping | null;
+  rule_set: string | null;
+  /** Whether the pinned engine still ships the rule set named. A stored id
+   *  the pin no longer has resolves to nothing rather than to a guess. */
+  rule_set_resolved: boolean;
+  /** The evidence the proposal rested on, kept so a person's choice can be
+   *  read against what they saw. Null for a file stored before it. */
+  analysis: SourceAnalysis | null;
+  confirmed_at: string | null;
+  confirmed_by: string | null;
+  ready: boolean;
+}
+
+/** One file as the last build read it: through which rule set, with its own
+ *  stamp, counts and report.
+ *
+ *  Each file is decoded on its own and the results are merged, so a stamp
+ *  belongs to a FILE rather than to a catalogue. Where several files disagree
+ *  the catalogue-level stamp and report are null and these are where the
+ *  facts are. */
+export interface BuiltFile {
+  source_key: string;
+  corpus_id: string;
+  filename: string;
+  sha256: string;
+  rule_set: string | null;
+  stamp: CatalogStamp;
+  records: number;
+  rows_read: number;
+  quarantined: number;
+  report: CatalogReport | null;
+  rows_kept?: number;
+  rows_skipped_blank_key?: number;
+  /** Rows this file contributed to the merged catalogue. Lower than
+   *  `rows_kept` where a newer file already carried the same part numbers,
+   *  and zero for a file every row of which is superseded — which is worth
+   *  seeing, since such a file is dead weight on every rebuild. */
+  rows_emitted: number;
+  sampled?: boolean;
 }
 
 /** What merging a company's files into one corpus did. */
 export interface CompanyCombine {
-  sources: SourceIngest[];
+  sources: BuiltFile[];
   rows_kept: number;
   /** Rows read across every file, before de-duplication and before rows with
    *  no part number were left out. */
@@ -776,46 +861,34 @@ export interface CompanyCombine {
   sampled: boolean;
 }
 
-/** Every shipped pack tried against a sample of one company's files.
+/** One of a company's decoded catalogues: one manufacturer's files, each
+ *  decoded through its own config.
  *
- *  Counts from the parser, never a score computed here: ranking packs by a
- *  number the portal invented would be the second parse-rate calculation
- *  `catalog.run_parse` refuses to have. */
-export interface PackFit {
-  available: boolean;
-  /** Why there was nothing to try, when there was: no packs shipped, or no
-   *  file uploaded. Never an empty list that reads as "no pack fits". */
-  reason: string | null;
-  sample_rows?: number;
-  packs: {
-    pack_id: string;
-    rows_read?: number;
-    classified?: number;
-    quarantined?: number;
-    report?: CatalogReport;
-    sampled?: boolean;
-    /** This pack could not read this file. A result, not a failure of the
-     *  trial — it is the answer the trial exists to give. */
-    error?: string;
-  }[];
-}
-
-export interface CompanyCatalogue {
+ *  A distributor sells Kennametal and YG-1 and more, and each one's price
+ *  lists read differently — so a company keeps one catalogue per
+ *  manufacturer, each with its own files, build and stamp, and resolves
+ *  against the union of them (`CatalogueUnion`). The key is the
+ *  catalogue's address on disk and in every union row; the name is only what
+ *  the screen calls it, and may be empty for a catalogue migrated from before
+ *  names existed. */
+export interface CompanyCatalogueEntry {
   connection_id: string;
-  label: string;
-  enabled: boolean;
+  catalogue_key: string;
+  name: string;
   scope: string;
-  /** The pack id stored against this company, and whether the pinned engine
-   *  still ships it. A stored id the engine no longer has resolves to nothing
-   *  rather than to a guess. */
-  pack_id: string | null;
-  pack_resolved: boolean;
-  pack: string | null;
+  /** Whether every file here has a saved decoding config the engine can run
+   *  — the one question the build asks. False for a catalogue with no files
+   *  at all, because there is nothing to decode either way. */
+  decoding_ready: boolean;
+  /** The `source_key` of each file that has no runnable config yet. Named
+   *  rather than counted: a build refused over six files is not something a
+   *  person can act on until they know which one is waiting. */
+  awaiting_decoding: string[];
   exists: boolean;
   /** A catalogue row whose file is gone: a rebuild waiting to happen, not an
    *  absent catalogue. Different fix, so it is its own field. */
   built_but_missing_on_disk: boolean;
-  /** null, never 0, when nothing is built — a company with no catalogue says
+  /** null, never 0, when nothing is built — a catalogue that is not built says
    *  nothing about coverage. */
   records: number | null;
   rows_read: number | null;
@@ -833,24 +906,56 @@ export interface CompanyCatalogue {
     uploaded_at: string;
     uploaded_by: string | null;
   } | null;
-  /** Every file this company's catalogue would be built from. One company can
-   *  keep several — an ERP item master, a manufacturer's range extension, a
-   *  price list — and the build merges them. */
+  /** Every file this catalogue would be built from. One catalogue can keep
+   *  several — an ERP item master, a manufacturer's range extension, a price
+   *  list — and the build merges them. */
   sources: CompanySource[];
   /** What merging them did, at the last build. Null before the first one. */
   ingest: CompanyCombine | null;
-  /** Which files the built catalogue actually read, as they were then. With
-   *  several merged, one filename does not answer "what is in this". */
-  built_from: { source_key: string; corpus_id: string; filename: string;
-                sha256: string }[] | null;
+  /** Which files the built catalogue actually read, as they were then —
+   *  each with the rule set that decoded it, its own stamp and its own
+   *  counts. With several merged, one filename does not answer "what is in
+   *  this", and no single stamp speaks for all of them. */
+  built_from: BuiltFile[] | null;
   /** Built from a set of sources that has since changed — one replaced, added
    *  or removed. Still a real catalogue with a real stamp, just not built from
-   *  what this company now holds. Out of date, not wrong. */
+   *  what this catalogue now holds. Out of date, not wrong. */
   stale: boolean;
-  /** The nearest-neighbour index beside the catalogue: which embedding model
-   *  built it, over how many records, and whether it still describes the file
-   *  on disk. Null before the first build, or when the build could not write
-   *  it — the next resolution builds one. The catalogue itself is unaffected
+}
+
+/** What one company actually resolves against: every built catalogue it
+ *  keeps, merged. Null when none is built, which is the honest shape for a
+ *  company that resolves nothing.
+ *
+ *  Described from the union's own manifest, never recounted here. A part
+ *  number two catalogues both claimed is a `duplicate` — the most recently
+ *  built catalogue's row is the one kept, and the count is reported because
+ *  that is a policy somebody has to know about. */
+export interface CatalogueUnion {
+  records: number;
+  version: string | null;
+  duplicates: number;
+  duplicate_examples: string[];
+  /** The built catalogues the union holds, with what each contributed after
+   *  duplicates were resolved — so a catalogue can be absent from here while
+   *  present on the company, if it is not built. */
+  catalogues: {
+    catalogue_key: string;
+    name: string;
+    /** The rule sets its files were decoded through — one catalogue can hold
+     *  files that needed different ones. */
+    rule_sets: string[];
+    built_at: string | null;
+    records: number;
+    ruleset_checksum?: string;
+    run_id?: string;
+    pack_version?: string;
+    org_id?: string;
+  }[];
+  /** The nearest-neighbour index beside the union: which embedding model
+   *  built it, over how many records, and whether it still describes the
+   *  file on disk. Null before the first build, or when the build could not
+   *  write it — the next resolution builds one. The union is unaffected
    *  either way; retrieval only ever adds options beneath the engine's own. */
   retrieval: {
     model_id: string;
@@ -861,13 +966,79 @@ export interface CompanyCatalogue {
   } | null;
 }
 
+/** One connected company: its catalogues, and the union they make.
+ *
+ *  Every mutating catalogue endpoint returns this whole envelope rather than
+ *  the one catalogue it touched, because a build or a removal changes the
+ *  union too — a screen that swapped in one entry would show a union from
+ *  before the change. */
+export interface CompanyCatalogue {
+  connection_id: string;
+  label: string;
+  enabled: boolean;
+  scope: string;
+  catalogues: CompanyCatalogueEntry[];
+  union: CatalogueUnion | null;
+}
+
+/** One remembered phrase: what a customer asked for in their own words and
+ *  the product a person put on the quote for it. Offered back beneath the
+ *  engine's ranking on a similar line; never an identity. */
+export interface PhraseAlias {
+  alias_id: string;
+  identity_id: string;
+  customer: string;
+  phrase: string;
+  target_record_id: string;
+  source_ref: string;
+  recorded_by: string | null;
+  created_at: string;
+}
+
+export interface PhraseAliases {
+  aliases: PhraseAlias[];
+  can_manage: boolean;
+}
+
+/** How the suggestion layers are doing, counted from this organization's
+ *  stored quotes. Every share is null, never 0, when there is nothing to take
+ *  a share of. See backend `app/retrieval/report.py`. */
+export interface RetrievalReport {
+  organization_id: string;
+  since: string | null;
+  drafts: number;
+  counts: {
+    lines: number; auto_selected: number; chosen_by_person: number;
+    chosen_from_ranking: number; chosen_from_retrieval: number;
+    chosen_from_confirmed_code: number; chosen_from_phrase: number;
+    typed_unoffered: number; left_open: number;
+  };
+  shares: {
+    found_beneath_ranking: number | null;
+    typed_unoffered: number | null;
+    auto_selected: number | null;
+  };
+  learned: {
+    phrase_aliases: number; confirmed_codes: number;
+    customers_with_aliases: number; training_pairs_floor: number;
+  };
+  triggers: { ranking: number; meaning: number };
+  readings: string[];
+}
+
 export interface CompanyCatalogues {
   scope: string;
   companies: CompanyCatalogue[];
-  /** The org-layer packs the pinned engine ships. Chosen, never uploaded. */
-  packs: { id: string; path: string }[];
+  /** The rule sets the pinned engine ships, which a file's decoding config
+   *  may name. Chosen, never uploaded — a rule set is regexes the engine runs
+   *  over every row, and accepting one from a tenant is accepting arbitrary
+   *  patterns to execute. */
+  rule_sets: { id: string; path: string }[];
   source: CatalogSource;
   max_corpus_bytes: number;
+  /** How many catalogues one company may keep. A ceiling, not a target — the
+   *  add control says when it is reached rather than failing on submit. */
+  max_catalogues: number;
   can_manage: boolean;
 }
 

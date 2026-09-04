@@ -45,6 +45,12 @@ def client():
                                 label="SLS Engineers", zoho_organization_id="z1"))
     s.add(models.ZohoConnection(connection_id="cx_4u", organization_id="org_pie",
                                 label="4U Precision", zoho_organization_id="z2"))
+    # Each with one catalogue defined and nothing chosen for it yet — the
+    # shape a migrated company arrives in. Several catalogues per company are
+    # pinned in test_company_catalogues_per_manufacturer.py.
+    for cid in ("cx_sls", "cx_4u"):
+        s.add(models.CompanyCatalogue(organization_id="org_pie", connection_id=cid,
+                                      catalogue_key="default", name=""))
     s.commit()
     s.close()
 
@@ -75,14 +81,47 @@ def _corpus() -> bytes:
     return settings.PIE_CORPUS.read_bytes()
 
 
-def _upload(c, hdr, connection_id, content, filename="items.csv"):
-    return c.post(
-        f"/api/v1/data/catalog/companies/{connection_id}/corpus?filename={filename}",
+def _upload(c, hdr, connection_id, content, filename="items.csv", decode=True):
+    """Upload one file and, unless the test is about the discovery step itself,
+    save the decoding config the analysis proposed for it.
+
+    Two steps, because that is the flow: an upload is a file of unknown format
+    and a *proposal*, and nothing is decoded until a person saves it. Most
+    tests here are about what a build then does, so they take both; the ones
+    about the proposal pass ``decode=False`` and say so.
+    """
+    r = c.post(
+        f"/api/v1/data/catalog/companies/{connection_id}/catalogues/default/corpus"
+        f"?filename={filename}",
         content=content, headers={**hdr, "Content-Type": "text/csv"})
+    if decode and r.status_code == 200:
+        return _confirm(c, hdr, r.json(), connection_id)
+    return r
+
+
+def _confirm(c, hdr, body, connection_id="cx_sls", key="default"):
+    """Save the decoding config the newest file's analysis proposed."""
+    source = _cat(body, connection_id, key)["sources"][-1]
+    columns = source["decoding"]["columns"]
+    return c.put(
+        f"/api/v1/data/catalog/companies/{connection_id}/catalogues/{key}"
+        f"/sources/{source['source_key']}/decoding",
+        json={"record_id": columns["record_id"],
+              "description": columns["description"],
+              "grade": columns.get("grade"),
+              "rule_set": source["decoding"]["rule_set"]},
+        headers=hdr)
 
 
 def _company(body, connection_id):
     return next(x for x in body["companies"] if x["connection_id"] == connection_id)
+
+
+def _cat(body, connection_id="cx_sls", key="default"):
+    """The one catalogue of a company, out of the company envelope every
+    action returns."""
+    company = body if "catalogues" in body else _company(body, connection_id)
+    return next(x for x in company["catalogues"] if x["catalogue_key"] == key)
 
 
 # ── the distinction the change exists for ────────────────────────────────────
@@ -97,19 +136,21 @@ def test_a_company_never_answers_from_another_companys_catalogue(client, tmp_pat
     """
     monkeypatch.setattr(settings, "PIE_CATALOG", tmp_path / "products.jsonl")
     hdr = _hdr(client, "s.menon@pie.example")
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
-               json={"pack_id": "zcnc"}, headers=hdr)
     assert _upload(client, hdr, "cx_sls", _corpus()).status_code == 200
-    built = client.post("/api/v1/data/catalog/companies/cx_sls/build", headers=hdr).json()
-    assert built["records"] == 6717
+    built = client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build", headers=hdr).json()
+    assert _cat(built)["records"] == 6717
 
     body = client.get("/api/v1/data/catalog/companies", headers=hdr).json()
-    other = _company(body, "cx_4u")
+    other = _cat(body, "cx_4u")
     assert other["exists"] is False
     # None, never 0 — a company with no catalogue says nothing about coverage.
     assert other["records"] is None
     assert other["corpus"] is None
     assert other["report"] is None
+    # And the union — what the company actually resolves against — is absent
+    # for the company with nothing built, never an empty catalogue.
+    assert _company(body, "cx_4u")["union"] is None
+    assert _company(body, "cx_sls")["union"]["records"] == 6717
 
 
 @requires_pie
@@ -123,20 +164,20 @@ def test_a_lost_disk_costs_a_rebuild_rather_than_the_data(client, tmp_path, monk
     """
     monkeypatch.setattr(settings, "PIE_CATALOG", tmp_path / "products.jsonl")
     hdr = _hdr(client, "s.menon@pie.example")
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
-               json={"pack_id": "zcnc"}, headers=hdr)
     _upload(client, hdr, "cx_sls", _corpus())
-    first = client.post("/api/v1/data/catalog/companies/cx_sls/build", headers=hdr).json()
+    first = _cat(client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build",
+                             headers=hdr).json())
 
     catalog.company_catalog_path("cx_sls").unlink()
     body = client.get("/api/v1/data/catalog/companies", headers=hdr).json()
-    gone = _company(body, "cx_sls")
+    gone = _cat(body)
     # Named as its own state: a row without its file is a rebuild waiting to
     # happen, which is a different fix from having uploaded nothing.
     assert gone["built_but_missing_on_disk"] is True
     assert gone["exists"] is False
 
-    again = client.post("/api/v1/data/catalog/companies/cx_sls/build", headers=hdr).json()
+    again = _cat(client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build",
+                             headers=hdr).json())
     assert again["records"] == first["records"]
     assert again["stamp"]["ruleset_checksum"] == first["stamp"]["ruleset_checksum"]
 
@@ -151,18 +192,17 @@ def test_a_newer_export_marks_the_catalogue_out_of_date_not_wrong(client, tmp_pa
     """
     monkeypatch.setattr(settings, "PIE_CATALOG", tmp_path / "products.jsonl")
     hdr = _hdr(client, "s.menon@pie.example")
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
-               json={"pack_id": "zcnc"}, headers=hdr)
     _upload(client, hdr, "cx_sls", _corpus())
-    client.post("/api/v1/data/catalog/companies/cx_sls/build", headers=hdr)
+    client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build", headers=hdr)
 
     raw = _corpus() + b"MM-EXTRA,SOME NEW TOOL,KC725M\n"
-    after = _upload(client, hdr, "cx_sls", raw, filename="newer.csv").json()
+    after = _cat(_upload(client, hdr, "cx_sls", raw, filename="newer.csv").json())
     assert after["stale"] is True
     assert after["exists"] is True          # still a real catalogue
     assert after["corpus"]["filename"] == "newer.csv"
 
-    rebuilt = client.post("/api/v1/data/catalog/companies/cx_sls/build", headers=hdr).json()
+    rebuilt = _cat(client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build",
+                               headers=hdr).json())
     assert rebuilt["stale"] is False
 
 
@@ -183,9 +223,7 @@ def test_an_export_whose_columns_cannot_be_identified_is_refused(client):
     to that is the list of what the file does have.
     """
     hdr = _hdr(client, "s.menon@pie.example")
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
-               json={"pack_id": "zcnc"}, headers=hdr)
-    r = _upload(client, hdr, "cx_sls", b"Wrong,Headers\n1,2\n")
+    r = _upload(client, hdr, "cx_sls", b"Wrong,Headers\n1,2\n", decode=False)
     assert r.status_code == 422
     detail = r.json()["detail"]
     assert "record id" in detail
@@ -194,7 +232,7 @@ def test_an_export_whose_columns_cannot_be_identified_is_refused(client):
 
 def test_an_export_that_is_not_utf8_is_refused(client):
     hdr = _hdr(client, "s.menon@pie.example")
-    r = _upload(client, hdr, "cx_sls", b"\xff\xfe\x00\x00not text")
+    r = _upload(client, hdr, "cx_sls", b"\xff\xfe\x00\x00not text", decode=False)
     assert r.status_code == 422
     assert "UTF-8" in r.json()["detail"]
 
@@ -204,7 +242,7 @@ def test_an_oversize_export_is_refused_by_its_declared_length(client, monkeypatc
     is answered rather than absorbed."""
     monkeypatch.setattr(catalog, "MAX_CORPUS_BYTES", 1024)
     hdr = _hdr(client, "s.menon@pie.example")
-    r = _upload(client, hdr, "cx_sls", b"MM#,Material Description\n" + b"x" * 4096)
+    r = _upload(client, hdr, "cx_sls", b"MM#,Material Description\n" + b"x" * 4096, decode=False)
     assert r.status_code == 413
 
 
@@ -213,8 +251,8 @@ def test_uploading_supersedes_rather_than_overwrites(client):
     referent for the corpus its stamp names."""
     hdr = _hdr(client, "s.menon@pie.example")
     header = b"MM#,Material Description,Grade\n"
-    _upload(client, hdr, "cx_sls", header + b"A,FIRST,KC725M\n")
-    _upload(client, hdr, "cx_sls", header + b"B,SECOND,KC725M\n")
+    _upload(client, hdr, "cx_sls", header + b"A,FIRST,KC725M\n", decode=False)
+    _upload(client, hdr, "cx_sls", header + b"B,SECOND,KC725M\n", decode=False)
 
     s = client.Maker()
     rows = s.query(models.CompanyCorpus).filter_by(connection_id="cx_sls").all()
@@ -226,33 +264,42 @@ def test_uploading_supersedes_rather_than_overwrites(client):
     s.close()
 
 
-# ── the pack: chosen, never uploaded ─────────────────────────────────────────
+# ── the decoder: shipped, never uploaded, and never defaulted ────────────────
 
-def test_only_a_pack_this_engine_ships_can_be_chosen(client):
-    """A pack is regexes the engine runs over every row, so the set of them is
-    what ships — never what a tenant sends. An id naming nothing is refused
-    rather than stored, since a stored choice that resolves to no pack leaves a
-    company unable to build with no statement of why."""
+def test_only_a_rule_set_this_engine_ships_can_be_saved(client):
+    """A rule set is regexes the engine runs over every row, so the set of them
+    is what ships — never what a tenant sends. An id naming nothing is refused
+    rather than stored, since a saved config that resolves to no rule set
+    leaves a file unbuildable with no statement of why."""
     hdr = _hdr(client, "s.menon@pie.example")
-    assert client.put("/api/v1/data/catalog/companies/cx_sls/pack",
-                      json={"pack_id": "zcnc"}, headers=hdr).status_code == 200
-    bad = client.put("/api/v1/data/catalog/companies/cx_sls/pack",
-                     json={"pack_id": "../../etc"}, headers=hdr)
+    _upload(client, hdr, "cx_sls", _corpus(), decode=False)
+    bad = client.put(
+        "/api/v1/data/catalog/companies/cx_sls/catalogues/default"
+        "/sources/items.csv/decoding",
+        json={"record_id": "MM#", "description": "Material Description",
+              "rule_set": "../../etc"}, headers=hdr)
     assert bad.status_code == 400
-    assert "zcnc" in bad.json()["detail"]
+    assert "zcnc" in bad.json()["detail"] or "none" in bad.json()["detail"]
 
 
-def test_building_without_a_pack_or_an_export_says_which_is_missing(client):
+def test_building_without_a_file_or_a_saved_config_says_which_is_missing(client):
+    """The two states a build refuses, and neither of them decodes anything
+    through a default."""
     hdr = _hdr(client, "s.menon@pie.example")
-    no_pack = client.post("/api/v1/data/catalog/companies/cx_sls/build", headers=hdr)
-    assert no_pack.status_code == 409
-    assert "pack" in no_pack.json()["detail"].lower()
-
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
-               json={"pack_id": "zcnc"}, headers=hdr)
-    no_corpus = client.post("/api/v1/data/catalog/companies/cx_sls/build", headers=hdr)
+    no_corpus = client.post(
+        "/api/v1/data/catalog/companies/cx_sls/catalogues/default/build", headers=hdr)
     assert no_corpus.status_code == 409
     assert "upload" in no_corpus.json()["detail"].lower()
+
+    # A file is on record, and its decoding config was never saved. The build
+    # names the file rather than decoding it through anything.
+    _upload(client, hdr, "cx_sls", _corpus(), decode=False)
+    unconfigured = client.post(
+        "/api/v1/data/catalog/companies/cx_sls/catalogues/default/build", headers=hdr)
+    assert unconfigured.status_code == 409
+    detail = unconfigured.json()["detail"]
+    assert "items.csv" in detail
+    assert "decoding config" in detail
 
 
 # ── who may do what ──────────────────────────────────────────────────────────
@@ -265,11 +312,14 @@ def test_reading_is_open_and_changing_is_owner_only(client):
         body = client.get("/api/v1/data/catalog/companies", headers=hdr)
         assert body.status_code == 200
         assert body.json()["can_manage"] is False
-        assert _upload(client, hdr, "cx_sls", b"MM#,Material Description\nA,B\n"
-                       ).status_code == 403
-        assert client.put("/api/v1/data/catalog/companies/cx_sls/pack",
-                          json={"pack_id": "zcnc"}, headers=hdr).status_code == 403
-        assert client.post("/api/v1/data/catalog/companies/cx_sls/build",
+        assert _upload(client, hdr, "cx_sls", b"MM#,Material Description\nA,B\n",
+                       decode=False).status_code == 403
+        assert client.put(
+            "/api/v1/data/catalog/companies/cx_sls/catalogues/default"
+            "/sources/items.csv/decoding",
+            json={"record_id": "MM#", "description": "Material Description",
+                  "rule_set": "zcnc"}, headers=hdr).status_code == 403
+        assert client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build",
                            headers=hdr).status_code == 403
 
     owner = _hdr(client, "s.menon@pie.example")
@@ -287,10 +337,10 @@ def test_a_connection_from_another_organization_reads_as_absent(client):
     s.close()
 
     hdr = _hdr(client, "s.menon@pie.example")
-    assert client.post("/api/v1/data/catalog/companies/cx_theirs/build",
+    assert client.post("/api/v1/data/catalog/companies/cx_theirs/catalogues/default/build",
                        headers=hdr).status_code == 404
-    assert _upload(client, hdr, "cx_theirs", b"MM#,Material Description\nA,B\n"
-                   ).status_code == 404
+    assert _upload(client, hdr, "cx_theirs", b"MM#,Material Description\nA,B\n",
+                   decode=False).status_code == 404
     listed = client.get("/api/v1/data/catalog/companies", headers=hdr).json()
     assert {c["connection_id"] for c in listed["companies"]} == {"cx_sls", "cx_4u"}
 
@@ -304,10 +354,8 @@ def test_no_cost_or_margin_crosses_the_per_company_surface(client, tmp_path, mon
     or `avg_margin`."""
     monkeypatch.setattr(settings, "PIE_CATALOG", tmp_path / "products.jsonl")
     hdr = _hdr(client, "s.menon@pie.example")
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
-               json={"pack_id": "zcnc"}, headers=hdr)
     _upload(client, hdr, "cx_sls", _corpus())
-    client.post("/api/v1/data/catalog/companies/cx_sls/build", headers=hdr)
+    client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build", headers=hdr)
     body = client.get("/api/v1/data/catalog/companies", headers=hdr).json()
 
     def keys(node, path="$"):
@@ -338,11 +386,9 @@ def test_a_built_catalogue_reports_its_provenance_and_the_parsers_numbers(
 
     monkeypatch.setattr(settings, "PIE_CATALOG", tmp_path / "products.jsonl")
     hdr = _hdr(client, "s.menon@pie.example")
-    client.put("/api/v1/data/catalog/companies/cx_sls/pack",
-               json={"pack_id": "zcnc"}, headers=hdr)
     _upload(client, hdr, "cx_sls", _corpus())
-    body = client.post("/api/v1/data/catalog/companies/cx_sls/build",
-                       headers=hdr).json()
+    body = _cat(client.post("/api/v1/data/catalog/companies/cx_sls/catalogues/default/build",
+                            headers=hdr).json())
 
     assert body["exists"] is True
     assert body["records"] == 6717

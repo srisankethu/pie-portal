@@ -27,7 +27,6 @@ from typing import Any, Dict, List, Optional
 from . import cache as cache_module
 from . import catalog as catalog_module
 from . import retrieval
-from .catalog import catalog_stamp
 from .config import settings
 
 log = logging.getLogger("pie_portal.pie")
@@ -176,6 +175,13 @@ class Candidate:
     #: engine never reads and which asserts nothing. One flag on the wire so a
     #: screen does not say "confirmed" about a choice.
     alias_kind: Optional[str] = None
+    #: Which of the company's catalogues this record came from — the
+    #: manufacturer's catalogue key (``kennametal``, ``yg-1``), read off the
+    #: union record. A company resolves against every catalogue it has built
+    #: at once, and "which manufacturer's product is this" is part of what a
+    #: provenanced answer has to say. ``None`` where the record could not be
+    #: read back, never a guess.
+    catalogue: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -184,6 +190,7 @@ class Candidate:
             "reason": self.reason, "attributes": self.attributes,
             "unverified": self.unverified, "retrieved": self.retrieved,
             "alias": self.alias, "alias_kind": self.alias_kind,
+            "catalogue": self.catalogue,
         }
 
 
@@ -219,28 +226,20 @@ class Resolution:
         }
 
 
-def _read_catalog_version(path: Optional[Path]) -> str:
-    """The ruleset checksum stamped on the catalogue's rows.
-
-    Read from the first record rather than recomputed — ``catalog_stamp`` is
-    the one reader of that fact; this narrows its answer to the field the
-    cache key and provenance stamps need.
-    """
-    if path is None:
-        return ""
-    return str(catalog_stamp(Path(path)).get("ruleset_checksum") or "")
-
-
-#: ``pack_families``' memo, keyed by pack path. Kept per path because packs
-#: are per company now and an organization may read several. A *failed* read is
-#: deliberately not cached: a pack fetched after boot must be seen on the next
-#: call, or every family edit stays refused until a restart for a failure that
-#: has been fixed.
+#: ``rule_set_families``' memo, keyed by rule-set path. Kept per path because
+#: an organization's price lists decode through several. A *failed* read is
+#: deliberately not cached: a rule set fetched after boot must be seen on the
+#: next call, or every family edit stays refused until a restart for a failure
+#: that has been fixed.
 _families_memo: Dict[str, tuple] = {}
 
 
-def pack_families(pack_path: Optional[Path] = None) -> Optional[tuple]:
-    """The family vocabulary one pack declares, or None if it cannot be read.
+def rule_set_families(rule_set_path: Path) -> Optional[tuple]:
+    """The family vocabulary one rule set declares, or None if it cannot be read.
+
+    A rule set is what pie-parser keeps as an org-layer pack; the portal calls
+    it by what it is to the portal — the decoder half of one price list's
+    decoding config — and there is no default one, so the path is required.
 
     Read from the manifest alone: resolving a code needs the whole engine, but
     the vocabulary is one YAML list, and a policy save must not pay for grammar
@@ -249,27 +248,24 @@ def pack_families(pack_path: Optional[Path] = None) -> Optional[tuple]:
     "what counts as a declared family" keeps exactly one definition — the one
     ``load_pack`` itself uses.
 
-    ``None`` means *this pack is not readable here* — a checkout without the
-    private submodule, or a pack id this engine no longer ships — which is a
+    ``None`` means *this rule set is not readable here* — a checkout without
+    the private submodule, or an id this engine no longer ships — which is a
     different answer from an empty vocabulary. The caller must treat it as
     "there is nothing to validate against", never as "every name is fine";
     ``commercial.policy.save_for_org`` refuses a family edit outright in that
     state rather than waving it through.
 
-    **A pack per company, so a pack argument.** This used to read
-    ``settings.PIE_PACK`` and document at length why one deployment meant one
-    organisation layer: the catalogue was built from one pack into one
-    process-wide index, so making the *vocabulary* per organisation while the
-    index stayed shared would have left two organisations validating names
-    against different packs and resolving products against the same one. That
-    reasoning was sound and its premise is gone — each company now builds its
-    own catalogue through its own pack — so the vocabulary follows the pack
-    that actually decoded the rows. ``commercial.policy`` unions the packs of
-    the organization's companies, which is the honest vocabulary for a policy
-    that applies to all of them.
+    **A rule set per price list, so a path argument and no default.** This
+    used to read ``settings.PIE_PACK`` and document at length why one
+    deployment meant one organisation layer: the catalogue was built from one
+    pack into one process-wide index. That premise is gone — every price list
+    decodes through the rule set its own decoding config names — so the
+    vocabulary follows the rule sets that actually decoded the rows.
+    ``commercial.policy`` unions the rule sets the organization's saved
+    decoding configs name, which is the honest vocabulary for a policy that
+    applies to all of them.
     """
-    pack_path = pack_path or settings.PIE_PACK
-    cached = _families_memo.get(str(pack_path))
+    cached = _families_memo.get(str(rule_set_path))
     if cached is not None:
         return cached
     try:
@@ -278,7 +274,7 @@ def pack_families(pack_path: Optional[Path] = None) -> Optional[tuple]:
             sys.path.insert(0, root)
         # Asked of the engine rather than read out of the manifest by hand.
         # This used to yaml.safe_load PIE_PACK/manifest.yaml and pass the raw
-        # document to families_from_config, which worked while a pack was one
+        # document to families_from_config, which worked while a rule set was one
         # flat directory. Packs are layered now — an organisation layer extends
         # a shared nomenclature layer — and `families` moved to the layer, so
         # reading the org manifest directly found none and the vocabulary went
@@ -287,11 +283,11 @@ def pack_families(pack_path: Optional[Path] = None) -> Optional[tuple]:
         # is the drift CLAUDE.md §2 is about: load_pack already owns it.
         from engine.pack import load_pack  # noqa: PLC0415
 
-        families = tuple(load_pack(pack_path).families)
-        _families_memo[str(pack_path)] = families
+        families = tuple(load_pack(rule_set_path).families)
+        _families_memo[str(rule_set_path)] = families
         return families
-    except Exception:  # noqa: BLE001 — an absent pack must not 500 a policy save
-        log.warning("PIE pack manifest unreadable; no family vocabulary to "
+    except Exception:  # noqa: BLE001 — an absent rule set must not 500 a policy save
+        log.warning("PIE rule-set manifest unreadable; no family vocabulary to "
                     "validate against", exc_info=True)
         return None
 
@@ -310,7 +306,13 @@ MAX_RESIDENT_CATALOGUES = 3
 
 @dataclass
 class _View:
-    """One company's loaded catalogue.
+    """One company's loaded catalogue: the union of every catalogue it has built.
+
+    ``path`` is the union file ``catalog.union_catalogue`` keeps current, and
+    ``version`` is that union's version — one catalogue's own ruleset checksum
+    where a company has one, a hash over every member's stamp where it has
+    several. ``catalogues`` says which manufacturers' catalogues are in it,
+    for the provenance a resolution reports.
 
     ``sources`` is built lazily and separately from ``index``: a sync asks only
     "is this SKU a catalogue record?", and making every item pull construct the
@@ -329,6 +331,12 @@ class _View:
     #: ``None`` is not yet tried; ``False`` is tried and unavailable, remembered
     #: so a missing index is not re-attempted per line.
     retriever: Any = None
+    #: The dense re-ranker, when a model directory is configured; ``False``
+    #: once tried and unavailable, like ``retriever``.
+    reranker: Any = None
+    #: The catalogues the union was made from, as ``catalog.union_catalogue``
+    #: reports them: key, name, rule sets, stamp and record count each.
+    catalogues: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class PieService:
@@ -409,9 +417,9 @@ class PieService:
     def reload(self, connection_id: Optional[str] = None) -> None:
         """Forget what was loaded for one company, so the next use re-reads it.
 
-        Called after that company's catalogue is rebuilt. Everything dropped is
-        downstream of its one file: the index, the resolver's sources, and the
-        version read off its first record. The remembered *failure* goes with
+        Called after one of that company's catalogues is rebuilt or removed
+        (``catalog.refresh_union``). Everything dropped is downstream of the
+        union file: the index, the resolver's sources, and the version. The remembered *failure* goes with
         it — that memo exists so a missing catalogue is not re-tried per row,
         and a rebuild is precisely the event that makes retrying right again.
 
@@ -434,8 +442,9 @@ class PieService:
             else:
                 self._views.pop(connection_id, None)
         # The family vocabulary too: a company that has just rebuilt may have
-        # done so through a different pack, and a memo from the previous one
-        # would validate its policy against a vocabulary nothing decodes with.
+        # done so through a different rule set, and a memo from the previous
+        # one would validate its policy against a vocabulary nothing decodes
+        # with.
         _families_memo.clear()
 
     # ── exact catalogue identity ─────────────────────────────────────────────
@@ -486,19 +495,25 @@ class PieService:
                     sys.path.insert(0, root)
                 from identity.store import AuthoritativeIndex  # noqa: PLC0415
 
-                path = catalog_module.company_catalog_path(connection_id)
-                if not path.exists():
+                # The union of every catalogue this company has built, made
+                # current from the files on disk. A company resolves against
+                # all of its manufacturers at once; which one answered is
+                # carried on each union record as `catalogue_key`.
+                union = catalog_module.union_catalogue(connection_id)
+                if union is None:
                     # Not an error and not a warning: a company that has not
-                    # built its catalogue yet is an ordinary state the screens
+                    # built a catalogue yet is an ordinary state the screens
                     # report. Logging it per row would bury the real failures.
                     log.info("no catalogue built for connection %s", connection_id)
                     self._views[connection_id] = None
                     return None
-                view = _View(path=path,
-                             version=_read_catalog_version(path),
-                             index=AuthoritativeIndex.from_jsonl(path))
-                log.info("catalogue loaded for connection %s from %s (ruleset %s)",
-                         connection_id, path, view.version or "unknown")
+                view = _View(path=union.path,
+                             version=union.version,
+                             index=AuthoritativeIndex.from_jsonl(union.path),
+                             catalogues=union.catalogues)
+                log.info("catalogue loaded for connection %s from %s (%d catalogue(s), "
+                         "version %s)", connection_id, union.path,
+                         len(union.catalogues), view.version or "unknown")
             except Exception:  # noqa: BLE001 — a sync must not fail on this
                 log.warning("catalogue for connection %s could not be loaded; "
                             "item links will be left unresolved",
@@ -582,19 +597,28 @@ class PieService:
         return rec if isinstance(rec, dict) else None
 
     def catalog_version(self, connection_id: Optional[str] = None) -> str:
-        """The ruleset checksum of the catalogue this company resolves against.
+        """The version of the catalogue this company resolves against.
 
-        pie-parser derives it from the input bytes plus the pack's own checksum,
-        which is what makes a rerun reproducible — and it is the one fact that
-        explains, months later, why the same RFQ text resolved to a different
-        product than it does today. It is uniform across a build, so reading it
-        from the first record is exact rather than a sample.
+        With one catalogue it is that catalogue's ruleset checksum: pie-parser
+        derives it from the input bytes plus the rule set's own checksum, which is
+        what makes a rerun reproducible — and it is the one fact that explains,
+        months later, why the same RFQ text resolved to a different product
+        than it does today. With several it is a hash over every member's key,
+        ruleset checksum and run id (``catalog.union_catalogue``), which moves
+        when any of them is rebuilt; :meth:`catalogues` names the members.
 
         Empty when this company has no catalogue. Never raises: provenance must
         not be the thing that fails a quote.
         """
         view = self._view(connection_id)
         return view.version if view else ""
+
+    def catalogues(self, connection_id: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Which manufacturers' catalogues this company resolves against, each
+        with its key, name, rule sets and stamp — the members behind
+        :meth:`catalog_version`. Empty when it has none."""
+        view = self._view(connection_id)
+        return [dict(c) for c in view.catalogues] if view else []
 
     def _make_args(self, text: str,
                    customer_scope: Optional[str] = None,
@@ -655,9 +679,10 @@ class PieService:
 
         ``version`` is the company's ruleset checksum, and it is what keeps two
         companies apart here — deliberately *instead of* the connection id.
-        Two companies that uploaded the same export and chose the same pack
-        have byte-identical catalogues, so they have identical answers, and a
-        key carrying the connection would miss a hit that is genuinely correct.
+        Two companies that uploaded the same export and saved the same rule
+        set for it have byte-identical catalogues, so they have identical
+        answers, and a key carrying the connection would miss a hit that is
+        genuinely correct.
 
         **An empty version is never cached.** It means the checksum could not
         be read, and every company whose checksum is unreadable would otherwise
@@ -738,22 +763,36 @@ class PieService:
             if view.retriever is None:
                 view.retriever = self._load_retriever(view)
 
-            key = self._cache_key(text, customer_scope, mapping_store, view.version)
-            result = self._cached_result(key)
-            if result is None:
-                args = self._make_args(text, customer_scope, mapping_store,
+            def run(query: str) -> Dict[str, Any]:
+                key = self._cache_key(query, customer_scope, mapping_store, view.version)
+                cached = self._cached_result(key)
+                if cached is not None:
+                    return cached
+                args = self._make_args(query, customer_scope, mapping_store,
                                        catalog_path=view.path)
-                result, _human = mod.run(args, view.sources)
+                fresh, _human = mod.run(args, view.sources)
                 if key is not None:
                     # A copy, so the object handed to ``_map`` below — and to
                     # every Candidate that keeps a reference into it — cannot
                     # be reached from the cache. A Line built from a cached
                     # resolution that shared its ``attributes`` dict would let
                     # one quote's edit change another's.
-                    _resolution_cache.set(key, copy.deepcopy(result))
-            return self._map(text, result, bands or Bands.default(), view,
-                             customer_scope=customer_scope,
-                             mapping_store=mapping_store)
+                    _resolution_cache.set(key, copy.deepcopy(fresh))
+                return fresh
+
+            result = run(text)
+            result = self._with_ranking_reading(
+                text, result, run, view, customer_scope, mapping_store)
+            resolution = self._map(text, result, bands or Bands.default(), view,
+                                   customer_scope=customer_scope,
+                                   mapping_store=mapping_store)
+            # Which of the company's catalogues each candidate came from, read
+            # off the union record. One place rather than one per branch of
+            # `_map`, so no path can forget it.
+            for cand in resolution.candidates:
+                rec = self._record(view, cand.code)
+                cand.catalogue = rec.get("catalogue_key") if rec else None
+            return resolution
         except Exception:  # noqa: BLE001 — deliberate: isolate engine failures
             log.exception("pie-parser resolution failed for %r", text)
             return Resolution(
@@ -907,6 +946,15 @@ class PieService:
         retrieved, retrieval_info = self._retrieved(
             view, text, result, exclude={c.code for c in cands},
             customer_scope=customer_scope, mapping_store=mapping_store)
+        reading = result.get("_ranking_reading")
+        if reading:
+            notes.append(
+                f"Read {reading['token']!r} as {reading['word']} — "
+                f"{'this customer' if reading['scope'] == 'customer' else 'this tenant'}"
+                f"'s usage in {reading['agreeing']} of {reading['support']} quotes. "
+                f"The ranking below was made with that reading; confirm it fits.")
+            if retrieval_info is not None:
+                retrieval_info["ranking_reading"] = reading
         if (cands and self._is_discriminating(cands) and outcome != "UNRESOLVED"
                 and not cands[0].unverified
                 # Appending the reference last is not enough on its own: when
@@ -979,11 +1027,56 @@ class PieService:
         if settings.RETRIEVAL_TOP_K <= 0:
             return False
         try:
-            return retrieval.ensure_index(view.path)
+            index = retrieval.ensure_index(view.path)
+            if view.reranker is None:
+                embedder = retrieval.embedder_from_settings(settings.EMBEDDER_MODEL_DIR)
+                view.reranker = (retrieval.DenseReranker(view.path, embedder)
+                                 if embedder is not None else False)
+            return index
         except Exception:  # noqa: BLE001 — retrieval must not take the line down
             log.warning("retrieval index for %s unavailable; resolving without "
                         "nearest-neighbour candidates", view.path, exc_info=True)
             return False
+
+    def _with_ranking_reading(self, text: str, result: Dict[str, Any], run: Any,
+                              view: "_View", customer_scope: Optional[str],
+                              mapping_store: Any) -> Dict[str, Any]:
+        """Give the engine's ranking one learned word, when it decoded no family.
+
+        The vocabulary's readings widen the *search* beneath the ranking; this
+        is the one place a reading reaches the ranking itself. Only when the
+        engine decoded no ``product_family`` from the text — a line it could
+        not place at all — and only a family reading whose family has a word
+        the engine's own fuzzy decoder reads (``FAMILY_WORDS``): the text is
+        resolved again with that word appended, so the engine applies its own
+        family gate and ranks within the family, and the second result is
+        used only if it did decode the family. The original text stays the
+        line's; the reading is written into the result so ``_map`` reports it
+        beside the ranking it changed. Nothing is invented: the engine still
+        decodes every dimension itself and still scores every record.
+        """
+        try:
+            spec = ((result.get("understood_spec") or {}).get("engine_spec")) or {}
+            if spec.get("product_family") or not text:
+                return result
+            vocabulary = self._vocabulary(mapping_store, view)
+            if vocabulary is None:
+                return result
+            reading = retrieval.Vocabulary.ranking_reading(
+                vocabulary.hints(text, customer_scope))
+            if reading is None:
+                return result
+            hint, word = reading
+            second = run(f"{text} {word}")
+            spec2 = ((second.get("understood_spec") or {}).get("engine_spec")) or {}
+            if spec2.get("product_family") != hint.value:
+                return result
+            second = dict(second)
+            second["_ranking_reading"] = {**hint.to_dict(), "word": word}
+            return second
+        except Exception:  # noqa: BLE001 — a reading must never take the line down
+            log.exception("could not apply a learned reading to the ranking for %r", text)
+            return result
 
     def _vocabulary(self, mapping_store: Any, view: "_View") -> Any:
         """What this tenant's words mean against this company's catalogue,
@@ -1100,6 +1193,12 @@ class PieService:
             hits = retriever.search(
                 expanded, k=settings.RETRIEVAL_TOP_K,
                 exclude=set(exclude) | {h.record_id for h in alias_hits})
+            # By meaning, when a dense model is configured: the same
+            # candidates, re-ordered by what the text means rather than how
+            # it is spelt. Provenance beside each; the score stays the engine's.
+            reranker = getattr(view, "reranker", None)
+            if reranker and hits:
+                hits = reranker.rerank(text, hits, lambda rid: self._record(view, rid))
             spec = ((result.get("understood_spec") or {}).get("engine_spec")) or {}
             out: List[Candidate] = []
             for hit in [*alias_hits, *hits]:
@@ -1131,8 +1230,11 @@ class PieService:
                     "field_breakdown": geo.get("field_matches"),
                 })
                 if alias is None:
+                    dense = getattr(hit, "dense_similarity", None)
                     reason = (f"Nearest catalogue description to this text "
-                              f"({hit.similarity:.2f} similar), not a ranked match. ")
+                              f"({hit.similarity:.2f} similar"
+                              + (f", {dense:.2f} by meaning" if dense is not None else "")
+                              + "), not a ranked match. ")
                 elif alias_kind == "phrase":
                     reason = (f"This customer was quoted this product before for "
                               f"{alias!r} ({hit.similarity:.2f} similar to this "
@@ -1175,6 +1277,7 @@ class PieService:
                          # search was widened and argue with the evidence.
                          "vocabulary": [h.to_dict() for h in hints],
                          "vocabulary_pairs": vocabulary.pairs if vocabulary else 0,
+                         "dense_model": reranker.model_id if reranker else None,
                          # The confirmed codes searched for this customer, and
                          # how many of the offers came through one. Zero when
                          # the line names no customer or the customer has none

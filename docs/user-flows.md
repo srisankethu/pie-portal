@@ -12,7 +12,7 @@ Conventions used throughout:
 
 - Routes are hash paths (`#/decisions`) — the SPA uses hash routing so the API
   and bundle can be served by one FastAPI app. The Quote Builder lives at
-  `#/quotes`; `#/negotiate` is a different screen (the negotiation-floor desk).
+  `#/quotes`.
 - Roles are the backend's names: **SALESPERSON**, **SALES_MANAGER**, **OWNER**
   (`authz.py`). The frontend mirror (`platform/ability.ts`) only decides what is
   *offered*; the server is always the authority, and cost/margin are **absent
@@ -86,7 +86,6 @@ SALES_MANAGER + OWNER.
 | `#/dependency` | Both-ends dependency | all (supplier side mgmt) | What the book leans on |
 | `#/targets` | Supplier target wall | mgmt | Where each principal's number stands |
 | `#/item-lines` | Item-line placement queue | mgmt | Place items into lines |
-| `#/negotiate` | Negotiation desk | all (cost figure mgmt) | What can I give, measured against the floor |
 | `#/quote-outcomes` | Won & lost (+ pricing panel mgmt) | all (scoped) | Win/loss rates and reasons |
 | `#/unanswered-quotes` | Unanswered quotes worklist | all (scoped) | Quotes with no recorded outcome |
 | `#/what-pie-changed` | Attribution: value ledger (+ owner report) | mgmt (owner panels inside) | What the platform changed |
@@ -726,7 +725,6 @@ the cost fields.
 | **Dependency** `#/dependency` | all (supplier side mgmt) | Company scope → revenue-share vs receivables-share top-fives → principal rows draw spend and downstream revenue on one track with target pace → customer rows open accounts; "Targets" button opens the editor | targets via editor |
 | **Supplier targets** `#/targets` | mgmt | Bullet chart per principal (done vs pace marker), scheme value secured + next rung, "still winnable" (sum of uplifts, never earned rebates); behind = amber + words → add/edit targets and rebate slabs (`PUT/DELETE /insight/targets`) | targets |
 | **Item lines** `#/item-lines` | mgmt | "Needs placing" queue ordered by the revenue it carries → inline select places an item into a line (`PUT /insight/catalogue/{id}`; override survives re-sync; "reset" returns to automatic sources); source chips (OVERRIDE/ZOHO/HSN/VENDOR/NONE) | placements |
-| **Negotiate** `#/negotiate` | all (cost figure mgmt) | Closed-set pickers (account → that account's items → status/tool family) + quantity, agreed price, and the give levers (customer discount, vendor concession, third-party payment — disabled with an explanation on government/PSU/defence accounts — toolkit spend at half, payment timing, target contribution) → "Work it out" → `POST /insight/negotiate`: floor per unit, contribution above floor, CAF after gives, earned-if-paid-at-timing, "free to give", hold-price; warnings; nothing persisted. `negotiable:false` prints the server's reason as the headline | nothing persisted |
 
 Every write in this table follows one idiom: commit on blur/Enter, failure as
 an alert line with the value unchanged, refetch after success, and **clear is
@@ -735,7 +733,7 @@ distinct from zero** everywhere ("none recorded" ≠ ₹0).
 
 ## 7. The quoting loop (`#/quotes`)
 
-The Quote Builder is the negotiation desk: paste an RFQ, resolve every line to
+The Quote Builder is where a quote is negotiated: paste an RFQ, resolve every line to
 a quote-ready product, price it against the customer's own history, send the
 estimate into their books, and record what happened. Every quote is a row in
 `quote_drafts` (`app/quote_workspace.py`): the lines go back to the row on
@@ -1668,13 +1666,18 @@ shims, are mounted but are not flows and are not listed here.
 | PUT | `/api/v1/data/connection` | owner | Legacy: connect/replace the org's Zoho credentials in one call; response pings, never echoes secrets |
 | DELETE | `/api/v1/data/connection` | owner | Legacy: unlink the Zoho connection; read-model rows untouched |
 | POST | `/api/v1/data/connection/use-credential` | owner | Legacy: point this org at a Zoho company using an existing grant |
-| GET | `/api/v1/data/catalog/companies` | signed-in | Every connected company, its chosen pack and its catalogue's state, plus the packs a company may choose from; readable by any signed-in user, because which catalogue answered a resolution is the same entitlement as knowing when the books last arrived |
-| POST | `/api/v1/data/catalog/companies/{connection_id}/corpus` | owner | Store one of the files this company's catalogue is built from — CSV or Excel, kept as a row rather than a file because the container filesystem is ephemeral; append-only, so an upload supersedes rather than overwrites and a catalogue already built keeps a real referent. `source_key` replaces that one file; without it, the whole export is replaced |
-| PUT | `/api/v1/data/catalog/companies/{connection_id}/sources/{source_key}/mapping` | owner | Correct which of one file's columns hold the record id, description and grade; re-reads the stored bytes and refuses a mapping naming a column the file lacks, so a mapping that cannot build is never stored |
-| DELETE | `/api/v1/data/catalog/companies/{connection_id}/sources/{source_key}` | owner | Stop building from one file. Superseded rather than deleted, and the built catalogue is left alone — it goes out of date, because rebuilding here would replace what a company resolves against as a side effect of tidying a file list |
-| GET | `/api/v1/data/catalog/companies/{connection_id}/pack-fit` | owner | Try every shipped pack against a sample of this company's files and report the parser's own counts for each, so the pack is chosen on evidence rather than by its identifier. Writes nothing, and runs only packs the engine ships |
-| PUT | `/api/v1/data/catalog/companies/{connection_id}/pack` | owner | Choose the pack this company decodes through; validated against what the pinned engine ships, and refused rather than stored when it names nothing |
-| POST | `/api/v1/data/catalog/companies/{connection_id}/build` | owner | Decode every file this company has uploaded through its chosen pack, merged into one corpus and de-duplicated by part number (newest file wins, overlaps counted). Synchronous — the response carries the finished result, so there is no job to poll |
+| GET | `/api/v1/data/catalog/companies` | signed-in | Every connected company, each catalogue it keeps (one per manufacturer, with each price list's decoding config and state) and the union it resolves against, plus the rule sets a decoding config may name; readable by any signed-in user, because which catalogue answered a resolution is the same entitlement as knowing when the books last arrived |
+| POST | `/api/v1/data/catalog/companies/{connection_id}/catalogues` | owner | Add a catalogue to a company — one per manufacturer it sells, named for it. Defines what the files and the build then belong to and decides nothing about decoding (each file brings its own config); refused with the reason when the name yields no key, the key is taken or the company is at its ceiling |
+| PATCH | `/api/v1/data/catalog/companies/{connection_id}/catalogues/{catalogue_key}` | owner | Rename a catalogue; the key (its address on disk and in every corpus row) stays. A migrated catalogue arrives without a name and is shown under its key until it is given one |
+| DELETE | `/api/v1/data/catalog/companies/{connection_id}/catalogues/{catalogue_key}` | owner | Stop a company resolving against one manufacturer's catalogue: its files are superseded (never deleted), its decoded output removed, and the union refreshed at once |
+| POST | `/api/v1/data/catalog/companies/{connection_id}/catalogues/{catalogue_key}/corpus` | owner | Store one of the files this catalogue is built from — CSV or Excel, kept as a row rather than a file because the container filesystem is ephemeral; append-only, so an upload supersedes rather than overwrites and a catalogue already built keeps a real referent. Every upload starts as an unknown format: the file is analysed on its own (its columns, and every shipped rule set's parser counts over its first rows) and a decoding config is *proposed* beside it, never inherited from a default; nothing decodes it until the proposal is saved. `source_key` replaces that one file; without it, the catalogue's whole export is replaced |
+| PUT | `/api/v1/data/catalog/companies/{connection_id}/catalogues/{catalogue_key}/sources/{source_key}/decoding` | owner | Save one file's decoding config — which of its columns hold the record id, description and grade, and which shipped rule set decodes it — the step between shown and decoded. Re-reads the stored bytes and refuses columns the file lacks or a rule set the engine does not ship, so a config that cannot build is never stored; a config with no rule set is saved but the file waits, by name |
+| POST | `/api/v1/data/catalog/companies/{connection_id}/catalogues/{catalogue_key}/sources/{source_key}/analyze` | owner | Analyse one stored file again from its bytes: every shipped rule set over its first rows, the parser's own counts for each, and a fresh proposal beside the file. A saved config stays saved |
+| DELETE | `/api/v1/data/catalog/companies/{connection_id}/catalogues/{catalogue_key}/sources/{source_key}` | owner | Stop building from one file. Superseded rather than deleted, and the built catalogue is left alone — it goes out of date, because rebuilding here would replace what a company resolves against as a side effect of tidying a file list |
+| GET | `/api/v1/data/catalog/aliases` | manager, owner | What the system remembers for this organization's customers: every active phrase alias — the customer's words and the product a person quoted for them — newest first, with the customer named. Read by managers because it is the sales team's own vocabulary; retiring is an owner's act |
+| DELETE | `/api/v1/data/catalog/aliases/{alias_id}` | owner | Stop offering one remembered phrase. Deactivates and audits; never deletes, and answers 404 alike for another tenant's row and an already-retired one |
+| GET | `/api/v1/data/catalog/retrieval-report` | manager, owner | How the suggestion layers are doing, counted from this organization's stored quotes: how many of a person's choices took a record found beneath the ranking, how many were typed in with nothing offered, and how much has been learned — with the thresholds the next investments wait on printed beside the numbers |
+| POST | `/api/v1/data/catalog/companies/{connection_id}/catalogues/{catalogue_key}/build` | owner | Decode every file this catalogue holds, each through its own saved decoding config, merged after the parse and de-duplicated by part number (newest file wins, overlaps counted), then refresh the union the company resolves against (newest build wins a part number two catalogues both claim, counted). Refused by name when any file has no saved config — nothing decodes through a default. Synchronous — the response carries the finished result, so there is no job to poll |
 | GET | `/api/v1/data/credentials` | owner | Every Zoho grant this org may connect through, with used_by and sharing info |
 | GET | `/api/v1/data/credentials/{credential_id}/organizations` | owner | Live list of Zoho companies one grant reaches, marked already_connected (502 if Zoho rejects it) |
 | POST | `/api/v1/data/credentials/{credential_id}/share` | owner | Full-replace which other organizations may connect through this grant |
@@ -1737,7 +1740,6 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/insight/msme-capture-backlog` | manager/owner | Which suppliers are worth establishing status for, ranked |
 | PUT | `/api/v1/insight/msme-status` | manager/owner | Record a supplier's established MSME position (no writer on the Statutory screen itself) |
 | GET | `/api/v1/insight/msme-watchlist` | manager/owner | Bills near/past the MSME 45-day cliff, with basis and amount at risk |
-| POST | `/api/v1/insight/negotiate` | signed-in | Deterministic deal arithmetic against the floor: contribution, CAF, collection factor, free-to-give, hold price, warnings, third-party legality |
 | GET | `/api/v1/insight/opportunities` | manager/owner | Opportunity radar: money at stake × evidence confidence |
 | GET | `/api/v1/insight/order-to-cash` | signed-in | Order→invoice→payment cycle by stage with unknown reasons and measurement rule |
 | GET | `/api/v1/insight/pass-through` | manager/owner | Cost pass-through pricing view (no frontend consumer found — API-only) |

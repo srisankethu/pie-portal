@@ -63,12 +63,17 @@ def _build_parser() -> argparse.ArgumentParser:
                          "export is measured against (its connection id). "
                          "Without it nothing is looked up and the identity "
                          "section reports UNKNOWN rather than zero")
-    ap.add_argument("--pack", default=None, metavar="ID_OR_PATH",
-                    help="the org-layer pack the names are decoded through — a "
-                         "shipped pack id or a path (default: the shipped "
-                         "pack). Named separately from --company because this "
-                         "tool reads no database, and which pack a company "
-                         "decodes through is stored against that company")
+    ap.add_argument("--rule-set", dest="rule_set", default=None,
+                    metavar="ID_OR_PATH",
+                    help="the rule set the names are decoded through — a "
+                         "shipped rule set id or a path. Required for the "
+                         "geometry half: which rule set reads an export is a "
+                         "fact about that file, there is no default one, and "
+                         "without it geometry coverage reports UNKNOWN rather "
+                         "than decoding through somebody else's grammars. "
+                         "Named separately from --company because this tool "
+                         "reads no database, and a file's decoding config is "
+                         "stored beside the file")
     ap.add_argument("--json", type=Path, default=None,
                     help="also write the full report as JSON to this path")
     ap.add_argument("--out", type=Path, default=None,
@@ -98,14 +103,14 @@ def _resolve_profile(args: argparse.Namespace) -> ColumnProfile:
     return profile_from_columns(given)
 
 
-def _pack_path(given: Optional[str]) -> Optional[Path]:
-    """Resolve ``--pack`` to a directory: a shipped pack id, or a path.
+def _rule_set_path(given: Optional[str]) -> Optional[Path]:
+    """Resolve ``--rule-set`` to a directory: a shipped id, or a path.
 
-    An id rather than only a path because that is what a company's stored
-    choice is, so the two arguments read the same way. Returns None for
-    "unspecified", which decodes through the shipped pack — and an id this
+    An id rather than only a path because that is what a file's saved decoding
+    config names, so the two read the same way. Returns None for "unspecified",
+    which decodes nothing and reports geometry coverage as UNKNOWN — an id this
     engine does not ship is an error rather than a silent fallback, since the
-    coverage numbers would then belong to a pack nobody asked for.
+    coverage numbers would then belong to a rule set nobody asked for.
     """
     if not given:
         return None
@@ -115,12 +120,13 @@ def _pack_path(given: Optional[str]) -> Optional[Path]:
 
     from .. import catalog  # noqa: PLC0415
 
-    for pack in catalog.available_packs():
-        if pack["id"] == given:
-            return Path(pack["path"])
+    for rule_set in catalog.available_rule_sets():
+        if rule_set["id"] == given:
+            return Path(rule_set["path"])
     raise ProfileError(
-        f"{given!r} is neither a directory nor a pack this engine ships. "
-        f"Shipped packs: {', '.join(p['id'] for p in catalog.available_packs()) or 'none'}.")
+        f"{given!r} is neither a directory nor a rule set this engine ships. "
+        f"Shipped rule sets: "
+        f"{', '.join(r['id'] for r in catalog.available_rule_sets()) or 'none'}.")
 
 
 def _print_profiles() -> None:
@@ -154,7 +160,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         profile = _resolve_profile(args)
-        pack = _pack_path(args.pack)
+        rule_set = _rule_set_path(args.rule_set)
         policy = load_policy(args.policy)
         rows, _headers = read_export(args.export, profile, sheet=args.sheet)
     except (ProfileError, PolicyError, SourceError) as exc:
@@ -170,15 +176,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # must not pay for it.
     from ..pie_service import pie_service  # noqa: PLC0415
 
-    # One company's catalogue, and the pack its names are decoded through.
+    # One company's catalogue, and the rule set these names are decoded
+    # through.
     #
-    # Both are per company now, and either one borrowed from another company is
-    # worse than having neither: another company's item master reports every
-    # SKU as unknown, and another company's org layer reports every name as
-    # unparsed. Where no company is named nothing is looked up and the identity
-    # section says UNKNOWN rather than zero, which is what
-    # `catalogue_available=False` already means downstream.
-    decode = decode_names(rows, pack)
+    # Neither is borrowed and neither has a default: another company's item
+    # master reports every SKU as unknown, and another file's grammars report
+    # every name as unparsed. Where no company is named nothing is looked up
+    # and the identity section says UNKNOWN rather than zero, which is what
+    # `catalogue_available=False` already means downstream; where no rule set
+    # is named nothing is decoded and geometry coverage says the same.
+    decode = decode_names(rows, rule_set)
     report = build_report(
         rows=rows, profile=profile, decode=decode, policy=policy,
         lookup=lambda identifier: pie_service.lookup_record(identifier, args.company),

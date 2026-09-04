@@ -441,7 +441,7 @@ const ABSENCE: Record<string, { label: string; tone: Tone; tip: string }> = {
  *
  *  Replaces six copies: three identical local `Unavailable` components (Mix,
  *  Dependency, Bonds — differing in one word) and three inline `<ul>` blocks
- *  (History, Negotiate, Screens). They also read three different server shapes,
+ *  (History, Screens, and the since-removed negotiation desk). They also read three different server shapes,
  *  which is why the normalising happens here: `{what, why}`, `{series, reason}`
  *  and `{scenario, needs, why}` all describe one thing, and unifying them at
  *  the render layer costs nothing where unifying them on the wire would break

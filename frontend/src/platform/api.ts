@@ -1,4 +1,4 @@
-import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PackFit, PayloadsReport, PlatformSession, PlatformUser, QuoteFieldSpec, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, PhraseAliases, RetrievalReport, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteFieldSpec, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -101,6 +101,14 @@ function noteAuthLoss(status: number): void {
   } catch {
     /* the throw below is the more useful signal */
   }
+}
+
+/** One catalogue's address. Every per-catalogue call goes through it, so the
+ *  nesting is spelled once — a second spelling is the one that forgets to
+ *  encode a key with a slash in it. */
+function catalogueUrl(connectionId: string, catalogueKey: string): string {
+  return `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}`
+    + `/catalogues/${encodeURIComponent(catalogueKey)}`;
 }
 
 async function req<T>(path: string, opts: RequestInit = {}, token?: string): Promise<T> {
@@ -632,12 +640,6 @@ export const papi = {
     req<unknown>(`/api/v1/insight/targets/${encodeURIComponent(targetId)}`,
       { method: "DELETE" }, t),
 
-  // The negotiation desk. A POST because it computes on what the salesperson
-  // is proposing, not on what is stored — nothing is persisted by asking.
-  negotiate: (t: string, body: Record<string, unknown>) =>
-    req<Record<string, unknown>>("/api/v1/insight/negotiate",
-      { method: "POST", body: JSON.stringify(body) }, t),
-
   simulationScenarios: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/simulate/scenarios", {}, t),
 
@@ -720,67 +722,118 @@ export const papi = {
 
   dataStatus: (t: string) => req<DataStatus>("/api/v1/data/status", {}, t),
 
-  /** Every connected company's catalogue, and the packs one may be built with. */
+  /** Every connected company's catalogues, and the rule sets a file's
+   *  decoding config may name. */
   companyCatalogues: (t: string) =>
     req<CompanyCatalogues>("/api/v1/data/catalog/companies", {}, t),
 
-  /** Store a company's item-master export.
+  /** What the system remembers for this organization's customers. */
+  phraseAliases: (t: string) =>
+    req<PhraseAliases>("/api/v1/data/catalog/aliases", {}, t),
+
+  /** Stop offering one remembered phrase. Deactivates; never deletes. */
+  retirePhraseAlias: (t: string, aliasId: string) =>
+    req<{ retired: string }>(
+      `/api/v1/data/catalog/aliases/${encodeURIComponent(aliasId)}`,
+      { method: "DELETE" }, t),
+
+  /** How the suggestion layers are doing, from this organization's quotes. */
+  retrievalReport: (t: string) =>
+    req<RetrievalReport>("/api/v1/data/catalog/retrieval-report", {}, t),
+
+  /** Add a catalogue to one company — one per manufacturer it sells. The
+   *  server turns the name into the key. Nothing is said about decoding here:
+   *  every price list uploaded into it brings its own config. Refused with the
+   *  reason when the name yields no key (422), or the key is taken and the
+   *  company is at its ceiling (409). Returns the whole company, because the
+   *  union changed shape. */
+  createCompanyCatalogue: (t: string, connectionId: string,
+                           body: { name: string }) =>
+    req<CompanyCatalogue>(
+      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/catalogues`,
+      { method: "POST", body: JSON.stringify(body) }, t),
+
+  /** Rename a catalogue. The key — its address on disk and in every union
+   *  row — stays; only what the screen calls it changes. */
+  renameCompanyCatalogue: (t: string, connectionId: string, catalogueKey: string,
+                           name: string) =>
+    req<CompanyCatalogue>(
+      catalogueUrl(connectionId, catalogueKey),
+      { method: "PATCH", body: JSON.stringify({ name }) }, t),
+
+  /** Stop this company resolving against one manufacturer. Its files are
+   *  superseded rather than deleted; the union is refreshed at once, so the
+   *  manufacturer stops answering without waiting for a rebuild. */
+  removeCompanyCatalogue: (t: string, connectionId: string, catalogueKey: string) =>
+    req<CompanyCatalogue>(
+      catalogueUrl(connectionId, catalogueKey), { method: "DELETE" }, t),
+
+  /** Store one file of a catalogue's export.
    *
    *  Sent as a raw body rather than a multipart form: the server takes the
    *  bytes directly, so this needs no `python-multipart` on the backend — the
    *  dependency `master_health/__init__.py` refuses stays refused. `File` is
    *  a `Blob`, so `body: file` streams it without reading it into a string. */
-  /** `sourceKey` names which of the company's files this one is, so uploading
+  /** `sourceKey` names which of the catalogue's files this one is, so uploading
    *  a second price list replaces that source and leaves the item master
    *  alone. Omitted, the server keeps the older meaning and replaces the whole
-   *  export — which is what "Replace export" on a single-file company means. */
-  uploadCompanyCorpus: (t: string, connectionId: string, file: File,
-                        sourceKey?: string) =>
+   *  export — which is what "Replace export" on a single-file catalogue means. */
+  uploadCompanyCorpus: (t: string, connectionId: string, catalogueKey: string,
+                        file: File, sourceKey?: string) =>
     req<CompanyCatalogue>(
-      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/corpus`
+      `${catalogueUrl(connectionId, catalogueKey)}/corpus`
       + `?filename=${encodeURIComponent(file.name)}`
       + (sourceKey ? `&source_key=${encodeURIComponent(sourceKey)}` : ""),
       { method: "POST", body: file,
         headers: { "Content-Type": file.type || "text/csv" } }, t),
 
-  /** Correct which columns of one source file the parse reads. Refused when it
-   *  names a column the file does not have, so a mapping that cannot build is
-   *  never stored. */
-  setSourceMapping: (t: string, connectionId: string, sourceKey: string,
-                     mapping: { record_id: string; description: string;
-                                grade?: string | null }) =>
+  /** Save one file's decoding config — which of its columns are read, and
+   *  which shipped rule set decodes its descriptions. The step between shown
+   *  and decoded: until this is saved the file is not decoded, and nothing
+   *  falls back to a default.
+   *
+   *  Refused when it names a column the file does not have (422) or a rule set
+   *  the engine does not ship (400), so a config that cannot build is never
+   *  stored. `rule_set` may be left out — the honest state for a file no
+   *  shipped rule set reads — and the config saves, the file stays not ready,
+   *  and the build names it. */
+  saveSourceDecoding: (t: string, connectionId: string, catalogueKey: string,
+                       sourceKey: string,
+                       config: { record_id: string; description: string;
+                                 grade?: string | null;
+                                 rule_set?: string | null }) =>
     req<CompanyCatalogue>(
-      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}`
-      + `/sources/${encodeURIComponent(sourceKey)}/mapping`,
-      { method: "PUT", body: JSON.stringify(mapping) }, t),
+      `${catalogueUrl(connectionId, catalogueKey)}`
+      + `/sources/${encodeURIComponent(sourceKey)}/decoding`,
+      { method: "PUT", body: JSON.stringify(config) }, t),
+
+  /** Analyse one stored file again, from its bytes alone: every shipped rule
+   *  set over its first rows, with the parser's counts for each. Writes a
+   *  fresh proposal beside the file and nothing else — a saved config stays
+   *  saved, and a proposal stays a proposal until somebody saves it. */
+  analyzeSource: (t: string, connectionId: string, catalogueKey: string,
+                  sourceKey: string) =>
+    req<CompanyCatalogue>(
+      `${catalogueUrl(connectionId, catalogueKey)}`
+      + `/sources/${encodeURIComponent(sourceKey)}/analyze`,
+      { method: "POST" }, t),
 
   /** Stop building from one file. Superseded, not deleted, and the built
    *  catalogue is left alone — it goes OUT OF DATE until somebody rebuilds. */
-  removeCompanySource: (t: string, connectionId: string, sourceKey: string) =>
+  removeCompanySource: (t: string, connectionId: string, catalogueKey: string,
+                        sourceKey: string) =>
     req<CompanyCatalogue>(
-      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}`
+      `${catalogueUrl(connectionId, catalogueKey)}`
       + `/sources/${encodeURIComponent(sourceKey)}`,
       { method: "DELETE" }, t),
 
-  /** Try every shipped pack against a sample of this company's files, so the
-   *  pack is chosen on the parser's own counts rather than on its name. */
-  companyPackFit: (t: string, connectionId: string) =>
-    req<PackFit>(
-      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/pack-fit`,
-      {}, t),
-
-  /** Choose which shipped pack decodes this company's export. */
-  setCompanyPack: (t: string, connectionId: string, packId: string) =>
-    req<CompanyCatalogue>(
-      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/pack`,
-      { method: "PUT", body: JSON.stringify({ pack_id: packId }) }, t),
-
-  /** Decode this company's stored corpus. Synchronous; the response is the
+  /** Decode every file this catalogue holds, each through its own saved
+   *  config, and refresh the company's union. Refused (409) naming the files
+   *  that have no config yet. Synchronous; the response is the company's
    *  finished state. */
-  buildCompanyCatalog: (t: string, connectionId: string) =>
+  buildCompanyCatalog: (t: string, connectionId: string, catalogueKey: string) =>
     req<CompanyCatalogue>(
-      `/api/v1/data/catalog/companies/${encodeURIComponent(connectionId)}/build`,
-      { method: "POST" }, t),
+      `${catalogueUrl(connectionId, catalogueKey)}/build`, { method: "POST" }, t),
 
   /** Choose the automatic pull's cadence, in hours; 0 switches it off. */
   setAutoSync: (t: string, hours: number) =>

@@ -380,3 +380,99 @@ def test_an_index_in_an_older_format_is_rebuilt(tmp_path):
     stamp["format"] = 1
     index_file.write_text(json.dumps(stamp) + "\n" + "".join(lines[1:]), encoding="utf-8")
     assert ensure_index(path).stamp.format == retrieval.index.FORMAT
+
+
+# ── the dense seam ───────────────────────────────────────────────────────────
+#
+# No model weights are available here, so the dense embedder is a fake that
+# satisfies the protocol: a deterministic unit vector from the text's own
+# words, with a small synonym table so it can "know" that SS means stainless.
+# What these pin is the seam — re-ranking, persistence, provenance, the model
+# id on the stamp — not the quality of any particular model.
+from app.retrieval import DenseReranker, Hit  # noqa: E402
+from app.retrieval.dense import RerankedHit, embedder_from_settings  # noqa: E402
+
+
+class FakeDenseEmbedder:
+    model_id = "fake-dense/1"
+    dim = 8
+    SYNONYMS = {"SS": "STAINLESS", "SST": "STAINLESS", "BOHRER": "DRILL"}
+
+    def embed(self, texts):
+        out = []
+        for text in texts:
+            vec = [0.0] * self.dim
+            for tok in tokens(text):
+                tok = self.SYNONYMS.get(tok, tok)
+                if tok.isalpha():
+                    vec[sum(map(ord, tok)) % self.dim] += 1.0
+            norm = sum(v * v for v in vec) ** 0.5 or 1.0
+            out.append([v / norm for v in vec])
+        return out
+
+
+DENSE_RECORDS = {
+    "4149315": {"record_id": "4149315", "description_raw": "SC DRILL 12mm COOLANT",
+                "product_family": "solid_carbide_drill", "applications": ["M"],
+                "material_class": "stainless"},
+    "3668915": {"record_id": "3668915", "description_raw": "RMS REAMER 10.00 H7",
+                "product_family": "reamer"},
+}
+
+
+def _hits():
+    return [Hit("3668915", 0.31, 1), Hit("4149315", 0.30, 0)]
+
+
+def test_reranking_reorders_by_meaning_and_keeps_the_hashed_similarity(tmp_path):
+    reranker = DenseReranker(tmp_path / "products.jsonl", FakeDenseEmbedder(),
+                             records=DENSE_RECORDS)
+    out = reranker.rerank("12mm drill for SS", _hits(), lambda rid: None)
+
+    assert [h.record_id for h in out] == ["4149315", "3668915"], (
+        "the drill for stainless should come first by meaning")
+    assert isinstance(out[0], RerankedHit)
+    assert out[0].similarity == 0.30 and out[0].dense_similarity > out[1].dense_similarity
+    assert reranker.model_id == "fake-dense/1"
+
+
+def test_record_vectors_are_remembered_beside_the_catalogue(tmp_path):
+    path = tmp_path / "products.jsonl"
+    first = DenseReranker(path, FakeDenseEmbedder(), records=DENSE_RECORDS)
+    first.rerank("drill", _hits(), lambda rid: None)
+    sidecar = DenseReranker.sidecar_for(path, "fake-dense/1")
+    assert sidecar.exists()
+    assert len(sidecar.read_text(encoding="utf-8").splitlines()) == 2
+
+    # A second process reads them back and does not re-embed — the embedder
+    # here has no records at all and would return nothing for a miss.
+    second = DenseReranker(path, FakeDenseEmbedder(), records={})
+    assert [h.record_id for h in second.rerank("drill", _hits(), lambda rid: None)] == [
+        h.record_id for h in first.rerank("drill", _hits(), lambda rid: None)]
+
+
+def test_a_record_that_cannot_be_embedded_keeps_its_place_at_the_end(tmp_path):
+    reranker = DenseReranker(tmp_path / "products.jsonl", FakeDenseEmbedder(),
+                             records={"4149315": DENSE_RECORDS["4149315"]})
+    out = reranker.rerank("drill", _hits(), lambda rid: None)
+    assert [h.record_id for h in out] == ["4149315", "3668915"]
+    assert out[1].dense_similarity == 0.0
+
+
+def test_an_empty_query_or_no_hits_reranks_nothing(tmp_path):
+    reranker = DenseReranker(tmp_path / "products.jsonl", FakeDenseEmbedder(),
+                             records=DENSE_RECORDS)
+    assert reranker.rerank("   ", _hits(), lambda rid: None) == []
+    assert reranker.rerank("drill", [], lambda rid: None) == []
+
+
+def test_no_model_directory_means_no_dense_embedder(tmp_path):
+    assert embedder_from_settings(None) is None
+    # Configured but unusable: reported, and treated as none.
+    assert embedder_from_settings(tmp_path / "no-such-model") is None
+
+
+def test_the_sidecar_is_named_by_model_so_two_models_never_share_vectors(tmp_path):
+    path = tmp_path / "products.jsonl"
+    assert DenseReranker.sidecar_for(path, "onnx/abc123") == tmp_path / "dense.onnx-abc123.jsonl"
+    assert DenseReranker.sidecar_for(path, "fake-dense/1") != DenseReranker.sidecar_for(path, "onnx/abc123")

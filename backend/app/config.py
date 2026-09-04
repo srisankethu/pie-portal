@@ -106,9 +106,11 @@ class Settings:
     # Disable in constrained deploys and build from the screen instead.
     AUTO_BUILD_CATALOG: bool = os.environ.get("AUTO_BUILD_CATALOG", "1") != "0"
 
-    # The corpus a *first* company inherits as its seed, and the pack it is
-    # decoded through. Not a runtime fallback: once a company has uploaded its
-    # own export, neither of these is read for it again.
+    # The corpus a *first* company inherits as its seed, and the rule set it
+    # ships with — the one written against exactly this file. Not a runtime
+    # fallback: once a company has uploaded its own export, neither of these
+    # is read for it again, and nothing uploaded is ever decoded through
+    # PIE_PACK by default.
     PIE_CORPUS: Path = _path_env(
         "PIE_CORPUS",
         PIE_PARSER_ROOT / "corpora" / "kmt_zcnc_2026-07_nomenclature.csv",
@@ -120,11 +122,12 @@ class Settings:
     # directory; the nomenclature layer is reached through the manifest and is
     # never named here.
     #
-    # This is a per-*company* choice, and it is stored per company:
-    # `zoho_connections.config["pie_pack"]` holds the id, resolved against what
-    # the engine ships by `catalog.pack_for`. What is left here is the default
-    # the seed uses and the fallback `master_health --pack` takes, naming the
-    # only org layer the pinned engine has.
+    # Which rule set decodes a file is a per-*file* fact — each uploaded price
+    # list carries its own decoding config (`company_corpora.rule_set`),
+    # proposed by analysing that file and saved by a person, and there is no
+    # default. What is left here is the seed's own pairing and the fallback
+    # `master_health --pack` takes, naming the only org layer the pinned engine
+    # has.
     PIE_PACK: Path = _path_env("PIE_PACK",
                                PIE_PARSER_ROOT / "packs" / "org" / "zcnc")
 
@@ -135,6 +138,13 @@ class Settings:
     # engine's ranked suggestions on a requirement line (see app/retrieval).
     # 0 turns retrieval off; the engine's own answer is unchanged either way.
     RETRIEVAL_TOP_K: int = int(os.environ.get("PIE_RETRIEVAL_TOP_K", "5"))
+
+    # A directory holding model.onnx + tokenizer.json for a dense embedder
+    # that re-ranks retrieval candidates by meaning (app/retrieval/dense.py).
+    # Unset means none: retrieval matches on spelling, as before.
+    EMBEDDER_MODEL_DIR: Optional[Path] = (
+        Path(os.environ["PIE_EMBEDDER_MODEL_DIR"])
+        if os.environ.get("PIE_EMBEDDER_MODEL_DIR") else None)
 
     # Deployment environment. "production" turns on hard guards (real auth secret
     # required, demo-seed disabled). Anything else is treated as dev/test.

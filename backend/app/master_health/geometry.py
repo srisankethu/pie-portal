@@ -95,12 +95,12 @@ class DecodeRun:
         return not self.unavailable_reason
 
 
-def _load_pack(pack_path: Optional[Path] = None) -> Any:
+def _load_pack(pack_path: Path) -> Any:
     root = str(settings.PIE_PARSER_ROOT)
     if root not in sys.path:
         sys.path.insert(0, root)
     from engine.pack import load_pack  # noqa: PLC0415
-    return load_pack(pack_path or settings.PIE_PACK)
+    return load_pack(pack_path)
 
 
 def _covered_brands(pack: Any) -> tuple[str, ...]:
@@ -117,12 +117,14 @@ def decode_names(rows: Sequence[MasterRow],
                  pack_path: Optional[Path] = None) -> DecodeRun:
     """Run every row's name through the pack, once, and gate the results.
 
-    ``pack_path`` is the pack of the company whose export this is — packs are
-    per company, so measuring one company's master through another's org layer
-    would report *that* pack's coverage of *this* export and call it a finding.
-    Absent, it falls back to the shipped pack, which is what a person running
-    this on a file with no company in mind gets, and the report names the pack
-    it used either way.
+    ``pack_path`` is the rule set this export is decoded through — the decoder
+    half of what a stored file's decoding config would name. It is **required**
+    and there is no fallback: measuring one export through another's grammars
+    would report *that* rule set's coverage of *this* file and call it a
+    finding, and decoding through a shipped default is the same mistake with
+    nobody to blame. Absent, nothing is decoded and geometry coverage is
+    UNKNOWN, which is the honest answer and the one this module gives
+    everywhere else.
 
     One batch through one ``ParserPipeline``, the same way ``app/catalog.py``
     builds the catalogue — not a per-row call, which would recompile the
@@ -138,6 +140,12 @@ def decode_names(rows: Sequence[MasterRow],
     diagnostic that dies on its optional half tells you nothing about the half
     that worked.
     """
+    if pack_path is None:
+        return DecodeRun({}, unavailable_reason=(
+            "no rule set was named, so no name was decoded. Which rule set "
+            "reads an export is a fact about that file and there is no default "
+            "one — pass --rule-set with a shipped id or a path. Geometry "
+            "coverage is UNKNOWN, not zero."))
     if not (Path(settings.PIE_PARSER_ROOT) / "engine" / "pipeline.py").exists():
         return DecodeRun({}, unavailable_reason=(
             f"pie-parser is not checked out at {settings.PIE_PARSER_ROOT}, so no "
@@ -151,7 +159,7 @@ def decode_names(rows: Sequence[MasterRow],
     except Exception as exc:  # noqa: BLE001 — an absent pack must not kill a report
         log.warning("master-health: pack unreadable", exc_info=True)
         return DecodeRun({}, unavailable_reason=(
-            f"the pack at {pack_path or settings.PIE_PACK} could not be loaded "
+            f"the rule set at {pack_path} could not be loaded "
             f"({exc}), so no "
             f"name was decoded. Geometry coverage is UNKNOWN, not zero."))
 

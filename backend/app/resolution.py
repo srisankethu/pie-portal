@@ -199,6 +199,11 @@ def _product(cand: Candidate, *, with_provenance: bool,
         # is how it was found. A past choice: not an identity, not the engine's
         # reading, and honestly not always what they mean this time.
         "prior_phrase": cand.alias if cand.alias_kind == "phrase" else None,
+        # Which of the company's catalogues — which manufacturer's — this
+        # record is from. A company resolves against every catalogue it has
+        # built, so the answer has to say which one answered; the key matches
+        # an entry of ``engine.catalogues``.
+        "catalogue": cand.catalogue,
     }
     if record is not None:
         out["record_confidence"] = record.get("row_confidence")
@@ -268,8 +273,18 @@ def _document(text: str, *, status: str, resolution: Optional[dict],
             # deployment-wide answer any more, which is the point: a stamp that
             # could not say *which* catalogue answered was never provenance.
             "catalogue_available": pie_service.catalog_available(connection_id),
+            # The version of what this company resolves against: a hash over
+            # each of its catalogues' run ids (input bytes plus ruleset), so it
+            # moves when any is rebuilt from different files or through a
+            # different pack. Kept under the field's original name; each
+            # catalogue's own ruleset checksum is listed below.
             "ruleset_checksum": pie_service.catalog_version(connection_id) or None,
             "company": connection_id,
+            # The catalogues behind that checksum: one per manufacturer this
+            # company sells, each with its own pack and its own stamp. One
+            # entry where the company has one catalogue, and the checksum
+            # above is then that catalogue's own.
+            "catalogues": pie_service.catalogues(connection_id),
             "input_semantics": semantics,
             "outcome": outcome,
             # The nearest-neighbour pass, when one ran: which model searched

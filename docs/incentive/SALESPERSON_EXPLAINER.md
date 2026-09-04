@@ -86,11 +86,12 @@ you earn a quarter rate on that particular stock.
 
 ## Working it out before you agree it
 
-The **Negotiation desk** in the portal does the arithmetic above while you are
-on the phone. Put in the item, the quantity and the price you are about to
-agree, and it gives you the floor, what the line contributes, what a discount
-costs, what the vendor ask is worth, and the price you would have to hold to
-keep a number you have in mind. Move any figure and it moves.
+The Negotiation desk that used to do this arithmetic in the portal has been
+removed. The sums are ones you can do on the phone: contribution is quantity
+times (price less floor); a discount costs exactly its own rupees; a rupee
+from the vendor is worth a rupee held on price; the price that holds a target
+is the floor plus the target divided by the quantity. The Quote Builder prices
+each line against the customer's history and the floor while you build it.
 
 Nothing there is hidden from you and nothing there is a different sum from the
 one above — it is the same calculator that pays you at the end of the month, so

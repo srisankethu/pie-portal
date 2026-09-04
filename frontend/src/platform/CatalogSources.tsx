@@ -1,4 +1,4 @@
-// The files one company's catalogue is decoded from, and how each one is read.
+// The files one catalogue is decoded from, and how each one is read.
 //
 // A company used to have exactly one item-master export, and replacing it was
 // the only thing that could be done to it. That is not how the exports arrive:
@@ -19,9 +19,20 @@
 // The catalogue is nomenclature only — a price is absent from it because it was
 // never written, not because a filter removed it — and a person can only
 // confirm that against their own spreadsheet if the columns are named.
+//
+// **Each file carries its own decoding config, and this is where it is checked
+// and saved.** There is no default decoder: an upload is analysed on its own
+// evidence — its headers, and every shipped rule set run over its first rows —
+// and what comes back is a *proposal*. It decodes nothing until a person opens
+// Decoding, reads the parser's counts and saves. So a file's state here is one
+// of three, and only one of them builds: READY, NOT SAVED (a proposal nobody
+// has confirmed) and NO RULE SET (columns saved, but no shipped rule set reads
+// this manufacturer — which is a rule set somebody has to write, not a menu
+// somebody has to find).
 
 import { useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
@@ -36,7 +47,7 @@ import Tooltip from "@mui/material/Tooltip";
 import type { ColDef } from "./DataGrid";
 import { DataGrid } from "./DataGrid";
 import { EmptyState, StatusChip } from "./kit";
-import type { CompanyCatalogue, CompanySource, SourceIngest } from "./types";
+import type { BuiltFile, CompanyCatalogueEntry, CompanySource } from "./types";
 import { Tip } from "./ui";
 import { formatDateTime } from "../when";
 
@@ -72,7 +83,7 @@ export function megabytes(bytes: number): string {
  *  carried contributes **nothing**, which is worth seeing on the screen where
  *  somebody decides whether to keep it.
  */
-function rowsOf(source: CompanySource, built?: SourceIngest): string {
+function rowsOf(source: CompanySource, built?: BuiltFile): string {
   const ingest = source.ingest;
   if (!ingest) return "not read yet";
   const kept = ingest.rows_kept ?? ingest.rows_read ?? 0;
@@ -83,25 +94,131 @@ function rowsOf(source: CompanySource, built?: SourceIngest): string {
     ? `${base} · ${emitted} used` : base;
 }
 
-/** Choose which columns of one file the parse reads.
+/** One file's decoding state, in a word.
  *
- *  Every option is a header this file actually has, so a mapping naming a
- *  column that does not exist cannot be composed here — the server refuses one
- *  anyway, since the file could have been replaced under a stale dialog, but a
- *  form that can only express valid answers is the better half of that pair.
+ *  Three states rather than a boolean, because the fixes differ. NOT SAVED is
+ *  a proposal nobody has confirmed — open it, check the counts, save. NO RULE
+ *  SET is a config that is saved and still cannot run: no rule set this engine
+ *  ships reads this manufacturer, which is a rule set somebody has to write.
+ *  Collapsing the two into "not ready" would send a person looking through a
+ *  menu for something that is not in it.
  */
-function MappingDialog({ source, onClose, onSave, busy }: {
+function decodingChip(source: CompanySource): { label: string; tone: "good" | "warn" } {
+  const d = source.decoding;
+  if (!d.confirmed_at || !d.columns) return { label: "NOT SAVED", tone: "warn" };
+  if (!d.rule_set || !d.rule_set_resolved) return { label: "NO RULE SET", tone: "warn" };
+  return { label: "READY", tone: "good" };
+}
+
+/** The evidence a decoding config is chosen on: every shipped rule set over
+ *  the first rows of this one file, with the parser's own counts.
+ *
+ *  Counts, never a rate and never an order. The numbers a score would be made
+ *  of are the ones `catalog.run_parse` already refuses to recompute, and one
+ *  "83% fit" would hide the distinction that decides the choice — a rule set
+ *  that classifies few rows is wrong for this file, one that errors could not
+ *  read it at all, and none of them reading it is the answer that means a rule
+ *  set has to be written before this manufacturer can be decoded at all.
+ *
+ *  Quarantined is shown beside classified rather than subtracted from it,
+ *  because "unknown means unknown" is the engine's contract: a quarantined row
+ *  is kept, and a rule set that quarantines most of a file has told you
+ *  something.
+ */
+function AnalysisEvidence({ source, busy, onAnalyze }: {
   source: CompanySource;
-  onClose: () => void;
-  onSave: (mapping: { record_id: string; description: string;
-                      grade?: string | null }) => void;
   busy: boolean;
+  onAnalyze: () => void;
+}) {
+  const analysis = source.decoding.analysis;
+  return (
+    <Box sx={{ mt: 2.5 }}>
+      <Stack direction="row" spacing={1}
+             sx={{ alignItems: "center", mb: 1, flexWrap: "wrap", rowGap: 1 }}>
+        <b>
+          {analysis
+            ? `Each rule set over the first ${analysis.sample_rows} rows of this file`
+            : "This file has not been analysed"}
+        </b>
+        <Box sx={{ flex: 1 }} />
+        <Button size="small" disabled={busy} onClick={onAnalyze}>Re-analyse</Button>
+      </Stack>
+      {analysis?.reason && (
+        <Alert severity="info" sx={{ mb: 1 }}>{analysis.reason}</Alert>
+      )}
+      {analysis && analysis.candidates.length > 0 && (
+        // A fact panel, not a grid: the row count is the rule set vocabulary
+        // the pinned engine ships — a property of the deployment, fixed — which
+        // is the case ui-standards §3 keeps as a table.
+        <table className="facttable" aria-label="Parse counts per rule set">
+          <tbody>
+            {analysis.candidates.map((c) => (
+              <tr key={c.rule_set}>
+                <td>
+                  {c.rule_set}
+                  {c.rule_set === analysis.proposed && (
+                    <span className="fsrc" style={{ marginLeft: 6 }}>proposed</span>
+                  )}
+                </td>
+                <td className="fv">
+                  {c.error ? (
+                    <span>could not read this file — {c.error}</span>
+                  ) : (
+                    <>
+                      {c.classified ?? 0} classified, {c.quarantined ?? 0} quarantined
+                      <span className="fsrc" style={{ marginLeft: 8 }}>
+                        of {c.rows_read ?? 0} rows
+                      </span>
+                    </>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      <p className="st-help" style={{ marginTop: 6 }}>
+        The parser&apos;s own counts, on a sample of this file. Nothing here
+        ranks them — which one is right is a reading of these numbers.
+      </p>
+    </Box>
+  );
+}
+
+/** Check and save how ONE file is decoded: its columns, and the rule set that
+ *  reads its descriptions.
+ *
+ *  This is the validate step of the flow, and the only thing that turns an
+ *  analysis into a config. Every column option is a header this file actually
+ *  has, so a config naming a column that does not exist cannot be composed
+ *  here — the server refuses one anyway, since the file could have been
+ *  replaced under a stale dialog, but a form that can only express valid
+ *  answers is the better half of that pair.
+ *
+ *  The rule set may be left at none. That is the honest state for a file no
+ *  shipped rule set reads: the columns go on record, the file stays undecoded,
+ *  and the build names it rather than quietly decoding it through somebody
+ *  else's grammars.
+ */
+function DecodingDialog({ source, ruleSets, busy, onClose, onSave, onAnalyze }: {
+  source: CompanySource;
+  ruleSets: { id: string; path: string }[];
+  busy: boolean;
+  onClose: () => void;
+  onSave: (config: { record_id: string; description: string;
+                     grade?: string | null; rule_set?: string | null }) => void;
+  onAnalyze: () => void;
 }) {
   const columns = source.ingest?.columns ?? [];
-  const mapped = source.mapping ?? source.ingest?.mapped ?? null;
-  const [recordId, setRecordId] = useState(mapped?.record_id ?? "");
-  const [description, setDescription] = useState(mapped?.description ?? "");
-  const [grade, setGrade] = useState(mapped?.grade ?? "");
+  const d = source.decoding;
+  // The saved config first, then what the analysis suggested from the headers.
+  // A suggestion is not a config — the file is undecoded until this is saved —
+  // but it is the right thing for the form to open on.
+  const settled = d.columns ?? source.ingest?.mapped ?? null;
+  const [recordId, setRecordId] = useState(settled?.record_id ?? "");
+  const [description, setDescription] = useState(settled?.description ?? "");
+  const [grade, setGrade] = useState(settled?.grade ?? "");
+  const [ruleSet, setRuleSet] = useState(d.rule_set ?? d.analysis?.proposed ?? "");
 
   const field = (label: string, tip: string, value: string,
                  set: (v: string) => void, optional = false) => (
@@ -115,39 +232,62 @@ function MappingDialog({ source, onClose, onSave, busy }: {
 
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>Which columns of {source.filename}?</DialogTitle>
+      <DialogTitle>How is {source.filename} decoded?</DialogTitle>
       <DialogContent>
         {columns.length === 0 ? (
-          // A source stored before columns were read — the seeded corpus, or an
-          // upload from before this existed. Its headers are not on record, so
-          // there is nothing truthful to offer as options here. It still builds
-          // (the headers are read at build time and mapped by their names), and
-          // re-uploading it under Replace is what puts its columns on record.
+          // A source stored before its columns were read — the seeded corpus,
+          // or an upload from before this existed. Its headers are not on
+          // record, so there is nothing truthful to offer as options here.
+          // Re-analyse reads the stored bytes again and puts them on record.
           <DialogContentText>
             This file was stored before its columns were read, so they are not
-            on record to choose from. It still decodes — its headers are read
-            at build time — but to map them by hand, use <b>Replace</b> on this
-            row and upload the same file again.
+            on record to choose from — and nothing is decoded through a
+            default, so it will not build as it stands. <b>Re-analyse</b> reads
+            the stored file again and puts its headers and the parser&apos;s
+            counts on record; then its columns and rule set can be saved here.
           </DialogContentText>
         ) : (
         <>
         <DialogContentText sx={{ mb: 2 }}>
-          These three are all that is read. Every other column in this file —
-          price, cost, stock, anything else — is left out of the catalogue
-          entirely.
+          These three columns are all that is read. Every other column in this
+          file — price, cost, stock, anything else — is left out of the
+          catalogue entirely. Nothing is inherited from the catalogue or the
+          deployment: <b>this file is not decoded until this is saved</b>.
         </DialogContentText>
         <Stack spacing={2.5} sx={{ mt: 1 }}>
           {field("Part number", "The code a customer quotes back at you.",
                  recordId, setRecordId)}
           {field("Description",
-                 "The text the pack decodes — dimensions, geometry, grade.",
+                 "The text the rule set decodes — dimensions, geometry, grade.",
                  description, setDescription)}
           {field("Grade",
                  "Optional. Leave as none where the grade is inside the description.",
                  grade, setGrade, true)}
+          <TextField select fullWidth size="small" label="Rule set" value={ruleSet}
+                     disabled={busy} onChange={(e) => setRuleSet(e.target.value)}
+                     helperText={
+                       d.rule_set && !d.rule_set_resolved
+                         ? `This engine no longer ships ${d.rule_set}, which this file names — it decodes nothing until another is chosen.`
+                         : ruleSets.length === 0
+                           ? "none available — this deployment ships no rule set"
+                           : "The decoder for this manufacturer's descriptions, from what the engine ships. The counts below are what says whether it reads this file."}>
+            <MenuItem value="">— none yet —</MenuItem>
+            {ruleSets.map((r) => (
+              <MenuItem key={r.id} value={r.id}>{r.id}</MenuItem>
+            ))}
+            {/* A rule set this file names and the pinned engine no longer has.
+                Offered rather than dropped: silently blanking the menu would
+                make a stored choice look like no choice at all. */}
+            {d.rule_set && !ruleSets.some((r) => r.id === d.rule_set) && (
+              <MenuItem value={d.rule_set}>
+                {d.rule_set} — not shipped by this engine
+              </MenuItem>
+            )}
+          </TextField>
         </Stack>
         </>
         )}
+        <AnalysisEvidence source={source} busy={busy} onAnalyze={onAnalyze} />
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={busy}>
@@ -155,9 +295,10 @@ function MappingDialog({ source, onClose, onSave, busy }: {
         </Button>
         {columns.length > 0 && (
         <Button variant="contained" disabled={busy || !recordId || !description}
-                onClick={() => onSave({ record_id: recordId,
-                                        description, grade: grade || null })}>
-          Save and re-read
+                onClick={() => onSave({ record_id: recordId, description,
+                                        grade: grade || null,
+                                        rule_set: ruleSet || null })}>
+          Save decoding config
         </Button>
         )}
       </DialogActions>
@@ -165,18 +306,30 @@ function MappingDialog({ source, onClose, onSave, busy }: {
   );
 }
 
-export function CatalogSources({ company, canManage, busy, onUpload, onMap,
-                                onRemove }: {
-  company: CompanyCatalogue;
+export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
+                                onUpload, onSaveDecoding, onAnalyze, onRemove }: {
+  catalogue: CompanyCatalogueEntry;
+  /** The company's label, for the grid's name: a company keeps one of these
+   *  per manufacturer, so the catalogue's own name alone does not say whose
+   *  files a screen reader is describing. */
+  label: string;
+  /** The rule sets this engine ships, which a file's config may name. */
+  ruleSets: { id: string; path: string }[];
   canManage: boolean;
   busy: boolean;
   /** A key replaces that one file; no key replaces the whole export. */
   onUpload: (file: File, sourceKey?: string) => void;
-  onMap: (sourceKey: string, mapping: { record_id: string; description: string;
-                                        grade?: string | null }) => void;
+  onSaveDecoding: (sourceKey: string,
+                   config: { record_id: string; description: string;
+                             grade?: string | null;
+                             rule_set?: string | null }) => void;
+  onAnalyze: (sourceKey: string) => void;
   onRemove: (sourceKey: string) => void;
 }) {
-  const [mapping, setMapping] = useState<CompanySource | null>(null);
+  /** Which file's decoding is open, by key rather than by value: re-analysing
+   *  replaces the whole company, so a dialog holding the row it was opened
+   *  with would go on showing the counts from before it ran. */
+  const [decodingKey, setDecodingKey] = useState<string | null>(null);
   const [confirmRemove, setConfirmRemove] = useState<CompanySource | null>(null);
   // One hidden input per action, because a file input that is reused for "add"
   // and "replace this one" needs a mode flag read inside its own change
@@ -187,9 +340,10 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
   const replacing = useRef<string | null>(null);
 
   // What the last build made of each file, keyed the way the rows are. Absent
-  // for a company that has not built yet, and for a file added since.
-  const built = new Map<string, SourceIngest>(
-    (company.ingest?.sources ?? []).map((s) => [s.source_key ?? "", s]));
+  // for a catalogue that has not built yet, and for a file added since.
+  const built = new Map<string, BuiltFile>(
+    (catalogue.ingest?.sources ?? []).map((s) => [s.source_key, s]));
+  const decoding = catalogue.sources.find((s) => s.source_key === decodingKey) ?? null;
 
   const columns: ColDef<CompanySource>[] = [
     {
@@ -209,10 +363,24 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
         p.data ? rowsOf(p.data, built.get(p.data.source_key)) : "",
     },
     {
+      headerName: "Decoding", minWidth: 130, flex: 1,
+      // The one state that decides whether this file builds. A chip rather
+      // than coloured text, per ui-standards §6.
+      cellRenderer: (p: { data: CompanySource }) => {
+        const chip = decodingChip(p.data);
+        return <StatusChip label={chip.label} tone={chip.tone}
+                           tip={p.data.decoding.rule_set
+                             ? `Decoded through ${p.data.decoding.rule_set}.`
+                             : "No rule set decodes this file yet, so a build will name it rather than decode it."} />;
+      },
+      valueGetter: (p: { data?: CompanySource }) =>
+        p.data ? decodingChip(p.data).label : "",
+    },
+    {
       headerName: "Reads", flex: 2, minWidth: 190,
       valueGetter: (p: { data?: CompanySource }) => {
-        const m = p.data?.mapping ?? p.data?.ingest?.mapped;
-        if (!m) return "headers read at build time";
+        const m = p.data?.decoding.columns ?? p.data?.ingest?.mapped;
+        if (!m) return "not chosen yet";
         return [m.record_id, m.description].filter(Boolean).join(" · ");
       },
     },
@@ -250,7 +418,7 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
       cellRenderer: (p: { data: CompanySource }) => (
         <Stack direction="row" spacing={0.5}>
           <Button size="small" disabled={busy}
-                  onClick={() => setMapping(p.data)}>Columns</Button>
+                  onClick={() => setDecodingKey(p.data.source_key)}>Decoding</Button>
           <Button size="small" disabled={busy}
                   onClick={() => {
                     replacing.current = p.data.source_key;
@@ -269,8 +437,8 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
         <b>Files this catalogue is built from</b>
         <Tip text="Every file here is merged into one catalogue. Where the same part number appears in two of them, the newest file's row is used and the overlap is counted — it is never quietly dropped, because two exports disagreeing about one product is something somebody has to know about." />
         <div style={{ flex: 1 }} />
-        {company.sources.length > 1 && (
-          <StatusChip label={`${company.sources.length} FILES`} tone="neutral" />
+        {catalogue.sources.length > 1 && (
+          <StatusChip label={`${catalogue.sources.length} FILES`} tone="neutral" />
         )}
         {canManage && (
           <Button size="small" variant="outlined" disabled={busy}
@@ -300,12 +468,12 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
              }} />
 
       <DataGrid<CompanySource>
-        rows={company.sources}
+        rows={catalogue.sources}
         columns={columns}
         getRowId={(r) => r.source_key}
         pageSize={10}
         filters={false}
-        ariaLabel={`Files ${company.label || company.connection_id} decodes`}
+        ariaLabel={`Files ${label || catalogue.connection_id} · ${catalogue.name || catalogue.catalogue_key} decodes`}
         empty={<EmptyState
           title="No export uploaded"
           reason="Item identity lookups and this company's RFQ line resolution answer UNKNOWN — not zero coverage — until a file is uploaded and decoded. A CSV or an Excel export of the item master is what this reads; price and stock columns in it are ignored."
@@ -313,6 +481,9 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
         renderNarrow={(r) => (
           <Stack spacing={0.5} sx={{ p: 1.5 }}>
             <b>{r.filename}</b>
+            <div>
+              <StatusChip label={decodingChip(r).label} tone={decodingChip(r).tone} />
+            </div>
             <span className="fsrc">
               {rowsOf(r, built.get(r.source_key))} rows ·{" "}
               {fileSize(r.size_bytes)} ·{" "}
@@ -330,7 +501,7 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
             {canManage && (
               <Stack direction="row" spacing={0.5}>
                 <Button size="small" disabled={busy}
-                        onClick={() => setMapping(r)}>Columns</Button>
+                        onClick={() => setDecodingKey(r.source_key)}>Decoding</Button>
                 <Button size="small" color="error" disabled={busy}
                         onClick={() => setConfirmRemove(r)}>Remove</Button>
               </Stack>
@@ -339,21 +510,28 @@ export function CatalogSources({ company, canManage, busy, onUpload, onMap,
         )}
       />
 
-      {company.ingest && company.ingest.collisions > 0 && (
+      {catalogue.ingest && catalogue.ingest.collisions > 0 && (
         <Alert severity="info" sx={{ mt: 1 }}>
-          {company.ingest.collisions} part number
-          {company.ingest.collisions === 1 ? "" : "s"} appeared in more than one
+          {catalogue.ingest.collisions} part number
+          {catalogue.ingest.collisions === 1 ? "" : "s"} appeared in more than one
           file at the last build — the newest file&apos;s row was used for each.
-          {company.ingest.collision_examples.length > 0 &&
-            ` For example ${company.ingest.collision_examples.slice(0, 5).join(", ")}.`}
+          {catalogue.ingest.collision_examples.length > 0 &&
+            ` For example ${catalogue.ingest.collision_examples.slice(0, 5).join(", ")}.`}
         </Alert>
       )}
 
-      {mapping && (
-        <MappingDialog
-          source={mapping} busy={busy}
-          onClose={() => setMapping(null)}
-          onSave={(m) => { onMap(mapping.source_key, m); setMapping(null); }} />
+      {decoding && (
+        <DecodingDialog
+          // Remounted when a re-analysis changes what is proposed, so the form
+          // offers the fresh proposal rather than the one it opened with.
+          key={`${decoding.source_key}:${decoding.decoding.analysis?.proposed ?? ""}`}
+          source={decoding} ruleSets={ruleSets} busy={busy}
+          onClose={() => setDecodingKey(null)}
+          onAnalyze={() => onAnalyze(decoding.source_key)}
+          onSave={(config) => {
+            onSaveDecoding(decoding.source_key, config);
+            setDecodingKey(null);
+          }} />
       )}
 
       <Dialog open={confirmRemove !== null} onClose={() => setConfirmRemove(null)}>

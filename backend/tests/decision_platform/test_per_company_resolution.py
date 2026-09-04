@@ -237,14 +237,18 @@ def test_the_shipped_corpus_seeds_the_first_company_and_it_resolves(maker, tmp_p
     corpus = catalog.current_corpus(s, ORG, SLS)
     assert corpus is not None
     assert corpus.size_bytes == settings.PIE_CORPUS.stat().st_size
-    # The pack it was decoded through, chosen for the company rather than left
-    # unset — a corpus with no pack builds nothing.
-    connection = s.get(models.ZohoConnection, SLS)
-    assert catalog.pack_for(connection) is not None
+    # The seed arrives with its own decoding config, saved by the seed: the
+    # rule set that was written against exactly this file, on the same footing
+    # as a config a person saved. Nothing else is decoded through a default,
+    # and a file with no saved config builds nothing.
+    assert catalog.catalogue_row(s, ORG, SLS, catalog.DEFAULT_CATALOGUE) is not None
+    assert catalog.decoding_ready(corpus)
+    assert corpus.decoding_confirmed_at is not None
 
     built = catalog.ensure_company_catalogues(s)
     s.commit()
-    assert built == [{"organization_id": ORG, "connection_id": SLS}]
+    assert built == [{"organization_id": ORG, "connection_id": SLS,
+                      "catalogue_key": catalog.DEFAULT_CATALOGUE}]
     pie_service.reload(SLS)
     assert pie_service.resolve("2001174", connection_id=SLS).rel == "EXACT"
     piesupport.forget_company_catalogue(SLS)

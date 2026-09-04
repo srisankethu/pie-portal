@@ -99,6 +99,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from sqlalchemy import func, select                       # noqa: E402
 
+from app.config import settings                           # noqa: E402
 from app.db import SessionLocal                           # noqa: E402
 from app.domain import models                             # noqa: E402
 from app.master_health.geometry import (                  # noqa: E402
@@ -299,7 +300,8 @@ def read_identity(session, product_ids: set[str],
 
 # ── 3. geometry: the ISO slots, decoded from the item name ───────────────────
 
-def read_geometry(names: Mapping[str, str]) -> Optional[dict[str, bool]]:
+def read_geometry(names: Mapping[str, str],
+                  rule_set: Optional[Path] = None) -> Optional[dict[str, bool]]:
     """Whether each product's NAME fills every slot in :data:`ISO_SLOTS`.
 
     The decode itself is ``master_health.geometry.decode_names`` and not a
@@ -317,7 +319,14 @@ def read_geometry(names: Mapping[str, str]) -> Optional[dict[str, bool]]:
     ``product_id``, so the mapping is positional over a sorted list — sorted
     for determinism, which is the property a rerun of this measurement rests on.
 
-    Returns None when the engine or its pack could not be loaded, which is
+    ``rule_set`` is the decoder these names are read through, and it is named
+    rather than defaulted: which rule set reads a file is a fact about that
+    file, and ``decode_names`` has no fallback. Here the shipped rule set is
+    the *subject* of the measurement — the question this script asks is how
+    much of what the business traded that rule set reaches — so the caller
+    passes ``settings.PIE_PACK`` and the report names it.
+
+    Returns None when the engine or its rule set could not be loaded, which is
     ``DecodeRun.available`` restated in this script's vocabulary.
 
     The decode runs over ``Product.name`` because that is where this master
@@ -331,7 +340,7 @@ def read_geometry(names: Mapping[str, str]) -> Optional[dict[str, bool]]:
         MasterRow(row_number=i, sku=None, name=names[pid], manufacturer=None,
                   rate=None, stock=None, hsn=None, uom=None)
         for i, pid in enumerate(ordered)
-    ])
+    ], rule_set or settings.PIE_PACK)
     if not run.available:
         log_reason = run.unavailable_reason
         print(f"  note: {log_reason}", file=sys.stderr)
@@ -546,7 +555,7 @@ def main() -> int:
             p.product_id: p.name for p in session.scalars(
                 select(models.Product).where(models.Product.product_id.in_(product_ids)))
         } if product_ids else {}
-        geometry = read_geometry(names)
+        geometry = read_geometry(names, settings.PIE_PACK)
         report = combine(traded, identity, geometry)
 
     print(render(report))

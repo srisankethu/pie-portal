@@ -37,9 +37,10 @@ def test_every_configured_target_margin_family_is_one_the_loaded_pack_declares()
     """A key the pack does not declare never matches a parsed line, so its
     target silently becomes the default. The strings in the policy and the
     strings in the pack manifest are the same strings, or the map buys nothing."""
-    from app.pie_service import pack_families
+    from app.config import settings
+    from app.pie_service import rule_set_families
 
-    vocabulary = pack_families()
+    vocabulary = rule_set_families(settings.PIE_PACK)
     assert vocabulary, "the pack is present, so its vocabulary must be readable"
     for family, _ in CommercialThresholds().target_margin_by_family:
         assert family in vocabulary, (
@@ -54,9 +55,10 @@ def test_the_default_policy_passes_its_own_write_path_validator():
     binding deliberately does NOT live in ``validate``: there it would run on
     the whole merged policy for every save, letting one stale stored key block
     an owner's edit of an unrelated field."""
-    from app.pie_service import pack_families
+    from app.config import settings
+    from app.pie_service import rule_set_families
 
-    vocabulary = pack_families()
+    vocabulary = rule_set_families(settings.PIE_PACK)
     assert vocabulary, "the pack is present, so its vocabulary must be readable"
     require_known_families(
         "target_margin_by_family",
@@ -73,30 +75,41 @@ def test_a_stale_stored_family_key_does_not_block_unrelated_edits(session, monke
     tolerates the stale key — and only an edit touching the map itself is
     asked to answer for the current vocabulary."""
     import app.pie_service as pie_service
+    from app import clock
     from app.commercial import policy as policy_mod
-    from app.domain import models
-
     from app.config import settings
+    from app.domain import models
 
     org = "org_stale_family_key"
     session.add(models.Organization(organization_id=org, name="Stale",
                                     currency="INR", config={}))
-    # The vocabulary is the union of this organization's companies' packs, so
-    # the organization needs a company before any family edit can be judged.
+    # A family edit is judged against what this organization can decode, so it
+    # needs a company, a catalogue and a file whose decoding config is saved.
     session.add(models.ZohoConnection(connection_id="cx_stale", organization_id=org,
-                                      label="Stale Co", zoho_organization_id="zs",
-                                      config={"pie_pack": settings.PIE_PACK.name}))
+                                      label="Stale Co", zoho_organization_id="zs"))
+    session.add(models.CompanyCatalogue(organization_id=org, connection_id="cx_stale",
+                                        catalogue_key="default", name=""))
+    # The vocabulary comes from the rule sets this organization's saved
+    # decoding configs name, so the organization needs a file with one.
+    session.add(models.CompanyCorpus(
+        organization_id=org, connection_id="cx_stale", catalogue_key="default",
+        source_key="master.csv", filename="master.csv", size_bytes=1,
+        sha256="x", content=b"x",
+        mapping={"record_id": "MM#", "description": "Material Description",
+                 "grade": None},
+        rule_set=settings.PIE_PACK.name,
+        decoding_confirmed_at=clock.now(), decoding_confirmed_by="test"))
     session.flush()
 
     # History: the override was saved under an older pack that declared the
     # name — simulated by widening the vocabulary for that one save.
-    real = pie_service.pack_families
-    vocab_then = tuple(real() or ()) + ("family_the_pack_since_renamed",)
-    monkeypatch.setattr(pie_service, "pack_families", lambda _pack=None: vocab_then)
+    real = pie_service.rule_set_families
+    vocab_then = tuple(real(settings.PIE_PACK) or ()) + ("family_the_pack_since_renamed",)
+    monkeypatch.setattr(pie_service, "rule_set_families", lambda _path: vocab_then)
     policy_mod.save_for_org(
         session, org,
         {"target_margin_by_family": {"family_the_pack_since_renamed": 0.30}})
-    monkeypatch.setattr(pie_service, "pack_families", real)
+    monkeypatch.setattr(pie_service, "rule_set_families", real)
 
     # The rename happened. An unrelated edit must still save.
     policy_mod.save_for_org(session, org, {"effective_tax_rate": 0.25})

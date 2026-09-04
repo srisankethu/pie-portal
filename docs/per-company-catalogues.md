@@ -1,6 +1,6 @@
 # Per-company decoded catalogues
 
-**Status: built, both parts, plus §10.** PR 1 brought the tables, upload, pack
+**Status: built, both parts, plus §10, §12 and §13.** PR 1 brought the tables, upload, pack
 selection, per-company build and the screen; PR 2 was the cutover — the quote
 names its company, the resolution API gained its argument and its refusal, the
 shipped corpus became a *seed*, and the deployment-wide catalogue was removed.
@@ -705,11 +705,230 @@ writer the quote screen uses, under the same rules, so a backfilled alias
 differs from a live one only in its `source_ref`. `enquiry` lines are not
 pairs — a disposition names a quote, not a product — so they are not read.
 
-**What this is not, yet.** A hint could also enter the engine's *ranking*, by
-translating a learned word into one the pack's fuzzy decoder reads (`BOHRER`
-→ `drill`) before resolution, so the family gate applies and the ranking
-means something. That is the next step if the widened search proves to find
-the right records but the ranking keeps abstaining on them. It needs the
-resolution run twice on such lines and a canonical-word table per attribute,
-and it is deliberately not done here: the options layer is where learning is
-cheap to be wrong in.
+**A reading reaching the ranking (built).** One learned reading may enter the
+engine's *ranking*, and only one kind: a `product_family` the engine could
+not decode from the text, when the tenant's quotes have taught the word and
+the family has a word the engine's own fuzzy decoder reads (`FAMILY_WORDS`:
+`BOHRER` → `drill`). `pie_service._with_ranking_reading` resolves the line
+again with that word appended; the second result is used only if the engine
+did decode that family from it, so the engine still applies its own gate and
+decodes every dimension itself. The line keeps its original text, the note
+says "Read 'BOHRER' as drill — this tenant's usage in 5 of 5 quotes; the
+ranking below was made with that reading", and `engine.retrieval.ranking_reading`
+carries the evidence. Everything else about the ranking — scores, bands,
+auto-selection, the discrimination and vacuity guards — is untouched: the
+engine was handed one word, in its own vocabulary, with the counts that
+justify it.
+
+### Measuring it (built)
+
+`GET /catalog/retrieval-report`, `python -m app.retrieval.report`, and the
+"Suggestions at work" panel on the Decoded catalogue screen count, from the
+quotes a tenant stored, what each layer is doing: of a person's choices on
+customer-linked requirement lines, how many took a record found beneath the
+ranking (retrieval, a confirmed code, a phrase), how many were typed in with
+nothing offered, how many the engine chose on its own; and how much has been
+learned. Two thresholds are printed beside the numbers as the reading: a fifth
+of choices found beneath the ranking says the ranking is the bottleneck; a
+fifth typed unoffered says the gap is meaning, and two thousand pairs is the
+floor for training on it. A share of nothing is `null`, never `0`.
+
+### Retiring a memory (built)
+
+"What the system remembers" on the same screen lists every active phrase
+alias with the customer, the words, the product and the quote it came from.
+A manager may read it; an owner may retire one. Retiring deactivates and
+audits (`PHRASE_ALIAS_RETIRED`); it never deletes, because the quote it came
+from still cites it. A retired phrase leaves the mapping store's snapshot and
+fingerprint at once, so the alias index is rebuilt on the next line.
+
+### A meaning-aware embedder (the seam is built; the model is yours)
+
+`retrieval/dense.py` is where a small language model plugs in. The protocol is
+a `model_id`, a `dim`, and `embed(texts) -> unit vectors`; `OnnxEmbedder`
+runs a sentence-embedding model exported to ONNX from a local directory —
+`model.onnx` and `tokenizer.json`, no network at build or quote time, the
+weights' hash as the model id on every stamp. `DenseReranker` re-orders the
+hashed index's candidates by cosine of dense vectors, **re-rank rather than
+replace**: the hashed index stays the candidate source because on codes and
+designations it is the better instrument, and scoring only the handful of
+candidates costs a few vector products. Record vectors are computed on first
+use and persisted beside the catalogue, named by model, so the next process
+reads them back. Downstream nothing changes: a re-ranked candidate is still
+compared by the engine, still POSSIBLE, still never selected; the dense
+similarity is carried as provenance ("0.81 by meaning"), never as the score.
+
+To turn it on: `pip install -r requirements-embed.txt`, put a model directory
+on the host, set `PIE_EMBEDDER_MODEL_DIR` to it, restart. Without those three
+the code path is inert and retrieval answers exactly as before.
+
+Which model. Any sentence-embedding model exportable to ONNX runs as is. A
+general one knows English, not the trade; the one worth having is tuned on the
+tenant's own pairs, and that is what `python -m app.retrieval.export_pairs
+--org X --catalogue <products.jsonl> --out pairs.jsonl` writes: one line per
+active phrase alias, the customer's words as the anchor and the chosen
+record's indexed text as the positive, one tenant per file — a model tuned
+on one tenant's pairs is that tenant's. The training is not in this codebase
+(it needs `torch` and `sentence-transformers`, far heavier than anything the
+backend runs) and is a one-off, offline:
+
+```
+pip install sentence-transformers optimum[exporters]
+python - <<'PY'
+from sentence_transformers import SentenceTransformer, InputExample, losses
+from torch.utils.data import DataLoader
+import json
+model = SentenceTransformer("sentence-transformers/all-MiniLM-L6-v2")
+pairs = [json.loads(l) for l in open("pairs.jsonl")]
+examples = [InputExample(texts=[p["anchor"], p["positive"]]) for p in pairs]
+loader = DataLoader(examples, shuffle=True, batch_size=32)
+model.fit(train_objectives=[(loader, losses.MultipleNegativesRankingLoss(model))],
+          epochs=3, warmup_steps=50)
+model.save("tuned")
+PY
+optimum-cli export onnx --model tuned --task feature-extraction model_dir/
+```
+
+`model_dir/` then holds `model.onnx` and `tokenizer.json`. Two thousand pairs
+is the floor below which this is not worth running; the report above says
+where a tenant stands.
+
+**Why the model could not be proven here.** The model host was not reachable
+from the environment this was built in and no tenant has two thousand pairs
+yet, so the seam is tested against a fake embedder that satisfies the
+protocol — re-ranking, persistence, provenance and the model id on the stamp
+are pinned; the quality of any particular model is not.
+
+## 13. Several catalogues per company, and no default decoder (built)
+
+Two things were wrong, and they are one change.
+
+**A company had one catalogue.** One set of files, one pack, one
+`products.jsonl`. A distributor sells several manufacturers, so that never fit.
+
+**A decoder was a fact about the company.** The pack lived on
+`zoho_connections.config["pie_pack"]`, so every file a company uploaded was
+decoded through whatever it had chosen once — and "which pack does this company
+use" has no answer for a company selling Kennametal and YG-1. Worse, it made
+the wrong thing easy: a YG-1 price list uploaded into a company set to `zcnc`
+decoded through Kennametal's grammars and produced a catalogue that was wrong
+while carrying a real provenance stamp.
+
+### The shape now
+
+```
+Catalogue (the company's canonical product knowledge, the union)
+└── Manufacturer catalogue          company_catalogues, keyed catalogue_key
+    ├── Price list 1                company_corpora
+    │   └── Decoding config 1       columns + rule set, on that row
+    └── Price list 2
+        └── Decoding config 2
+```
+
+A **catalogue** is a manufacturer's product universe and owns no decoder. A
+**price list** is one uploaded document. A **decoding config** is what it takes
+to decode *that* document: which of its own columns hold the part number, the
+description and the grade, and which **rule set** decodes its descriptions. A
+rule set is what pie-parser keeps as an org-layer pack; the portal calls it by
+what it is to the portal, because that is the only thing it is here.
+
+**There is no default.** `settings.PIE_PACK` names the rule set the shipped
+seed corpus was written against, and it is read in exactly two places: the seed
+(§6), which stores it as that one file's own saved config, and `master_health
+--rule-set`'s error message. Nothing uploaded is ever decoded through it.
+
+### The upload flow
+
+Upload → the file is read as a table and its columns settled → **every** shipped
+rule set is run over its first rows and the parser's own counts reported for
+each → a config is *proposed* → a person checks it and saves it
+(`PUT …/sources/{key}/decoding`) → the build decodes the file through it.
+
+`catalog.analyze_source` does the discovery, and what it refuses to do is the
+point: it proposes a rule set only when exactly one classified any sampled row.
+Where several read the file the counts are shown and a person chooses — ranking
+them by a number this module invented would be the second parse-rate
+calculation `run_parse` refuses to have. Where none reads it, the proposal is
+empty and the reason says so: that file needs a rule set nobody has written
+yet, and no amount of choosing from the menu fixes it. A proposal is never a
+config. `decoding_confirmed_at` is what a build looks at, and
+`POST …/sources/{key}/analyze` re-runs the discovery on a stored file without
+touching a saved config.
+
+**Failing clearly rather than falling back.** A build with any file lacking a
+saved config is refused with the files named
+(`Not decoded: yg1-prices.xlsx has no saved decoding config…`), the catalogue
+reports `decoding_ready: false` and `awaiting_decoding: [...]`, and the screen
+says so on the file's own row. `ensure_company_catalogues` logs it and leaves
+the catalogue NOT BUILT rather than decoding it at boot.
+
+### The build
+
+`build_for_company` decodes **each file on its own** through its own rule set
+and merges the decoded records afterwards, where the old code normalised every
+file into one CSV and parsed it once through one pack. So each file carries its
+own stamp — its `run_id` over its own bytes and its own rule set — and
+`company_catalogues.sources` holds one entry per file with that stamp, its rule
+set and the parser's own report for it. The row's own stamp fields are null
+where two files disagree, and `report` is null with more than one file: summing
+two censuses here would be the recomputation the parser has already made
+unnecessary.
+
+Merging moved to `_merge_decoded`, which is the collision rule stated once and
+used twice — across the files of one catalogue, and across the catalogues of
+one company. pie-parser's `AuthoritativeIndex` treats a duplicate identifier
+inside one namespace as a collision that never resolves, so a merge that kept
+both rows would silently stop that part number resolving; the newest statement
+wins (a later file, a later build) and the overlap is counted and named. Each
+kept record is tagged with where it came from — `source_key` inside a
+catalogue, `catalogue_key` in the union — which is how a resolution says which
+manufacturer's catalogue answered without a second map to keep in step.
+
+### The union, and what a company resolves against
+
+`catalog.union_catalogue` merges every built catalogue into
+`data/catalogues/<connection_id>/_union/products.jsonl`, and that one file is
+what `pie_service._view` loads and hands the engine as `pie_data`. The engine's
+identity step reads one path (`resolve_rfq._identity_resolver`), so a union
+file keeps that step exactly as it is — no engine change, no second index. It
+is assembled from the disk (each catalogue's `catalogue.json` sidecar) so it
+can be built in the resolver, at start-up, or in a test that linked a file into
+place, and it is rebuilt when a member's file changes.
+
+`catalog_version` is a hash over each member's key and the **run ids of the
+files it was built from**. The ruleset checksum alone would not do: it is the
+rule set's hash, identical for two companies decoding different item masters
+through `zcnc`, so a resolution cache keyed on it could hand one company the
+other's answer. One rule whatever the count, so the value means the same thing
+for a company with one catalogue as for one with five.
+
+### What moved, and what the migration does
+
+`m1cats` re-keys `company_catalogues` to
+`(organization_id, connection_id, catalogue_key)` — in place on Postgres,
+because a batch recreate would drop `h2rls`'s tenant policy; via batch on
+SQLite, which has no policies and cannot alter a key in place. It adds `name`,
+makes `built_at` nullable (a row is a definition before it is a build) and
+drops `pack`. It adds `catalogue_key` and the decoding-config columns to
+`company_corpora`, files every existing row under `default`, and **carries the
+company's recorded pack choice onto each of its live files** as that file's own
+saved config, marked confirmed by the migration — a recorded decision, not a
+default applied to an unknown file. A company holding files but no catalogue
+row gets its `default` definition. Downgrade supersedes rather than deletes the
+non-default files.
+
+`commercial.policy` validates family names against the union of the rule sets
+this organization's saved configs name (`catalog.rule_sets_in_use`), and
+`master_health` takes `--rule-set` with no fallback: absent, nothing is decoded
+and geometry coverage is UNKNOWN, which is what that module says everywhere
+else.
+
+### Accepted, and stated
+
+The union manifest is overwritten on every refresh, so a composite version on
+an append-only quote snapshot names *a* set of builds but cannot be decomposed
+once a member has been rebuilt; the per-line `catalogue` the API reports is the
+durable half. And only one rule set ships with the pinned engine, so a YG-1
+catalogue can be *defined* and its files analysed, but until a YG-1 rule set is
+written in pie-parser the analysis will say so and the file will wait — which
+is the honest answer, and the one the old default hid.

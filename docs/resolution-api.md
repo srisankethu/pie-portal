@@ -197,7 +197,15 @@ gets the record as an option, for that customer only. A fourth,
 `found_by: "prior_choice"`, is a record a person put on a quote for this
 customer when they asked for words close to these — `prior_phrase` carries
 the words. A past choice, never an identity: the engine does not read it, and
-the same words may honestly mean a different product this time. `engine.retrieval`
+the same words may honestly mean a different product this time.
+
+`engine.retrieval` also carries `vocabulary` (the learned readings applied to
+this line, each with the counts behind it), `ranking_reading` when one of
+those readings was given to the engine's own ranking — the line decoded to no
+family, the tenant's quotes had taught the word, and the line was resolved
+again with that family word appended; the note on the line says so — and
+`dense_model` when a meaning-aware embedder re-ordered the description
+neighbours. All three are provenance, not scores. `engine.retrieval`
 says whether that search ran — which model id, over how many records, offering
 how many — and is null where it did not, which reads as "not searched" and
 never as "nothing near". The model is a deterministic hashed n-gram embedding

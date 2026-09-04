@@ -14,7 +14,7 @@
 //
 // **Loaded on demand.** ag-grid is roughly the size of the rest of this
 // application. Statically imported it would be in the bundle for a salesperson
-// who only ever opens the negotiation desk, so the grid is a lazy chunk and the
+// who only ever opens the Quote Builder, so the grid is a lazy chunk and the
 // screens that use it get a skeleton for the moment it takes to arrive.
 //
 // **Below `NARROW_BREAKPOINT` a grid is not a grid.** A phone is narrower than

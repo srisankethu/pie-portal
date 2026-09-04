@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Seed and build every connected company's decoded PIE catalogue.
 
-Each company decodes its own item-master export (`backend/data/catalogues/
-<connection_id>/products.jsonl`) through its own pack. A company that has
-uploaded nothing inherits the corpus shipping in the ./pie-parser submodule,
+Each company keeps a catalogue per manufacturer it sells, and each decodes
+its own price lists (`backend/data/catalogues/<connection_id>/<catalogue_key>/
+products.jsonl`) through each file's own saved decoding config; the company
+resolves against the union of them, written beside those under `_union/`. A
+company that has uploaded nothing inherits the corpus shipping in the
+./pie-parser submodule,
 once — that seed is what keeps a deployment resolving across the move from one
 shared catalogue to one per company.
 
@@ -50,16 +53,18 @@ def main() -> int:
         for row in seeded:
             print(f"Seeded the shipped corpus to company {row['connection_id']}")
         if args.force:
-            # `ensure_` skips a company whose file is already there, so a forced
-            # rebuild removes it first rather than being a second build path.
-            for cid in session.scalars(
-                    select(models.CompanyCorpus.connection_id).distinct()):
-                catalog.company_catalog_path(cid).unlink(missing_ok=True)
+            # `ensure_` skips a catalogue whose file is already there, so a
+            # forced rebuild removes it first rather than being a second build
+            # path. Per catalogue: a company keeps one per manufacturer.
+            for cid, key in session.execute(
+                    select(models.CompanyCorpus.connection_id,
+                           models.CompanyCorpus.catalogue_key).distinct()):
+                catalog.company_catalog_path(cid, key).unlink(missing_ok=True)
         built = catalog.ensure_company_catalogues(session, actor="build_catalog.py")
         session.commit()
 
     for row in built:
-        out = catalog.company_catalog_path(row["connection_id"])
+        out = catalog.company_catalog_path(row["connection_id"], row["catalogue_key"])
         n = sum(1 for _ in out.open(encoding="utf-8"))
         print(f"Built catalogue: {out} ({n} products)")
     if not built:

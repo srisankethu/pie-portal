@@ -1155,3 +1155,162 @@ through the rule set each file's decoding config names, and a second build path
 with no caller would be worse than none. What connects them is Stage C — the
 step that proposes slot bindings and asks a person to confirm them — which is
 where a proposal becomes something a build can use.
+
+---
+
+## 16. Naming what a captured number is (Stage C, built)
+
+§15 proposes structure and stops there, on purpose: it hands back groups called
+`num1`, `opt2` and says nothing about what they hold. This is the step that
+names them. `app/decoding/evidence.py`, `app/decoding/bind.py` and
+`app/decisions/decoder_binding.py`.
+
+It is three steps in that order, and the order is the design — the
+deterministic answer is computed first and is never overridden.
+
+### 1. Evidence: what the file actually put in each group
+
+For every group of every segment, measured over every row: how often it
+captured, how many distinct values, the most frequent of them, the token
+written immediately before and after, and whether every value was an integer.
+
+**From the matches, never from the pattern.** The pattern says what its author
+intended a group to catch; the matches say what the file put there. A group
+whose pattern accepts any number and which in this file only ever holds `0` is
+the finding, and reading the pattern would have hidden it behind "accepts any
+number".
+
+Two things had to be worked at, both caught by a test rather than by reading:
+
+- **Adjacent tokens are case-folded**, because the corpus writes `11,1mm` and
+  `11,1MM` and the pattern matches both — inference folded the case, so the two
+  are one token as far as the decoder is concerned. Unfolded, the drill
+  diameter had 1,175 `mm` against 64 `MM` and therefore *no unit at all*.
+- **Examples are the lexicographically smallest claimed rows**, not the first
+  three seen. The first three seen made evidence depend on the order the file
+  was read in, which is the same defect §15 had to fix in its skeleton
+  counting, for the same reason.
+
+### 2. The surface binder: derived from the vocabulary, not tabulated
+
+A number written `3xD` is a depth ratio because `depth_ratio_xd` is the **only**
+slot in `CORE_SLOTS` ending `_xd`. A number written `5.1mm` is *a* millimetre
+dimension and the vocabulary has eleven of those, so this narrows to the eleven
+and **declines**.
+
+That decline is as much the point as the bindings are. On the real corpus:
+
+| | |
+|---|---|
+| Groups in the proposed decoder | 330 |
+| Named by the file's own text | **12** |
+| Declined — a bare `mm`, eleven ways (`AMBIGUOUS_UNIT`) | 16 |
+| Declined — no unit written at all (`NO_UNIT`) | 223 |
+| Declined — a group no row uses (`NO_OCCURRENCES`) | 28 |
+| Declined — an optional group holding two words (`MIXED_VALUES`) | 30 |
+| Declined — one word, unrecognised (`UNKNOWN_WORD`) | 21 |
+
+Twelve of three hundred and thirty. A step claiming more than that would be
+guessing, and the twelve fill 1,680 attribute values across 4,342 decoded
+records.
+
+`UNIT_TOKENS` is nine entries and every one is a unit of measure or a counter
+written like one — `mm`, `in`, `inch`, `"`, `deg`, `°`, `xd`, `fl`, `fls`. It
+says what `mm` *is*; which slots that reaches is derived from `CORE_SLOTS`, so
+adding a second `_xd` slot would make the binder stop binding `xD` and start
+narrowing, with no edit to the binder. Nothing here names a manufacturer, a
+family or a file format, and there is no default to fall back to.
+
+Three rules with teeth:
+
+- **A unit counts only as a suffix.** An earlier version also looked at the
+  left-hand token, on the theory that a file might write `dia 5.1`. It never
+  caught one of those — `dia` is not a unit, so it was never in the table.
+  What it caught instead was the *previous field's* suffix: in
+  `GP SCEM 2FL 20x20x75x150` the token before `20` is `FL`, so the shank
+  diameter was bound to `flute_count` on **seven segments** of the shipped
+  corpus. Each one a wrong slot with a real stamp on it.
+- **A group that captured nothing is never bound.** Not with a plausible slot,
+  not with a low-confidence one. Twenty-eight groups of the shipped corpus
+  never participate in a match, and a binding on one would be a claim with no
+  evidence under it — reading, on a screen, as a decoded attribute.
+- **One slot is claimed once per segment.** `freeze` refuses a set with two
+  groups on one slot, so without this a reviewer would be handed an error where
+  a review should be.
+
+An optional group is bound as a **flag**, which the executor makes `True` when
+the group participated and *absent* otherwise, never `False` — because a
+pattern can establish that a file said `COOLANT` and can never establish that
+it said the tool has no through-coolant.
+
+The `MIXED_VALUES` decline is worth reading as a finding about §15 rather than
+about this step: inference folds `COOLANT` and `MQL` into one optional group,
+and those are two different slots. One binding cannot express both, so nothing
+is offered for that group at all — splitting it is inference's job, and the
+empty candidate list is what keeps that visible instead of resolved by picking
+the more common word.
+
+### 3. The model, and why it cannot state a number
+
+Choosing among eleven millimetre slots needs to know that in `16x16x56x110` the
+first number is the shank and the third the length of cut. That is knowledge of
+the trade, not of the file, and it is the one interpreted step in the whole
+pipeline. It lives in `decisions/` because `decoding/` is deterministic by
+contract and must never import `ai/` (`CLAUDE.md` §1, §3).
+
+**"AI never computes a number" holds by construction here, not by review.** The
+model's entire output vocabulary is four fields:
+
+```json
+{"bindings": [{"segment": "s4-gp-sc", "group": "num3",
+               "slot": "shank_dia_mm", "type": "integer"}]}
+```
+
+— an id of a segment that already exists, a name of a group that segment
+already declares, a slot from the list *this file* narrowed, and one of four
+executor types. There is no field through which a measurement could arrive, so
+a model asserting that a drill is 9.99 mm has nowhere to put it. What it
+decides is that the number the file **already contains** at this position is a
+cutting diameter; the number itself is read out by a frozen regular expression
+and would be the same under any binding.
+
+The gate is deterministic, and every check is a comparison against something
+computed from the file:
+
+| Refusal | What it catches |
+|---|---|
+| `UNKNOWN_TARGET` | A segment or group that does not exist, or **that was not asked about** — so a reply cannot overrule a group the file's own text already settled |
+| `SLOT_NOT_A_CANDIDATE` | A group followed by `mm` typed as an inch dimension, however confident the reply |
+| `TYPE_NOT_SUPPORTED` | `5.1` typed as an integer — a thousand rows lost at decode time to a decision made in a prompt |
+| `DUPLICATE_SLOT` | Two groups on one slot. Evidence order breaks the tie, because that order is a property of the file |
+
+Entries are dropped individually rather than failing the batch: a reply that
+names forty groups and gets two wrong should still leave a reviewer
+thirty-eight. The counts are reported, because a mostly-refused reply is a
+finding about the prompt rather than a quietly thin review.
+
+**The floor is the deterministic answer.** A provider that is missing,
+misconfigured, slow, or answers unparseable text degrades to the surface
+suggestions with a stated reason (`PROVIDER_FAILED`, `UNREADABLE_REPLY`) and
+never raises — this runs behind a screen, and a caller that gets a degraded
+review got something. Where nothing is left to ask, no call is made at all
+(`NOTHING_LEFT_TO_ASK`).
+
+### Nothing is confirmed, and nothing is wired into the build yet
+
+The output is a **review**: every group, named or not, with its evidence and
+the slots it could still be. A person changes what they disagree with and
+confirms, and only then does `bind.apply_bindings` freeze a new artifact — a
+**new** one, with its own `decoder_id`, never an edit in place. Rows already
+decoded were stamped with the id of a decoder that did not have these bindings,
+and changing what that id means is the one thing the freeze exists to prevent.
+
+A binding set is the whole answer for the segments it names, not a patch, so
+which of a segment's groups are unbound is a property of the set somebody
+confirmed rather than of the order things were confirmed in.
+
+What is still **not** done: `catalog.py`'s build path still decodes through a
+pie-parser rule set (`run_parse`), so Stages A–C are the substrate and not yet
+the road. Replacing that call — and with it, deciding how identity namespacing
+works when there is no pack id to namespace by — is Stage D, and it is the part
+that touches `identity/store.py`.

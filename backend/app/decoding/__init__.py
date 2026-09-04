@@ -31,6 +31,17 @@ is machinery for holding it:
 * :mod:`app.decoding.executor` runs a frozen decoder as a pure function and
   refuses one frozen against a different executor version rather than doing
   its best with it.
+* :mod:`app.decoding.infer` proposes the *structure* of a decoder from one
+  file's descriptions and nothing else, and measures the proposal over every
+  row of that file rather than the sample it was induced from.
+* :mod:`app.decoding.evidence` measures what each capture group actually
+  caught, and :mod:`app.decoding.bind` names the groups whose meaning the
+  file's own text settles — a number written ``3xD`` is a depth ratio because
+  the vocabulary has exactly one ``_xd`` slot. Naming the rest needs knowledge
+  of the trade rather than of the file, which is
+  ``decisions/decoder_binding.py``: the one interpreted step, gated so a model
+  can name a slot and has no field through which a value could arrive, and
+  confirmed by a person before anything is frozen.
 
 The one thing that is **not** per file is the attribute vocabulary
 (:data:`~app.decoding.schema.CORE_SLOTS`, 50 names). Every file gets its own
@@ -54,6 +65,16 @@ from .executor import (
     decode,
     to_jsonl,
 )
+from .bind import (
+    UNIT_TOKENS,
+    Suggestion,
+    apply_bindings,
+    candidates_for,
+    suggest,
+    suggest_group,
+    types_for,
+)
+from .evidence import GroupEvidence, SegmentEvidence, gather
 from .safety import MAX_INPUT_LENGTH, UnsafePattern, check_pattern
 from .schema import (
     CORE_SLOTS,
@@ -77,8 +98,11 @@ __all__ = [
     "BAD_VALUE", "CORE_SLOTS", "DECIMAL_CONVENTIONS", "EXT_PREFIX",
     "ID_WIDTH", "MAX_INPUT_LENGTH", "NO_DESCRIPTION", "NO_SEGMENT",
     "SCHEMA_VERSION",
-    "SLOT_TYPES", "DecodeResult", "Decoder", "DecoderError",
-    "DecoderVersionError", "FieldBinding", "Quarantined", "Segment",
-    "UnsafePattern", "canonical_bytes", "check_pattern", "content_id",
-    "decode", "freeze", "from_dict", "is_known_slot", "to_jsonl",
+    "SLOT_TYPES", "UNIT_TOKENS", "DecodeResult", "Decoder", "DecoderError",
+    "DecoderVersionError", "FieldBinding", "GroupEvidence", "Quarantined",
+    "Segment", "SegmentEvidence", "Suggestion",
+    "UnsafePattern", "apply_bindings", "canonical_bytes", "candidates_for",
+    "check_pattern", "content_id",
+    "decode", "freeze", "from_dict", "gather", "is_known_slot", "suggest",
+    "suggest_group", "to_jsonl", "types_for",
 ]

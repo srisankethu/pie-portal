@@ -2,14 +2,16 @@ import { useEffect, useState } from "react";
 import { demoCta } from "./cta";
 import { ERP_PAGES } from "./erp";
 import { caseStudy, complianceRows, hasProof, namedCustomers } from "./proof";
-import { FooterBlurb, TrustBand } from "./shared";
+import { DEMO_LENGTH, FooterBlurb, TrustBand } from "./shared";
 import { ContactModal } from "./ContactModal";
 import {
+  EXAMPLE_ITEM,
   detectRegion,
   exampleFor,
   heldToFloor,
   heldToRecommended,
   lineTotal,
+  marginPct,
   unitPrice,
   type Region,
 } from "./worked-example";
@@ -359,6 +361,11 @@ export function Landing({ onEnter, onDemo }: {
               </p>
             </div>
 
+            {/* One grid cell for the card and its caption. Without the
+                wrapper the hero's two-column grid took the caption as a third
+                child and set it under the copy, four hundred pixels from the
+                card it is about. */}
+            <div className="lp-card-cell">
             <div
               className="lp-card"
               role="img"
@@ -369,39 +376,37 @@ export function Landing({ onEnter, onDemo }: {
                  from the same values the card renders, so the two cannot say
                  different things. */
               aria-label={
-                "An illustration of a PIE decision card, drawn like an engineering "
-                + "sheet. Not a real quote and not a customer's figures. "
+                `A PIE decision card for ${EXAMPLE_ITEM}, with sample figures. `
                 + `A customer asked for ${line.units} units at ${unitPrice(price, line.asked)}, `
-                + `below the margin floor of ${unitPrice(price, line.floor)} that this `
-                + `organization's policy sets for the item; it costs ${unitPrice(price, line.cost)} `
-                + `and the recommended price is ${unitPrice(price, line.recommended)}. `
-                + "The line routes for a manager's approval, and a title block says "
-                + "what computes it in the product."
+                + `which is ${marginPct(price)} margin — below the floor of `
+                + `${unitPrice(price, line.floor)} that this organization's policy `
+                + `sets for the item. It costs ${unitPrice(price, line.cost)} and the `
+                + `recommended price is ${unitPrice(price, line.recommended)}. The line `
+                + "routes for a manager's approval, and every fact names the record it "
+                + "came from."
               }
             >
               <span className="lp-corner tl" aria-hidden="true" />
               <span className="lp-corner tr" aria-hidden="true" />
               <span className="lp-corner bl" aria-hidden="true" />
               <span className="lp-corner br" aria-hidden="true" />
-              {/* The second chip was “Quote Q-1147 · line 3”, and the title
-                  block below it carried a policy hash, a thresholds version
-                  and a revision. Every one of them was invented, and together
-                  they did not read as an illustration — they read as a
-                  screenshot of a record, in the exact provenance vocabulary
-                  this site uses everywhere else to mean “this is real”.
-                  Borrowing that vocabulary to dress a drawing is the one
-                  forgery that costs the rest of the page its credit, and it
-                  was the most prominent element on the site.
+              {/* Below this line the card is the product's own decision screen,
+                  element for element: the type-and-priority row, the subject as
+                  the heading, who it is routed to, "Facts · what the data
+                  shows" over a table whose every row names the record it came
+                  from, then the evidence and the actions that screen actually
+                  offers (`platform/PlatformApp.tsx`, the decision detail).
 
-                  So the identifiers are gone rather than made vaguer — a
-                  plausible-looking id is the problem, not its digits — and the
-                  chip that held one now says what the card is. `proof.ts`
-                  hides an entire section rather than name one customer it
-                  cannot; the hero does not get an exemption from that rule for
-                  being the hero. */}
+                  It was a drawing of a card before — its own invented layout,
+                  its own invented identifiers, and a disclaimer chip shouting
+                  that none of it was real, which is a worse answer than the
+                  problem it fixed. A page that will not show its own product is
+                  a page arguing that the product is not worth showing. So: the
+                  real screen, sample figures, said once and quietly under the
+                  card rather than stamped across it. */}
               <div className="lp-card-top">
                 <span className="lp-chip alert">Below floor</span>
-                <span className="lp-chip kind">Illustration · not a real quote</span>
+                <span className="lp-chip kind">Approval needed</span>
               </div>
               {/* Not a heading. The card is one `role="img"` with a full
                   aria-label, so nothing inside it is exposed to a screen
@@ -409,28 +414,44 @@ export function Landing({ onEnter, onDemo }: {
                   first h2, and an h1 followed by an h3 is a skipped level in
                   the document outline that every accessibility checker will
                   find and that no reader benefits from. Styled identically. */}
-              <p className="lp-card-title">This line is priced under your own floor</p>
+              <p className="lp-card-title">{EXAMPLE_ITEM}</p>
               <p className="lp-card-body">
-                <b>{price.customer}</b> asked for {line.units} units at{" "}
-                {unitPrice(price, line.asked)} — below the floor your margin
-                policy sets for this item. It routes for a manager's sign-off:
-                the platform holds it, not the salesperson.
+                {line.units} units for <b>{price.customer}</b>, quoted at{" "}
+                {unitPrice(price, line.asked)} — routed to a sales manager, no
+                individual owner. The platform holds it, not the salesperson.
               </p>
-              <div className="lp-facts">
-                <div className="lp-fact">
-                  <div className="k">Cost</div>
-                  <div className="v lp-num">{unitPrice(price, line.cost)}</div>
-                </div>
-                <div className="lp-fact">
-                  <div className="k">Margin floor</div>
-                  <div className="v lp-num">{unitPrice(price, line.floor)}</div>
-                </div>
-                <div className="lp-fact">
-                  <div className="k">Recommended</div>
-                  <div className="v lp-num">{unitPrice(price, line.recommended)}</div>
-                </div>
-              </div>
-              <div className="lp-actions"><span>Request approval</span><span>Reprice to floor</span></div>
+
+              <div className="lp-facts-mark">Facts &middot; what the data shows</div>
+              <table className="lp-facttable">
+                <tbody>
+                  <tr>
+                    <td>Quoted unit price<span>this quote</span></td>
+                    <td className="lp-fv lp-num">{unitPrice(price, line.asked)}</td>
+                  </tr>
+                  <tr>
+                    <td>Effective unit cost<span>bill</span></td>
+                    <td className="lp-fv lp-num">{unitPrice(price, line.cost)}</td>
+                  </tr>
+                  <tr>
+                    <td>Margin floor<span>your margin policy</span></td>
+                    <td className="lp-fv lp-num">{unitPrice(price, line.floor)}</td>
+                  </tr>
+                  <tr>
+                    <td>Recommended<span>this customer&rsquo;s own history</span></td>
+                    <td className="lp-fv lp-num">{unitPrice(price, line.recommended)}</td>
+                  </tr>
+                  <tr>
+                    <td>Margin at this price<span>computed</span></td>
+                    <td className="lp-fv lp-num warn">{marginPct(price)}</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div className="lp-facts-mark">Evidence used</div>
+              <div className="lp-evi"><span>zoho &middot; invoice</span><span>the price history</span></div>
+              <div className="lp-evi"><span>zoho &middot; bill</span><span>the cost</span></div>
+
+              <div className="lp-actions"><span>Request approval</span><span>Full analysis &rarr;</span></div>
               {/* The title block stays, because what it says about the
                   product is true and is the argument: a number here is
                   computed by a policy you set and stamped with the version of
@@ -441,9 +462,15 @@ export function Landing({ onEnter, onDemo }: {
               <div className="lp-tblock lp-num">
                 <div><span className="k">Computed by</span>your margin policy</div>
                 <div><span className="k">Stamped with</span>its version</div>
-                <div><span className="k">AI's part</span>none</div>
-                <div><span className="k">Sheet</span>illustration</div>
+                <div><span className="k">AI&rsquo;s part</span>none</div>
+                <div><span className="k">Figures</span>sample</div>
               </div>
+            </div>
+            <p className="lp-card-note">
+              The manager&rsquo;s decision card, as the product draws it — with
+              sample figures, because no customer&rsquo;s numbers belong on a
+              public page.
+            </p>
             </div>
           </div>
         </header>
@@ -554,11 +581,24 @@ export function Landing({ onEnter, onDemo }: {
         <section id="outcomes">
           <div className="lp-wrap">
             <div className="lp-sec-head">
-              <h2>Four things your desk can do the week after it connects</h2>
+              {/* "…the week after it connects" was here, and no duration is
+                  modelled anywhere in this product — `onboarding.py` has a
+                  four-step checklist and no ETA field. It is the same claim
+                  the Aug 2026 audit removed as "Live in about a week", grown
+                  back in a heading where nobody looked for it.
+
+                  "Unlimited named accounts" went with it, for a different
+                  reason: nothing caps users, but nothing promises they are
+                  free either. Plans are scoped by connected *companies*
+                  (`entitlements.PLAN_SUMMARY`), and this page ends its pricing
+                  conversation in a form — a packaging term settled in a
+                  sub-heading pre-empts the conversation the page says it wants
+                  to have. */}
+              <h2>Four things your desk can do once it connects</h2>
               <p>
                 Each one is arithmetic on your own records, computed the same way
                 every time, and stamped with the policy version that judged it.
-                Unlimited named accounts, each seeing what their role allows.
+                Named accounts, each seeing what their role allows.
               </p>
             </div>
             <div className="lp-two">
@@ -585,7 +625,8 @@ export function Landing({ onEnter, onDemo }: {
                   Drop a customer&rsquo;s enquiry in as they wrote it — a pasted
                   email, a line of WhatsApp — and PIE reads it into quote lines
                   and resolves each code against your catalog. Where a code has
-                  no exact match it ranks alternatives on geometry and grade,
+                  no exact match it ranks alternatives on the attributes it
+                  decoded — the dimensions and the material spec —
                   deterministically, and <b>abstains when nothing
                   discriminates</b> rather than inventing one.
                 </p>
@@ -601,8 +642,8 @@ export function Landing({ onEnter, onDemo }: {
                 <p>
                   Signals from your own numbers — margin drift, customer decline,
                   payments slipping — each written up in plain words and each
-                  traceable to the figures that raised it. A handful of accounts
-                  a day, not a dashboard to go and interrogate.
+                  traceable to the figures that raised it. A short list of
+                  accounts, not a dashboard to go and interrogate.
                 </p>
                 <ul>
                   <li>Detectors run over persisted rows, never over a model&rsquo;s guess</li>
@@ -815,11 +856,13 @@ export function Landing({ onEnter, onDemo }: {
               <div className="lp-panel">
                 <h3>Your data. Export any time, erase provably.</h3>
                 <p>
-                  Full export on request. On exit your tenant key is destroyed,
-                  making everything encrypted under it permanently unreadable —
-                  live tables, replicas and backups alike. The signed receipt
-                  lists exactly what that reached and what it did not, and you
-                  can verify it.
+                  One export, everything your organization owns, whenever the
+                  owner asks for it. Erase and your tenant key is destroyed,
+                  which makes the ciphertext written under it inert wherever it
+                  lives — live tables, replicas and backups alike. What was
+                  never encrypted stays readable, and the signed receipt names
+                  both halves rather than the flattering one; you can verify it
+                  yourself.
                 </p>
               </div>
               <div className="lp-panel">
@@ -830,12 +873,26 @@ export function Landing({ onEnter, onDemo }: {
                   other customer.
                 </p>
               </div>
+              {/* Two different events were being promised as one, and only
+                  by reading them together could a reader notice they cannot
+                  both happen: "your data leaves with you" beside "the quote
+                  desk keeps working", next to a panel saying the tenant key is
+                  destroyed. Stopping the subscription and leaving entirely are
+                  separate things and the product treats them separately —
+                  `entitlements.PLAN_SUMMARY[FREE]` is what survives a lapse
+                  ("Quoting, RFQ reading, margin floors and approvals … One
+                  connected company"), and `trust/erasure` is what happens when
+                  somebody actually goes. The true half was borrowed from
+                  `TrialNotice`, where it is true, and attached to the wrong
+                  event here. */}
               <div className="lp-panel">
                 <h3>Your exit. Off-ramps defined, not discovered.</h3>
                 <p>
-                  Stop at any time and your data leaves with you, in a format
-                  you can read. The quote desk keeps working, and your decoded
-                  catalog keeps working as delivered.
+                  Stop paying and nothing is deleted: quoting, margin floors and
+                  approvals carry on for one connected company, and the decision
+                  layer waits until you subscribe again. Leave properly and your
+                  data goes with you in a format you can read — the decoded
+                  catalog included, because it is yours.
                 </p>
               </div>
             </div>
@@ -1000,7 +1057,7 @@ export function Landing({ onEnter, onDemo }: {
                   list rather than prose because a reader deciding whether to
                   give up half an hour is scanning for the shape of it. */}
               <ul className="lp-demo-list">
-                <li><b>30–45 minutes</b>, with whoever prices your quotes</li>
+                <li><b>{DEMO_LENGTH}</b>, with whoever prices your quotes</li>
                 <li><b>A real enquiry</b> of yours, priced on the desk in front of you</li>
                 <li><b>Your margin policy</b>, set up as you would actually set it</li>
                 <li><b>The look-back</b> — what your own history holds, and what it cannot say</li>

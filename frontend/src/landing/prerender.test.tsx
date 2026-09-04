@@ -17,7 +17,7 @@ import { Landing } from "./Landing";
 import connectionsSource from "../../../backend/app/ingestion/connections.py?raw";
 
 import { ERP_PAGES } from "./erp";
-import { exampleFor } from "./worked-example";
+import { EXAMPLE_ITEM, exampleFor } from "./worked-example";
 import { PAGES, landingTokenCss, renderLandingMarkup } from "./prerender";
 
 /** Rendered once and read by every block below — the render is the fixture. */
@@ -274,9 +274,27 @@ describe("the worked card is marked as a drawing, not a record", () => {
   // the fabricated identifiers may not come back. This is the same rule
   // `proof.ts` already keeps by hiding a section rather than naming a customer
   // it does not have — the hero is not exempt from it for being the hero.
-  it("says on the card that it is an illustration", () => {
-    expect(markup).toContain("Illustration · not a real quote");
-    expect(markup).toContain("illustration");
+  it("says once, under the card, that the figures are samples", () => {
+    // Under it and in a caption's register — not stamped across the card. The
+    // first fix for the forged record was a chip inside it reading "not a real
+    // quote", which told the reader the screen was not worth looking at; a
+    // page that will not show its own product argues that the product is not
+    // worth showing. The marker has to exist and has to be quiet.
+    expect(markup).toContain("sample figures");
+    expect(markup).toMatch(/Figures<\/span>sample/);
+  });
+
+  it("draws the product's own decision screen, not an invented layout", () => {
+    // The card is the decision detail in `platform/PlatformApp.tsx`, element
+    // for element. These are that screen's own words, and they are here so
+    // that a card redrawn into something the product does not have fails.
+    expect(markup).toContain("Facts · what the data shows");
+    expect(markup).toContain("Evidence used");
+    expect(markup).toContain("Request approval");
+    // Every fact names the record behind it — the property that makes the
+    // screen worth showing at all.
+    expect(markup).toContain("your margin policy");
+    expect(markup).toContain("bill");
   });
 
   it("prints no invented quote id, policy hash or revision", () => {
@@ -302,6 +320,39 @@ describe("the worked card is marked as a drawing, not a record", () => {
     // the dollar region's.
     expect(markup).toContain(exampleFor("INTL").customer);
     expect(markup).not.toContain(exampleFor("IN").customer);
+  });
+});
+
+describe("the public pages name no single trade", () => {
+  // The platform reads whatever book a distributor keeps — the connector
+  // registry alone spans six ERPs and no vertical — so the front page must not
+  // quietly pick one. It did: the worked card's item was a real ISO
+  // turning-insert designation and the RFQ card ranked alternatives on
+  // "geometry and grade", which is a carbide catalogue's vocabulary. A
+  // fasteners distributor reading either learns the product was built for
+  // somebody else.
+  //
+  // The example item is a code that decodes to nothing, and the attributes are
+  // named in the words any catalogue would use. This is the check that keeps
+  // it that way, because the tempting edit is always to make the example more
+  // vivid by making it somebody's.
+  // The attribute words are in here too, and they are the half that would
+  // otherwise go unchecked: "ranks alternatives on geometry and grade" is as
+  // much a carbide catalogue as the part number was.
+  const TRADE = /\b(carbide|DNMG|CNMG|insert|end ?mill|drill bit|fastener|bearing|geometry|grade)s?\b/i;
+
+  it("keeps the landing page's example free of a trade", () => {
+    const landing = documents.find((d) => d.page.slug === "")!.html;
+    const hit = landing.match(TRADE);
+    expect(hit?.[0] ?? null,
+      `the front page names a trade: “${hit?.[0]}”. The example has to read for `
+      + "whatever this distributor sells.").toBeNull();
+  });
+
+  it("uses an item code that decodes to nothing", () => {
+    // Shaped like a catalogue code and meaning nothing in any of them.
+    expect(EXAMPLE_ITEM).not.toMatch(TRADE);
+    expect(documents.find((d) => d.page.slug === "")!.html).toContain(EXAMPLE_ITEM);
   });
 });
 

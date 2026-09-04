@@ -53,6 +53,22 @@ export { detectRegion, type Region };
  *  here, and the test holds the card's floor to it. */
 export const MARGIN_FLOOR = 0.15;
 
+/** The item the worked line is for — a catalogue code and nothing else.
+ *
+ *  It was "DNMG 150608-MP insert": a real ISO turning-insert designation, the
+ *  one the seeded demo book uses, chosen so the card would name something a
+ *  distributor recognises. The trouble is *which* distributor. This platform
+ *  is sold to distributors of whatever their book holds — the connector
+ *  registry alone spans six ERPs and no vertical — and a carbide insert on
+ *  the front page tells a fastener or a bearings distributor that the product
+ *  was built for somebody else's catalogue. Nothing about the decision on
+ *  that card is specific to a cutting tool.
+ *
+ *  So: a code shaped like a catalogue code, decoding to nothing. It has to
+ *  stay that way — the moment it means something in some trade, it is that
+ *  trade's page again. */
+export const EXAMPLE_ITEM = "Part 4114-08";
+
 /** One quote line, as the hero card shows it and the plans note re-reads it. */
 export interface WorkedLine {
   /** Units asked for. */
@@ -118,6 +134,20 @@ const EXAMPLES: Record<Region, RegionExample> = {
 
 export function exampleFor(region: Region): RegionExample {
   return EXAMPLES[region];
+}
+
+/** Margin at the price the customer asked for — the figure the card flags.
+ *
+ *  Derived rather than written down, for the reason every other figure here is
+ *  derived: the two regions' costs are not proportional to their prices, so a
+ *  literal would be right for one card and quietly wrong for the other. */
+export function marginAtAsked(p: RegionExample): number {
+  return (p.line.asked - p.line.cost) / p.line.asked;
+}
+
+/** `5.1%` — the app prints one decimal place, so this does too. */
+export function marginPct(p: RegionExample): string {
+  return `${(marginAtAsked(p) * 100).toFixed(1)}%`;
 }
 
 function format(p: RegionExample, amount: number, decimals: number): string {

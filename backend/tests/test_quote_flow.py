@@ -115,16 +115,19 @@ def test_the_quote_builder_has_no_login_of_its_own():
                 if getattr(r, "path", "").startswith("/api/auth/")]
 
 
+@pytest.mark.requires_pie
 def test_auth_required(client):
     assert client.get("/api/v1/quotes/nope").status_code == 401
 
 
+@pytest.mark.requires_pie
 def test_a_forged_token_is_refused(client):
     assert client.get(
         "/api/v1/quotes/nope",
         headers={"Authorization": "Bearer not.a.real.token"}).status_code == 401
 
 
+@pytest.mark.requires_pie
 def test_a_quote_is_invisible_to_another_tenant(client):
     """The org check at each read seam is the whole of quote authorization.
     Without it a signed-in user from any tenant could read — or mutate —
@@ -170,6 +173,7 @@ def test_intake_builds_resolution_grid(client, mgmt_hdr):
     assert set(q["filterCounts"]) >= {"ALL", "NEEDS", "UNRES", "SUBST"}
 
 
+@pytest.mark.requires_pie
 def test_economics_are_role_gated(client, sales_hdr, mgmt_hdr):
     qs = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=sales_hdr).json()
     qid = qs["id"]
@@ -385,6 +389,7 @@ def test_supply_selection_and_pricing(client, mgmt_hdr):
     assert q["lines"][0]["lineTotal"] == 999 * 50
 
 
+@pytest.mark.requires_pie
 def test_estimate_blocked_by_technical_lines(client, mgmt_hdr):
     q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]
@@ -904,6 +909,7 @@ def test_a_failed_item_creation_leaves_the_line_in_create_failed(client, mgmt_hd
     assert "2001174" in body["createItemError"]
 
 
+@pytest.mark.requires_pie
 def test_every_quote_carries_a_reference_a_person_could_search_for(client, mgmt_hdr):
     a = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     b = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
@@ -940,6 +946,7 @@ def _lines(client):
         s.close()
 
 
+@pytest.mark.requires_pie
 def test_a_stated_channel_captures_the_enquiry_word_for_word(client, sales_hdr):
     qid = client.post("/api/v1/quotes", json={"customer": "Acme"},
                       headers=sales_hdr).json()["id"]
@@ -958,6 +965,7 @@ def test_a_stated_channel_captures_the_enquiry_word_for_word(client, sales_hdr):
     assert line.source_ref == f"quote:{qid}"
 
 
+@pytest.mark.requires_pie
 def test_no_channel_captures_nothing_rather_than_guessing_one(client, sales_hdr):
     """`InboundChannel` has no UNKNOWN member because "an enquiry that arrived
     some other way has no honest value to store". A default here would file
@@ -973,6 +981,7 @@ def test_no_channel_captures_nothing_rather_than_guessing_one(client, sales_hdr)
     assert _lines(client) == []
 
 
+@pytest.mark.requires_pie
 def test_a_bad_channel_costs_the_corpus_a_row_and_the_quote_nothing(
         client, sales_hdr):
     """The quote is the work; the corpus is a by-product. An adapter sending a
@@ -989,6 +998,7 @@ def test_a_bad_channel_costs_the_corpus_a_row_and_the_quote_nothing(
     assert _lines(client) == []
 
 
+@pytest.mark.requires_pie
 def test_the_same_enquiry_pasted_twice_is_two_rows(client, sales_hdr):
     """No deduplication, here or anywhere: two identical asks are two enquiries,
     and merging them would under-report exactly the repeat demand the table

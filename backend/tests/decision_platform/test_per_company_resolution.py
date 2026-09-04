@@ -276,6 +276,7 @@ def test_the_seed_never_overwrites_a_company_that_has_its_own_export(maker):
     s.close()
 
 
+@requires_pie
 def test_the_seed_is_idempotent_and_skips_an_organization_with_no_company(maker):
     """It runs on every boot, so running it twice must change nothing — and an
     organization with nothing connected is left with no catalogue, which

@@ -89,6 +89,7 @@ def test_a_salesperson_sees_nothing_here(client):
                       headers=_hdr(client, SALES)).status_code == 403
 
 
+@pytest.mark.requires_pie
 def test_an_owner_can_retire_a_phrase_and_it_stops_being_offered(client):
     owner = _hdr(client, OWNER)
     (alias,) = client.get("/api/v1/data/catalog/aliases", headers=owner).json()["aliases"]

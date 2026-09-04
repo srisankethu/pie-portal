@@ -245,6 +245,7 @@ def test_the_checker_reports_a_drift_it_should_catch(types):
 
 
 # ── the contract, against real responses ────────────────────────────────────
+@pytest.mark.requires_pie
 def test_a_new_quote_matches_the_quote_interface(client, mgmt_hdr, types):
     q = client.post("/api/v1/quotes", json={"customer": "Pitti Engineering"},
                     headers=mgmt_hdr)
@@ -252,6 +253,7 @@ def test_a_new_quote_matches_the_quote_interface(client, mgmt_hdr, types):
     assert_matches(q.json(), "Quote", types)
 
 
+@pytest.mark.requires_pie
 def test_a_fetched_quote_matches_the_quote_interface(client, mgmt_hdr, types):
     qid = client.post("/api/v1/quotes", json={"customer": "Pitti"},
                       headers=mgmt_hdr).json()["id"]

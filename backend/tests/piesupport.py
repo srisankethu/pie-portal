@@ -56,6 +56,8 @@ def shared_catalogue() -> Path:
     if _built is not None and _built.exists():
         return _built
 
+    _require_engine()
+
     from app import catalog
     from app.config import settings
 
@@ -67,6 +69,39 @@ def shared_catalogue() -> Path:
         catalog.run_parse(settings.PIE_CORPUS, settings.PIE_PACK, out)
     _built = out
     return out
+
+
+def _require_engine() -> None:
+    """Refuse to decode without the engine, and name the missing marker.
+
+    Reaching here without pie-parser means an unmarked test asked for a real
+    catalogue: `conftest.pytest_collection_modifyitems` skips the tests marked
+    ``requires_pie`` when the engine is absent, so a test that runs this far is
+    one nobody marked. That used to surface as ``ModuleNotFoundError: No module
+    named 'engine'`` raised from inside ``app/catalog.run_parse`` during fixture
+    setup — a traceback about an import three layers down, naming neither the
+    test's real requirement nor the one-line fix. Thirty-one tests across ten
+    files were added that way in two commits before anyone read it as "you
+    forgot the marker".
+
+    Deliberately an error and not ``pytest.skip``: skipping here would make the
+    test pass quietly on a checkout with no engine *and* leave it unselected by
+    ``pytest -m requires_pie``, so the `pie-contract` job would not run it
+    either. That is a test covering nothing, anywhere — the always-green check
+    CLAUDE.md §6 has the incident about. The marker is the only mechanism that
+    both skips it here and runs it there, so this insists on the marker rather
+    than standing in for it.
+    """
+    from conftest import PIE_AVAILABLE, _SKIP_REASON
+
+    if PIE_AVAILABLE:
+        return
+    raise RuntimeError(
+        f"This test needs a decoded catalogue, but {_SKIP_REASON}\n"
+        "Mark it `@pytest.mark.requires_pie` (or set a module-level "
+        "`pytestmark`, where the fixture that needs the engine is autouse) so "
+        "it skips here and still runs in the `pie-contract` job."
+    )
 
 
 def give_company_a_catalogue(connection_id: str) -> Path:

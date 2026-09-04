@@ -42,6 +42,14 @@ from app.pie_service import Bands, pie_service
 #: so a test that wants a real answer names one.
 COMPANY = piesupport.company_id("test-reference")
 
+#: Every test here needs the engine, because the fixture below is autouse and
+#: decodes the shipped corpus. Stated once for the module rather than on each
+#: test: the requirement belongs to the fixture, and marking it per test is how
+#: ten of these fifteen came to be unmarked and to ERROR — rather than skip —
+#: on a checkout without the private submodule. The `pie-contract` job selects
+#: on this marker, so the module is still run for real against the engine.
+pytestmark = pytest.mark.requires_pie
+
 
 @pytest.fixture(autouse=True)
 def _company_catalogue():
@@ -170,7 +178,6 @@ def test_a_genuine_exact_identity_is_untouched():
     assert res.supplyCode == "2001174"
 
 
-@pytest.mark.requires_pie
 def test_end_to_end_against_the_real_engine():
     """The reproduction from the report, run against the real catalogue."""
     res = pie_service.resolve("same as 2001174 but 0.4 corner radius",
@@ -253,7 +260,6 @@ def test_the_derived_winner_is_still_selected_around_it():
 # accounts for the whole input. See pie-parser tests/test_identity_role.py for
 # the classification half; this is the portal half.
 
-@pytest.mark.requires_pie
 @pytest.mark.parametrize("text", [
     "2001174 but 0.4 corner radius",
     "2001174 with 0.4 corner radius",
@@ -272,7 +278,6 @@ def test_a_variation_in_any_phrasing_never_quotes_the_unvaried_product(text):
         f"{text!r} auto-selected the product it asked to change")
 
 
-@pytest.mark.requires_pie
 @pytest.mark.parametrize("text", [
     "2001174", "MM# 2001174", "2001174 x 10 nos", "2001174 qty 10",
     "10 nos 2001174",
@@ -288,7 +293,6 @@ def test_a_code_with_a_quantity_still_resolves_exactly(text):
 
 # --- the confirmation gate --------------------------------------------------
 
-@pytest.mark.requires_pie
 def test_a_variation_is_never_offered_as_a_confirmable_identity():
     """A confirmation files "this customer's code means this product" forever.
 
@@ -310,7 +314,6 @@ def test_a_variation_is_never_offered_as_a_confirmable_identity():
             f"to change")
 
 
-@pytest.mark.requires_pie
 def test_a_bare_code_is_still_offered_for_confirmation():
     """The gate must keep doing its job — this is what it is *for*."""
     from app.store import _identity_candidate

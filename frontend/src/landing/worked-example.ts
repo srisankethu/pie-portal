@@ -94,7 +94,15 @@ export interface RegionExample {
    *  paying ₹412 a unit. Nobody wrote that sentence — it was assembled out of
    *  two halves that no longer agreed, which is the only way a page whose
    *  every figure has a test on it still manages to say something false. One
-   *  record now holds both, so they cannot come apart. */
+   *  record now holds both, so they cannot come apart.
+   *
+   *  “A machine shop” is what it said until the item stopped naming a trade,
+   *  and it named the same one — a machine shop buys cutting tools, so the
+   *  buyer was quietly re-deciding for the reader what this platform is for.
+   *  What the card needs from this phrase is that the account is a returning
+   *  one, because that is what gives the line a price history to be judged
+   *  against; the trade it is in never mattered. The geography stays: it is
+   *  the half that has to move with the currency. */
   customer: string;
   /** ISO 4217, for `Intl.NumberFormat`. */
   currency: "USD" | "INR";
@@ -110,7 +118,7 @@ export interface RegionExample {
 const EXAMPLES: Record<Region, RegionExample> = {
   INTL: {
     region: "INTL",
-    customer: "A machine shop in Ohio",
+    customer: "A repeat account in Ohio",
     currency: "USD",
     locale: "en-US",
     unitDecimals: 2,
@@ -123,7 +131,7 @@ const EXAMPLES: Record<Region, RegionExample> = {
   },
   IN: {
     region: "IN",
-    customer: "A machine shop in Pune",
+    customer: "A repeat account in Pune",
     currency: "INR",
     locale: "en-IN",
     unitDecimals: 0,

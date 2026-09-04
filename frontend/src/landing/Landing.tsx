@@ -447,9 +447,17 @@ export function Landing({ onEnter, onDemo }: {
                 </tbody>
               </table>
 
+              {/* The real screen names the connector each record came from —
+                  "zoho · invoice", because that is the book that answered. On
+                  this page there is no such book yet: the reader has not
+                  connected one, and the strip below offers seven. Naming one
+                  of them here told six distributors the card was drawn for
+                  somebody else's stack, which is the same defect as the
+                  carbide part number two rows up. The record types are the
+                  part that is true of every connection. */}
               <div className="lp-facts-mark">Evidence used</div>
-              <div className="lp-evi"><span>zoho &middot; invoice</span><span>the price history</span></div>
-              <div className="lp-evi"><span>zoho &middot; bill</span><span>the cost</span></div>
+              <div className="lp-evi"><span>your ERP &middot; invoice</span><span>the price history</span></div>
+              <div className="lp-evi"><span>your ERP &middot; bill</span><span>the cost</span></div>
 
               <div className="lp-actions"><span>Request approval</span><span>Full analysis &rarr;</span></div>
               {/* The title block stays, because what it says about the

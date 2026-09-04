@@ -339,7 +339,12 @@ describe("the public pages name no single trade", () => {
   // The attribute words are in here too, and they are the half that would
   // otherwise go unchecked: "ranks alternatives on geometry and grade" is as
   // much a carbide catalogue as the part number was.
-  const TRADE = /\b(carbide|DNMG|CNMG|insert|end ?mill|drill bit|fastener|bearing|geometry|grade)s?\b/i;
+  // The buyer is in here for the same reason the item is. "A machine shop in
+  // Ohio" was the customer on the card long after the item stopped naming a
+  // trade, and it named the same one — a machine shop buys cutting tools. What
+  // the sentence needs is a returning account, which is what gives the line a
+  // price history; the trade never mattered.
+  const TRADE = /\b(carbide|DNMG|CNMG|insert|end ?mill|drill bit|fastener|bearing|geometry|grade|machine shop|foundry|tool ?room)s?\b/i;
 
   it("keeps the landing page's example free of a trade", () => {
     const landing = documents.find((d) => d.page.slug === "")!.html;
@@ -347,6 +352,18 @@ describe("the public pages name no single trade", () => {
     expect(hit?.[0] ?? null,
       `the front page names a trade: “${hit?.[0]}”. The example has to read for `
       + "whatever this distributor sells.").toBeNull();
+  });
+
+  it("cites the record type, not one vendor's name, on the worked card", () => {
+    // The real decision screen names the connector each record came from,
+    // because by then a book has answered. Here none has: the reader has
+    // connected nothing and the strip below this card offers seven systems, so
+    // "zoho · invoice" told six of those distributors the card was drawn for
+    // somebody else's stack. The record types are what is true of every
+    // connection, and the page names those.
+    const landing = documents.find((d) => d.page.slug === "")!.html;
+    expect(landing).toContain("your ERP · invoice");
+    expect(landing).toContain("your ERP · bill");
   });
 
   it("uses an item code that decodes to nothing", () => {

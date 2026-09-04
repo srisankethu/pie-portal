@@ -493,7 +493,26 @@ export default function PlatformApp() {
     setError(null);
     // Back to the public front, not to a bare form: signing out is leaving.
     setDoor("landing");
-  }, []);
+    // And leaving takes the address with it. The door changed here and the URL
+    // did not, so signing out of `/#/account/CUST-123` drew the public landing
+    // page under an address bar still naming that customer — a screen the
+    // browser is no longer showing and whoever is holding it may no longer be
+    // allowed to read. `replace`, so Back does not lead to the screen just
+    // left.
+    //
+    // `intended` goes with it, because it is the same fact stored twice.
+    // It is seeded from the arrival URL, and a session restored from storage
+    // never reaches `signIn` to spend it — so it outlived the session that set
+    // it, and the next person to sign in on this tab was sent to the previous
+    // person's account screen. Clearing the address and leaving the ref would
+    // have fixed the half that is visible and kept the half that acts.
+    //
+    // Anything that does want a destination carried across the sign-in detour
+    // records it *after* this call. `handleAuthLoss` is the one that does, and
+    // says so.
+    intended.current = null;
+    navigate(PATH.home, { replace: true });
+  }, [navigate]);
 
   const signOut = useCallback(() => {
     // Tell the server first, and do not wait for it or let it fail the sign-out:
@@ -508,13 +527,17 @@ export default function PlatformApp() {
   /** A dead session must return the user to sign-in, not strand them inside
    *  application chrome that looks live but can load nothing. */
   const handleAuthLoss = useCallback(() => {
-    // Where they were, so signing back in returns them there rather than to
-    // home. Captured before signOut swaps the shell for the landing page.
-    intended.current = location.pathname + location.search;
     // `forgetSession`, not `signOut`: the session is already gone, and posting
     // to /auth/logout with a dead credential answers 401, which is an auth loss,
     // which calls this again. Local cleanup only.
     forgetSession();
+    // Where they were, so signing back in returns them there rather than to
+    // home. Recorded *after* the line above, which clears this ref along with
+    // the address bar — an expiry is not a departure, and this is the one
+    // caller that has somewhere to come back to. `location` is still this
+    // render's, so it reads the screen they were on rather than the home the
+    // navigate is on its way to.
+    intended.current = location.pathname + location.search;
     // The toast lives inside the signed-in shell, which is about to unmount —
     // the message has to survive onto the sign-in screen to be seen at all.
     setNotice("Your session expired. Please sign in again.");

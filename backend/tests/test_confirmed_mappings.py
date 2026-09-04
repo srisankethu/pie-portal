@@ -234,6 +234,7 @@ def test_two_stores_over_different_mappings_still_fingerprint_differently(
     assert store_before.fingerprint() != store_after.fingerprint()
 
 
+@pytest.mark.requires_pie
 def test_the_store_hands_its_active_rows_to_retrieval_as_aliases(session):
     """Same snapshot, same fingerprint: what the engine resolves exactly and
     what retrieval offers as near are one set of facts."""
@@ -291,6 +292,7 @@ def test_nothing_is_recorded_without_a_scope_a_phrase_or_a_target(session):
     assert session.query(models.CustomerPhraseAlias).count() == 0
 
 
+@pytest.mark.requires_pie
 def test_a_phrase_reaches_retrieval_and_the_fingerprint_but_never_the_engine(session):
     """The line that keeps a choice from becoming an identity: the store hands
     it to retrieval as a ``phrase``, changes its fingerprint so the alias

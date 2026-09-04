@@ -301,6 +301,7 @@ def test_each_file_is_decoded_through_its_own_config_and_stamped_with_it(client)
     assert built["stamp"]["ruleset_checksum"]   # both files agree on this one
 
 
+@requires_pie
 def test_a_second_file_is_analysed_afresh_and_inherits_nothing(client):
     """Every upload starts as an unknown format.
 

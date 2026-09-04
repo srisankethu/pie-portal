@@ -584,6 +584,7 @@ class TestRegisteredHealthChecks:
         health._components.clear()
         health._components.update(saved)
 
+    @pytest.mark.requires_pie
     def test_the_pie_parser_check_can_report_ready(self, checks):
         """The engine, not a catalogue.
 

@@ -442,6 +442,7 @@ def test_the_two_paths_build_one_catalogue_together(client, tmp_path,
 
 # ── the namespace, and what one field for two authorities costs ────────────
 
+@requires_pie
 def test_the_namespace_is_the_company_not_the_pack(client, tmp_path, monkeypatch):
     """``record_namespace`` reads ``org_id`` first and its docstring says what
     the field means: the organisation, not the manufacturer. Under packs the

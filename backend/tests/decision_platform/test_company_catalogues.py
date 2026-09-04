@@ -266,6 +266,7 @@ def test_uploading_supersedes_rather_than_overwrites(client):
 
 # ── the decoder: shipped, never uploaded, and never defaulted ────────────────
 
+@requires_pie
 def test_only_a_rule_set_this_engine_ships_can_be_saved(client):
     """A rule set is regexes the engine runs over every row, so the set of them
     is what ships — never what a tenant sends. An id naming nothing is refused
@@ -282,6 +283,7 @@ def test_only_a_rule_set_this_engine_ships_can_be_saved(client):
     assert "zcnc" in bad.json()["detail"] or "none" in bad.json()["detail"]
 
 
+@requires_pie
 def test_building_without_a_file_or_a_saved_config_says_which_is_missing(client):
     """The two states a build refuses, and neither of them decodes anything
     through a default."""

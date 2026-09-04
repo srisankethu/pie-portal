@@ -1818,6 +1818,7 @@ shims, are mounted but are not flows and are not listed here.
 | POST | `/api/v1/quotes/{quote_id}/lines/{line_id}/create-item` | signed-in | Create the supply product in the books; failure returns createItemError and leaves the line CREATE FAILED |
 | GET | `/api/v1/quotes/{quote_id}/lines/{line_id}/options` | signed-in | Ranked supply candidates for one line (the supply drawer's data) |
 | POST | `/api/v1/quotes/{quote_id}/lines/{line_id}/price` | signed-in | Set/clear the quoted rate on one line (priceSource USER/LIST) |
+| POST | `/api/v1/quotes/{quote_id}/lines/{line_id}/cost` | signed-in | Set/clear the custom cost price on one line; `null` falls back to the cost on record |
 | POST | `/api/v1/quotes/{quote_id}/lines/{line_id}/supply` | signed-in | Select/revert a supply product; runs the identity-confirmation gate (confirm_proposed_identity) and re-enriches the line; note in response when a… |
 | POST | `/api/v1/resolve` | api-key | Resolve one enquiry line (≤512 chars) into the public provenance document; 200 for answers and evidence-bearing abstentions… |
 | POST | `/api/v1/resolve/confirm` | api-key | Confirm a customer's code → record mapping through the same confirm_proposed_identity gate as the Quote Builder; line re-resolved server-side; every… |

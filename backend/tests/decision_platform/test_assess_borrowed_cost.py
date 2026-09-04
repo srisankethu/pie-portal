@@ -122,6 +122,32 @@ def test_a_salesperson_cannot_borrow_another_desks_cost_into_an_assessment(
         f"whatever quote is named: {verdicts}")
 
 
+def test_a_salesperson_cannot_borrow_another_desks_hand_entered_cost_either(
+        api_client, session, another_desks_quote):
+    """The custom cost is a second number sitting on somebody's line.
+
+    It arrived after this rule was written, which is exactly how the rule gets
+    a hole: the scope check is on the *accessor*, so any cost the accessor
+    returns has to fall under it. A hand-entered cost borrowed off another
+    desk's line manufactures the same boundary this file measured — and on a
+    product the books do not cost, it is the only one there would be.
+    """
+    quote = quote_workspace.load(session, ORG, another_desks_quote.id)
+    quote.lines[0].cost = None
+    quote.lines[0].customCost = float(BORROWED_COST)
+    quote_workspace.save(session, quote, "usr_manager")
+    session.commit()
+
+    verdicts = {price: _codes(_assess(api_client, SALES, price=price,
+                                      quote_id=another_desks_quote.id))
+                for price in SWEEP}
+    distinct = {tuple(v) for v in verdicts.values()}
+    assert len(distinct) == 1, (
+        "the assessment's verdict moved as the price swept, so another desk's "
+        f"hand-entered cost reached it: {verdicts}")
+    assert "NO_COST_BASIS" in next(iter(distinct))
+
+
 def test_an_unheld_quote_id_assesses_exactly_as_no_quote_id_does(
         api_client, another_desks_quote):
     """Degrade, never refuse — otherwise the refusal itself says the quote is

@@ -225,7 +225,7 @@ def test_the_type_file_is_fully_understood(types):
     assert len(types) >= 15, f"only {len(types)} interfaces parsed — parser broken?"
     # Spot-check the shapes these tests lean on, so a regex that quietly matches
     # nothing cannot look like a clean run.
-    assert len(types["Line"].fields) == 29
+    assert len(types["Line"].fields) == 35
     assert len(types["Economics"].fields) == 6
     assert types["Line"].fields["supplyCode"].ts == "string | null"
     assert types["Quote"].fields["marginFloor"].optional is True

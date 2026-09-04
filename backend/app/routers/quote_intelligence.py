@@ -435,7 +435,7 @@ def _validate(body: AssessRequest | SnapshotRequest, *, what: str) -> None:
     _reject_price_sweep(list(body.lines))
 
 
-def _inputs(session: Session, body: AssessRequest, org: str, *,
+def _inputs(session: Session, body: "AssessRequest | SnapshotRequest", org: str, *,
             holds_quote: bool) -> list[QuoteLineInput]:
     """The assessment's line inputs, including the server-held cost per line.
 
@@ -465,19 +465,25 @@ def _inputs(session: Session, body: AssessRequest, org: str, *,
     choice ``_visible_customer_ref`` makes one line down and for the same
     reason — a refusal that stood out would confirm the quote exists.
     """
-    return [
-        QuoteLineInput(line_id=ln.line_id, product_ref=ln.product,
-                       qty=ln.qty, proposed_price=ln.proposed_price,
-                       family=ln.family,
-                       # Only when the caller named a quote they hold. Without
-                       # one there is no server-held line to read a cost from
-                       # and the assessment falls back to bills alone, which is
-                       # exactly what a caller who does not hold it now gets.
-                       item_master_cost=(quote_workspace.line_cost(
-                                             session, org, body.quote_id, ln.line_id)
-                                         if holds_quote else None))
-        for ln in body.lines
-    ]
+    quote_id = (body.quote_id or "").strip()
+    out = []
+    for ln in body.lines:
+        # Only when the caller named a quote they hold. Without one there is no
+        # server-held line to read a cost from and the assessment falls back to
+        # bills alone, which is exactly what a caller who does not hold it now
+        # gets. The hand-entered cost is withheld on the same condition and for
+        # the same reason: it is a second cost sitting on somebody's line, and
+        # borrowing it manufactures the same boundary measured above.
+        #
+        # One read per line, not one per cost: `line_cost_basis` walks the whole
+        # quote, and asking it twice would double that on a forty-line request.
+        basis = (quote_workspace.line_cost_basis(session, org, quote_id, ln.line_id)
+                 if holds_quote and quote_id else quote_workspace.LineCostBasis())
+        out.append(QuoteLineInput(
+            line_id=ln.line_id, product_ref=ln.product, qty=ln.qty,
+            proposed_price=ln.proposed_price, family=ln.family,
+            item_master_cost=basis.system, custom_cost=basis.custom))
+    return out
 
 
 @router.post("/assess")
@@ -589,11 +595,9 @@ def snapshot(
         # this assessment is about. None where the quote is not in the
         # workspace — an honest "not recorded" rather than a guess.
         connection_id=quote.connectionId if quote is not None else None,
-        lines=[QuoteLineInput(line_id=ln.line_id, product_ref=ln.product, qty=ln.qty,
-                              proposed_price=ln.proposed_price, family=ln.family,
-                              item_master_cost=quote_workspace.line_cost(
-                                  session, org, body.quote_id, ln.line_id))
-               for ln in body.lines],
+        # The same builder the assessment path uses — one answer to "where does
+        # a quote line's cost come from", which is the question that had two.
+        lines=_inputs(session, body, org, holds_quote=True),
         user_id=principal.user_id,
         overrides={ln.line_id: (ln.override_reason, ln.override_reason_code)
                    for ln in body.lines},

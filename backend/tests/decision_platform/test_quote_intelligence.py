@@ -73,7 +73,7 @@ def _line(days_ago, qty, price, cost=None, customer="c1"):
 
 
 def _assess(*, qty, price, lines=(), costs=(), family=None, benchmark=None, th=TH,
-            item_master_cost=None):
+            item_master_cost=None, custom_cost=None):
     lines = list(lines)
     metrics = (compute_relationship("c1", "p1", lines, AS_OF, th) if lines else None)
     return assess_line(
@@ -83,7 +83,8 @@ def _assess(*, qty, price, lines=(), costs=(), family=None, benchmark=None, th=T
         lines=lines, costs=list(costs), metrics=metrics, benchmark=benchmark,
         family=family, as_of=AS_OF, th=th,
         item_master_cost=(Decimal(str(item_master_cost))
-                          if item_master_cost is not None else None))
+                          if item_master_cost is not None else None),
+        custom_cost=(Decimal(str(custom_cost)) if custom_cost is not None else None))
 
 
 def _codes(intel):
@@ -235,6 +236,61 @@ def test_a_placeholder_item_master_cost_is_not_a_cost():
     intel = _assess(qty=10, price=399, costs=[], item_master_cost=0)
     assert intel.economics.unit_cost is None
     assert NO_COST_BASIS in _codes(intel)
+
+
+def test_a_hand_entered_cost_is_a_cost_basis_when_the_books_hold_none():
+    """The case the second basis still could not answer.
+
+    An item nobody has bought has no bill and no item-master landed cost, so
+    the assessment said NO_COST_BASIS — correctly, and uselessly for the desk
+    holding the supplier's offer. A cost they enter is evidence: it makes the
+    margin computable and the floors real.
+    """
+    intel = _assess(qty=10, price=399, costs=[], item_master_cost=None,
+                    custom_cost=420)
+    assert intel.economics.unit_cost == Decimal("420")
+    assert NO_COST_BASIS not in _codes(intel)
+    assert NEGATIVE_MARGIN in _codes(intel)
+    assert intel.blocking and intel.requires_approval
+    # Traceable, and distinguishable from both of the other two bases.
+    assert intel.economics.cost_source_ref["basis"] == "custom_cost_price"
+    assert intel.economics.cost_source_ref["record_type"] == "quote_line"
+
+
+def test_a_hand_entered_cost_outranks_both_a_bill_and_the_item_master():
+    """The most specific claim wins.
+
+    A bill says what we paid for this item at some point and the item master
+    says what the books think it costs; a cost entered on the line says what
+    *this* deal costs, which is the only one of the three that is about the
+    quantity, the supplier and the day in front of the person quoting.
+    """
+    intel = _assess(qty=10, price=399, costs=[_cost(10, 300)],
+                    item_master_cost=350, custom_cost=420)
+    assert intel.economics.unit_cost == Decimal("420")
+    assert intel.economics.cost_source_ref["basis"] == "custom_cost_price"
+    assert NEGATIVE_MARGIN in _codes(intel)
+
+
+def test_a_placeholder_hand_entered_cost_is_not_a_cost():
+    """Zero is what an unfilled field holds — the same rule the other two bases
+    are held to, applied at the same point, so a zero cannot arrive by the one
+    route that skipped the check."""
+    intel = _assess(qty=10, price=399, costs=[], custom_cost=0)
+    assert intel.economics.unit_cost is None
+    assert NO_COST_BASIS in _codes(intel)
+
+
+def test_a_hand_entered_cost_moves_the_floors_it_should_move():
+    """The references are the floors, so they must be built from the cost that
+    actually answered — not from the one it replaced. A custom cost that reached
+    the margin but not the floors would put a line under review against a
+    threshold derived from a different number."""
+    intel = _assess(qty=10, price=600, costs=[_cost(10, 300)], custom_cost=500)
+    target = by_code(intel.references)[TARGET_MARGIN_PRICE]
+    # cost / (1 - target margin), on the hand-entered cost and not the bill's.
+    expected = Decimal("500") / (Decimal("1") - Decimal(str(TH.target_margin(None))))
+    assert abs(target.value - expected) < Decimal("0.01")
 
 
 def test_a_critical_exception_survives_the_materiality_floor():

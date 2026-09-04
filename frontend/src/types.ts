@@ -98,6 +98,26 @@ export interface Line {
    *  weight as a finished one. */
   priceSource: "LIST" | "USER" | null;
   recommended: number | null;
+  /** Which cost the line's economics rest on, and from where. `CUSTOM` is a
+   *  cost a person entered on this line; `BOOKS` is the connected ledger's own
+   *  landed cost; `DEMO` is the offline stand-in adapter's hashed figure, which
+   *  is not a purchase price and must not be read as one. `null` when no cost
+   *  is on record at all.
+   *
+   *  Safe for both roles — it names a source, never a value, the same line
+   *  `priceSource` sits on. */
+  costBasis: "CUSTOM" | "BOOKS" | "DEMO" | null;
+  /** Whether a hand-entered cost is on this line. Always sent; the number
+   *  itself may not be — see `customCost`. */
+  customCostSet: boolean;
+  /** The hand-entered cost, when this reader may see it: management sees every
+   *  one, the desk sees the ones the desk recorded. Absent — not null — where
+   *  it is withheld, which is why the control reads `customCostSet` to know
+   *  whether one exists. */
+  customCost?: number | null;
+  customCostNote?: string;
+  customCostBy?: string | null;
+  customCostAt?: string | null;
   lineTotal: number | null;
   createPhase: string | null;
   service: string | null;

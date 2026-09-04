@@ -413,6 +413,14 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   const doSetPrice = (id: string, price: number | null) =>
     guard(async () => setQuote(await api.setPrice(t, quote!.id, id, price)));
 
+  const doSetCustomCost = (id: string, cost: number | null, note: string) =>
+    guard(async () => {
+      setQuote(await api.setCustomCost(t, quote!.id, id, cost, note));
+      flash(cost === null
+        ? "Cost price cleared — back to the cost on record"
+        : "Cost price recorded for this line");
+    });
+
   const doDeleteLine = (id: string) =>
     guard(async () => {
       const q = await api.deleteLine(t, quote!.id, id);
@@ -868,6 +876,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           // on a platform URL in the same shell, rather than swapping the app.
           onOpenPlatform={(path) => navigate(path)}
           onClose={() => setDrawerLineId(null)}
+          onSetCustomCost={doSetCustomCost}
           onSelect={doSelect}
           onRevert={doRevert}
           readOnly={readOnly}

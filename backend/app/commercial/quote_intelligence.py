@@ -113,6 +113,7 @@ def assess_line(
     as_of: date,
     th: CommercialThresholds,
     item_master_cost: Optional[Decimal] = None,
+    custom_cost: Optional[Decimal] = None,
 ) -> QuoteLineIntelligence:
     """Assess one quote line. Pure, total, and deterministic.
 
@@ -124,8 +125,31 @@ def assess_line(
 
     ``item_master_cost`` is the landed cost the books hold against the item
     itself, and it is the *second* cost basis — see below for why it exists.
+    ``custom_cost`` is a cost a person sourced for this line and outranks both.
     """
     band = band_for(qty, th)
+
+    # First, because it is the most specific claim anyone has made about what
+    # this line costs. A bill says what we paid for this item at some point; a
+    # hand-entered cost says what *this* deal costs, and it is the only answer
+    # available for a first-time part quoted against a fresh supplier offer —
+    # the case where the bill history and the item master both hold nothing and
+    # the assessment previously had to say NO_COST_BASIS.
+    #
+    # It never overwrites the item master and is not a fact about the product:
+    # it lives on one quote line and dies with it.
+    if custom_cost is not None and custom_cost > _ZERO:
+        return _assessed(
+            line_id=line_id, customer_id=customer_id, product_id=product_id,
+            qty=qty, band=band, unit_cost=Decimal(custom_cost),
+            basis=CostRow(
+                product_id=product_id or "", date=as_of, qty=qty,
+                unit_cost=Decimal(custom_cost),
+                source_ref={"system": "portal", "record_type": "quote_line",
+                            "basis": "custom_cost_price"},
+                external_ref=""),
+            proposed_price=proposed_price, lines=lines, metrics=metrics,
+            benchmark=benchmark, family=family, as_of=as_of, th=th)
 
     basis = cost_basis_asof(costs, as_of)
     unit_cost = Decimal(basis.unit_cost) if basis is not None else None
@@ -157,6 +181,38 @@ def assess_line(
                         "basis": "item_master_landed_cost"},
             external_ref="")
 
+    return _assessed(
+        line_id=line_id, customer_id=customer_id, product_id=product_id,
+        qty=qty, band=band, unit_cost=unit_cost, basis=basis,
+        proposed_price=proposed_price, lines=lines, metrics=metrics,
+        benchmark=benchmark, family=family, as_of=as_of, th=th)
+
+
+def _assessed(
+    *,
+    line_id: str,
+    customer_id: Optional[str],
+    product_id: Optional[str],
+    qty: Decimal,
+    band: QuantityBand,
+    unit_cost: Optional[Decimal],
+    basis: Optional[CostRow],
+    proposed_price: Optional[Decimal],
+    lines: list[LineEconomics],
+    metrics: Optional[RelationshipMetrics],
+    benchmark: Optional[ItemBenchmark],
+    family: Optional[str],
+    as_of: date,
+    th: CommercialThresholds,
+) -> QuoteLineIntelligence:
+    """Everything downstream of "which cost answered", given that answer.
+
+    Extracted so the three cost bases — a hand-entered cost, a bill, the item
+    master — reach the references, the economics and the exception rules
+    through one body. A second copy for the custom-cost path is precisely how a
+    rule ends up firing on one basis and not the other, which is the class of
+    defect §1 is about: the gate and the grid disagreeing about the same line.
+    """
     references = build_references(
         lines=lines, band=band, unit_cost=unit_cost, benchmark=benchmark,
         historical_margin=(metrics.historical_margin if metrics else None),

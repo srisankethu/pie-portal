@@ -474,3 +474,23 @@ describe("the page's own call to action", () => {
     expect(withoutDemo).toContain("See how it works");
   });
 });
+
+describe("the wordmark in the nav", () => {
+  it("points at the site root on every page, not at a fragment", () => {
+    // The landing page's logo was `href="#top"`, so pressing it navigated:
+    // the address bar became `/#top`, and that is what a visitor then copied,
+    // shared or bookmarked — a URL that reads like a section deep-link to a
+    // section nobody links to. It is `/` now on both surfaces, and Landing
+    // cancels the reload on a plain click so the mark scrolls to the top
+    // without touching the URL at all. The static document keeps the working
+    // link for a reader whose bundle never arrives.
+    //
+    // Pinned here because the fault and the fix are each one attribute, and
+    // `#top` is the thing a nav logo is most often written as.
+    for (const { page, html } of documents) {
+      const logo = html.match(/<a[^>]*class="lp-logo"[^>]*>/);
+      expect(logo, `/${page.slug} has no wordmark`).not.toBeNull();
+      expect(logo![0], `/${page.slug} wordmark`).toContain('href="/"');
+    }
+  });
+});

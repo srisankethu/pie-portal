@@ -281,7 +281,28 @@ export function Landing({ onEnter, onDemo }: {
       <div className="lp-sheet">
         <nav className="lp-nav">
           <div className="lp-wrap lp-nav-inner">
-            <a className="lp-logo" href="#top" onClick={closeMenu}>PIE<span>.</span></a>
+            {/* The logo goes to the top of this page without writing `#top`
+                into the address bar. It used to be `href="#top"`, and a
+                fragment link is a navigation: pressing the logo left the
+                visitor on a URL that reads like a section deep-link and
+                survives a copy-paste, a share and a bookmark. `href="/"` is
+                the honest destination — it is where the mark points, it is
+                what a hover and a middle-click show — and the handler cancels
+                the reload on the one path where a reload is pointless, which
+                is a plain click on the page that is already `/`. A modified
+                click keeps the real link, and a reader without JavaScript
+                (the prerendered document ships no bundle) reloads `/` and
+                arrives at the top, which is the same place. */}
+            <a
+              className="lp-logo"
+              href="/"
+              onClick={(e) => {
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                e.preventDefault();
+                closeMenu();
+                window.scrollTo({ top: 0 });
+              }}
+            >PIE<span>.</span></a>
             <button
               type="button"
               className="lp-nav-toggle"

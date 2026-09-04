@@ -94,6 +94,11 @@ def _enquiry(row: models.ContactRequest) -> dict:
         "phone": row.phone, "plan": row.plan, "erp": row.erp,
         "message": row.message,
         "created_at": clock.iso(row.created_at),
+        # Whether anybody was *told* this arrived, which is a different question
+        # from whether it was answered. Carried because the console is the only
+        # place a silently broken alert shows up: a webhook down for a week
+        # leaves a column of nulls here and nothing else anywhere says so.
+        "notified_at": clock.iso(row.notified_at),
         "status": row.status,
         "handled_at": clock.iso(row.handled_at),
         "handled_by": row.handled_by,

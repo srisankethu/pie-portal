@@ -646,6 +646,22 @@ class ContactRequest(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=_now, index=True)
 
+    #: When somebody was *told* this arrived, which is not the same question as
+    #: whether it was answered.
+    #:
+    #: Null means nobody has been told yet. `python -m app.contact alert` sends
+    #: the unannounced rows and stamps them, so an enquiry is announced once
+    #: rather than re-announced on every run — an alert that repeats the same
+    #: backlog twice a day is one people learn to skip, which is the failure the
+    #: alert exists to prevent, arriving by a different route.
+    #:
+    #: Stamped only when a delivery actually succeeded, so a webhook that was
+    #: down leaves the row unannounced and the next run picks it up. The
+    #: enquiry itself is never at risk either way: it is in this table, and
+    #: `contact list` has always shown it.
+    notified_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), index=True)
+
     #: NEW until somebody replies. Then HANDLED, with who and when. There is no
     #: third state and no way back: a second enquiry is a second row.
     status: Mapped[str] = mapped_column(String(16), default="NEW", index=True)

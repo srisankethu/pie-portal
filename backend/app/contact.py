@@ -10,12 +10,15 @@ A form has to land somewhere. This is that somewhere, and everything odd about
 it follows from what a visitor is at the moment they fill it in: not a tenant.
 
 - **No ``organization_id``.** There is no organization yet, so
-  :class:`~app.domain.models.ContactRequest` is the third table in this schema
-  with no tenant column, alongside ``zoho_credentials`` (which belongs to a
-  person) and ``process_leases`` (which is about processes). The row-level
-  security suite names all three and fails on a fourth, which is the right way
-  round: adding one has to be a decision somebody made rather than something
-  discovered later.
+  :class:`~app.domain.models.ContactRequest` is one of the few tables in this
+  schema with no tenant column, alongside ``zoho_credentials`` (which belongs
+  to a person), ``process_leases`` (which is about processes) and
+  ``operator_keys`` (which is PIE's own staff credential). The row-level
+  security suite names them by hand and fails on one it has not been told
+  about, which is the right way round: adding one has to be a decision somebody
+  made rather than something discovered later. ``operator_keys`` is what that
+  decision looks like when it is made on purpose —
+  ``docs/operator-console.md`` argues it.
 - **No principal.** The endpoint is unauthenticated by necessity, which is why
   the refusals below are strict about what a row must contain and why the
   router rate-limits it.
@@ -29,12 +32,22 @@ it follows from what a visitor is at the moment they fill it in: not a tenant.
 what is waiting and marks one answered; ``python -m app.entitlements requests``
 prints this queue beside the other two, because an operator asking "who wants
 to buy something" must get one answer rather than having to know there are
-three tables. This module owns the rows; that command borrows them.
+three tables. The operator console (``docs/operator-console.md``) reads the same
+rows over HTTP. This module owns them; everything else borrows them.
+
+**And a queue you have to remember to look at is the same lie, slower.** Every
+reader above is something a person has to *decide* to open. ``contact alert`` is
+the one that goes the other way: run on a schedule, it sends what has arrived
+since the last time it sent anything and stamps those rows, so an enquiry is
+announced once and a run with nothing new says nothing at all. The stamp is
+``notified_at`` and it is written only after a delivery succeeded — what a
+failed webhook loses is an announcement, never an enquiry.
 """
 from __future__ import annotations
 
 import argparse
 import logging
+import sys
 from typing import Optional
 
 from sqlalchemy import select
@@ -130,6 +143,63 @@ def pending(session: Session) -> list[models.ContactRequest]:
         .order_by(models.ContactRequest.created_at)))
 
 
+def unannounced(session: Session) -> list[models.ContactRequest]:
+    """Everything nobody has been told about yet, oldest first.
+
+    Deliberately *not* filtered to ``status == NEW``. An enquiry answered
+    straight from the console before the alert ran was still never announced,
+    and the run that follows should say it arrived — the alert reports what came
+    in, the queue reports what is outstanding. Two questions, and conflating
+    them here would make the alert silently skip anything handled quickly.
+    """
+    return list(session.scalars(
+        select(models.ContactRequest)
+        .where(models.ContactRequest.notified_at.is_(None))
+        .order_by(models.ContactRequest.created_at)))
+
+
+def mark_announced(session: Session,
+                   rows: list[models.ContactRequest]) -> None:
+    """Stamp the rows an alert actually delivered.
+
+    One timestamp for the batch rather than one per row: they were announced by
+    the same message, and giving them times that differ by microseconds would
+    invent a precision the fact does not have.
+    """
+    at = clock.now()
+    for row in rows:
+        row.notified_at = at
+
+
+def alert_text(rows: list[models.ContactRequest], *, waiting: int) -> str:
+    """What the alert says. Plain text, because it has to survive being read on
+    a phone in a message app that renders nothing.
+
+    Both numbers are here on purpose: what arrived (the news) and what is
+    outstanding (the reason to act). A message carrying only the first lets a
+    backlog grow while every individual alert still looks small.
+    """
+    lines = ["1 new enquiry" if len(rows) == 1
+             else f"{len(rows)} new enquiries"]
+    for row in rows:
+        who = row.company or row.name
+        detail = " · ".join(filter(None, [
+            row.name if row.company else "",
+            row.email,
+            f"runs {row.erp}" if row.erp else "",
+            f"asked about {row.plan}" if row.plan else "",
+        ]))
+        lines.append(f"\n{who}\n{detail}")
+        if row.message:
+            # Trimmed: the whole message is in the console, and an alert that
+            # pastes four paragraphs into a phone is one nobody reads to the end.
+            trimmed = (row.message if len(row.message) <= 240
+                       else row.message[:237] + "…")
+            lines.append(trimmed)
+    lines.append(f"\n{waiting} waiting for a reply in total.")
+    return "\n".join(lines)
+
+
 def mark_handled(session: Session, contact_request_id: str, *,
                  handled_by: str) -> models.ContactRequest:
     """Somebody replied. Stamps the row and leaves what was asked intact.
@@ -168,6 +238,53 @@ def describe(row: models.ContactRequest) -> str:
     return "\n".join(lines)
 
 
+def _alert(session: Session, *, mark_only: bool = False) -> int:  # pragma: no cover — CLI
+    """The scheduled half: say what arrived, once, and stay quiet otherwise.
+
+    Exit code 0 whether or not there was anything to say. A cron entry that
+    fails on "nothing happened" is one somebody silences, and a silenced job is
+    the state this command exists to get out of.
+
+    The order below is the whole correctness argument: deliver, *then* stamp,
+    *then* commit. A webhook that was down leaves the rows unannounced for the
+    next run, and a crash between the two leaves them unannounced too — the
+    failure mode is a repeated announcement, never a missed one. That direction
+    is chosen deliberately: being told twice is an annoyance, being told never
+    is the defect.
+    """
+    from . import alerts
+
+    fresh = unannounced(session)
+    if not fresh:
+        return 0
+
+    if mark_only:
+        mark_announced(session, fresh)
+        session.commit()
+        print(f"Marked {len(fresh)} enquiries as already announced. Nothing sent.")
+        return 0
+
+    text = alert_text(fresh, waiting=len(pending(session)))
+    if not alerts.configured():
+        # No destination. Print it and say so — a deployment that has not chosen
+        # one must find that out, rather than running a silent job forever.
+        print(text)
+        print("\nALERT_WEBHOOK is not set, so this was not sent anywhere and "
+              "nothing was stamped. Set it, or pipe this command's output.",
+              file=sys.stderr)
+        return 0
+
+    if not alerts.deliver(text):
+        print("The alert did not send. These stay unannounced and the next run "
+              "will try again.", file=sys.stderr)
+        return 0
+
+    mark_announced(session, fresh)
+    session.commit()
+    log.info("announced %d contact requests", len(fresh))
+    return 0
+
+
 def _main() -> int:                                  # pragma: no cover — CLI
     from .db import SessionLocal
 
@@ -179,9 +296,19 @@ def _main() -> int:                                  # pragma: no cover — CLI
     p_done = sub.add_parser("handled", help="Mark one enquiry answered")
     p_done.add_argument("contact_request_id")
     p_done.add_argument("--by", default="operator")
+    p_alert = sub.add_parser(
+        "alert",
+        help="Send what has arrived since the last time this said anything. "
+             "Silent when there is nothing new — meant for cron.")
+    p_alert.add_argument(
+        "--mark-only", action="store_true",
+        help="Stamp everything as announced without sending. For the first run "
+             "after deploying, when the backlog is history rather than news.")
     args = parser.parse_args()
 
     with SessionLocal() as session:
+        if args.cmd == "alert":
+            return _alert(session, mark_only=args.mark_only)
         if args.cmd == "handled":
             row = mark_handled(session, args.contact_request_id,
                                handled_by=args.by)

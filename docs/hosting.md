@@ -398,6 +398,63 @@ hour — and it is the only mode that notices a deletion.
 | `--reconcile` | changed only | whole window | **yes** | weekly |
 | `--full` | **every document** | whole window | yes | a read model you no longer trust |
 
+### The enquiry alert
+
+The public site's demo-request form writes to `contact_requests`, and until this
+job existed the only thing standing between a buyer and silence was somebody
+remembering to run `python -m app.contact list`. This is the job that says an
+enquiry arrived.
+
+Set one variable in `.env.production`:
+
+```bash
+ALERT_WEBHOOK=https://hooks.slack.com/services/…
+```
+
+Then a cron entry. Every fifteen minutes is not too often — the command is
+silent unless something new arrived, so a quiet day produces no output at all:
+
+```bash
+(crontab -l 2>/dev/null; echo '*/15 * * * * cd ~/pie-portal && docker compose --env-file .env.production exec -T api python -m app.contact alert >> ~/alerts.log 2>&1') | crontab -
+```
+
+**Before the first run,** if the table already holds a backlog, stamp it as
+history rather than having it announced as news:
+
+```bash
+docker compose --env-file .env.production exec -T api python -m app.contact alert --mark-only
+```
+
+**Where it can send.** The body is `{"text": "…"}`, which Slack, Mattermost and
+most relays take unchanged. Two that need a little more:
+
+```bash
+# Telegram — needs a chat_id, so it goes through the extra-headers escape hatch
+# only for auth; the chat id itself needs a two-line relay or a bot library.
+# The simplest working shape is ntfy, which takes the text as-is:
+ALERT_WEBHOOK=https://ntfy.sh/your-private-topic-name
+
+# Anything that authenticates with a header:
+ALERT_WEBHOOK_HEADERS={"Authorization":"Bearer …"}
+```
+
+Email is deliberately not supported directly: there is no SMTP anywhere in this
+application, and adding a dependency, a credential, a sender domain and a
+deliverability problem to reach one person who has a phone is the wrong trade.
+Point the webhook at a relay (Zapier, Make, or a Resend/Mailgun API call behind
+three lines of your own) if email is what you want.
+
+**What a failure costs.** Nothing but the announcement. `notified_at` is stamped
+only after a delivery succeeds, so a webhook that was down leaves the rows
+unannounced and the next run retries them. The enquiry itself is in the table
+either way, `python -m app.contact list` still shows it, and the operator
+console's Enquiries tab has an **Alerted** column that reads "not sent" — which
+is where a webhook that has been broken for a week becomes visible.
+
+The failure that remains is the harmless direction: a crash between sending and
+committing announces something twice. Being told twice is an annoyance; being
+told never is the defect this job exists to end.
+
 `--full` is the original hour-long pull. It is not a schedule; it is a repair.
 
 Other flags: `--since YYYY-MM-DD` sets the start date, `--organization` limits

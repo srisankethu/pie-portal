@@ -215,10 +215,14 @@ job.
   precisely the bridge §1 exists to prevent. If it is ever built it goes through
   `trust/access` per view, like everything else here, and it needs its own
   document.
-- **No notification.** An enquiry can still sit in the queue unread, because
-  nothing tells anybody it arrived. The console makes it *visible*; it does not
-  make it *noticed*. That is a scheduled job, not a screen, and it is the
-  smaller and more valuable of the two.
+- ~~No notification.~~ **Done, and it is a job rather than a screen.**
+  `python -m app.contact alert` sends what has arrived since it last said
+  anything and stamps those rows, so an enquiry is announced once and a quiet
+  run is silent. `docs/hosting.md` has the cron entry and the destinations. The
+  console makes the queue *visible*; that job is what makes it *noticed*, and
+  the two are different problems — which is why the Enquiries tab now carries an
+  **Alerted** column: a webhook broken for a week is a column of "not sent" and
+  is otherwise invisible.
 - **No second operator.** Everything here works for a team, but nothing has been
   used by one. Roles among operators — who may grant a plan versus who may only
   read a queue — is a real question and is deliberately not answered yet: there

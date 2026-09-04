@@ -88,6 +88,10 @@ export interface Enquiry {
   company: string; name: string; email: string; phone: string;
   plan: string; erp: string; message: string;
   created_at: string | null;
+  /** When somebody was told this arrived — not when it was answered. Null on a
+   *  waiting row means the alert has not run or could not deliver, which is the
+   *  one place a broken webhook is visible. */
+  notified_at: string | null;
   status: string;
   handled_at: string | null;
   handled_by: string | null;

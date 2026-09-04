@@ -446,6 +446,25 @@ class Settings:
     CONTACT_RATE_LIMIT_PER_HOUR: int = int(
         os.environ.get("CONTACT_RATE_LIMIT_PER_HOUR", "20"))
 
+    # Where `python -m app.contact alert` sends what arrived. Unset means the
+    # command prints to stdout instead, which is the honest default: an empty
+    # string here is a deployment that has not chosen a destination, and
+    # inventing one for it would be worse than saying so.
+    #
+    # A URL rather than a mail server, because there is no SMTP in this
+    # application and adding one to reach a single person who has a phone is
+    # the wrong trade — `app/alerts.py` argues it. Slack, Mattermost, ntfy and
+    # most relays take the `{"text": …}` body it sends unchanged;
+    # `docs/hosting.md` has the two lines for Telegram.
+    ALERT_WEBHOOK: str = os.environ.get("ALERT_WEBHOOK", "")
+    #: A JSON object of extra headers, for a destination that authenticates
+    #: with one. Holds secrets; never logged.
+    ALERT_WEBHOOK_HEADERS: str = os.environ.get("ALERT_WEBHOOK_HEADERS", "")
+    #: Short on purpose. This runs on a schedule and its real work is a
+    #: database sweep; a webhook that hangs must not hold the job open.
+    ALERT_TIMEOUT_SECONDS: float = float(
+        os.environ.get("ALERT_TIMEOUT_SECONDS", "10"))
+
     # ── The public resolution API (app/routers/resolve.py) ───────────────────
     # The default allowance a newly minted API key carries, per minute, per
     # key. It is stored on the row, so this is the value at minting time and

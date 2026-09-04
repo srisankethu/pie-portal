@@ -238,6 +238,11 @@ function Enquiries() {
     { field: "erp", headerName: "Runs", width: 160 },
     { field: "plan", headerName: "Asked about", width: 140 },
     { field: "message", headerName: "Said", flex: 2 },
+    // "Alerted" rather than a hidden field: a webhook that has been down for a
+    // week shows up here as a column of "not sent", and nothing else in the
+    // product would ever mention it.
+    { field: "notified_at", headerName: "Alerted", width: 150,
+      valueFormatter: (p) => (p.value ? formatDateTime(p.value) : "not sent") },
     ...(handled
       ? [{ field: "handled_by", headerName: "Answered by", width: 140 } as ColDef<Enquiry>]
       : [{

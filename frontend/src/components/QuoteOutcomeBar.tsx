@@ -55,7 +55,7 @@ const STATUS_TONE: Record<QuoteOutcomeStatus, Tone> = {
 };
 
 const STATUS_TIP: Record<QuoteOutcomeStatus, string> = {
-  DRAFT: "Priced and recorded, not yet sent. Creating the Zoho estimate marks it sent.",
+  DRAFT: "Priced and recorded, not yet sent. Sending it into the customer's books marks it sent.",
   SENT: "With the customer. Recording what happened next is what lets a price be judged against whether it won.",
   WON: "The customer ordered at this price. Terminal — reopening it would rewrite history the margin analysis has already counted.",
   LOST: "Somebody else supplied it, or nobody did. Terminal.",

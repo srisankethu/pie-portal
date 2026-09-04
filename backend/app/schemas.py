@@ -94,6 +94,9 @@ class EstimateResponse(BaseModel):
     #: user names a record type they cannot find.
     system: str = ""
     systemLabel: str = ""
+    #: The same name at the width a grid cell has for it — see
+    #: ``connections.system_short_for``.
+    systemShort: str = ""
     documentTerm: str = ""
     #: True where the document was already there under this quote's reference
     #: and was reported rather than created. "Sent" and "was already sent" are

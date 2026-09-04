@@ -131,10 +131,12 @@ export interface EstimateResult {
   blockers: string[];
   message: string;
   /** The connector key, and that system's own names for itself and for the
-   *  document a quote becomes there. Empty on a refusal that never reached a
-   *  system — there is nothing to name. */
+   *  document a quote becomes there. Carried on every answer this endpoint
+   *  gives, refusals included: a screen saying what it failed to create still
+   *  has to name it. With nothing connected they read "your books" / "quote". */
   system: string;
   systemLabel: string;
+  systemShort: string;
   documentTerm: string;
   /** True where the document was already there under this quote's reference.
    *  "Sent" and "was already sent" are different facts. */
@@ -253,6 +255,26 @@ export interface Quote {
    *  through before it is answered, so this is also "when it was last
    *  changed" — there is no separate save. */
   savedAt: string | null;
+  /** Which system this quote is bound to, in that system's own words —
+   *  `system` is the connector key, `systemLabel` its full name ("Zoho Books",
+   *  "Dynamics 365 Business Central"), `systemShort` the same at the width a
+   *  grid cell has for it, `documentTerm` what that system calls the document
+   *  a quote becomes there ("estimate", "sales quote").
+   *
+   *  Every sentence on this screen that names the ledger reads them. They used
+   *  to be absent, so the builder printed the word "Zoho" at every customer
+   *  whatever they run. With nothing connected they read "your books" / "quote",
+   *  which names no system rather than claiming one. */
+  system: string;
+  systemLabel: string;
+  systemShort: string;
+  documentTerm: string;
+  /** Whether the item facts on these lines came from that system or from the
+   *  offline stand-in. False is the default (`ZOHO_QUOTE_SERVICE=mock`), and
+   *  it matters on screen: the stand-in derives in-books, stock and list
+   *  price from a hash of the code, so "NOT IN BOOKS" beside the company's
+   *  real system name is a sentence about nothing unless this is true. */
+  booksLive: boolean;
   /** Whoever started the quote, until it is handed over. Only the owner
    *  changes a quote, plus managers where the policy allows. */
   ownerId: string | null;

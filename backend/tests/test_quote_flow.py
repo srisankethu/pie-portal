@@ -667,9 +667,15 @@ def test_the_send_response_carries_no_economics(client, mgmt_hdr):
         qid = _clean_quote(client, mgmt_hdr)
         sent = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
 
+    # ``systemShort`` joined the three naming fields when the builder stopped
+    # printing the word "Zoho" at every customer: a grid cell has room for
+    # "D365 BC" and not for "Dynamics 365 Business Central". It is a *name*,
+    # like the three beside it — it varies with the connector and with nothing
+    # else, so there is no price to walk and no boundary to place. That is the
+    # argument this assertion exists to make somebody write down.
     assert set(sent) == {"ok", "documentNumber", "lineCount", "blockers",
-                         "message", "system", "systemLabel", "documentTerm",
-                         "alreadyExisted"}, (
+                         "message", "system", "systemLabel", "systemShort",
+                         "documentTerm", "alreadyExisted"}, (
         "a field was added to the send response — if it answers a margin "
         "question, in any form, it does not belong here")
     body = json.dumps(sent).lower()

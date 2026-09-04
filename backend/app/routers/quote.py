@@ -716,10 +716,15 @@ def create_estimate(quote_id: str,
                     books: QuoteBooks = Depends(books_for_quote),
                     session: Session = Depends(get_session)):
     q = _get_editable(session, principal, quote_id)
+    # The words for the system this quote is bound to, on every answer this
+    # endpoint gives — refusals included. They used to be filled in only where
+    # a document was actually written, so a screen that wanted to say what it
+    # had *failed* to create had nothing to name it with.
+    words = _system_words(_quote_connector(session, principal.organization_id, q))
     blockers = store.blockers(q)
     if blockers:
         return EstimateResponse(
-            ok=False,
+            ok=False, **words,
             blockers=[ln.id for ln in blockers],
             # Which lines, not merely how many. The client shows this sentence
             # and switches the grid to them, and "3 critical line(s) must be
@@ -733,7 +738,7 @@ def create_estimate(quote_id: str,
     unpriced = [ln for ln in q.lines if ln.supplyCode and ln.quoted is None]
     if unpriced:
         return EstimateResponse(
-            ok=False,
+            ok=False, **words,
             blockers=[ln.id for ln in unpriced],
             message=(f"{len(unpriced)} line(s) have no rate yet: "
                      f"{_name_lines(unpriced)}."),
@@ -745,7 +750,7 @@ def create_estimate(quote_id: str,
         # exists for a quote with no customer — so the send stops here, before
         # a snapshot is recorded against a customer reference of "".
         return EstimateResponse(
-            ok=False,
+            ok=False, **words,
             message="Choose a customer before sending — the quote is written "
                     "into their books.")
     missing = quote_fields.missing_required(
@@ -754,7 +759,7 @@ def create_estimate(quote_id: str,
         # The organization made these mandatory. Named, so the desk fills in
         # the right box rather than reading "details missing".
         return EstimateResponse(
-            ok=False,
+            ok=False, **words,
             message=(f"{len(missing)} detail(s) this organization requires on every "
                      f"quote are missing: {', '.join(missing)}."))
 
@@ -850,11 +855,11 @@ def create_estimate(quote_id: str,
     except SourceWriteRefused as e:
         refused = {c for c in e.codes if c}
         return EstimateResponse(
-            ok=False,
+            ok=False, **words,
             blockers=[ln.id for ln in q.lines if ln.supplyCode in refused],
             message=str(e))
     except SourceWriteUnknown as e:
-        return EstimateResponse(ok=False, message=str(e))
+        return EstimateResponse(ok=False, **words, message=str(e))
 
     # Past here the estimate exists — including when Zoho recognised the
     # reference as one it had already landed. Recorded either way, so the local
@@ -934,6 +939,20 @@ def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
     # them before anybody presses the button.
     out["missingFields"] = quote_fields.missing_required(
         quote_fields.definitions_for(session, org), q.fields)
+    # Which system this quote is bound to, in that system's own words. On the
+    # quote rather than only on the document it produces: the screen names the
+    # ledger long before anything is sent — "Not in Zoho Books", "+ Create",
+    # "Create Zoho Books estimate" — and with nothing here it had no choice but
+    # to print the word "Zoho" at every customer, whatever they run.
+    out.update(_system_words(_quote_connector(session, org, q)))
+    # Whether the item facts on these lines came from that system or from the
+    # offline stand-in. ``ZOHO_QUOTE_SERVICE`` defaults to ``mock`` so a fresh
+    # clone can never write to a real ledger — correct, and invisible: the
+    # mock derives in-books, stock and list price from a hash of the code, so
+    # "NOT IN BOOKS" on a screen naming the company's real system is a
+    # sentence about nothing. §1 asks for the absence to be stated rather than
+    # to read as a pass, and this is the field that states it.
+    out["booksLive"] = settings.ZOHO_QUOTE_SERVICE == "live"
     sent = quote_service.latest_document(session, org, quote_id=q.id)
     out["estimate"] = None if sent is None else {
         "number": sent.external_document_number,
@@ -946,16 +965,55 @@ def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
     return out
 
 
-def _system_words(connector: str) -> dict[str, str]:
-    """The three naming fields, from one place.
+#: What to call the ledger when this organization has connected none.
+#:
+#: A quote can be built with nothing connected — lines resolve against a
+#: company's decoded catalogue, which is not a ledger — and every sentence the
+#: screen prints still has to name something. "your books" is the honest
+#: placeholder: it does not claim a system that is not there, and it reads
+#: correctly in the three places it appears ("Not in your books", "no item in
+#: your books", "Create quote").
+_NO_SYSTEM = {"system": "", "systemLabel": "your books", "systemShort": "books",
+              "documentTerm": "quote"}
 
-    Built once rather than at each return: five responses carry them, and five
-    hand-assembled copies is how one of them ends up saying "estimate" about a
-    Business Central document long after the others stopped.
+
+def _system_words(connector: str) -> dict[str, str]:
+    """The naming fields, from one place.
+
+    Built once rather than at each return: every response that names a system
+    carries them, and hand-assembled copies are how one of them ends up saying
+    "estimate" about a Business Central document long after the others stopped.
+
+    ``systemShort`` is the same name at the width a grid cell has for it —
+    see ``connections.system_short_for``.
     """
+    if not connector:
+        return dict(_NO_SYSTEM)
     return {"system": connector,
             "systemLabel": conn.system_label_for(connector),
+            "systemShort": conn.system_short_for(connector),
             "documentTerm": conn.quote_term_for(connector)}
+
+
+def _quote_connector(session: Session, org: str, quote: Quote) -> str:
+    """Which system this quote's company keeps its books in, or "".
+
+    Read off the quote's own company rather than through ``books_for_quote``:
+    that resolves the *customer's* book and only in live mode, while this
+    question — what to call the ledger on screen — has an answer in mock mode,
+    before a customer is chosen, and on a quote that will never be sent. The
+    screen asks it on every read, so it must not depend on a credential.
+
+    A connection this organization does not own reads as "" for the same
+    reason every other seam refuses one: a quote must not name another
+    tenant's system.
+    """
+    if not quote.connectionId:
+        return ""
+    try:
+        return conn.connector_of(conn.get_connection(session, org, quote.connectionId))
+    except conn.ConnectionNotFound:
+        return ""
 
 
 def _name_lines(lines: list[Line], limit: int = 4) -> str:

@@ -124,11 +124,14 @@ function CodeCell({
  *  availability and the active substitution each have a cell that states them,
  *  and the old table printed all seven here as well — three lines of pills
  *  restating what the row already said, on every row. */
-function Flags({ line, wrap }: { line: Line; wrap?: boolean }) {
+function Flags({ line, wrap, systemShort }:
+               { line: Line; wrap?: boolean; systemShort: string }) {
   const flags: [string, Tone][] = [
     line.flags.unresolved ? ["unresolved", "bad" as Tone] : null,
     line.flags.procurement ? ["procurement", "warn" as Tone] : null,
-    line.flags.missingBooks ? ["no Zoho item", "warn" as Tone] : null,
+    // Named for the system this quote's books are in, not for Zoho. The chip
+    // is dense and shares a 66px row, so it takes the short name.
+    line.flags.missingBooks ? [`not in ${systemShort}`, "warn" as Tone] : null,
     line.flags.manualReview ? ["manual review", "warn" as Tone] : null,
   ].filter(Boolean) as [string, Tone][];
   if (!flags.length) return null;
@@ -249,7 +252,8 @@ const CARD_TINT: Record<"blocked" | "attention", string> = {
  *  this is a `TextField`, always open, committing on blur and on Enter.
  */
 function LineCard({
-  line, intel, mgmt, readOnly = false, selected, onToggle, onOpen, onSetPrice,
+  line, intel, mgmt, readOnly = false, systemLabel, systemShort,
+  selected, onToggle, onOpen, onSetPrice,
   onDeleteLine, onCreateItem, onConfirmReading,
 }: {
   line: Line;
@@ -259,6 +263,10 @@ function LineCard({
    *  field, the remove, create and accept controls are withheld, because a
    *  control that only ever answers 403 is worse than none. */
   readOnly?: boolean;
+  /** What this quote's books are called, in their own words — see
+   *  `Quote.systemLabel`. Every sentence here that names the ledger reads it. */
+  systemLabel: string;
+  systemShort: string;
   selected: boolean;
   onToggle: (id: string) => void;
   onOpen: (id: string) => void;
@@ -307,7 +315,7 @@ function LineCard({
             }}
           >
             <CodeCell code={line.reqCode} desc={line.reqDesc} wrap>
-              <Flags line={line} wrap />
+              <Flags line={line} wrap systemShort={systemShort} />
             </CodeCell>
           </Box>
         </Box>
@@ -335,7 +343,7 @@ function LineCard({
               )}
               {line.inBooks === false && !readOnly && (
                 <Button size="small" sx={TOUCH} onClick={() => onCreateItem(line.id)}>
-                  + Create in Zoho
+                  + Create in {systemLabel}
                 </Button>
               )}
             </Stack>
@@ -464,6 +472,8 @@ export function LineGrid({
   lines,
   mgmt,
   readOnly = false,
+  systemLabel,
+  systemShort,
   intel,
   selectedIds,
   onSelectionChange,
@@ -477,6 +487,10 @@ export function LineGrid({
   /** The reader may not change this quote — see `Quote.canEdit`. The rate
    *  cell stops being editable and the per-line controls are withheld. */
   readOnly?: boolean;
+  /** What this quote's books are called, in their own words, and the same at
+   *  the width a grid cell has for it — see `Quote.systemLabel`. */
+  systemLabel: string;
+  systemShort: string;
   intel: Record<string, LineIntelligence>;
   selectedIds: string[];
   onSelectionChange: (ids: string[]) => void;
@@ -522,7 +536,7 @@ export function LineGrid({
       cellRenderer: (p: { data?: Row }) =>
         p.data ? (
           <CodeCell code={p.data.reqCode} desc={p.data.reqDesc}>
-            <Flags line={p.data} />
+            <Flags line={p.data} systemShort={systemShort} />
           </CodeCell>
         ) : null,
     },
@@ -576,10 +590,10 @@ export function LineGrid({
                   // width is the scarce thing, so `minWidth` is the one part of
                   // `TOUCH` this cannot take.
                   sx={{ minHeight: TOUCH_TARGET, minWidth: 0, px: 0.75, fontSize: 11 }}
-                  title={`Create ${l.reqCode} in Zoho Books`}
+                  title={`Create ${l.reqCode} in ${systemLabel}`}
                   onClick={() => onCreateItem(l.id)}
                 >
-                  + Zoho
+                  + Create
                 </Button>
               )}
             </Stack>
@@ -721,7 +735,7 @@ export function LineGrid({
           </Tooltip>
         ) : null,
     },
-  ], [mgmt, readOnly, onCreateItem, onDeleteLine]);
+  ], [mgmt, readOnly, systemLabel, systemShort, onCreateItem, onDeleteLine]);
 
   return (
     <DataGrid<Row>
@@ -751,6 +765,8 @@ export function LineGrid({
           intel={r.intel}
           mgmt={mgmt}
           readOnly={readOnly}
+          systemLabel={systemLabel}
+          systemShort={systemShort}
           selected={selectedIds.includes(r.id)}
           onToggle={toggle}
           onOpen={onOpen}

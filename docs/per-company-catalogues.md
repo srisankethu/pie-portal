@@ -1063,3 +1063,95 @@ namespaced by the pack's `org_id`. With no packs it should become the
 catalogue — the manufacturer — which is already modelled, but it touches
 `identity/store.py` and getting it wrong makes part numbers stop resolving
 silently.
+
+
+## 15. Proposing a decoder from the file itself (Stage B, built)
+
+§14 made a frozen decoder reproducible and shipped no inference, deliberately —
+the artifact is data, so it can be written by hand, and everything downstream
+could be built against one first. This is the step that writes one by reading
+the file. `app/decoding/infer.py`.
+
+### What it does
+
+1. **Tokenise** each description into atoms: runs of letters, runs that are a
+   number, single characters otherwise. A number is what varies between two
+   rows of the same shape, so it is the thing worth finding.
+2. **Cluster** by the leading two tokens with numbers masked. On the shipped
+   corpus that gives `SC DRILL` (1,273 rows), `ANSI/ISO Turning` (1,016),
+   `GP SC` (282) — the groups a person would name looking at the file.
+3. **Align** within a cluster and turn the differences into optional parts.
+   This is the step that matters: masking numbers alone splits the drills into
+   `SC DRILL #mm/.#/ #xD`, `…#xD COOLANT` and `SC DRILL KU …` as three
+   unrelated shapes, when they are one shape with two optional pieces.
+4. **Validate** over every row of the file — not the rows the pattern was
+   induced from, which is the overfitting check and the reason a proposal
+   carries coverage numbers rather than a promise.
+
+### The result
+
+**64.6% of the real 6,717-row corpus, with no manufacturer knowledge of any
+kind**, in 0.39 seconds. 135 segments; the drill segment claims 1,239 rows —
+*more* than the hand-authored segment in §14 claims (1,219), because inference
+found the tool-family alternation (`FLAT|HPR|HPS|HP|KU|XL|XS`) that a person
+reading the file had missed.
+
+### What it will not do
+
+- **It binds no slots.** What a captured number means — cutting diameter or
+  shank diameter — is a judgement about the trade, and a wrong binding is a
+  confidently wrong dimension, which is the failure this whole design exists to
+  prevent. Groups come back named `num1`, `opt1`; binding them is Stage C.
+- **It never offers a pattern that fails its own examples.** Every candidate
+  goes through `freeze` before it is proposed, so a proposal is a decoder that
+  already works or it is not a proposal.
+- **It ranks nothing by quality and computes no score.** Segments come back in
+  coverage order, which is a count. Whether that coverage is good enough is a
+  judgement it leaves alone.
+- **It never guesses at a row it could not place.** Unclaimed rows come back
+  counted with samples — on a file this does not understand, that is the
+  finding rather than the failure.
+
+### Deterministic, which is not required and is worth having
+
+The freeze is what makes *decoding* reproducible, so inference does not have to
+be — a proposal is reviewed before it becomes a decoder. But a proposal that
+came out differently each run would make review useless: a person could not
+tell a change they caused from noise, and two people looking at one file would
+be arguing about different things. So every ordering is explicit and every tie
+breaks on a stated rule, and the same file proposes the same decoder **whatever
+order its rows are in**. That last property had to be worked at: counting
+skeletons over the first N rows of a cluster cost it, and counting over all of
+them bought it back at no meaningful expense, since the bounded work is the
+pairwise alignment and not the counting.
+
+### Three bugs the real file found
+
+Each cost hundreds of rows, and none would have shown up against a fixture
+small enough to write by hand. They are regressions in
+`test_decoder_inference.py` now.
+
+- **The base skeleton was chosen by frequency.** The most common drill skeleton
+  includes `COOLANT`, so every drill *without* coolant was a deletion relative
+  to the base, could not fold in, and went unclaimed — the segment claimed 472
+  of 1,273. The base is now the skeleton the most rows are pure insertions of.
+- **Only one optional run per position was kept.** A drill line names one of
+  several tool families in the same place, and the rest were silently dropped.
+  They are an alternation inside the optional group now, which is safe: what
+  `safety` refuses is an alternation inside an unbounded *repeat*, and an
+  optional group is not one. The comment claiming otherwise was simply wrong.
+- **Case split a shape in two.** The corpus writes `3mm` and `1,8MM`. Read
+  case-sensitively those are different skeletons, and the smaller half fell
+  below the cluster floor. Case is folded when the skeleton is taken and the
+  pattern matches case-insensitively at exactly those atoms — nothing else
+  loosens, because a `/` between two numbers is structure and not decoration.
+
+Together those took coverage from 44.9% to 64.6%.
+
+### Still not wired in
+
+Nothing calls this yet, on §14's reasoning: the catalogue build still decodes
+through the rule set each file's decoding config names, and a second build path
+with no caller would be worse than none. What connects them is Stage C — the
+step that proposes slot bindings and asks a person to confirm them — which is
+where a proposal becomes something a build can use.

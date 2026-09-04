@@ -644,6 +644,63 @@
 }
 .pie-landing .lp-form-done h3 { margin-bottom: 8px; }
 
+/* ── the dialog the form opens in ──
+   Rendered inside `.pie-landing` and not through a portal, so the page's own
+   `.lp-panel`, `.lp-field` and `.lp-btn` rules reach it unchanged — the form
+   inside the dialog is the same form, styled once.
+
+   `position: fixed` above the sticky header's z-index (20). No ancestor sets a
+   transform or a filter, so fixed here means the viewport, which is what an
+   overlay has to mean. */
+.pie-landing .lp-modal-backdrop {
+  position: fixed; inset: 0; z-index: 100;
+  background: rgba(17, 24, 33, 0.55);
+  display: flex; align-items: flex-start; justify-content: center;
+  padding: 24px; box-sizing: border-box;
+  overflow-y: auto;
+}
+/* Top-aligned with a little air rather than centred: the form is taller than a
+   short viewport, and a centred box that overflows crops its own heading. It
+   scrolls in the backdrop, which is why the padding is on the backdrop. */
+.pie-landing .lp-modal {
+  position: relative;
+  width: 100%; max-width: 720px;
+  margin: auto;
+  box-shadow: 0 18px 48px rgba(17, 24, 33, 0.28);
+}
+.pie-landing .lp-modal:focus-visible {
+  outline: 2px solid var(--color-accent); outline-offset: 2px;
+}
+/* The form inside is already a `.lp-panel`; on the dialog it wants the page's
+   background rather than the panel grey, so the sheet reads as a surface lifted
+   off the page and not as a panel that escaped the section. */
+.pie-landing .lp-modal .lp-panel { background: var(--color-bg); }
+.pie-landing .lp-modal-close {
+  position: absolute; top: 10px; right: 12px; z-index: 1;
+  width: 34px; height: 34px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 24px; font-family: var(--font-body);
+  color: var(--color-neutral-700); background: transparent;
+  border: 0; border-radius: var(--radius-sm); cursor: pointer;
+}
+.pie-landing .lp-modal-close:hover { color: var(--color-text); }
+.pie-landing .lp-modal-close:focus-visible {
+  outline: 2px solid var(--color-accent); outline-offset: 1px;
+}
+/* The heading must not run under the close button on a narrow sheet. */
+.pie-landing .lp-modal .lp-panel h3 { padding-right: 34px; }
+@media (prefers-reduced-motion: no-preference) {
+  .pie-landing .lp-modal { animation: lp-rise 0.22s ease-out both; }
+}
+
+/* ── the block the panels' buttons point at ──
+   `#talk` stays a real element: the ERP sub-pages ship no JavaScript and link
+   into `/#talk`, and a plan panel's button is still an anchor so that a visitor
+   whose bundle never arrives is scrolled somewhere that explains itself rather
+   than pressing a button that does nothing. With JavaScript, the same press
+   opens the dialog and no jump happens. */
+.pie-landing .lp-talk-lead { margin: 0 0 20px; }
+
 /* final CTA + footer */
 .pie-landing .lp-final { text-align: center; padding: 84px 0; }
 .pie-landing .lp-final h2 { font-size: clamp(28px, 4vw, 42px); margin: 0 0 12px; }

@@ -4,7 +4,12 @@
  * What a distributor actually pays turns on how many companies they run, which
  * ERP each of those sits on, and how much catalogue there is to build — none of
  * which a panel knows, and all of which it was answering anyway. So the panels
- * say what each plan *is*, and the section ends here.
+ * say what each plan *is*, and each one's button asks this.
+ *
+ * It is rendered by `ContactModal`, which owns *how it opens* and nothing else:
+ * the fields, the copy and the request are here, once. A dialog with its own
+ * copy of a contact form is two forms that answer the same question
+ * differently, and the second one is the one nobody updates.
  *
  * Three things about it are deliberate:
  *
@@ -15,10 +20,14 @@
  * as the "Book a demo" button that pointed at a placeholder — invisible to
  * whoever maintains the page and the whole experience for whoever used it.
  *
- * **It renders in the prerender.** `prerender.tsx` bakes this page as static
- * markup, so nothing here may read `window` or fetch while rendering. The
- * fields are ordinary inputs inside a real `<form>`; state only ever changes in
- * response to a person, and the request happens on submit.
+ * **It stays renderable on the server.** `prerender.tsx` bakes this page as
+ * static markup. The dialog means these fields are no longer *in* that
+ * document — nothing of them is rendered until somebody opens it — but the
+ * rule still holds and is worth keeping: nothing here may read `window` or
+ * fetch while rendering, because the day this form goes back on the page is
+ * not the day to discover it cannot. The fields are ordinary inputs inside a
+ * real `<form>`; state only ever changes in response to a person, and the
+ * request happens on submit.
  *
  * **It says what it is.** Submitting creates no account, licenses no plan and
  * charges nothing — the same non-promise the sign-up form's plan radio makes —
@@ -120,7 +129,11 @@ export function ContactForm({ plan, onPlanChange }: {
   if (status.kind === "sent") {
     return (
       <div className="lp-panel lp-form-done" role="status">
-        <h3>Thanks — that reached us.</h3>
+        {/* Keeps the id the heading above it carries: the dialog in
+            `ContactModal` is labelled by it, and a thank-you that dropped the
+            id would leave the dialog unnamed at the one moment a screen reader
+            is being told what just happened. */}
+        <h3 id="lp-form-head">Thanks — that reached us.</h3>
         <p>
           We read every one of these ourselves and come back at the address you
           gave, usually within a working day. Nothing was charged and no account

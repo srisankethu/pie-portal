@@ -31,6 +31,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -168,6 +169,44 @@ def delete(session: Session, org: str, quote_id: str,
     return True
 
 
+@dataclass(frozen=True)
+class LineCostBasis:
+    """The two costs a quote line can hold, kept apart.
+
+    ``system`` is what the books returned for the item; ``custom`` is what a
+    person sourced for this deal. They are separate fields rather than one
+    resolved number because the assessment has to *say* which answered — a
+    cost with no traceable origin is what §1 forbids, and "a manager typed
+    it" and "a bill says so" are different claims about the same rupees.
+    """
+
+    system: Optional[Decimal] = None
+    custom: Optional[Decimal] = None
+
+
+def line_cost_basis(session: Session, org: str, quote_id: str,
+                    line_id: str) -> LineCostBasis:
+    """Both of one quote line's costs, in one load.
+
+    One accessor rather than two, because the callers read them together and
+    ``load`` walks the whole quote: a second call per line doubles that on a
+    forty-line assessment to answer half a question.
+    """
+    quote = load(session, org, quote_id)
+    if quote is None:
+        return LineCostBasis()
+    line = next((row for row in quote.lines if row.id == line_id), None)
+    if line is None:
+        return LineCostBasis()
+    return LineCostBasis(system=_money(line.cost), custom=_money(line.customCost))
+
+
+def _money(value: Optional[float]) -> Optional[Decimal]:
+    # `Decimal(str(...))` rather than `Decimal(float)`: money is Decimal (§1),
+    # and the binary-float detour is how 420.0 becomes 419.99999999999994.
+    return None if value is None else Decimal(str(value))
+
+
 def line_cost(session: Session, org: str, quote_id: str,
               line_id: str) -> Optional[Decimal]:
     """The landed cost this server already holds against one quote line.
@@ -185,15 +224,7 @@ def line_cost(session: Session, org: str, quote_id: str,
     ``org`` is enforced: this returns a *cost*, and a caller naming another
     tenant's ``quote_id`` must read exactly what an unknown id reads — ``None``.
     """
-    quote = load(session, org, quote_id)
-    if quote is None:
-        return None
-    line = next((row for row in quote.lines if row.id == line_id), None)
-    if line is None or line.cost is None:
-        return None
-    # `Decimal(str(...))` rather than `Decimal(float)`: money is Decimal (§1),
-    # and the binary-float detour is how 420.0 becomes 419.99999999999994.
-    return Decimal(str(line.cost))
+    return line_cost_basis(session, org, quote_id, line_id).system
 
 
 def _row(session: Session, org: str, quote_id: str) -> Optional[models.QuoteDraft]:

@@ -67,6 +67,18 @@ class SetPriceRequest(BaseModel):
     price: Optional[float] = None
 
 
+class SetCustomCostRequest(BaseModel):
+    """A cost price a person sourced for one quote line.
+
+    ``cost`` of ``None`` clears the entry and the line goes back to the cost the
+    books hold. ``note`` is why that number — the supplier, the offer, how long
+    it stands — because a cost with no provenance is one nobody can question.
+    """
+
+    cost: Optional[float] = None
+    note: str = ""
+
+
 class DiscountRequest(BaseModel):
     lineIds: List[str]
     percent: float

@@ -88,6 +88,22 @@ class RaiseQuoteApproval(BaseModel):
     reason: Optional[str] = Field(default=None, max_length=2000)
 
 
+def _line_input(session: Session, org: str, body) -> QuoteLineInput:
+    """One assessment input, carrying both server-held costs for the line.
+
+    Both, and read here rather than taken from the request, for the reason the
+    handler below gives: an approval whose numbers came from the requester is a
+    request to approve whatever they typed. A hand-entered cost is a number a
+    person supplied — but through the quote, where it is attributed and
+    persisted, not through this body.
+    """
+    basis = quote_workspace.line_cost_basis(session, org, body.quote_id, body.line_id)
+    return QuoteLineInput(line_id=body.line_id, product_ref=body.product,
+                          qty=body.qty, proposed_price=body.proposed_price,
+                          family=body.family,
+                          item_master_cost=basis.system, custom_cost=basis.custom)
+
+
 @router.post("/quote-line", status_code=http.HTTP_201_CREATED)
 def request_quote_line_approval(
     body: RaiseQuoteApproval,
@@ -103,12 +119,7 @@ def request_quote_line_approval(
     th = load_for_org(session, principal.organization_id)
     result = assess_quote(
         session, principal.organization_id, customer_ref=body.customer.strip(),
-        lines=[QuoteLineInput(line_id=body.line_id, product_ref=body.product,
-                              qty=body.qty, proposed_price=body.proposed_price,
-                              family=body.family,
-                              item_master_cost=quote_workspace.line_cost(
-                                  session, principal.organization_id,
-                                  body.quote_id, body.line_id))],
+        lines=[_line_input(session, principal.organization_id, body)],
         th=th)
     intel = result.lines[0]
 

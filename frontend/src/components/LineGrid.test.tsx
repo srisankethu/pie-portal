@@ -41,6 +41,8 @@ function lineWithEconomics(): Line {
     relLabel: "Identical",
     supplyCode: "2001174",
     supplyDesc: "CNMG 120408 MP KCP25",
+    costBasis: "BOOKS",
+    customCostSet: false,
     sel: "AUTO",
     avail: 40,
     availUnknown: false,

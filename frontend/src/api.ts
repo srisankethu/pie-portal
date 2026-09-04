@@ -163,6 +163,18 @@ export const api = {
       t,
     ),
 
+  /** Record — or clear, with `null` — the cost price a person sourced for this
+   *  line. Every role that may edit the quote: the books answer what we have
+   *  paid for an item, and on a first-time part they answer nothing, so the
+   *  person holding the supplier's offer is the one at the desk. */
+  setCustomCost: (t: string, id: string, lineId: string,
+                  cost: number | null, note = "") =>
+    req<Quote>(
+      `/api/v1/quotes/${id}/lines/${lineId}/cost`,
+      { method: "POST", body: JSON.stringify({ cost, note }) },
+      t,
+    ),
+
   deleteLine: (t: string, id: string, lineId: string) =>
     req<Quote>(`/api/v1/quotes/${id}/lines/${lineId}`, { method: "DELETE" }, t),
 

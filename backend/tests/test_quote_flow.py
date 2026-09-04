@@ -219,6 +219,151 @@ def test_a_salesperson_cannot_ask_whether_a_line_is_below_the_floor(
     assert "economics" not in sales_view["lines"][0]
 
 
+# ── the second cost basis ───────────────────────────────────────────────────
+#
+# The books answer "what have we paid for this item". On a first-time part they
+# answer nothing, and the assessment said NO_COST_BASIS while the desk sat on a
+# supplier's offer it had no field for. These cover the field, and the gate on
+# reading one back: what a person writes is their own number, so writing is open
+# to every role — but a cost management recorded is management's, and §1 does not
+# stop applying because it was typed into a quote rather than read from a bill.
+@pytest.mark.requires_pie
+def test_a_salesperson_may_record_a_cost_price_and_it_drives_the_margin(
+        client, sales_hdr, mgmt_hdr):
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"},
+                    headers=sales_hdr).json()
+    qid = q["id"]
+    q = client.post(f"/api/v1/quotes/{qid}/intake", json={"text": "2001174, 10"},
+                    headers=sales_hdr).json()
+    lid = q["lines"][0]["id"]
+    client.post(f"/api/v1/quotes/{qid}/lines/{lid}/price", json={"price": 1000},
+                headers=sales_hdr)
+
+    r = client.post(f"/api/v1/quotes/{qid}/lines/{lid}/cost",
+                    json={"cost": 800, "note": "Kennametal ADR, valid 30 days"},
+                    headers=sales_hdr)
+    assert r.status_code == 200, "the desk holds the supplier's offer"
+    sline = r.json()["lines"][0]
+    assert sline["costBasis"] == "CUSTOM"
+    assert sline["customCostSet"] is True
+    # Their own number, read back to them: it discloses nothing the platform
+    # knows and they do not.
+    assert sline["customCost"] == 800
+    assert sline["customCostNote"] == "Kennametal ADR, valid 30 days"
+    # And still no economics for a salesperson.
+    assert "economics" not in sline
+
+    mline = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()["lines"][0]
+    assert mline["economics"]["cost"] == 800, "the entered cost is the one in force"
+    assert abs(mline["economics"]["margin"] - 0.20) < 1e-9
+
+
+@pytest.mark.requires_pie
+def test_a_cost_price_management_recorded_is_withheld_from_the_desk(
+        client, sales_hdr, mgmt_hdr):
+    """Writing is open to every role; reading back is not.
+
+    A cost a manager put on the line is the platform's number, and handing it to
+    a salesperson as a field is the thing §1 forbids — "we typed it into the
+    quote" is not an exemption. The desk is still told one *exists*, because a
+    control that silently does nothing is worse than one that says why.
+    """
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"},
+                    headers=mgmt_hdr).json()
+    qid = q["id"]
+    q = client.post(f"/api/v1/quotes/{qid}/intake", json={"text": "2001174, 10"},
+                    headers=mgmt_hdr).json()
+    lid = q["lines"][0]["id"]
+    client.post(f"/api/v1/quotes/{qid}/lines/{lid}/cost",
+                json={"cost": 777, "note": "landed, incl. freight"}, headers=mgmt_hdr)
+
+    sline = client.get(f"/api/v1/quotes/{qid}", headers=sales_hdr).json()["lines"][0]
+    assert sline["customCostSet"] is True
+    assert "customCost" not in sline
+    assert "customCostNote" not in sline
+    assert "economics" not in sline
+    # Nothing else in the sales payload states it either.
+    assert "777" not in json.dumps(sline)
+
+    mline = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()["lines"][0]
+    assert mline["customCost"] == 777
+
+
+@pytest.mark.requires_pie
+def test_clearing_a_cost_price_falls_back_to_the_cost_on_record(client, mgmt_hdr):
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"},
+                    headers=mgmt_hdr).json()
+    qid = q["id"]
+    q = client.post(f"/api/v1/quotes/{qid}/intake", json={"text": "2001174, 10"},
+                    headers=mgmt_hdr).json()
+    lid = q["lines"][0]["id"]
+    on_record = q["lines"][0]["economics"]["cost"]
+
+    q = client.post(f"/api/v1/quotes/{qid}/lines/{lid}/cost", json={"cost": 999},
+                    headers=mgmt_hdr).json()
+    assert q["lines"][0]["economics"]["cost"] == 999
+
+    q = client.post(f"/api/v1/quotes/{qid}/lines/{lid}/cost", json={"cost": None},
+                    headers=mgmt_hdr).json()
+    line = q["lines"][0]
+    assert line["customCostSet"] is False
+    assert line["customCost"] is None
+    assert line["economics"]["cost"] == on_record
+    assert line["costBasis"] != "CUSTOM"
+
+
+@pytest.mark.requires_pie
+def test_a_zero_or_negative_cost_price_is_refused(client, mgmt_hdr):
+    """Zero is what an unfilled field holds, and a zero cost reads as pure
+    profit on every line it touches."""
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"},
+                    headers=mgmt_hdr).json()
+    qid = q["id"]
+    q = client.post(f"/api/v1/quotes/{qid}/intake", json={"text": "2001174, 10"},
+                    headers=mgmt_hdr).json()
+    lid = q["lines"][0]["id"]
+    for bad in (0, -5):
+        r = client.post(f"/api/v1/quotes/{qid}/lines/{lid}/cost", json={"cost": bad},
+                        headers=mgmt_hdr)
+        assert r.status_code == 400
+    line = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()["lines"][0]
+    assert line["customCostSet"] is False
+
+
+@pytest.mark.requires_pie
+def test_a_stand_in_cost_says_it_is_one(client, mgmt_hdr):
+    """The default adapter derives a landed cost from `sha256(code)`.
+
+    That is fine for an offline demo and not fine unlabelled: the card read
+    "Cost ₹2,830" for an item nobody had ever bought, in the weight a real
+    landed cost gets. `costBasis` is what tells the two apart.
+    """
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"},
+                    headers=mgmt_hdr).json()
+    qid = q["id"]
+    q = client.post(f"/api/v1/quotes/{qid}/intake", json={"text": "2001174, 10"},
+                    headers=mgmt_hdr).json()
+    assert q["lines"][0]["costBasis"] == "DEMO"
+
+
+def test_the_stand_in_invents_nothing_for_an_item_the_books_do_not_hold():
+    """The complaint this started from: an item absent from the item list, with
+    a cost on it anyway.
+
+    `ZohoBooksService.get_item` has always answered a code it cannot find with
+    no price, no cost and no stock. The mock handed back all three regardless of
+    `in_books`, so a line reading NOT IN BOOKS still showed a cost — and a
+    stand-in that contradicts the adapter it stands in for makes every screen
+    and test written against it evidence about behaviour production lacks.
+    """
+    mock = MockZoho()
+    mock.mark_not_in_books("XZ-NOT-IN-THE-BOOKS-0001")
+    item = mock.get_item("XZ-NOT-IN-THE-BOOKS-0001")
+    assert item.in_books is False
+    assert item.cost is None and item.list_price is None and item.stock is None
+    assert item.synthetic is True
+
+
 @pytest.mark.requires_pie
 def test_supply_selection_and_pricing(client, mgmt_hdr):
     q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()

@@ -48,6 +48,7 @@ function lineWithCaveats(over: Partial<Line> = {}): Line {
     supplyCode: null, supplyDesc: "", sel: "AUTO",
     avail: null, availUnknown: true, inBooks: null, shortage: null,
     quoted: null, priceSource: null, recommended: null, lineTotal: null,
+    costBasis: null, customCostSet: false,
     createPhase: null, service: null, incompatReason: null,
     status: { kind: "technical", label: "unresolved" },
     flags: {
@@ -67,7 +68,8 @@ function renderDrawer(line: Line) {
       line={line} customer="Acme" token="t" mgmt={false}
       intel={null} intelLoading={false} intelError={null}
       onRecordOverride={vi.fn()} onRequestApproval={vi.fn()}
-      approvalStatus={null} onClose={vi.fn()} onSelect={vi.fn()}
+      approvalStatus={null} onClose={vi.fn()} onSetCustomCost={vi.fn()}
+      onSelect={vi.fn()}
       onRevert={vi.fn()}
     />,
   );

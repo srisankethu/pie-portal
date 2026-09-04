@@ -42,6 +42,7 @@ from ..schemas import (
     EstimateResponse,
     IntakeRequest,
     SelectSupplyRequest,
+    SetCustomCostRequest,
     SetCustomerRequest,
     SetFieldsRequest,
     SetOwnerRequest,
@@ -699,6 +700,36 @@ def set_price(quote_id: str, line_id: str, body: SetPriceRequest,
     q = _get_editable(session, principal, quote_id)
     ln = _get_line(q, line_id)
     store.set_price(ln, body.price)
+    return _saved(session, principal, q)
+
+
+@router.post("/{quote_id}/lines/{line_id}/cost")
+def set_custom_cost(quote_id: str, line_id: str, body: SetCustomCostRequest,
+                    principal: Principal = Depends(current_principal),
+                    session: Session = Depends(get_session)):
+    """Record the cost price a person sourced for this line, or clear it.
+
+    Every role that may edit the quote, salesperson included, and that is the
+    point of it rather than a relaxation of §1. The books answer "what have we
+    paid for this item"; on a first-time part they answer nothing, and the
+    person holding the supplier's offer is the one at the desk. Refusing them
+    the field does not keep a cost from the quote — it keeps the *right* cost
+    from it, and leaves margin, the floors and the approval gate resting on a
+    number that is missing.
+
+    What is written is the caller's own number, not the platform's, so nothing
+    here discloses a cost. Reading one back is where the gate lives:
+    ``Line.customCostRestricted`` marks an entry management made, and
+    ``to_dict`` withholds those from the desk.
+    """
+    q = _get_editable(session, principal, quote_id)
+    ln = _get_line(q, line_id)
+    try:
+        store.set_custom_cost(
+            ln, body.cost, user_id=principal.user_id, note=body.note,
+            restricted=principal.is_manager_or_owner)
+    except ValueError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     return _saved(session, principal, q)
 
 

@@ -1,7 +1,10 @@
+import * as React from "react";
 import Button from "@mui/material/Button";
 import Box from "@mui/material/Box";
 import Drawer from "@mui/material/Drawer";
 import Paper from "@mui/material/Paper";
+import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import type { Line, LineIntelligence } from "../types";
 import { relTone } from "../rel";
@@ -9,6 +12,7 @@ import { StatusChip } from "../platform/kit";
 import { DecisionSupport } from "./DecisionSupport";
 import { QuoteIntelligence } from "./QuoteIntelligence";
 import { money } from "../money";
+import { formatTime } from "../when";
 import { pathFor } from "../platform/route";
 
 export function SupplyDrawer({
@@ -24,6 +28,7 @@ export function SupplyDrawer({
   approvalStatus,
   onOpenPlatform,
   onClose,
+  onSetCustomCost,
   onSelect,
   onRevert,
   readOnly = false }: {
@@ -41,6 +46,9 @@ export function SupplyDrawer({
   /** Jump to a platform screen — the Customer × Item analysis drill-down. */
   onOpenPlatform?: (path: string) => void;
   onClose: () => void;
+  /** Record the cost price this line is quoted against, or clear it with
+   *  `null`. Every role, which is the point — see the panel below. */
+  onSetCustomCost: (lineId: string, cost: number | null, note: string) => void;
   onSelect: (code: string, manual: boolean) => void;
   onRevert: () => void;
   /** The reader may not change this quote: the options are shown, the
@@ -109,6 +117,12 @@ export function SupplyDrawer({
                 <div>
                   <div className="drawer-pricing-label">Cost</div>
                   <div className="drawer-pricing-value">{money(line.economics.cost)}</div>
+                  {/* Which cost this is. The card used to print the figure
+                      alone, so a stand-in adapter's hashed number and a
+                      ledger's landed cost were the same three glyphs in the
+                      same weight — and on a deployment left in mock mode the
+                      whole card was arithmetic on `sha256(code)`. */}
+                  <div className="drawer-pricing-footnote">{costBasisLabel(line)}</div>
                 </div>
               </div>
               {pricingDelta !== null && (
@@ -125,6 +139,12 @@ export function SupplyDrawer({
               <div className="drawer-pricing-footnote">Adjust the rate inline in the grid when you need to update this line.</div>
             </div>
           )}
+          <CostBasisPanel
+            line={line}
+            mgmt={mgmt}
+            readOnly={readOnly}
+            onSetCustomCost={onSetCustomCost}
+          />
           <QuoteIntelligence
             line={line}
             intel={intel}
@@ -253,5 +273,153 @@ export function SupplyDrawer({
         </div>
       </Box>
     </Drawer>
+  );
+}
+
+/** What the line's cost is, in one phrase — a source, never a value.
+ *
+ *  `DEMO` is the one that had to exist. The offline stand-in adapter derives a
+ *  list price and a landed cost from `sha256(code)`, and a deployment that has
+ *  not set `ZOHO_QUOTE_SERVICE=live` renders those in exactly the weight a real
+ *  landed cost gets — which is how a pricing card came to read "Cost ₹2,830"
+ *  for an item nobody had ever bought.
+ */
+export function costBasisLabel(line: Line): string {
+  switch (line.costBasis) {
+    case "CUSTOM":
+      return "cost price entered for this line";
+    case "BOOKS":
+      return "landed cost from the books";
+    case "DEMO":
+      return "demo stand-in — not a real purchase price";
+    default:
+      return "no cost on record";
+  }
+}
+
+/** The second cost basis: what a person sourced for this line.
+ *
+ *  Open to every role that may edit the quote, and that is the point of it
+ *  rather than a hole in §1. The books answer "what have we paid for this
+ *  item"; for a first-time part they answer nothing, and the person holding the
+ *  supplier's offer is the one at the desk. Refusing them the field does not
+ *  keep a cost off the quote — it keeps the *right* one off, and leaves the
+ *  margin, the floors and the approval gate resting on nothing.
+ *
+ *  What is written is the caller's own number. Reading one back is where the
+ *  gate is: the server withholds an entry management made, so `customCost`
+ *  arrives absent while `customCostSet` still says one exists.
+ */
+function CostBasisPanel({
+  line, mgmt, readOnly, onSetCustomCost,
+}: {
+  line: Line;
+  mgmt: boolean;
+  readOnly: boolean;
+  onSetCustomCost: (lineId: string, cost: number | null, note: string) => void;
+}) {
+  const visible = line.customCost ?? null;
+  const withheld = line.customCostSet && visible === null;
+  const [cost, setCost] = React.useState(visible === null ? "" : String(visible));
+  const [note, setNote] = React.useState(line.customCostNote ?? "");
+  // Remounts on the server's answer, so the field shows what was stored rather
+  // than what was typed at it — including the case where the store refused.
+  const key = `${line.id}-${visible ?? ""}`;
+  React.useEffect(() => {
+    setCost(visible === null ? "" : String(visible));
+    setNote(line.customCostNote ?? "");
+  }, [key]);                              // eslint-disable-line react-hooks/exhaustive-deps
+
+  const typed = cost.trim();
+  const parsed = typed === "" ? null : Number(typed);
+  const invalid = parsed !== null && (!Number.isFinite(parsed) || parsed <= 0);
+  const unchanged = parsed === visible && (note ?? "") === (line.customCostNote ?? "");
+
+  return (
+    <Paper variant="outlined" sx={{ p: 1.5, mb: 1.5 }}>
+      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 1 }}>
+        <Typography variant="overline" color="text.secondary" component="div"
+                    sx={{ lineHeight: 1.6 }}>
+          Cost price
+        </Typography>
+        <StatusChip
+          label={costBasisLabel(line)}
+          tone={line.costBasis === "CUSTOM" ? "info"
+            : line.costBasis === "BOOKS" ? "good"
+              : line.costBasis === "DEMO" ? "warn" : "neutral"}
+          dense
+        />
+      </Stack>
+      {withheld ? (
+        <Typography variant="body2" color="text.secondary">
+          A cost price is set on this line by management. It is what the margin,
+          the floors and the approval gate are computed against.
+        </Typography>
+      ) : (
+        <>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+            {line.costBasis === null
+              ? "Nothing has been bought against this item, so there is no cost "
+                + "on record. Enter what this line costs you and the margin and "
+                + "the floors follow from it."
+              : "A cost you enter here is used for this line instead of the one "
+                + "on record. It stays on this quote — the item master is not "
+                + "changed."}
+          </Typography>
+          <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
+            <TextField
+              label="Custom cost price"
+              size="small"
+              value={cost}
+              onChange={(e) => setCost(e.target.value)}
+              error={invalid}
+              helperText={invalid ? "Must be greater than zero" : " "}
+              placeholder="—"
+              disabled={readOnly}
+              slotProps={{ htmlInput: {
+                inputMode: "decimal",
+                "aria-label": `Custom cost price for ${line.reqCode}`,
+              } }}
+              sx={{ width: 150 }}
+            />
+            <TextField
+              label="Where it came from"
+              size="small"
+              value={note}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder="supplier, offer, valid until"
+              helperText=" "
+              disabled={readOnly}
+              sx={{ flex: 1 }}
+            />
+          </Stack>
+          <Stack direction="row" spacing={1}>
+            <Button
+              variant="outlined" size="small"
+              disabled={readOnly || invalid || unchanged}
+              onClick={() => onSetCustomCost(line.id, parsed, note)}
+            >
+              Save cost price
+            </Button>
+            {visible !== null && (
+              <Button
+                variant="text" size="small"
+                disabled={readOnly}
+                onClick={() => onSetCustomCost(line.id, null, "")}
+              >
+                Clear
+              </Button>
+            )}
+          </Stack>
+          {mgmt && line.customCostAt && visible !== null && (
+            <Typography variant="caption" color="text.secondary"
+                        sx={{ display: "block", mt: 1 }}>
+              Recorded {formatTime(line.customCostAt)}
+              {line.customCostBy ? " · by a user on this quote" : ""}
+            </Typography>
+          )}
+        </>
+      )}
+    </Paper>
   );
 }

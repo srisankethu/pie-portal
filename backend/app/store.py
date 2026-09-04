@@ -24,7 +24,7 @@ import uuid
 from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Dict, List, Optional
 
-from . import pricing
+from . import clock, pricing
 from .pie_service import Bands, Candidate, Resolution, pie_service
 from .ingestion.errors import (SourceUnavailable, SourceWriteRefused,
                                SourceWriteUnknown)
@@ -388,6 +388,43 @@ class Line:
     avail: Optional[int] = None
     listPrice: Optional[float] = None
     cost: Optional[float] = None
+    #: Where ``cost`` came from. ``BOOKS`` is the connected ledger's own landed
+    #: cost; ``DEMO`` is the offline stand-in adapter's hashed figure, which is
+    #: not a purchase price and must never be read as one. ``None`` when no
+    #: cost was returned at all.
+    #:
+    #: Carried for the same reason ``priceSource`` is: without it the two are
+    #: rendered identically, and a deployment left in mock mode showed a
+    #: management pricing card reading "Cost ₹2,830" for an item nobody had
+    #: ever bought — ``sha256(code)`` at 82% of a list price from the same
+    #: hash, in the same weight as a real one.
+    costSource: Optional[str] = None   # None | BOOKS | DEMO
+    #: The cost a person put on this line by hand — the second cost basis.
+    #:
+    #: The books answer "what have we paid for this item", which is the wrong
+    #: question for an item nobody has bought yet: a first-time part quoted
+    #: against a supplier's fresh ADR has a real cost that no bill and no item
+    #: master holds. Without somewhere to put it the desk either quotes blind
+    #: or invents a price, and every downstream number — margin, the floors,
+    #: the approval gate — rests on a cost that is missing.
+    #:
+    #: It takes precedence over ``cost`` for this line and only this line. It is
+    #: never written back to the item master: this is what *this* deal costs,
+    #: not a fact about the product. See ``effective_cost``.
+    customCost: Optional[float] = None
+    #: Why that number — the supplier, the offer, the date it holds until.
+    customCostNote: str = ""
+    #: Who recorded it and when, because a cost with no author is a cost
+    #: nobody can question later.
+    customCostBy: Optional[str] = None
+    customCostAt: Optional[str] = None
+    #: True when a manager or owner recorded it. A custom cost entered by the
+    #: desk is the desk's own number — a supplier quote they obtained — and
+    #: returning it to them discloses nothing the platform knows and they do
+    #: not. One entered by management is management's number and stays
+    #: management's: §1's rule is that our cost does not reach a salesperson,
+    #: and "we typed it into the quote" is not an exemption from it.
+    customCostRestricted: bool = False
     family: Optional[str] = None
     #: The tax rate the books hold against this line's item, as a percentage.
     #: ``None`` means the books did not state one — which is why the summary
@@ -418,8 +455,30 @@ class Line:
             return None
         return max(0, self.reqQty - self.avail)
 
+    def effective_cost(self) -> Optional[float]:
+        """The cost this line is actually priced against.
+
+        A hand-entered cost wins over the books. It is the more specific claim
+        — a number somebody sourced for this deal, against a general one the
+        ledger holds for the item — and it is the only one available at all for
+        an item with no purchase history, which is the case that made it
+        necessary.
+        """
+        return self.customCost if self.customCost is not None else self.cost
+
+    def cost_basis(self) -> Optional[str]:
+        """Which of the two costs ``effective_cost`` returned, and from where.
+
+        Safe for either role: it says where a number came from, not what it is
+        — the same rule ``priceSource`` is serialized under.
+        """
+        if self.customCost is not None:
+            return "CUSTOM"
+        return self.costSource if self.cost is not None else None
+
     def economics(self) -> pricing.Economics:
-        return pricing.compute_economics(self.cost, self.listPrice, self.quoted, self.family)
+        return pricing.compute_economics(self.effective_cost(), self.listPrice,
+                                         self.quoted, self.family)
 
     def status(self) -> Dict[str, str]:
         """(kind, label) — matches the design's status taxonomy."""
@@ -485,6 +544,12 @@ class Line:
             # came from, not what it cost.
             "priceSource": self.priceSource if self.quoted is not None else None,
             "recommended": econ.recommended,   # decision support, safe for both roles
+            # Which cost the numbers above rest on, and whether one exists at
+            # all. Both roles: it names a source, never a value — the same line
+            # `priceSource` sits on — and the desk cannot decide whether to
+            # enter a cost for this line without being told there is none.
+            "costBasis": self.cost_basis(),
+            "customCostSet": self.customCost is not None,
             "lineTotal": (self.quoted * self.reqQty) if self.quoted is not None else None,
             "createPhase": self.createPhase,
             "service": self.service,
@@ -495,6 +560,16 @@ class Line:
             "notes": self.notes,
             "substituted": self.substituted(),
         }
+        # The number itself, under the rule `customCostRestricted` states: the
+        # desk reads back what the desk recorded, and never what management
+        # recorded. `recommended` above still moves with either — that is the
+        # residual §1 already accepts and documents, and it is not a licence to
+        # hand over the figure as a field on top of it.
+        if mgmt or not self.customCostRestricted:
+            base["customCost"] = self.customCost
+            base["customCostNote"] = self.customCostNote
+            base["customCostBy"] = self.customCostBy
+            base["customCostAt"] = self.customCostAt
         if mgmt:
             base["economics"] = econ.to_dict()
         return base
@@ -865,6 +940,10 @@ class QuoteStore:
         ln.avail = item.stock
         ln.listPrice = item.list_price
         ln.cost = item.cost
+        # Said, not assumed. A stand-in adapter's figure and a ledger's figure
+        # arrive through the same field and are worth different amounts.
+        ln.costSource = None if item.cost is None else ("DEMO" if item.synthetic
+                                                        else "BOOKS")
         ln.taxPercent = item.tax_percentage
         ln.family = self._family_of(ln)
         if item.in_books and item.list_price is not None:
@@ -914,6 +993,38 @@ class QuoteStore:
         # Clearing the field puts the line back to having no price at all, so
         # there is nothing left to attribute.
         ln.priceSource = "USER" if price is not None else "LIST"
+
+    def set_custom_cost(self, ln: Line, cost: Optional[float], *,
+                        user_id: Optional[str], note: str = "",
+                        restricted: bool = False) -> None:
+        """Record — or clear — the cost a person sourced for this line.
+
+        ``None`` clears it and the line falls back to the books, attribution
+        and all, because a cleared entry is not a correction of the number to
+        nothing: there is simply no hand-entered cost any more.
+
+        A zero or negative cost is refused rather than stored. It is the same
+        rule ``quote_intelligence`` applies to a cost record and
+        ``line_economics`` to a bill line — a zero there is a placeholder
+        somebody has not filled in, and letting one through here would make
+        every price on the line read as pure profit.
+        """
+        if cost is None:
+            ln.customCost = None
+            ln.customCostNote = ""
+            ln.customCostBy = None
+            ln.customCostAt = None
+            ln.customCostRestricted = False
+            return
+        if cost <= 0:
+            raise ValueError(
+                "A cost price must be greater than zero. Clear the field to go "
+                "back to the cost on record.")
+        ln.customCost = float(cost)
+        ln.customCostNote = (note or "").strip()[:500]
+        ln.customCostBy = user_id
+        ln.customCostAt = clock.iso(clock.now())
+        ln.customCostRestricted = restricted
 
     def delete_line(self, quote: Quote, line_id: str) -> Line:
         line = next((ln for ln in quote.lines if ln.id == line_id), None)
@@ -1017,6 +1128,8 @@ class QuoteStore:
         ln.createPhase = None
         ln.itemId = item.item_id or ln.itemId
         ln.cost = item.cost
+        ln.costSource = None if item.cost is None else ("DEMO" if item.synthetic
+                                                        else "BOOKS")
         if ln.quoted is None and item.list_price is not None:
             ln.quoted = item.list_price
             ln.priceSource = "LIST"

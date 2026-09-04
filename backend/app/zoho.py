@@ -52,6 +52,15 @@ class ZohoItem:
     # the code a second time: re-matching at send time is both a call per line
     # against the rate limit and a second chance to pick a different item.
     item_id: Optional[str] = None
+    #: True when this record was invented rather than read — the offline
+    #: stand-in adapter's hashed figures. It travels because the alternative is
+    #: what shipped: a list price and a landed cost derived from
+    #: ``sha256(code)`` rendered in the same weight as Zoho's own numbers, with
+    #: nothing on screen able to tell them apart. ``select_zoho_service`` already
+    #: states the rule for the live-without-credentials case — "the mock, whose
+    #: hashed prices would be indistinguishable on screen from real ones" — and
+    #: this is that rule applied to the case the deployment is actually in.
+    synthetic: bool = False
     # The tax rate the books hold against this item, as a percentage (18.0, not
     # 0.18 — it is Zoho's number in Zoho's units, converted where it is used).
     #
@@ -203,8 +212,24 @@ class MockZoho:
         if code in self._created:
             in_books = True
         name = self._created[code].name if code in self._created else code
+        if not in_books:
+            # An item the books do not hold has no list price, no landed cost
+            # and no stock, because there is no item record for any of them to
+            # be on. ``ZohoBooksService.get_item`` has always answered exactly
+            # this way for a code it cannot find; the mock did not, and handed
+            # back all three anyway — so a line reading NOT IN BOOKS still
+            # showed a cost, and "the item is not in our item list, where is
+            # this cost coming from" had a real answer: ``sha256(code)``.
+            #
+            # A stand-in that contradicts the adapter it stands in for is worse
+            # than no stand-in, since every screen and every test written
+            # against it is written against behaviour production does not have.
+            return ZohoItem(code=code, name=name, in_books=False,
+                            list_price=None, stock=None, cost=None,
+                            synthetic=True)
         return ZohoItem(code=code, name=name, in_books=in_books,
-                        list_price=float(list_price), stock=stock_val, cost=float(cost))
+                        list_price=float(list_price), stock=stock_val,
+                        cost=float(cost), synthetic=True)
 
     # ── protocol ─────────────────────────────────────────────────────────────
     def get_item(self, code: str) -> Optional[ZohoItem]:
@@ -221,7 +246,7 @@ class MockZoho:
             item = ZohoItem(
                 code=code, name=name or code, in_books=True,
                 list_price=list_price if list_price is not None else base.list_price,
-                stock=base.stock, cost=base.cost,
+                stock=base.stock, cost=base.cost, synthetic=True,
             )
             self._created[code] = item
             self._not_in_books.discard(code)

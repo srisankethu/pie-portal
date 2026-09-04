@@ -77,6 +77,10 @@ class QuoteLineInput:
     #: the requester is a request to approve whatever they typed. Used only when
     #: no bill-derived cost record exists; see ``assess_line``.
     item_master_cost: Optional[Decimal] = None
+    #: The cost a person put on this line by hand, read from the server's own
+    #: quote for exactly the reason ``item_master_cost`` is. It outranks both
+    #: the bill history and the item master — see ``assess_line``.
+    custom_cost: Optional[Decimal] = None
 
 
 @dataclass
@@ -219,7 +223,8 @@ def assess_quote(
             family=ln.family,
             as_of=reference,
             th=th,
-            item_master_cost=ln.item_master_cost))
+            item_master_cost=ln.item_master_cost,
+            custom_cost=ln.custom_cost))
     return result
 
 
@@ -628,8 +633,15 @@ def _evidence_refs(intel: QuoteLineIntelligence) -> list[dict]:
     # decision's evidence claim Zoho for a bill that a second connector might
     # have written — and a citation that names the wrong system is worse than
     # one that admits it does not know.
+    # The record type comes off the ref for the same reason the system does.
+    # It was a literal "bill", which was true of the only basis that existed
+    # when it was written and is now false of two: an item-master landed cost
+    # is not a bill, and a cost somebody typed on the quote line is a long way
+    # from one. An audit row that names the wrong kind of evidence is worse
+    # than one that says it does not know.
     return [{"source_system": ref.get("system") or UNRECORDED_SOURCE,
-             "record_type": "bill",
+             "record_type": ref.get("record_type") or "bill",
+             "basis": ref.get("basis"),
              "record_id": ref.get("record_id"), "line_id": ref.get("line_id")}]
 
 

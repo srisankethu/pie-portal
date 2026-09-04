@@ -2,8 +2,7 @@ import { useEffect, useState } from "react";
 import { demoCta } from "./cta";
 import { ERP_PAGES } from "./erp";
 import { caseStudy, complianceRows, hasProof, namedCustomers } from "./proof";
-import { FooterBlurb, TrialFinePrint, TrustBand } from "./shared";
-import { PLANS } from "./ContactForm";
+import { FooterBlurb, TrustBand } from "./shared";
 import { ContactModal } from "./ContactModal";
 import {
   detectRegion,
@@ -31,13 +30,9 @@ const SYSTEMS = [
  * The public front door — what a signed-out visitor sees before the sign-in
  * card.
  *
- * The second CTA is "See it on sample data" where a deployment offers one, and
- * the wording is held to the same honesty rule as everything else here: it is
- * sample data, said plainly, rather than "see it live" or "try it free" over a
- * book that belongs to nobody. Absent where no demonstration workspace is
- * configured, in which case the link to the plans takes the slot back. Purely presentational (no data fetch, no session), styled entirely
- * from the theme's emitted tokens so it reads as the same product as the
- * screens behind it.
+ * Purely presentational (no data fetch, no session), styled entirely from the
+ * theme's emitted tokens so it reads as the same product as the screens behind
+ * it.
  *
  * The design direction is a works drawing — the sheets this product's
  * customers live in: the page sits inside a drawing frame, sections are named
@@ -46,20 +41,21 @@ const SYSTEMS = [
  * caption. The frame and corner marks are decorative and aria-hidden; the
  * dividers are real text because they are the section labels.
  *
- * The honesty rule this page keeps on purpose: every claim on it is a real,
- * checkable property of the product — the determinism and audit-trail claims,
- * the trial, the plan tiers, the connector registry's actual systems — with no
- * invented customers, no testimonials and no logos. The connectors are named in
- * plain type for the same reason.
+ * ── The honesty rule ────────────────────────────────────────────────────────
  *
- * Section F is where that rule is under the most pressure, and it does not
- * bend: the customer names, the case-study figures and the compliance statuses
- * are `{{PLACEHOLDER}}` tokens, visible as tokens, until somebody has real
- * ones with permission to print them. `prerender.test.tsx` refuses any token
- * that is not on the known list, and `scripts/prerender.mjs` prints every one
- * still in the built page at the end of a build. Filling a slot here with
- * something plausible is not a shortcut — it is the one edit that would make
- * every other claim on the page worthless.
+ * Every claim on this page is a real, checkable property of the product — the
+ * determinism and audit-trail claims, the role scoping, the connector
+ * registry's actual systems — with no invented customers, no testimonials and
+ * no logos. The connectors are named in plain type for the same reason.
+ *
+ * Section {letter("proof")} is where that rule is under the most pressure, and
+ * it does not bend: the customer names, the case-study figures and the
+ * compliance statuses are `{{PLACEHOLDER}}` tokens, visible as tokens, until
+ * somebody has real ones with permission to print them. `prerender.test.tsx`
+ * refuses any token that is not on the known list, and `scripts/prerender.mjs`
+ * prints every one still in the built page at the end of a build. Filling a
+ * slot here with something plausible is not a shortcut — it is the one edit
+ * that would make every other claim on the page worthless.
  *
  * That rule was audited against the backend in Aug 2026 and had drifted in six
  * places, so the specifics are worth keeping — every one of them read as good
@@ -89,162 +85,78 @@ const SYSTEMS = [
  * no test fails. Check a claim against the module that would implement it
  * before putting it on this page.
  *
- * Audited again in Aug 2026, after four changes to the product that this page
- * had not caught up with. What moved, and against what:
+ * ── Sep 2026: rebuilt as an enterprise front page ───────────────────────────
  *
- *   - The hero led with three capabilities. It leads with the look-back now,
- *     because `signals/retrospective.py` makes that an offer rather than a
- *     description — it runs on the history the sync just pulled.
- *   - "See what it would have caught" promised below-floor quotes on day one
- *     and could not deliver them: replaying a floor needs `QuoteDecision` rows,
- *     and a book that connected this morning has none. The decline half runs on
- *     synced history alone and is true from the first sync, so the claim is now
- *     split by when each half becomes true.
- *   - "Four steps, and PIE tracks which are done" rendered three. `onboarding`
- *     does have four, but they are the setup checklist and not this narrative —
- *     the heading was counting one list while the page showed the other.
- *   - The value ledger was fourteen words inside a pricing card. It is Section D
- *     now, and every claim in it is a property `attribution/` enforces.
- *   - The proof bar was four adjectives. Each one names its mechanism now; the
- *     specifics are free and they are the only credibility available to a
- *     vendor with no customers it can name.
+ * The brief was the register the buyer already knows — Proton.ai, Pricefx,
+ * Zilliant — and one conversion path: **book a demo**. What that changed, and
+ * what it deliberately did not:
  *
- *   - The pricing section named three tiers whose upper two could be reached
- *     only by somebody with a shell on the server, so it described a purchase
- *     nobody could make. `PlanChangeRequest` gave it a real mechanism and the
- *     section says what that is.
+ *   - **The page states no price and names no plan, anywhere.** The plans
+ *     section is gone, not softened. It had already stopped printing a figure
+ *     (what this costs turns on how many companies are connected, which ERP
+ *     each sits on and how much catalogue there is to build, so any number on
+ *     a panel is wrong for somebody) — but three named tiers is still a
+ *     pricing conversation, held with a reader who has not yet been told what
+ *     the product does. None of the three reference sites has one. The whole
+ *     of that conversation now happens with a person, after the demo.
+ *   - **The trial is not marketed here either.** "Start free / 30 days" is a
+ *     plan discussion wearing a button, and it split the page's attention
+ *     between two destinations. Sign-up is untouched as a *product* path —
+ *     `SELF_SERVE_SIGNUP` still governs it and `SignInCard` still offers
+ *     "Create your organization" one click behind the door — it is simply no
+ *     longer what this page asks for. `onSignUp` therefore left this
+ *     component's props; nothing here calls it.
+ *   - **Sections are named for outcomes, not for features.** This is
+ *     Zilliant's move and it is the right one for a reader who is scanning:
+ *     "Control every quote before it leaves" tells them whether to stop,
+ *     "Margin floors & approvals" does not. The six feature cards became four
+ *     outcome cards; nothing true was dropped, it moved inside the outcome it
+ *     serves.
+ *   - **"Who it's for" is new, and it is Pricefx's audience split.** It earns
+ *     its place here for a reason that is specific to this product rather than
+ *     borrowed: the three readers genuinely see three different screens, and
+ *     the salesperson's is missing cost by construction (§1 of `CLAUDE.md`).
+ *     A competitor can copy the section; it cannot copy the guarantee.
+ *   - **What replaces the reference sites' proof furniture.** All three lean
+ *     on logo walls, testimonials and recovered-margin statistics. This page
+ *     may not, and the substitute is not a weaker version of the same thing:
+ *     it is the mechanism band under the hero, where each claim names the code
+ *     that enforces it. Specificity is the only credibility available to a
+ *     vendor with no customers it can name, and it is free.
  *
- * Repositioned in Aug 2026, for a different buyer: a US or European
- * mid-market industrial distributor on Prophet 21, NetSuite or Acumatica,
- * buying an annual contract rather than a monthly subscription. What that
- * changed here, and what it deliberately did not:
+ * What did not move, and why:
  *
- *   - The hero leads with the financial outcome and a commitment to prove it
- *     ("see how much you kept"), where it used to lead with the look-back.
- *     The look-back is still an offer and still evidence — it is Section C's
- *     second step, which is where the narrative reaches it.
- *   - "Why it can be trusted" moved out from between Sections C and D to
- *     directly under the hero. It was reading as a co-equal pillar — one more
- *     thing the product does — when its job is to answer the question the
- *     outcome claim provokes. Nothing in it was weakened: the determinism, the
- *     policy stamp, the append-only record and the ledger that says UNKNOWN are
- *     the reason the outcome claim is sayable at all.
+ *   - **"Why it can be trusted" stays directly under the hero.** It reads as
+ *     one more pillar anywhere else; its job is to answer the question the
+ *     outcome claim provokes, which means it has to arrive with the question.
+ *   - **The value ledger keeps a section of its own.** It is the one thing on
+ *     this page none of the three reference sites offers, and burying it
+ *     inside an outcome card would trade the differentiator for symmetry.
+ *   - The hero's worked card, its arithmetic and the region swap are
+ *     unchanged. See `worked-example.ts`.
  *
- *   - **The page states no price at all, and the plans section ends in a
- *     form.** The
- *     panels carried a monthly figure per region, and the currency swap was
- *     built because ₹9,999 is an anchor this positioning could not survive a
- *     reader forming. The figure itself was the deeper version of the same
- *     problem: what this costs turns on how many companies are connected,
- *     which ERP each sits on and how much catalogue there is to build, so any
- *     number on a panel is wrong for somebody, and wrong in a way they act on
- *     without ever asking. The panels now say what each plan *is*, and each
- *     one's button opens `ContactForm` in a dialog (`ContactModal`) — which
- *     posts to `POST /api/v1/contact` and lands in a queue an operator reads.
- *     The form sat open at the foot of the section first, which put nine
- *     fields between the plans and the closing block for every visitor who was
- *     not asking anything, and scrolled the person who *was* away from the
- *     panel they were reading; `#talk` is now the block that offers it rather
- *     than the form itself. The per-visitor currency survives for the worked
- *     card, whose figures are still money. See `worked-example.ts`.
- *   - The hero's primary action became "Book a demo". Nobody signs an annual
- *     contract from inside a product trial, and the page had no way for a
- *     buyer who was ready to talk to say so. The trial keeps its own button.
- *     The paid panels went further and now open the form over their own
- *     section, which reaches the same person a meeting would and works whether
- *     or not a scheduling link has ever been configured.
- *
- *     Until a scheduling link exists, each of those buttons falls back — to
- *     the trial door in the hero and the closing block, to "Ask for this plan"
- *     on the paid panels, which is the mechanism the standfirst above them
- *     already describes. They rendered the raw `{{DEMO_BOOKING_URL}}` token
- *     into `href` before that, which put a dead destination on the primary
- *     action of every public page for the sake of a reminder three other
- *     things were already giving. See `cta.ts`.
- *   - The two panels that read as two products are one platform with a free
- *     floor now. That is a reversal of the note above about "free forever",
- *     and it is not a return to it: `PlanTier.FREE` is still not a
- *     destination anybody chooses, and the page still does not offer it as
- *     one. What it now says is the thing that is mechanically true and was
- *     missing — the desk keeps working when nothing is being paid for, which
- *     is what makes the trial safe to start.
- *
- * Three smaller corrections, made while repositioning the page (below):
- *
- *   - The zone letters are gone. See the comment on the sheet.
- *   - The decision card named "ABC Industries", which reads as a placeholder
- *     somebody forgot rather than as an anonymised customer. It is "a machine
- *     shop in Ohio" now — a description, not a name, because the invention rule
- *     on this page forbids a customer name that was never supplied.
- *   - "About 18 months of history" was a hedge on a page that is otherwise
- *     exact, and the number was never approximate: `_default_since` in
- *     `routers/connections.py` computes the first day of the month
- *     `DEFAULT_HISTORY_MONTHS` back, and the connect form lets an owner move
- *     it. The record list stays deliberately coarse — Prophet 21 declares no
- *     `customer_payments` permission and Acumatica no `quotes`, so "customers,
- *     items, invoices and bills, plus payments and orders where the system
- *     exposes them" is the sentence that is true of every connector.
- *
- * The eyebrow is unchanged on purpose. `prerender.test.tsx` pins that string, so
- * moving it is a deliberate act rather than a copy edit, and the positioning
- * question it belongs to is not settled on this branch.
+ * The eyebrow is unchanged on purpose. `prerender.test.tsx` pins that string,
+ * so moving it is a deliberate act rather than a copy edit.
  *
  * The decision card's figures are illustrative but formula-consistent:
- * floor = cost / (1 − margin floor). They live in `worked-example.ts` now, in
- * both currencies, and its test re-derives every one of them — so editing
- * the card without editing the note that re-reads it fails a test rather than
- * shipping a page whose own arithmetic does not close. The card shows cost
- * because it depicts the *approver's* view — a manager sees cost, a
- * salesperson never does. Keep both properties when editing the numbers.
- *
- * That rule used to be broken by the page's own buttons. Both CTAs said "Get
- * started free" and led to a *sign-in* form, because the only way to get an
- * account was an operator running `python -m app.provision_org` — so the one
- * promise the page made twice, in its largest type, was the one thing a visitor
- * could not do. `onSignUp` is that path. It is optional because sign-up is a
- * deployment's choice (`SELF_SERVE_SIGNUP`): where it is absent the CTAs fall
- * back to sign-in, which is honest for a single-tenant install and was the
- * whole behaviour before.
- *
- * That flag now defaults to **on**, and the default is the load-bearing half.
- * While it defaulted off, every unconfigured deployment — the hosted marketing
- * site included — took the fallback, so this page's largest button read "Sign
- * in" and the product it was selling had no visible way in. The fallback was
- * right and the thing it was falling back *from* was missing. Nothing in this
- * file changed to fix that; `config.py` did.
+ * floor = cost / (1 − margin floor). They live in `worked-example.ts`, in both
+ * currencies, and its test re-derives every one of them — so editing the card
+ * without editing the note that re-reads it fails a test rather than shipping a
+ * page whose own arithmetic does not close. The card shows cost because it
+ * depicts the *approver's* view — a manager sees cost, a salesperson never
+ * does. Keep both properties when editing the numbers.
  */
-export function Landing({ onEnter, onSignUp, onDemo }: {
+export function Landing({ onEnter, onDemo }: {
   onEnter: () => void;
-  /** Takes the plan the visitor was reading about, where they came through the
-   *  trial button on a plan panel. It only preselects the radio on the sign-up
-   *  form — the account created is the free one either way, because nothing
-   *  here sells anything. */
-  onSignUp?: (plan?: string) => void;
   onDemo?: () => void;
 }) {
   const enter = (e: React.MouseEvent) => {
     e.preventDefault();
     onEnter();
   };
-  /** The two big CTAs: sign up where it is offered, sign in where it is not. */
-  const start = (e: React.MouseEvent) => {
-    e.preventDefault();
-    (onSignUp ?? onEnter)();
-  };
-  /** The trial door, opened on the plan a panel was describing.
-   *
-   *  The panels were three static blocks with nothing to press, so the one
-   *  place a visitor has decided which plan they want was the one place the
-   *  page stopped talking to them — they had to scroll back to a CTA that
-   *  asked the question again. The two paid panels ask instead (`askAbout`);
-   *  this is the free panel's, and the one the trial line beside it means. */
-  const startOn = (plan: string) => (e: React.MouseEvent) => {
-    e.preventDefault();
-    (onSignUp ?? onEnter)(plan);
-  };
-  /** The third door, and the only one that asks for nothing. Optional for the
-   *  same reason `onSignUp` is: a deployment without a demonstration workspace
-   *  must show no such button rather than one that leads nowhere. */
+  /** The third door, and the only one that asks for nothing. Optional because
+   *  a deployment without a demonstration workspace must show no such button
+   *  rather than one that leads nowhere. */
   const demo = (e: React.MouseEvent) => {
     e.preventDefault();
     onDemo?.();
@@ -252,10 +164,10 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
 
   /** Which currency the worked example is written in.
    *
-   *  There is no price list any more — the page states nothing about what a
-   *  plan costs — but the example quote line is still money, and money that is
-   *  not the reader's own is money they have to convert before the arithmetic
-   *  means anything.
+   *  There is no price list on this page — it states nothing about what
+   *  anything costs — but the example quote line is still money, and money that
+   *  is not the reader's own is money they have to convert before the
+   *  arithmetic means anything.
    *
    *  INTL until proven otherwise, and deliberately so: `useEffect` does not run
    *  during the static prerender, so the HTML baked into `dist/index.html` — the
@@ -272,116 +184,90 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
   const price = exampleFor(region);
   const line = price.line;
 
-  /** The contact dialog: `null` when it is shut, and otherwise the plan the
-   *  visitor pressed — `""` for "they opened it themselves", which is the value
-   *  `ContactForm` reads as "Not sure yet".
+  /** Whether the demo-request dialog is open.
    *
-   *  One state and not two, because "is it open" and "what is it open on" can
-   *  never disagree if there is only one of them. The panels are the one place
-   *  somebody says which plan they want, and the section used to forget it the
-   *  moment they scrolled. */
-  const [askingAbout, setAskingAbout] = useState<string | null>(null);
+   *  A boolean now, where it used to be the plan a visitor had pressed. There
+   *  is one thing to ask for on this page and one form to ask it with, so
+   *  there is nothing left for the state to carry. */
+  const [asking, setAsking] = useState(false);
 
-  /** `/#talk` is what the ERP sub-pages link into, and it used to land on a
-   *  form that was already on the page. The form is a dialog now, so the hash
-   *  has to open it — otherwise that link would deposit a visitor beside a
-   *  button and leave them to find it.
+  /** `/#talk` is what the ERP sub-pages link into, and what every "Book a
+   *  demo" button on this page falls back to without JavaScript. The form is a
+   *  dialog, so the hash has to open it — otherwise that link would deposit a
+   *  visitor beside a button and leave them to find it.
+   *
+   *  The id is `talk` rather than something the new copy would suggest because
+   *  it is a published address: the ERP sub-pages hard-code `/#talk` and so
+   *  does anything else that has ever linked here. Renaming it would break
+   *  those for the sake of a string no visitor reads.
    *
    *  In an effect because it reads `location`, which does not exist during the
    *  prerender, and once because a visitor who closes the dialog with the hash
    *  still in the address bar must not have it reopened underneath them. */
   useEffect(() => {
-    if (window.location.hash === "#talk") setAskingAbout("");
+    if (window.location.hash === "#talk") setAsking(true);
   }, []);
 
-  /** The four "Book a demo" buttons on this page, each with the honest thing
-   *  to offer while no scheduling link is configured.
+  /** Open the demo-request dialog.
    *
-   *  The hero and the closing block fall back to the trial door — the same
-   *  door their own secondary button opens, which is why that second button is
-   *  dropped when the fallback is showing rather than rendered twice. The paid
-   *  panels fall back to "Ask for this plan", which is not a euphemism: it is
-   *  the mechanism the standfirst above them already describes, and it was the
-   *  label on those panels until a scheduling link was planned. */
+   *  Still an anchor to `#talk`, and the handler still has to stop the jump.
+   *  Both halves are deliberate: with JavaScript the dialog opens over the
+   *  block being read and the page does not move, and without it the press
+   *  falls back to the browser's own scroll to a block that says what to do —
+   *  which is the whole of what a visitor without a bundle can be given here,
+   *  since the form could not have sent anything either. */
+  const ask = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setAsking(true);
+  };
+
   /** Which lettered sections exist on this render, in order — and therefore
    *  what each one's letter is.
    *
-   *  The letters were written out by hand, which was fine while every section
-   *  always rendered. Section F is conditional now: it appears when there is a
-   *  customer, a case study or a compliance status to show, and disappears
-   *  when there is none. Hard-coded letters would then run A B C D E **G**,
-   *  and a reader who noticed would be right to wonder what was removed and
-   *  why nobody checked.
+   *  Computed rather than written out because Section {letter("proof")} is
+   *  conditional: it appears when there is a customer, a case study or a
+   *  compliance status to show, and disappears when there is none. Hard-coded
+   *  letters would then skip one, and a reader who noticed would be right to
+   *  wonder what was removed and why nobody checked.
    *
-   *  The body copy references two of these by letter as well ("the value
-   *  ledger in Section D"), so those read from the same list. A cross-
+   *  The body copy references one of these by letter as well ("the value
+   *  ledger in Section E"), so that reads from the same list. A cross-
    *  reference that survives the section it points at moving is the only kind
    *  worth writing. */
   const proofShown = hasProof();
-  const sections = ["problem", "product", "how", "worth", "ownership",
-                    ...(proofShown ? ["proof"] : []), "plans"];
+  const sections = ["problem", "outcomes", "roles", "how", "worth", "ownership",
+                    ...(proofShown ? ["proof"] : []), "demo"];
   const letter = (name: string) => String.fromCharCode(65 + sections.indexOf(name));
 
   const customers = namedCustomers();
   const study = caseStudy();
   const compliance = complianceRows();
 
-  /** What the page's own "start" action is, and what it may call itself.
+  /** The page's one action, in the four places it appears.
    *
-   *  `onSignUp` is absent wherever the deployment does not accept sign-ups
-   *  (`SELF_SERVE_SIGNUP`, and `useSignupOffer` also drops it if the probe
-   *  fails), and the fallback has always been the sign-in card. The label did
-   *  not follow: a button reading **Start free** opened a form asking for a
-   *  password the visitor has never set, which is the same defect the demo
-   *  button had — an action named for something it does not do.
-   *
-   *  Where sign-up is offered this is unchanged and "Start free" opens the
-   *  sign-up card. Where it is not, the button says what it actually is. The
-   *  page then makes no offer a visitor cannot take up, which is also why the
-   *  trial line below is conditional: "free for 30 days, no card" over a
-   *  sign-in form is the same sentence pointing at the same closed door. */
-  const signUpOffered = onSignUp !== undefined;
-  const startCta = signUpOffered
-    ? { label: "Start free", onClick: start }
-    : { label: "Sign in", onClick: enter };
-  const trialCta = signUpOffered
-    ? { label: "Start your trial", onClick: startOn("intelligence") }
-    : { label: "Sign in", onClick: enter };
-
-  const heroDemo = demoCta({ href: "#signin", ...startCta });
-  const closingDemo = demoCta({ href: "#signin", ...startCta });
-
-  /** A panel's own button: the contact dialog, opened on that plan.
-   *
-   *  Still an anchor to `#talk`, and the handler still has to stop the jump.
-   *  Both halves are deliberate: with JavaScript the dialog opens over the
-   *  panel being read and the page does not move, and without it the press
-   *  falls back to the browser's own scroll to a block that says what to do —
-   *  which is the whole of what a visitor without a bundle can be given here,
-   *  since the form could not have sent anything either. */
-  const askAbout = (plan: string) => (e: React.MouseEvent) => {
-    e.preventDefault();
-    setAskingAbout(plan);
-  };
+   *  `demoCta` opens a real scheduling link where one is configured. Where
+   *  none is — and none is, today: `DEMO_BOOKING_URL` is still a placeholder —
+   *  it falls back to what the caller says the honest alternative is, and here
+   *  the honest alternative is *also* booking a demo: the dialog posts to
+   *  `POST /api/v1/contact`, an operator reads the queue, and a person comes
+   *  back to arrange one. So the label is the same in both branches, which it
+   *  could not be while the fallback was a sign-in form. See `cta.ts`. */
+  const bookDemo = () => demoCta({ href: "#talk", label: "Book a demo", onClick: ask });
+  const heroDemo = bookDemo();
+  const closingDemo = bookDemo();
+  const navDemo = bookDemo();
 
   // The mobile nav collapses the section links behind a menu button. Closed on
   // first render, which is also the state the prerenderer bakes into the static
-  // HTML — a signed-out visitor without JS sees the logo and Sign in, and the
-  // toggle comes alive when the bundle mounts. Tapping a link closes it so the
-  // panel is not left covering the section it just jumped to.
+  // HTML — a signed-out visitor without JS sees the logo and the menu button,
+  // and the toggle comes alive when the bundle mounts. Tapping a link closes it
+  // so the panel is not left covering the section it just jumped to.
   const [menuOpen, setMenuOpen] = useState(false);
   const closeMenu = () => setMenuOpen(false);
 
   return (
     <div className="pie-landing">
       <div className="lp-sheet">
-        {/* The drawing frame used to carry zone letters along its top margin —
-            A B C D E, set above the sheet in the page's own top gutter. On a
-            works drawing they are a coordinate system; here there was nothing
-            to reference them from, so the row read as five stray capitals
-            floating over the nav. The frame keeps the motif; the letters are
-            gone. The section names on the dimension lines below are the real
-            navigation aid, and they read as words. */}
         <nav className="lp-nav">
           <div className="lp-wrap lp-nav-inner">
             <a className="lp-logo" href="#top" onClick={closeMenu}>PIE<span>.</span></a>
@@ -399,13 +285,28 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
               className={`lp-nav-links${menuOpen ? " open" : ""}`}
               id="lp-nav-menu"
             >
-              <a href="#product" onClick={closeMenu}>Product</a>
+              <a href="#outcomes" onClick={closeMenu}>Outcomes</a>
+              <a href="#roles" onClick={closeMenu}>Who it&rsquo;s for</a>
               <a href="#how" onClick={closeMenu}>How it works</a>
               <a href="#worth" onClick={closeMenu}>What it&rsquo;s worth</a>
-              <a href="#trust" onClick={closeMenu}>Trust</a>
               {proofShown && <a href="#proof" onClick={closeMenu}>Proof</a>}
-              <a href="#plans" onClick={closeMenu}>Plans</a>
-              <a className="lp-btn solid lp-nav-cta" href="#signin" onClick={enter}>Sign in</a>
+              {/* Sign in is a quiet link and Book a demo is the button. On
+                  every page of this kind the existing customer knows where the
+                  door is; the visitor who has not decided yet is the one the
+                  bar has to make an offer to. */}
+              <a className="lp-nav-signin" href="#signin" onClick={(e) => { closeMenu(); enter(e); }}>
+                Sign in
+              </a>
+              <a
+                className="lp-btn solid lp-nav-cta"
+                {...navDemo.props}
+                onClick={(e) => {
+                  closeMenu();
+                  navDemo.props.onClick?.(e);
+                }}
+              >
+                {navDemo.label}
+              </a>
             </div>
           </div>
         </nav>
@@ -420,35 +321,31 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           <div className="lp-wrap lp-hero-grid">
             <div className="lp-hero-copy">
               <p className="lp-eyebrow">The commercial intelligence layer for distributors</p>
-              <h1>Stop quoting away your <em>margin</em> — and see how much you kept.</h1>
-              {/* The second sentence is a commitment, not a capability list.
-                  "How much you kept" is only worth leading with if the reader
-                  can check it, so the sentence that follows the promise says
-                  where the figure comes from and that it opens — which is what
-                  `attribution/` actually does, and what Section {letter("worth")} spells out.
-                  Everything else the product does is a description, and a
-                  description belongs below the fold. */}
+              {/* Named for the outcome the buyer is trying to reach, in the
+                  register the category has taught them to scan for — and
+                  narrow enough to be checkable, which is the half the category
+                  usually drops. */}
+              <h1>Make every quote defend your <em>margin</em>.</h1>
               <p className="lp-sub">
                 PIE checks every quote line against <b>your own floor</b> before
-                it goes out and holds what breaches it for a manager. Then it
-                reports <b>the margin that held</b> — every figure openable, and
-                re-derivable from the rows your desk already wrote. Connected to
-                the ERP you already run.
+                it goes out, holds what breaches it for a manager, and reports{" "}
+                <b>the margin that held</b> — every figure openable, and
+                re-derivable from the rows your desk already wrote. It reads the
+                ERP you already run and replaces none of it.
               </p>
-              {/* The primary action is a conversation now, not a signup.
-                  Nobody commits a distributor to an annual contract from
-                  inside a product trial, and a page that only offers the trial
-                  makes the buyer who is ready to talk go and find an address.
-                  The trial keeps its own button, one step quieter. */}
               <div className="lp-ctas">
                 <a className="lp-btn solid" {...heroDemo.props}>{heroDemo.label}</a>
-                {heroDemo.ready
-                  && <a className="lp-btn" href="#signin" onClick={startCta.onClick}>{startCta.label}</a>}
                 {onDemo
-                  ? <a className="lp-quiet" href="#demo" onClick={demo}>or see it on sample data</a>
-                  : <a className="lp-quiet" href="#plans">or see the plans</a>}
+                  ? <a className="lp-btn" href="#demo" onClick={demo}>See it on sample data</a>
+                  : <a className="lp-btn" href="#how">See how it works</a>}
               </div>
-              {signUpOffered && <TrialFinePrint />}
+              {/* What the button actually buys, so the press is not a
+                  commitment the reader has to guess at. Nothing here promises
+                  a duration the product does not model. */}
+              <p className="lp-fine">
+                A working session on your numbers, not a slide deck. No account,
+                no card, and nothing connected until you say so.
+              </p>
             </div>
 
             <div
@@ -516,12 +413,15 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           </div>
         </header>
 
-        {/* Each of these was an adjective, and an adjective is a claim. To a
-            buyer who has survived one unfinished ERP implementation,
-            "deterministic" reads as the same register as everything else they
-            were promised. So each one now names the mechanism that enforces it
-            — the specifics are free, they are all true, and specificity is the
-            only credibility available to a vendor with no customers to name. */}
+        {/* Where the reference sites put a logo wall and a recovered-margin
+            statistic. This page may have neither, and what stands in for them
+            is not a weaker version of the same thing: each of these was an
+            adjective once, and an adjective is a claim. To a buyer who has
+            survived one unfinished ERP implementation, "deterministic" reads
+            as the same register as everything else they were promised. So each
+            one names the mechanism that enforces it — the specifics are free,
+            they are all true, and specificity is the only credibility
+            available to a vendor with no customers to name. */}
         <div className="lp-proof">
           <div className="lp-wrap lp-proof-grid">
             <div><div className="v">Versioned</div><div className="k">every computed row is stamped with a hash of the policy that judged it</div></div>
@@ -543,8 +443,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                 those pages are reachable from this one — a page in the
                 sitemap and nowhere in the site is an orphan and reads like
                 one — and a hand-maintained list is how a new page becomes an
-                orphan. The count used to be in this comment too, which lasted
-                exactly until the fourth page. */}
+                orphan. */}
             {SYSTEMS.map((name) => {
               const page = ERP_PAGES.find((p) => p.short === name);
               return page
@@ -609,73 +508,141 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           </div>
         </section>
 
-        <div className="lp-dim"><b>Section {letter("product")} — The product</b></div>
-        <section id="product">
+        {/* ── Outcomes ─────────────────────────────────────────────────────
+            Named for what the reader gets, not for what the module is called.
+            This was six feature cards ("Margin floors & approvals", "Your
+            catalog, decoded") and it is four outcomes now; nothing true was
+            dropped, each one moved inside the outcome it serves. A reader
+            scanning headings can decide whether to stop, which is the whole
+            job of this section and the one a feature name cannot do. */}
+        <div className="lp-dim"><b>Section {letter("outcomes")} — Outcomes</b></div>
+        <section id="outcomes">
           <div className="lp-wrap">
             <div className="lp-sec-head">
-              <h2>A quote desk with a commercial brain behind it</h2>
+              <h2>Four things your desk can do the week after it connects</h2>
               <p>
-                Three outcomes: <b>know what to quote</b>, <b>know what you
-                cannot afford to quote</b>, and <b>know which customers need
-                attention</b>. Unlimited named accounts, each seeing what their
-                role allows — salespeople quote confidently{" "}
-                <b>without ever seeing your cost</b>.
+                Each one is arithmetic on your own records, computed the same way
+                every time, and stamped with the policy version that judged it.
+                Unlimited named accounts, each seeing what their role allows.
+              </p>
+            </div>
+            <div className="lp-two">
+              <div className="lp-outcome">
+                <p className="lp-eyebrow">Control</p>
+                <h3>Control every quote before it leaves</h3>
+                <p>
+                  Your policy sets the floor per line, and PIE applies it at the
+                  moment of quoting rather than in a report afterwards. A breach
+                  doesn&rsquo;t send quietly — it routes for sign-off, and the
+                  sign-off is on record with the policy version and catalog
+                  edition that produced it.
+                </p>
+                <ul>
+                  <li>Per-line margin floors, from your own policy</li>
+                  <li>Breaches held for a named approver, never sent</li>
+                  <li>Append-only record — last quarter&rsquo;s price still explains itself</li>
+                </ul>
+              </div>
+              <div className="lp-outcome">
+                <p className="lp-eyebrow">Speed</p>
+                <h3>Answer an RFQ the day it arrives</h3>
+                <p>
+                  Drop a customer&rsquo;s enquiry in as they wrote it — a pasted
+                  email, a line of WhatsApp — and PIE reads it into quote lines
+                  and resolves each code against your catalog. Where a code has
+                  no exact match it ranks alternatives on geometry and grade,
+                  deterministically, and <b>abstains when nothing
+                  discriminates</b> rather than inventing one.
+                </p>
+                <ul>
+                  <li>Pasted enquiry to priced lines, in one pass</li>
+                  <li>Your suppliers&rsquo; nomenclature decoded, coverage measured against your own catalog</li>
+                  <li>A scored suggestion is never promoted to an identity</li>
+                </ul>
+              </div>
+              <div className="lp-outcome">
+                <p className="lp-eyebrow">Retention</p>
+                <h3>See the accounts going quiet</h3>
+                <p>
+                  Signals from your own numbers — margin drift, customer decline,
+                  payments slipping — each written up in plain words and each
+                  traceable to the figures that raised it. A handful of accounts
+                  a day, not a dashboard to go and interrogate.
+                </p>
+                <ul>
+                  <li>Detectors run over persisted rows, never over a model&rsquo;s guess</li>
+                  <li>Every signal opens into the rows beneath it</li>
+                  <li>Thresholds are yours, versioned, and editable</li>
+                </ul>
+              </div>
+              <div className="lp-outcome">
+                <p className="lp-eyebrow">Evidence</p>
+                <h3>Show the board what it was worth</h3>
+                <p>
+                  The value ledger counts what the platform actually changed —
+                  quote lines held to a floor, declines raised in time — carrying
+                  the operands each figure was computed from, so any number opens
+                  into the lines that produced it. Section {letter("worth")} is
+                  about the parts it refuses to count.
+                </p>
+                <ul>
+                  <li>Every figure re-derivable from your own rows</li>
+                  <li>A month with no detection reads UNKNOWN, not zero</li>
+                  <li>What could not be measured prints above what could</li>
+                </ul>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ── Who it's for ─────────────────────────────────────────────────
+            Borrowed shape, unborrowable content. The reference sites split
+            their audience because their readers have different *jobs*; this
+            page can split it because the three readers are served three
+            genuinely different screens, and the middle one is missing cost by
+            construction rather than by configuration. That is the §1 invariant
+            in `CLAUDE.md`, and it is the only claim on this page a competitor
+            cannot simply also make. */}
+        <div className="lp-dim"><b>Section {letter("roles")} — Who it&rsquo;s for</b></div>
+        <section id="roles">
+          <div className="lp-wrap">
+            <div className="lp-sec-head">
+              <h2>Three people, three screens, one set of numbers</h2>
+              <p>
+                What each role can see is enforced by the server, not hidden in
+                the browser — the fields are absent from the response, so there
+                is nothing to read out of a network tab.
               </p>
             </div>
             <div className="lp-grid3">
-              <div className="lp-feat">
-                <p className="lp-eyebrow">Quote</p>
-                <h3>Quote from a pasted email</h3>
+              <div className="lp-panel lp-role">
+                <span className="lp-tag">Owner &amp; finance</span>
+                <h3>You set the floors. You see everything.</h3>
                 <p>
-                  Drop a customer&rsquo;s RFQ in as they wrote it; PIE reads it
-                  into quote lines and resolves each code against your catalog.{" "}
-                  <b>In your 30-day trial.</b>
+                  Cost, margin and the policy behind every decision — plus the
+                  ledger of what the platform was worth, with the gaps printed
+                  before the good news. Change the margin policy and every row
+                  computed under the old one still says which one judged it.
                 </p>
               </div>
-              <div className="lp-feat">
-                <p className="lp-eyebrow">Margin</p>
-                <h3>Margin floors &amp; approvals</h3>
+              <div className="lp-panel lp-role">
+                <span className="lp-tag">Sales desk</span>
+                <h3>Quote confidently, without ever seeing cost.</h3>
                 <p>
-                  Your policy sets the floor per line. A breach doesn&rsquo;t send
-                  quietly — it routes for sign-off, and the sign-off is on record.{" "}
-                  <b>In your 30-day trial.</b>
+                  The floor, the recommended price and this customer&rsquo;s own
+                  history — enough to negotiate well, and no cost or margin field
+                  anywhere in the response. The guardrail travels with the
+                  quote instead of living in a manager&rsquo;s head.
                 </p>
               </div>
-              <div className="lp-feat">
-                <p className="lp-eyebrow">Quote</p>
-                <h3>Your catalog, decoded</h3>
+              <div className="lp-panel lp-role">
+                <span className="lp-tag">Approvers</span>
+                <h3>Decide in one screen, on the record.</h3>
                 <p>
-                  We decode your suppliers&rsquo; price lists so every code, size
-                  and grade is understood — and the coverage is measured against
-                  your own catalog, not promised. Pay once,{" "}
-                  <b>own it permanently</b>.
-                </p>
-              </div>
-              <div className="lp-feat">
-                <p className="lp-eyebrow">Quote</p>
-                <h3>Equivalents, scored not guessed</h3>
-                <p>
-                  PIE ranks alternatives from your catalog on geometry and grade
-                  — deterministically — and <b>abstains when nothing
-                  discriminates</b> rather than inventing a match.
-                </p>
-              </div>
-              <div className="lp-feat">
-                <p className="lp-eyebrow">Attention</p>
-                <h3>A daily attention list</h3>
-                <p>
-                  Signals from your own numbers — margin drift, customer decline,
-                  payments slipping — each written up in plain words, each
-                  traceable to the figures that raised it.
-                </p>
-              </div>
-              <div className="lp-feat">
-                <p className="lp-eyebrow">Margin</p>
-                <h3>Every quote, on record</h3>
-                <p>
-                  Each decision is stamped with the policy version and catalog
-                  edition that produced it, and the record is append-only — so a
-                  price you quoted last quarter still explains itself.
+                  A held line arrives with cost, floor and recommended price on
+                  it, and the rule that stopped it named. Your sign-off is
+                  append-only and carries the threshold version that was in
+                  force when you gave it.
                 </p>
               </div>
             </div>
@@ -686,11 +653,6 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
         <section id="how">
           <div className="lp-wrap">
             <div className="lp-sec-head">
-              {/* Said "Four steps" and rendered three. `onboarding.py` does have
-                  four — connect, pull, floors, team — but they are the setup
-                  checklist, not this narrative, and the heading was counting
-                  one list while the page showed the other. Named for what is
-                  below it; the checklist speaks for itself inside the product. */}
               <h2>Connect, look back, then decide.</h2>
               <p>Most of the work is deciding your own margin floors — not fighting software.</p>
             </div>
@@ -716,9 +678,8 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                     half wrong on the day somebody checks. */}
                 <h3>See what your history already holds</h3>
                 <p>
-                  Your first month includes the full intelligence layer. PIE reads
-                  the history it just pulled and shows the accounts that were
-                  quietly declining and the margins that drifted —{" "}
+                  PIE reads the history it has just pulled and shows the accounts
+                  that were quietly declining and the margins that drifted —{" "}
                   <b>and how much of your book it could not judge</b>, before
                   what it found. Below-floor quoting is measured from the quotes
                   you price here, so that arrives as you use it.
@@ -727,9 +688,10 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
               <div className="lp-step">
                 <h3>Decide with the numbers on</h3>
                 <p>
-                  Set your floors, add your catalog, and quote. If the findings
-                  don&rsquo;t pay for the subscription, stay on the free desk —{" "}
-                  <b>everything you built stays yours</b>.
+                  Set your floors, add your catalog, and quote. Every figure on
+                  every screen from here is arithmetic over your own rows,
+                  openable down to the operands — including the ones that say
+                  the platform found nothing.
                 </p>
               </div>
             </div>
@@ -740,11 +702,6 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
         <section id="worth">
           <div className="lp-wrap">
             <div className="lp-sec-head">
-              {/* Promoted out of a subordinate clause in the middle pricing
-                  card, where it had been the strongest asset on the page
-                  described in fourteen words. Every claim below is a property
-                  of `backend/app/attribution/` and its own docstrings say so
-                  more bluntly than this does. */}
               <h2>A ledger of what this platform was worth. Including when it was nothing.</h2>
               <p>
                 Every intervention PIE claims credit for is arithmetic over rows
@@ -767,7 +724,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                 <h3>Time saved is counted, never priced</h3>
                 <p>
                   Approvals turned round and quotes priced come back as counts
-                  with no rupee figure anywhere near them. Your business holds no
+                  with no money figure anywhere near them. Your business holds no
                   hourly rate, and multiplying a count by an invented one is a
                   made-up number that happens to have been computed carefully.
                 </p>
@@ -778,14 +735,37 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                   What the platform could not measure is printed before what it
                   did — on the renewal screen, where the incentive runs the other
                   way. Return on investment stays UNKNOWN until you type in what
-                  you are paying; PIE will not assume its own price.
+                  you are paying; PIE will not assume its own figure.
                 </p>
               </div>
             </div>
+            {/* The arithmetic, done on the page's own numbers rather than left
+                for the reader to do or, worse, asserted as a round claim.
+
+                It uses the figure held to the *floor* and not the one the
+                recommended price would have made, and the difference is the
+                point: the ledger counts a movement only up to the floor,
+                because clearing a floor by more than it asked for is the
+                salesperson's judgement and not something the guardrail did.
+                Quoting the bigger number here would be the page contradicting
+                the module it is describing, in the section that describes it.
+
+                Both figures come from `worked-example.ts`, where a test
+                re-derives them from the card's own cost and floor. */}
+            <p className="lp-worked-note">
+              The card at the top of this page is one worked line:{" "}
+              {line.units} units asked at {unitPrice(price, line.asked)} against
+              a floor of {unitPrice(price, line.floor)}. Held to that floor it
+              is <span className="lp-num">{lineTotal(price, heldToFloor(price))}</span>,
+              from a single line. The ledger would count exactly that and not
+              the {lineTotal(price, heldToRecommended(price))} the recommended
+              price would have made, because clearing a floor by more than it
+              asked for is your judgement, not ours.
+            </p>
           </div>
         </section>
 
-        <div className="lp-dim"><b>Section {letter("ownership")} — Ownership</b></div>
+        <div className="lp-dim"><b>Section {letter("ownership")} — What you own</b></div>
         <section id="trust">
           <div className="lp-wrap">
             <div className="lp-sec-head">
@@ -818,8 +798,9 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
               <div className="lp-panel">
                 <h3>Your exit. Off-ramps defined, not discovered.</h3>
                 <p>
-                  Downgrade any time: you keep the free desk, all your data, and
-                  your decoded catalog keeps working as delivered.
+                  Stop at any time and your data leaves with you, in a format
+                  you can read. The quote desk keeps working, and your decoded
+                  catalog keeps working as delivered.
                 </p>
               </div>
             </div>
@@ -934,151 +915,62 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           </>
         )}
 
-        <div className="lp-dim"><b>Section {letter("plans")} — Plans</b></div>
-        <section id="plans">
+        {/* ── Book a demo ──────────────────────────────────────────────────
+            Where the plans section was. It named three tiers and ended in this
+            same form, which meant the page spent its closing section holding a
+            pricing conversation with a reader who had not yet agreed the
+            product was for them. What a plan costs turns on how many companies
+            are connected, which ERP each sits on and how much catalogue there
+            is to build — so it was never a conversation a panel could hold
+            anyway. It happens with a person now, after this.
+
+            The id is `talk` and stays `talk`: it is the address the ERP
+            sub-pages link into (`/#talk`), and the effect at the top of this
+            component opens the dialog for anybody who arrives on it. */}
+        <div className="lp-dim"><b>Section {letter("demo")} — Book a demo</b></div>
+        <section id="talk">
           <div className="lp-wrap">
             <div className="lp-sec-head">
-              {/* This read as two products — a free quote desk and a separate
-                  intelligence product — which is not what is being sold and is
-                  not what the entitlements actually do. There is one platform.
-                  The quote desk is the part of it that never stops working, and
-                  the decision layer is the part that is paid for. Said in that
-                  order, the sequence a buyer moves through is obvious; said as
-                  two panels of equal weight, they had to work it out. */}
-              <h2>One platform. The quote desk keeps working; the decision layer is what you buy.</h2>
+              <h2>See it on your own numbers</h2>
               <p>
-                Unlimited users on every plan — nothing here counts seats.
-              </p>
-              {/* **No price on this page, in any currency.** The panels used to
-                  carry one and it was answering a question the page had asked
-                  the reader nothing about: what this costs turns on how many
-                  companies are connected, which ERP each of them sits on and
-                  how much catalogue there is to build. A figure that is right
-                  for a single-company book on Zoho is wrong for four on
-                  Prophet 21, and the reader it is wrong for is the one worth
-                  the most.
-
-                  So the mechanism is stated plainly instead, and it is the
-                  mechanism that already exists rather than a euphemism for a
-                  price nobody will say: `PlanChangeRequest` records an ask from
-                  inside the product and an operator applies it, and the form
-                  these panels open records one from out here. There is no checkout in this
-                  product at all. */}
-              <p className="lp-plans-how">
-                Every organization starts on a 30-day trial of Commercial
-                Intelligence — no card, no conversation needed. What a paid plan
-                costs depends on your setup, so we quote it after we have seen
-                it: tell us what you run — the button on either paid panel
-                opens the form — and we will come back with the number and what
-                it takes. Buying is then a conversation — the plan is requested
-                from inside the product and confirmed by a person, and{" "}
-                <b>everything you have put in stays exactly where it is</b> if
-                the trial ends without one: the decision layer locks and the
-                quote desk carries on.
+                Tell us what you run and we will come back to arrange a working
+                session — the quote desk, your margin floors and the look-back
+                over your own history, in the time it takes to price a real
+                enquiry. What it would cost is a conversation we have after
+                that, when we know what your setup is.
               </p>
             </div>
-            <div className="lp-grid3">
-              {/* Not "free forever". `domain/enums.PlanTier` is explicit that
-                  FREE "is **not a product** … the floor an organization sits on
-                  when it is paying for nothing", and `entitlements.PURCHASABLE`
-                  leaves it out precisely so it cannot be chosen as a
-                  destination. What is true — and what this panel says — is that
-                  the desk keeps working when nothing is being paid for, which
-                  is the entry the buyer actually experiences and the promise the
-                  trial has to keep. */}
-              <div className="lp-panel lp-plan">
-                <h3>{PLANS[0].label}</h3>
+            <div className="lp-demo-panel lp-panel">
+              <div className="lp-demo-copy">
+                {/* Kept as an h3 rather than promoted: the section already has
+                    its h2 directly above, and two headings of the same rank in
+                    one section is an outline that says they are peers when one
+                    introduces the other. */}
+                <h3>Tell us about your business</h3>
                 <p>
-                  Where everyone starts, and what keeps working when nothing is
-                  being paid for: quoting, RFQ reading, margin floors and
-                  approvals, on one connected company. Your first 30 days
-                  include the decision layer beside it.
+                  How many companies you run, what each of them sits on, and
+                  what you are trying to fix. It reaches a person, not a
+                  sequence — we read every one of these ourselves and come back
+                  at the address you give, usually within a working day.
                 </p>
-                <a className="lp-btn" href="#signin" onClick={trialCta.onClick}>
-                  {trialCta.label}
-                </a>
-              </div>
-              <div className="lp-panel lp-plan mid">
-                <h3>{PLANS[1].label}</h3>
-                <p>
-                  <b>The decision layer.</b> The attention list, customer
-                  health, collections — and the value ledger in Section{" "}
-                  {letter("worth")}, which is how you decide whether to keep
-                  paying for this.
+                <div className="lp-ctas">
+                  <a className="lp-btn solid" href="#talk" onClick={ask}>Book a demo</a>
+                </div>
+                <p className="lp-fine">
+                  No card, no account, nothing charged, and nothing connected to
+                  your ERP — this sends us a message and nothing else.
                 </p>
-                <a className="lp-btn solid" href="#talk"
-                   onClick={askAbout(PLANS[1].value)}>
-                  Talk to us about this plan
-                </a>
               </div>
-              <div className="lp-panel lp-plan">
-                <h3>{PLANS[2].label}</h3>
-                <p>
-                  <b>Commercial intelligence across the business.</b> Several
-                  companies, one view — with all catalog builds included and a
-                  named person who knows your setup.
-                </p>
-                <a className="lp-btn" href="#talk"
-                   onClick={askAbout(PLANS[2].value)}>
-                  Talk to us about this plan
-                </a>
-              </div>
-            </div>
-            {/* The arithmetic, done on the page's own numbers rather than left
-                for the reader to do or, worse, asserted as a round claim.
-
-                It uses the figure held to the *floor* and not the one the
-                recommended price would have made, and the difference is the
-                point: the ledger counts a movement only up to the floor,
-                because clearing a floor by more than it asked for is the
-                salesperson's judgement and not something the guardrail did.
-                Quoting the bigger number here would be the page contradicting
-                the module it is describing, two sections after promising it
-                does not.
-
-                Both figures come from `worked-example.ts`, where a test
-                re-derives them from the card's own cost and floor. It used to
-                say "about three weeks of the middle plan", which cannot be said
-                by a page that states no price — and should not have been said
-                while it did, because the ratio changes with every line. */}
-            <p className="lp-plans-note">
-              The card at the top of this page is one worked line:{" "}
-              {line.units} units asked at {unitPrice(price, line.asked)} against
-              a floor of {unitPrice(price, line.floor)}. Held to that floor it
-              is <span className="lp-num">{lineTotal(price, heldToFloor(price))}</span>,
-              from a single line. The ledger would count exactly that and not
-              the {lineTotal(price, heldToRecommended(price))} the recommended
-              price would have made, because clearing a floor by more than it
-              asked for is your judgement, not ours.
-            </p>
-            <p className="lp-plans-note">
-              A catalog build is one-time work on your own item master, and what
-              it produces is yours permanently. Every organization starts on the
-              30-day trial and works the same day — the paid plans are enabled
-              with you, and nothing is charged when you sign up.
-            </p>
-
-            {/* The end of the section is the door, and the door is now a
-                button rather than the form itself. The id stays: it is what a
-                panel's anchor jumps to without JavaScript and what the ERP
-                sub-pages link into (`/#talk`), and the effect above opens the
-                dialog for anyone who arrives on it. */}
-            <div className="lp-talk lp-panel" id="talk">
-              {/* One sentence, and deliberately not the form's own lead: the
-                  long version of why there is no price on this page is inside
-                  the dialog, where somebody who has decided to ask will read
-                  it. Repeating it here would be the same paragraph in two
-                  files, and the second copy is the one that stops being
-                  updated. */}
-              <h3>Tell us about your business</h3>
-              <p className="lp-talk-lead">
-                Say how many companies you run and what each of them sits on,
-                and we will come back with what it would cost and what it would
-                take.
-              </p>
-              <a className="lp-btn solid" href="#talk" onClick={askAbout("")}>
-                Talk to us
-              </a>
+              {/* What the session actually is, so the press is not a leap. A
+                  list rather than prose because a reader deciding whether to
+                  give up half an hour is scanning for the shape of it. */}
+              <ul className="lp-demo-list">
+                <li><b>30–45 minutes</b>, with whoever prices your quotes</li>
+                <li><b>A real enquiry</b> of yours, priced on the desk in front of you</li>
+                <li><b>Your margin policy</b>, set up as you would actually set it</li>
+                <li><b>The look-back</b> — what your own history holds, and what it cannot say</li>
+                <li><b>No connection</b> to your books until you decide to make one</li>
+              </ul>
             </div>
           </div>
         </section>
@@ -1089,8 +981,6 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
             <p>PIE turns that history into better commercial decisions — and reports what that was worth.</p>
             <div className="lp-ctas lp-ctas-centred">
               <a className="lp-btn solid" {...closingDemo.props}>{closingDemo.label}</a>
-              {closingDemo.ready
-                && <a className="lp-btn" href="#signin" onClick={startCta.onClick}>{startCta.label}</a>}
             </div>
           </div>
         </div>
@@ -1113,10 +1003,7 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           the form — one set of styles for one form — while sitting outside the
           drawing frame's borders and above the sticky header. Nothing is
           rendered while it is shut, so the prerender is unchanged. */}
-      {askingAbout !== null && (
-        <ContactModal plan={askingAbout} onPlanChange={setAskingAbout}
-                      onClose={() => setAskingAbout(null)} />
-      )}
+      {asking && <ContactModal onClose={() => setAsking(false)} />}
     </div>
   );
 }

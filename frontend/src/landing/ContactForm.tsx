@@ -1,10 +1,17 @@
-/** The form the price list used to be.
+/** The form the price list used to be, and the demo request it is now.
  *
  * The plans section named three tiers and printed a figure under two of them.
  * What a distributor actually pays turns on how many companies they run, which
- * ERP each of those sits on, and how much catalogue there is to build — none of
- * which a panel knows, and all of which it was answering anyway. So the panels
- * say what each plan *is*, and each one's button asks this.
+ * ERP each of those sits on, and how much catalogue there is to build — none
+ * of which a panel knows, and all of which it was answering anyway. The
+ * figures went first and the panels followed: the public site names no plan at
+ * all now, and this is what every "Book a demo" button on it opens.
+ *
+ * The fields barely changed, because they were already the right ones — who
+ * you are, how to reach you, and what you run. What went is the question that
+ * only made sense beside three panels ("Which plan are you asking about?"),
+ * and the lead paragraph that answered a pricing question the page no longer
+ * raises.
  *
  * It is rendered by `ContactModal`, which owns *how it opens* and nothing else:
  * the fields, the copy and the request are here, once. A dialog with its own
@@ -29,10 +36,10 @@
  * real `<form>`; state only ever changes in response to a person, and the
  * request happens on submit.
  *
- * **It says what it is.** Submitting creates no account, licenses no plan and
- * charges nothing — the same non-promise the sign-up form's plan radio makes —
- * and the copy beside the button says so rather than leaving a stranger to
- * wonder what they just agreed to.
+ * **It says what it is.** Submitting creates no account, licenses no plan,
+ * charges nothing and connects nothing to the sender's books — and the copy
+ * beside the button says so rather than leaving a stranger to wonder what they
+ * just agreed to.
  *
  * It uses `authInit` from `src/authFetch.ts` rather than `platform/api.ts`.
  * That module is the *signed-in* app's transport: it carries session storage,
@@ -45,21 +52,20 @@ import { useState } from "react";
 
 import { authInit } from "../authFetch";
 
-/** The three plans, named once.
+/** The plans are deliberately not here any more.
  *
- *  The panels above the form and the picker inside it are the same three
- *  things, and a rename that reached one and not the other would leave a
- *  visitor choosing "Commercial Intelligence" from a list beside a panel called
- *  something else. The values are `PlanTier`'s own, because the server parses
- *  them with `onboarding.parse_requested_plan` and refuses anything else.
+ *  This form asked "Which plan are you asking about?" over a list of three
+ *  tiers, because it used to be the foot of a plans section. The public site
+ *  states no price and names no plan now — that conversation happens with a
+ *  person, after the demo, when there is something to base it on — so the
+ *  picker went with the section.
+ *
+ *  The wire field survives and is always `null`. The server takes
+ *  `plan: Optional[str]` and distinguishes "did not say" from an answer it
+ *  does not recognise, so sending nothing is a value it already understands;
+ *  a visitor who does have a plan in mind writes it in the message box, where
+ *  a person reads it.
  */
-export const PLANS = [
-  { value: "free", label: "Quote desk" },
-  { value: "intelligence", label: "Commercial Intelligence" },
-  { value: "platform", label: "Platform" },
-] as const;
-
-export type PlanValue = (typeof PLANS)[number]["value"];
 
 /** What the form is doing. `failed` keeps the server's own sentence: it is
  *  written for a person and is more useful than anything this component could
@@ -70,14 +76,7 @@ type Status =
   | { kind: "sent" }
   | { kind: "failed"; message: string };
 
-export function ContactForm({ plan, onPlanChange }: {
-  /** Which plan the visitor was reading when they pressed a panel's button, or
-   *  `""` for "they came to the form on their own". Held by the caller so a
-   *  panel can preselect it — the one place a visitor has said which plan they
-   *  want should not be a place the page forgets. */
-  plan: string;
-  onPlanChange: (plan: string) => void;
-}) {
+export function ContactForm() {
   const [status, setStatus] = useState<Status>({ kind: "idle" });
 
   const submit = async (e: React.FormEvent<HTMLFormElement>) => {
@@ -90,10 +89,10 @@ export function ContactForm({ plan, onPlanChange }: {
       email: String(data.get("email") ?? "").trim(),
       phone: String(data.get("phone") ?? "").trim(),
       erp: String(data.get("erp") ?? "").trim(),
-      // `null` rather than `""` for "did not say": the server distinguishes an
-      // unanswered question from an answer it does not recognise, and refuses
-      // the second.
-      plan: plan || null,
+      // Always "did not say" — see the note above. `null` rather than `""`
+      // because the server distinguishes an unanswered question from an answer
+      // it does not recognise, and refuses the second.
+      plan: null,
       message: String(data.get("message") ?? "").trim(),
     };
     setStatus({ kind: "sending" });
@@ -136,9 +135,9 @@ export function ContactForm({ plan, onPlanChange }: {
         <h3 id="lp-form-head">Thanks — that reached us.</h3>
         <p>
           We read every one of these ourselves and come back at the address you
-          gave, usually within a working day. Nothing was charged and no account
-          was created: if you would rather start looking now, the quote desk is
-          free and the trial takes a minute.
+          gave, usually within a working day, to arrange a time. Nothing was
+          charged, no account was created, and nothing has been connected to
+          your books.
         </p>
       </div>
     );
@@ -147,13 +146,12 @@ export function ContactForm({ plan, onPlanChange }: {
   const sending = status.kind === "sending";
   return (
     <form className="lp-panel lp-form" onSubmit={submit}>
-      <h3 id="lp-form-head">Tell us about your business</h3>
+      <h3 id="lp-form-head">Book a demo</h3>
       <p className="lp-form-lead">
-        What you pay depends on how many companies you run, the ERP each of them
-        sits on, and how much catalogue there is to build — so we would rather
-        ask than print a number that is wrong for you. Say roughly where you
-        are and we will come back with what it would cost and what it would
-        take.
+        Tell us roughly where you are and we will come back to arrange a
+        working session on your own numbers — the quote desk, your margin
+        floors, and what your history already holds. It reaches a person, not a
+        sequence.
       </p>
 
       <div className="lp-form-grid">
@@ -193,18 +191,6 @@ export function ContactForm({ plan, onPlanChange }: {
             <option value="Sage" />
           </datalist>
         </label>
-        <label className="lp-field">
-          <span>Which plan are you asking about?</span>
-          <select name="plan" value={plan} disabled={sending}
-                  onChange={(e) => onPlanChange(e.target.value)}>
-            {/* First, and the honest default: somebody who already knew which
-                plan they needed would not need to ask us. */}
-            <option value="">Not sure yet</option>
-            {PLANS.map((p) => (
-              <option key={p.value} value={p.value}>{p.label}</option>
-            ))}
-          </select>
-        </label>
       </div>
 
       <label className="lp-field">
@@ -222,8 +208,8 @@ export function ContactForm({ plan, onPlanChange }: {
           {sending ? "Sending…" : "Send this to us"}
         </button>
         <span className="lp-fine">
-          No card, no account, nothing charged — this sends us a message and
-          nothing else.
+          No card, no account, nothing charged, and nothing connected to your
+          ERP — this sends us a message and nothing else.
         </span>
       </div>
     </form>

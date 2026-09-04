@@ -15,20 +15,29 @@
  * ways that no visitor has to pay for.
  *
  * So the link degrades instead. Until the URL is set, each button falls back
- * to what its caller says the honest alternative is — the trial door — under a
- * label that describes *that*, not a meeting nobody can book yet. A page
- * deployed today asks for something a visitor can actually do.
+ * to what its caller says the honest alternative is.
  *
- * One module rather than a literal per button: there are four of these across
- * two components — the landing's hero and closing block, and each ERP page's
- * hero and closing block — and a scheduling link that is right in three places
- * and stale in the fourth is the ordinary way this goes wrong.
+ * On the landing page that alternative is now *also* booking a demo: the
+ * fallback opens the demo-request dialog, which posts to
+ * `POST /api/v1/contact`, lands in a queue an operator reads, and gets a
+ * person to come back and arrange one. So that caller passes "Book a demo" as
+ * its fallback label and the button says the same thing either way.
  *
- * The two that used to sit on the paid panels are gone, and not because the
- * fallback was wrong. The panels state no price now and the plans section ends
- * in a form that reaches the same person a meeting would, so a "Book a demo"
- * button beside it would be a second door to one room — and the one a visitor
- * cannot use while the link is unset.
+ * **That is not a licence to reuse the label.** The rule the two required
+ * fields exist for is unchanged, and it is why they are required: a button
+ * that still says "Book a demo" while pointing at something that does not book
+ * a demo is a smaller lie than a dead link but it is still a lie, and this
+ * page cannot afford either. It was exactly that until recently — the fallback
+ * was the *trial door*, and had to be labelled "Start free" — and it stopped
+ * being a lie because the destination changed, not because the label was
+ * relabelled. A caller whose fallback goes somewhere else owes it a different
+ * label.
+ *
+ * One module rather than a literal per button: there are several of these
+ * across two components — the landing's nav, hero, demo section and closing
+ * block, and each ERP page's hero and closing block — and a scheduling link
+ * that is right in three places and stale in the fourth is the ordinary way
+ * this goes wrong.
  *
  * Not to be confused with the *other* demo on this page. `onDemo` opens a
  * read-only workspace of sample data inside the product ("See it on sample
@@ -44,9 +53,9 @@ export const DEMO_BOOKING_READY = !DEMO_BOOKING_URL.startsWith("{{");
 
 /** What a caller offers instead, while there is nothing to book.
  *
- *  Both fields are required, and the label is the reason why: a button that
- *  still says "Book a demo" while pointing at a sign-in form is a smaller lie
- *  than a dead link but it is still a lie, and this page cannot afford either.
+ *  Both fields are required, and the label is the reason why — see the note on
+ *  reusing "Book a demo" above. A label is owed to the destination, and the
+ *  destination is this caller's to declare.
  */
 export interface DemoFallback {
   href: string;

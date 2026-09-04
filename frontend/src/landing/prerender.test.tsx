@@ -53,8 +53,12 @@ describe("renderLandingMarkup", () => {
   });
 
   it("keeps the CTAs as anchors, so the markup degrades to links", () => {
+    // `#signin` is the existing customer's door and `#talk` is every "Book a
+    // demo" button's destination while no scheduling link is configured. Both
+    // have to survive as real anchors: without JavaScript they are all a
+    // visitor has, and the second is the page's headline action.
     expect(markup).toContain('href="#signin"');
-    expect(markup).toContain('href="#plans"');
+    expect(markup).toContain('href="#talk"');
   });
 });
 
@@ -206,24 +210,40 @@ describe("what a plan costs", () => {
     }
   });
 
+  it("names no plan either, which is the newer half of the rule", () => {
+    // Removing the figures left three named tiers on the page, and three named
+    // tiers is still a pricing conversation — held with a reader who has not
+    // yet been told what the product does. The section is gone. This is what
+    // would notice it coming back one panel at a time, the way it went.
+    const landing = documents.find((d) => d.page.slug === "")!.html;
+    expect(landing).not.toContain('id="plans"');
+    expect(landing).not.toContain('href="#plans"');
+    // The ladder's own labels, as a heading or a picker would print them. The
+    // trailing `<` matters: "commercial intelligence layer for distributors" is
+    // the entity statement this page is pinned to elsewhere, and a bare
+    // substring check would forbid it.
+    expect(landing).not.toMatch(/Commercial Intelligence</);
+    expect(landing).not.toContain("Which plan are you asking about");
+  });
+
   it("is asked about instead, through a door that is in the document", () => {
-    // The other half, and the half that makes the first honest: removing a
-    // price and leaving nothing in its place would be a page that describes
-    // three plans and gives a buyer no way to ask about any of them.
+    // The other half, and the half that makes the first honest: removing the
+    // price and then the plans and leaving nothing in their place would be a
+    // page that gives a buyer no way to ask about anything at all.
     //
-    // The fields themselves are no longer here, and that is the change rather
-    // than a regression: the form opens in a dialog (`ContactModal`) on the
-    // press of a plan panel's button, so nothing of it is rendered until
-    // somebody asks for it. What the static document therefore has to carry is
-    // the invitation and the way in — the `#talk` block, its copy, and the
-    // anchors that reach it — because that is all a crawler, or a visitor
-    // whose bundle never arrives, can see.
+    // The fields themselves are not here, and that is the design rather than a
+    // regression: the form opens in a dialog (`ContactModal`) on the press of
+    // any "Book a demo" button, so nothing of it is rendered until somebody
+    // asks for it. What the static document therefore has to carry is the
+    // invitation and the way in — the `#talk` block, its copy, and the anchors
+    // that reach it — because that is all a crawler, or a visitor whose bundle
+    // never arrives, can see.
     const landing = documents.find((d) => d.page.slug === "")!.html;
     expect(landing).toContain('id="talk"');
     expect(landing).toContain("Tell us about your business");
-    expect(landing).toContain("Talk to us");
-    // The panels lead here, so the jump target has to exist in the same
-    // document that links to it.
+    expect(landing).toContain("Book a demo");
+    // Every CTA on the page leads here, so the jump target has to exist in the
+    // same document that links to it.
     expect(landing).toContain('href="#talk"');
   });
 
@@ -307,6 +327,32 @@ describe("every prerendered page", () => {
     }
   });
 
+  it("points every cross-page anchor at a section that exists", () => {
+    // The other half of the test above, and the one that was missing. A
+    // sub-page's `/#outcomes` is right in form and can still be wrong in fact:
+    // the landing page owns those ids, this file only names them, and nothing
+    // connects the two. Renaming a section on the front page therefore breaks
+    // links on four other documents silently — the browser scrolls to the top
+    // of the landing page and the reader has no way to know they missed.
+    //
+    // Which is exactly what happened when this page was rebuilt: `#product`
+    // became `#outcomes`, `#plans` was deleted with the plans section, and both
+    // links survived in the sub-page nav, looking and behaving like working
+    // ones. `#signin` is the deliberate exception — no element carries it; it
+    // is a signal the mounted app reads to open the sign-in card.
+    const landing = documents.find((d) => d.page.slug === "")!.html;
+    const ids = new Set(
+      [...landing.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
+    for (const { page, html } of documents) {
+      if (page.slug === "") continue;
+      for (const [, frag] of html.matchAll(/href="\/#([^"]+)"/g)) {
+        if (frag === "signin") continue;
+        expect(ids.has(frag), `/${page.slug} links to /#${frag}, which the landing page has no id for`)
+          .toBe(true);
+      }
+    }
+  });
+
   it("names its own ERP in the first heading of each sub-page", () => {
     // The whole reason these pages exist: a Prophet 21 distributor has to see
     // "Prophet 21" without reading a paragraph first.
@@ -326,39 +372,60 @@ describe("every prerendered page", () => {
 });
 
 describe("the page's own call to action", () => {
-  /** The landing rendered as each kind of deployment sees it. */
-  const offered = renderToStaticMarkup(<Landing onEnter={() => {}} onSignUp={() => {}} />);
-  const notOffered = renderToStaticMarkup(<Landing onEnter={() => {}} />);
+  const landing = documents.find((d) => d.page.slug === "")!.html;
 
-  it("says 'Start free' where the deployment accepts sign-ups", () => {
-    expect(offered).toContain(">Start free<");
-    expect(offered).toContain(">Start your trial<");
+  it("asks for one thing, and asks for it in the static document", () => {
+    // The page had two headline actions — "Book a demo" and "Start free" — and
+    // they wanted different readers. It has one now. A crawler and a visitor
+    // whose bundle never arrives both see it, because it is an anchor into the
+    // same document rather than a handler.
+    expect(landing).toContain("Book a demo");
+    expect(landing).toContain('href="#talk"');
   });
 
-  it("never says 'Start free' where it does not", () => {
-    // The defect: `onSignUp` is absent wherever SELF_SERVE_SIGNUP is off, the
-    // handler fell back to the sign-in card, and the label did not follow — so
-    // a button reading "Start free" opened a form asking for a password the
-    // visitor had never set. The same shape as the demo button pointing at a
-    // placeholder, and it survived that fix because it lives elsewhere.
-    expect(notOffered).not.toContain(">Start free<");
-    expect(notOffered).not.toContain(">Start your trial<");
+  it("markets no trial and no plan", () => {
+    // What this replaces is the pair of tests that pinned the opposite:
+    // "Start free" where sign-up was offered, "Sign in" where it was not, and
+    // the 30-day line beside them. All three were correct for a page whose job
+    // was sign-ups. This page asks for a demo, and a trial button beside that
+    // is a second destination competing for the one decision the reader is
+    // being asked to make — as well as a plan conversation held before the
+    // product has been described.
+    //
+    // Sign-up itself is untouched: `SELF_SERVE_SIGNUP` still governs it and
+    // `SignInCard` still offers "Create your organization" one click behind
+    // this page. It is simply not what the front door asks for.
+    expect(landing).not.toContain(">Start free<");
+    expect(landing).not.toContain(">Start your trial<");
+    expect(landing).not.toContain("free for 30 days");
   });
 
-  it("promises no free trial it cannot let anyone start", () => {
-    // "Commercial Intelligence free for 30 days — no card" over a sign-in form
-    // is the same sentence pointing at the same closed door.
-    expect(offered).toContain("free for 30 days");
-    expect(notOffered).not.toContain("free for 30 days");
+  it("still lets an existing customer in", () => {
+    // The half that would be easy to lose while removing the other buttons.
+    // Every visitor who already pays for this arrives looking for exactly one
+    // link, and a page that only sells is a page they cannot use.
+    expect(landing).toContain('href="#signin"');
+    expect(landing).toContain(">Sign in<");
   });
 
-  it("bakes the offered case, because that is what a marketing page is for", () => {
-    // A static render has to assume one. It assumes the door a deployment
-    // running this page wants open; the mounted app corrects the label within
-    // a paint where it is not, which is the same swap the rupee price list
-    // already makes. The reverse — baking "Sign in" for everyone — would sell
-    // the product to nobody, and to a crawler it is the page's headline action.
-    const landing = documents.find((d) => d.page.slug === "")!.html;
-    expect(landing).toContain(">Start free<");
+  it("renders the same call to action whatever the deployment offers", () => {
+    // The prerender used to have to guess. `onSignUp` decided whether the
+    // headline button said "Start free" or "Sign in", the static document had
+    // to bake one, and the mounted app corrected it within a paint where the
+    // guess was wrong. The prop is gone and there is nothing left to guess:
+    // the only optional prop is `onDemo`, which changes the *secondary*
+    // button, and the primary is the same sentence either way.
+    const withDemo = renderToStaticMarkup(
+      <Landing onEnter={() => {}} onDemo={() => {}} />);
+    const withoutDemo = renderToStaticMarkup(<Landing onEnter={() => {}} />);
+    for (const html of [withDemo, withoutDemo]) {
+      expect(html).toContain("Book a demo");
+      expect(html).not.toContain(">Start free<");
+    }
+    // And the secondary button says what it actually does in each case, rather
+    // than naming a sample workspace this deployment may not have.
+    expect(withDemo).toContain("See it on sample data");
+    expect(withoutDemo).not.toContain("See it on sample data");
+    expect(withoutDemo).toContain("See how it works");
   });
 });

@@ -1,15 +1,15 @@
-/** The contact form as a dialog, opened from a plan panel.
+/** The demo-request form as a dialog, opened by any "Book a demo" button.
  *
  * The form used to sit at the foot of the plans section, always on screen. A
- * visitor who pressed "Talk to us about this plan" was scrolled to it, which
- * meant the page's one conversion surface competed with the section that was
- * meant to lead into it — and everybody who was not asking anything scrolled
- * past a nine-field form to reach the closing block. It opens on the press
- * now, over the panel that was being read.
+ * visitor who pressed a panel's button was scrolled to it, which meant the
+ * page's one conversion surface competed with the section that was meant to
+ * lead into it — and everybody who was not asking anything scrolled past a
+ * nine-field form to reach the closing block. It opens on the press now, over
+ * whatever was being read.
  *
- * The form itself is unchanged and is still `ContactForm`: this file owns
- * *how it opens*, and nothing about what it asks or where it posts. A second
- * copy of those fields is the failure this split exists to prevent.
+ * The form itself is `ContactForm`: this file owns *how it opens*, and nothing
+ * about what it asks or where it posts. A second copy of those fields is the
+ * failure this split exists to prevent.
  *
  * What a dialog owes a person, done by hand rather than with `<dialog>` or a
  * component library:
@@ -39,13 +39,7 @@ const FOCUSABLE =
   'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]),'
   + ' textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
 
-export function ContactModal({ plan, onPlanChange, onClose }: {
-  /** The plan the visitor pressed, or `""` for "they opened it themselves" —
-   *  the same value `ContactForm` takes, held by the caller for the same
-   *  reason: the one place somebody has said which plan they want should not
-   *  be a place the page forgets. */
-  plan: string;
-  onPlanChange: (plan: string) => void;
+export function ContactModal({ onClose }: {
   onClose: () => void;
 }) {
   const dialog = useRef<HTMLDivElement>(null);
@@ -121,7 +115,7 @@ export function ContactModal({ plan, onPlanChange, onClose }: {
                 aria-label="Close">
           <span aria-hidden="true">×</span>
         </button>
-        <ContactForm plan={plan} onPlanChange={onPlanChange} />
+        <ContactForm />
       </div>
     </div>
   );

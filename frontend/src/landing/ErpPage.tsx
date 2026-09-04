@@ -1,6 +1,6 @@
 import { filled } from "./content";
 import { demoCta } from "./cta";
-import { FooterBlurb, TrialFinePrint, TrustBand } from "./shared";
+import { FooterBlurb, TrustBand } from "./shared";
 import type { ErpPageData } from "./erp";
 import "./landing.css";
 
@@ -21,8 +21,8 @@ import "./landing.css";
  *
  *   - **Nothing here may need JavaScript.** No `useState`, no menu that opens,
  *     no handler. Every link is an `href` that works with the bundle absent,
- *     and in-page links to the main page are absolute (`/#plans`) because a
- *     bare `#plans` on this document is a fragment that goes nowhere. The
+ *     and in-page links to the main page are absolute (`/#talk`) because a
+ *     bare `#talk` on this document is a fragment that goes nowhere. The
  *     enquiry form is one of those links rather than a copy of the form: these
  *     pages ship no JavaScript, so a form here would render and refuse to
  *     send.
@@ -40,13 +40,20 @@ import "./landing.css";
  */
 export function ErpPage({ page }: { page: ErpPageData }) {
   /** Both "Book a demo" buttons on a sub-page. With no scheduling link
-   *  configured they fall back to the trial door — and in the hero, where the
-   *  secondary button opens that same door, the secondary is dropped rather
-   *  than shown twice. These pages ship no JavaScript, so the fallback is a
-   *  plain path and carries no handler. */
+   *  configured they fall back to `/#talk` — the landing page's demo-request
+   *  form, which opens on arrival because the hash says so — so the label is
+   *  the same in both branches. These pages ship no JavaScript, so the
+   *  fallback is a plain path and carries no handler.
+   *
+   *  This followed the front page rather than leading it. Both buttons said
+   *  "Start free" and pointed at the sign-in card, which was correct while the
+   *  landing page sold a trial; once the front door asked for a demo and
+   *  nothing else, a visitor who clicked through to /erp/prophet-21 from that
+   *  page's own systems strip was offered something the page they came from
+   *  had stopped offering. One ask, on every public page. */
   const evidence = filled(page.evidence);
-  const heroDemo = demoCta({ href: "/#signin", label: "Start free" });
-  const closingDemo = demoCta({ href: "/#signin", label: "Start free" });
+  const heroDemo = demoCta({ href: "/#talk", label: "Book a demo" });
+  const closingDemo = demoCta({ href: "/#talk", label: "Book a demo" });
 
   return (
     <div className="pie-landing">
@@ -60,11 +67,20 @@ export function ErpPage({ page }: { page: ErpPageData }) {
                 `.lp-nav-links` is display:none below 640px until a JS toggle
                 adds `.open`, so without this modifier a phone got the logo and
                 nothing else. */}
+            {/* These are cross-document links, which is why they are worth a
+                note: the landing page's section ids are this file's
+                dependency, and nothing here fails when one of them is renamed.
+                `/#product` and `/#plans` both dangled for exactly that reason
+                — the first was renamed to `#outcomes` and the second deleted
+                with the plans section — and a sub-page whose nav scrolls to
+                the top of the front page is a dead link that looks like a
+                working one. */}
             <div className="lp-nav-links lp-nav-static">
-              <a href="/#product">Product</a>
+              <a href="/#outcomes">Outcomes</a>
               <a href="/#how">How it works</a>
-              <a href="/#plans">Plans</a>
-              <a className="lp-btn solid lp-nav-cta" href="/#signin">Sign in</a>
+              <a href="/#worth">What it&rsquo;s worth</a>
+              <a className="lp-nav-signin" href="/#signin">Sign in</a>
+              <a className="lp-btn solid lp-nav-cta" href="/#talk">Book a demo</a>
             </div>
           </div>
         </nav>
@@ -88,10 +104,12 @@ export function ErpPage({ page }: { page: ErpPageData }) {
               </p>
               <div className="lp-ctas">
                 <a className="lp-btn solid" {...heroDemo.props}>{heroDemo.label}</a>
-                {heroDemo.ready && <a className="lp-btn" href="/#signin">Start free</a>}
-                <a className="lp-quiet" href="/#talk">or tell us what you run</a>
+                {/* Only where a scheduling link exists: without one the
+                    primary button already goes to `/#talk`, and two buttons to
+                    one destination is a choice that is not a choice. */}
+                {heroDemo.ready
+                  && <a className="lp-btn" href="/#talk">Tell us what you run</a>}
               </div>
-              <TrialFinePrint />
             </div>
           </div>
         </header>

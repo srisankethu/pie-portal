@@ -516,13 +516,6 @@
   font-size: 13.5px; line-height: 1.5; color: var(--color-neutral-700);
 }
 .pie-landing .lp-outcome li:last-child { margin-bottom: 0; }
-.pie-landing .lp-outcome li::before {
-  content: ""; position: absolute; left: 2px; top: 8px;
-  width: 7px; height: 7px;
-  border-right: 2px solid var(--color-accent-700);
-  border-bottom: 2px solid var(--color-accent-700);
-  transform: rotate(-45deg);
-}
 
 /* ── Section C: who it's for ──
    A `.lp-panel` with the section's tag on it. The tag rule is shared with the
@@ -676,16 +669,30 @@
   font-size: 13.5px; line-height: 1.5; color: var(--color-neutral-700);
 }
 .pie-landing .lp-demo-list li b { color: var(--color-text); font-weight: 600; }
-/* A tick mark on the margin, the same one the outcome cards use, so the two
-   lists read as the same kind of thing said twice rather than as two
-   conventions. */
+
+/* ── the margin mark, once ──
+   A drawing tick set in the margin of a list item: a 7px box showing two of its
+   borders, turned 45°. Both schedules on this page use it — the specifics under
+   an outcome card and the items in the demo panel — and they are meant to read
+   as one convention used twice rather than as two.
+
+   It was written out twice, once per list, differing only in the offset that
+   centres it on the first line of its own type size. A duplicate scan found it
+   at 65 tokens, and the comment on the second copy already said "the same one
+   the outcome cards use", which is the tell: a rule whose comment has to claim
+   it matches another rule is a rule that should be that other rule. Only the
+   offset differs now, and it differs where it is actually a different value. */
+.pie-landing .lp-outcome li::before,
 .pie-landing .lp-demo-list li::before {
-  content: ""; position: absolute; left: 2px; top: 15px;
+  content: ""; position: absolute; left: 2px;
   width: 7px; height: 7px;
   border-right: 2px solid var(--color-accent-700);
   border-bottom: 2px solid var(--color-accent-700);
   transform: rotate(-45deg);
 }
+.pie-landing .lp-outcome li::before { top: 8px; }    /* 13.5px copy, tight rows */
+.pie-landing .lp-demo-list li::before { top: 15px; } /* same copy, 11px row padding */
+/* Where the mark itself is defined — see the shared rule below. */
 
 .pie-landing .lp-form h3 { margin-bottom: 6px; }
 .pie-landing .lp-form-lead {

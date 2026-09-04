@@ -365,10 +365,22 @@ export function Landing({ onEnter, onDemo }: {
                 re-derivable from the rows your desk already wrote. It reads the
                 ERP you already run and replaces none of it.
               </p>
+              {/* Both branches fall back to `#how`, and only the label and the
+                  handler differ. `#demo` named no section — `sections` lists
+                  "demo" to letter the closing block, whose id is `talk` — so
+                  the href was a destination that does not exist. `demo` stops
+                  the jump, which hid it: the only presses that reach the href
+                  are the ones the handler never sees, and a middle-click on
+                  "See it on sample data" opened a second tab on `/#demo`, the
+                  same landing page, scrolled nowhere, with no sample data in
+                  it. `#how` is where a reader who cannot be given the live
+                  workspace should land anyway — it is the block that shows
+                  what they would have seen — which is what the right-hand
+                  branch already says. */}
               <div className="lp-ctas">
                 <a className="lp-btn solid" {...heroDemo.props}>{heroDemo.label}</a>
                 {onDemo
-                  ? <a className="lp-btn" href="#demo" onClick={demo}>See it on sample data</a>
+                  ? <a className="lp-btn" href="#how" onClick={demo}>See it on sample data</a>
                   : <a className="lp-btn" href="#how">See how it works</a>}
               </div>
               {/* What the button actually buys, so the press is not a

@@ -494,3 +494,47 @@ describe("the wordmark in the nav", () => {
     }
   });
 });
+
+describe("the landing page's own fragments", () => {
+  /** Both renders, not just the prerendered one.
+   *
+   *  `renderLandingMarkup` calls `<Landing onEnter />` with no `onDemo`, so the
+   *  static document only ever carries one side of the hero's ternary — and the
+   *  side it leaves out is the one a deployment with a demonstration workspace
+   *  actually serves. Checking `documents` alone therefore proves nothing about
+   *  half the page, which is why `#demo` was reachable and unpinned. */
+  const variants = [
+    ["without a demo workspace", renderToStaticMarkup(<Landing onEnter={() => {}} />)],
+    ["with a demo workspace",
+      renderToStaticMarkup(<Landing onEnter={() => {}} onDemo={() => {}} />)],
+  ] as const;
+
+  /** Fragments that name a door rather than a section, and so carry no `id`.
+   *
+   *  `#signin` is read by `doorFromHash` in PlatformApp on mount: pressing it
+   *  before the bundle has hydrated leaves `/#signin` in the address bar, and
+   *  the app opens the sign-in card when it arrives. It is the one fragment on
+   *  this page whose job is to be in the URL. */
+  const DOORS = new Set(["signin"]);
+
+  it("points every same-page anchor at a section that exists", () => {
+    // The mirror of the cross-page test above, and the half that was missing.
+    // A dangling `#fragment` is not an error a browser reports: the page does
+    // not move, the address bar keeps the fragment, and the reader is left on
+    // a URL that reads like a deep-link to a section nobody can find. That is
+    // how `#demo` survived. Its button cancels the jump, so a plain press
+    // never reached the href at all — what reached it were the presses the
+    // handler never sees, and a middle-click opened a second tab on `/#demo`
+    // that scrolled nowhere.
+    for (const [what, html] of variants) {
+      const ids = new Set([...html.matchAll(/\sid="([^"]+)"/g)].map((m) => m[1]));
+      const fragments = [...html.matchAll(/href="#([^"]+)"/g)].map((m) => m[1]);
+      expect(fragments.length).toBeGreaterThan(0);
+      for (const frag of fragments) {
+        if (DOORS.has(frag)) continue;
+        expect(ids.has(frag), `${what}: the landing links to #${frag}, which no element carries`)
+          .toBe(true);
+      }
+    }
+  });
+});

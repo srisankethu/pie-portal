@@ -66,22 +66,18 @@ export function TrustBand({ system }: { system?: string }) {
   );
 }
 
-/** What the free 30 days actually are.
- *
- * One sentence, and the one this site is least allowed to get wrong: a trial
- * lifts an organization to Commercial Intelligence and never to Platform
- * (`entitlements.effective_plan`, which says so in as many words), and the
- * quote desk is what keeps working when nothing is being paid for. It said
- * "the whole platform" on both pages until somebody checked.
- */
-export function TrialFinePrint() {
-  return (
-    <p className="lp-fine">
-      Commercial Intelligence free for 30 days — no card. The quote desk keeps
-      working whether or not you subscribe.
-    </p>
-  );
-}
+/* `TrialFinePrint` used to be here — one sentence saying what the free 30 days
+   actually are, shared by the landing page and the ERP pages because it had
+   already drifted into two versions that promised different things.
+   
+   It is gone rather than unused. No public page markets the trial now: the
+   front door asks for a demo and nothing else, and the sub-pages follow it.
+   The sentence was correct to the last word (a trial lifts an organization to
+   Commercial Intelligence and never to Platform — `entitlements.effective_plan`
+   says so in as many words), which is exactly why it should not sit here
+   waiting: a correct, tested, importable component is the one somebody adds
+   back to a page without asking whether the page should be making the offer.
+   `entitlements` is where that rule lives; this was only ever its shop window. */
 
 /** The footer's one-line statement of what PIE is. */
 export function FooterBlurb() {

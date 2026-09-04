@@ -1,10 +1,10 @@
-// The form that replaced the price list, and the two ways a form like this
-// fails without anybody noticing.
+// The demo-request form, and the two ways a form like this fails without
+// anybody noticing.
 //
-// The first is that it does not send. A page can describe three plans, ask a
-// buyer to get in touch, thank them, and drop the message — and every screen
-// in that sequence looks correct. So what is pinned here is the request: the
-// endpoint it goes to, and that every field the visitor filled in is in it.
+// The first is that it does not send. A page can ask a buyer to book a demo,
+// thank them, and drop the message — and every screen in that sequence looks
+// correct. So what is pinned here is the request: the endpoint it goes to, and
+// that every field the visitor filled in is in it.
 //
 // The second is that it *claims* to have sent when it did not. A refusal from
 // the server ends in a thank-you, and the enquiry is gone. Both failure
@@ -19,14 +19,11 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** The form with the plan state its parent owns. Returns the setter's spy so a
- *  test can assert the picker reports a change back up — the panels above the
- *  form read the same value. */
-function form(plan = "") {
-  const onPlanChange = vi.fn();
-  const { container } = render(
-    <ContactForm plan={plan} onPlanChange={onPlanChange} />);
-  return { onPlanChange, container };
+/** The form. It takes no props now: the plan picker went with the plans
+ *  section, and there was nothing else the parent had to hold. */
+function form() {
+  const { container } = render(<ContactForm />);
+  return { container };
 }
 
 function fill(label: RegExp, value: string) {
@@ -64,7 +61,7 @@ function submit(container: HTMLElement) {
 describe("sending an enquiry", () => {
   it("posts every answer to the contact endpoint", async () => {
     const fetchMock = stubFetch({ ok: true });
-    const { container } = form("intelligence");
+    const { container } = form();
     fillTheUsual();
     submit(container);
 
@@ -78,9 +75,10 @@ describe("sending an enquiry", () => {
       email: "buyer@acme.example",
       phone: "",
       erp: "Prophet 21",
-      // The plan the panel preselected, carried through. This is the one field
-      // the visitor answered by pressing a button rather than by typing.
-      plan: "intelligence",
+      // Always null. The field survives on the wire because the server takes
+      // it and distinguishes "did not say" from an answer it does not
+      // recognise; nothing on the public site asks the question any more.
+      plan: null,
       message: "Three companies, one book each.",
     });
   });
@@ -88,7 +86,9 @@ describe("sending an enquiry", () => {
   it("says 'did not say' rather than an empty answer", async () => {
     // `null`, not `""`. The server distinguishes an unanswered question from an
     // answer it does not recognise and refuses the second, so a form that sent
-    // an empty string would turn "not sure yet" into a 400.
+    // an empty string would turn "nobody asked" into a 400. Kept as its own
+    // test rather than folded into the one above: the shape of the absent
+    // answer is the part the server is strict about.
     const fetchMock = stubFetch({ ok: true });
     const { container } = form();
     fillTheUsual();
@@ -131,14 +131,16 @@ describe("sending an enquiry", () => {
     expect(done).toBeTruthy();
   });
 
-  it("reports the plan the picker was changed to", () => {
-    // The parent holds it because the panels above set it too; a picker that
-    // kept its own copy would show one plan while the panel had chosen
-    // another.
-    const { onPlanChange } = form();
-    fireEvent.change(screen.getByLabelText(/which plan/i),
-                     { target: { value: "platform" } });
-    expect(onPlanChange).toHaveBeenCalledWith("platform");
+  it("asks nothing about plans or price", () => {
+    // The inverse of the test this replaces, and the reason it is worth a test
+    // at all: the public site states no price and names no plan, and this form
+    // is the one surface where that decision could quietly come undone — it is
+    // a form, somebody will want to add a field to it, and a select is the
+    // obvious place to put "which plan". The page's own rule is pinned in
+    // `prerender.test.tsx`; this is the same rule where a visitor meets it.
+    form();
+    expect(screen.queryByLabelText(/which plan/i)).toBeNull();
+    expect(screen.queryByText(/\/\s?month|per month/i)).toBeNull();
   });
 });
 

@@ -31,23 +31,26 @@ import { Landing } from "./Landing";
  * JavaScript the sign-in card cannot open anyway, and with it React owns the
  * page before anybody clicks.
  *
- * `onSignUp` is passed, and it is the one prop here that changes what the
- * document *says*. Whether a deployment accepts sign-ups is a runtime answer
- * (`useSignupOffer`), and the page now labels its own primary action for the
- * door that will actually open — "Start free" where sign-up is offered, "Sign
- * in" where it is not. A static render has to assume one, so it assumes the
- * one a marketing deployment exists for: this document is the crawlable
- * surface of a page whose whole job is to get sign-ups, and baking "Sign in"
- * as its call to action would sell the product to nobody.
+ * There is nothing else to pass, and that is the point of the current shape.
+ * This used to take `onSignUp` too, and it was the one prop that changed what
+ * the document *said*: whether a deployment accepted sign-ups was a runtime
+ * answer (`useSignupOffer`), the page labelled its primary action for the door
+ * that would actually open, and a static render had to guess which. It guessed
+ * "Start free" and the mounted app corrected the label within a paint where
+ * that was wrong.
  *
- * Where a deployment does not accept them, the mounted app corrects the label
- * within a paint — the same swap it already makes for the worked example's
- * currency.
- * That is the right way round: the common case is served statically and the
- * exception is corrected, rather than every visitor being shown the exception.
+ * The page asks for a demo now and asks for nothing else, so its call to
+ * action is the same sentence for every deployment and the static document is
+ * simply true rather than true-by-assumption. One fewer thing the prerender
+ * has to be right about.
+ *
+ * `onDemo` is likewise not passed: the sample-data door depends on a
+ * demonstration workspace this render knows nothing about, and the page falls
+ * back to "See how it works" — an in-document anchor, which is exactly what a
+ * reader without JavaScript can use.
  */
 export function renderLandingMarkup(): string {
-  return renderToStaticMarkup(<Landing onEnter={() => {}} onSignUp={() => {}} />);
+  return renderToStaticMarkup(<Landing onEnter={() => {}} />);
 }
 
 /** The theme's design tokens as one `:root` rule.
@@ -128,7 +131,7 @@ export function contentGaps(): { slot: string; effect: string }[] {
   if (isPlaceholder(DEMO_BOOKING_URL)) {
     gaps.push({
       slot: "DEMO_BOOKING_URL",
-      effect: "every \"Book a demo\" button falls back to the trial door",
+      effect: "every \"Book a demo\" button opens the request form instead of a calendar",
     });
   }
 

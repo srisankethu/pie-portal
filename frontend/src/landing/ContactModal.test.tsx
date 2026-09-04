@@ -11,12 +11,10 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ContactModal } from "./ContactModal";
 
-function open(plan = "") {
+function open() {
   const onClose = vi.fn();
-  const onPlanChange = vi.fn();
-  const utils = render(
-    <ContactModal plan={plan} onPlanChange={onPlanChange} onClose={onClose} />);
-  return { onClose, onPlanChange, ...utils };
+  const utils = render(<ContactModal onClose={onClose} />);
+  return { onClose, ...utils };
 }
 
 describe("opening the contact dialog", () => {
@@ -26,13 +24,8 @@ describe("opening the contact dialog", () => {
     expect(dialog).toHaveAttribute("aria-modal", "true");
     // Named by the form's own heading rather than by a label repeated here:
     // two names for one thing drift.
-    expect(dialog).toHaveAccessibleName("Tell us about your business");
+    expect(dialog).toHaveAccessibleName("Book a demo");
     expect(dialog.querySelector("form")).not.toBeNull();
-  });
-
-  it("opens on the plan the visitor pressed", () => {
-    open("platform");
-    expect(screen.getByLabelText(/which plan/i)).toHaveValue("platform");
   });
 
   it("moves focus onto the dialog itself, so it is announced before its fields", () => {

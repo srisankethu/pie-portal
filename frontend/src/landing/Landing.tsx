@@ -3,7 +3,8 @@ import { demoCta } from "./cta";
 import { ERP_PAGES } from "./erp";
 import { caseStudy, complianceRows, hasProof, namedCustomers } from "./proof";
 import { FooterBlurb, TrialFinePrint, TrustBand } from "./shared";
-import { ContactForm, PLANS } from "./ContactForm";
+import { PLANS } from "./ContactForm";
+import { ContactModal } from "./ContactModal";
 import {
   detectRegion,
   exampleFor,
@@ -137,17 +138,21 @@ const SYSTEMS = [
  *     problem: what this costs turns on how many companies are connected,
  *     which ERP each sits on and how much catalogue there is to build, so any
  *     number on a panel is wrong for somebody, and wrong in a way they act on
- *     without ever asking. The panels now say what each plan *is*, and the
- *     section ends in `ContactForm` — which posts to `POST /api/v1/contact`
- *     and lands in a queue an operator reads. The per-visitor currency
- *     survives for the worked card, whose figures are still money. See
- *     `worked-example.ts`.
+ *     without ever asking. The panels now say what each plan *is*, and each
+ *     one's button opens `ContactForm` in a dialog (`ContactModal`) — which
+ *     posts to `POST /api/v1/contact` and lands in a queue an operator reads.
+ *     The form sat open at the foot of the section first, which put nine
+ *     fields between the plans and the closing block for every visitor who was
+ *     not asking anything, and scrolled the person who *was* away from the
+ *     panel they were reading; `#talk` is now the block that offers it rather
+ *     than the form itself. The per-visitor currency survives for the worked
+ *     card, whose figures are still money. See `worked-example.ts`.
  *   - The hero's primary action became "Book a demo". Nobody signs an annual
  *     contract from inside a product trial, and the page had no way for a
  *     buyer who was ready to talk to say so. The trial keeps its own button.
- *     The paid panels went further and now lead to the form at the end of
- *     their own section, which reaches the same person a meeting would and
- *     works whether or not a scheduling link has ever been configured.
+ *     The paid panels went further and now open the form over their own
+ *     section, which reaches the same person a meeting would and works whether
+ *     or not a scheduling link has ever been configured.
  *
  *     Until a scheduling link exists, each of those buttons falls back — to
  *     the trial door in the hero and the closing block, to "Ask for this plan"
@@ -267,10 +272,27 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
   const price = exampleFor(region);
   const line = price.line;
 
-  /** Which plan the visitor pressed, held here so the form below can open on
-   *  it. The panels are the one place somebody says which plan they want, and
-   *  the section used to forget it the moment they scrolled. */
-  const [askingAbout, setAskingAbout] = useState<string>("");
+  /** The contact dialog: `null` when it is shut, and otherwise the plan the
+   *  visitor pressed — `""` for "they opened it themselves", which is the value
+   *  `ContactForm` reads as "Not sure yet".
+   *
+   *  One state and not two, because "is it open" and "what is it open on" can
+   *  never disagree if there is only one of them. The panels are the one place
+   *  somebody says which plan they want, and the section used to forget it the
+   *  moment they scrolled. */
+  const [askingAbout, setAskingAbout] = useState<string | null>(null);
+
+  /** `/#talk` is what the ERP sub-pages link into, and it used to land on a
+   *  form that was already on the page. The form is a dialog now, so the hash
+   *  has to open it — otherwise that link would deposit a visitor beside a
+   *  button and leave them to find it.
+   *
+   *  In an effect because it reads `location`, which does not exist during the
+   *  prerender, and once because a visitor who closes the dialog with the hash
+   *  still in the address bar must not have it reopened underneath them. */
+  useEffect(() => {
+    if (window.location.hash === "#talk") setAskingAbout("");
+  }, []);
 
   /** The four "Book a demo" buttons on this page, each with the honest thing
    *  to offer while no scheduling link is configured.
@@ -329,14 +351,18 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
   const heroDemo = demoCta({ href: "#signin", ...startCta });
   const closingDemo = demoCta({ href: "#signin", ...startCta });
 
-  /** A paid panel's own button: the form below, opened on that plan.
+  /** A panel's own button: the contact dialog, opened on that plan.
    *
-   *  No `preventDefault` — `#talk` is a real element and the jump is the
-   *  browser's own, so a visitor whose JavaScript never arrives gets the same
-   *  scroll and a form reading "Not sure yet". All the handler adds is the
-   *  answer they already gave by pressing this panel rather than the one
-   *  beside it. */
-  const askAbout = (plan: string) => () => setAskingAbout(plan);
+   *  Still an anchor to `#talk`, and the handler still has to stop the jump.
+   *  Both halves are deliberate: with JavaScript the dialog opens over the
+   *  panel being read and the page does not move, and without it the press
+   *  falls back to the browser's own scroll to a block that says what to do —
+   *  which is the whole of what a visitor without a bundle can be given here,
+   *  since the form could not have sent anything either. */
+  const askAbout = (plan: string) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    setAskingAbout(plan);
+  };
 
   // The mobile nav collapses the section links behind a menu button. Closed on
   // first render, which is also the state the prerenderer bakes into the static
@@ -936,15 +962,15 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
                   mechanism that already exists rather than a euphemism for a
                   price nobody will say: `PlanChangeRequest` records an ask from
                   inside the product and an operator applies it, and the form
-                  below records one from out here. There is no checkout in this
+                  these panels open records one from out here. There is no checkout in this
                   product at all. */}
               <p className="lp-plans-how">
                 Every organization starts on a 30-day trial of Commercial
                 Intelligence — no card, no conversation needed. What a paid plan
                 costs depends on your setup, so we quote it after we have seen
-                it: tell us what you run, using the form at the end of this
-                section, and we will come back with the number and what it
-                takes. Buying is then a conversation — the plan is requested
+                it: tell us what you run — the button on either paid panel
+                opens the form — and we will come back with the number and what
+                it takes. Buying is then a conversation — the plan is requested
                 from inside the product and confirmed by a person, and{" "}
                 <b>everything you have put in stays exactly where it is</b> if
                 the trial ends without one: the decision layer locks and the
@@ -1032,13 +1058,27 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
               with you, and nothing is charged when you sign up.
             </p>
 
-            {/* The end of the section is the door. It is an anchor a panel can
-                jump to and an id the ERP sub-pages link into (`/#talk`), so
-                "Talk to us about this plan" lands on the form with that plan
-                already chosen rather than at the top of a section the visitor
-                has just read. */}
-            <div className="lp-talk" id="talk">
-              <ContactForm plan={askingAbout} onPlanChange={setAskingAbout} />
+            {/* The end of the section is the door, and the door is now a
+                button rather than the form itself. The id stays: it is what a
+                panel's anchor jumps to without JavaScript and what the ERP
+                sub-pages link into (`/#talk`), and the effect above opens the
+                dialog for anyone who arrives on it. */}
+            <div className="lp-talk lp-panel" id="talk">
+              {/* One sentence, and deliberately not the form's own lead: the
+                  long version of why there is no price on this page is inside
+                  the dialog, where somebody who has decided to ask will read
+                  it. Repeating it here would be the same paragraph in two
+                  files, and the second copy is the one that stops being
+                  updated. */}
+              <h3>Tell us about your business</h3>
+              <p className="lp-talk-lead">
+                Say how many companies you run and what each of them sits on,
+                and we will come back with what it would cost and what it would
+                take.
+              </p>
+              <a className="lp-btn solid" href="#talk" onClick={askAbout("")}>
+                Talk to us
+              </a>
             </div>
           </div>
         </section>
@@ -1067,6 +1107,16 @@ export function Landing({ onEnter, onSignUp, onDemo }: {
           </div>
         </footer>
       </div>
+
+      {/* Outside `.lp-sheet` and not through a portal: a sibling of the sheet
+          keeps the page's own `.lp-panel` / `.lp-field` / `.lp-btn` rules over
+          the form — one set of styles for one form — while sitting outside the
+          drawing frame's borders and above the sticky header. Nothing is
+          rendered while it is shut, so the prerender is unchanged. */}
+      {askingAbout !== null && (
+        <ContactModal plan={askingAbout} onPlanChange={setAskingAbout}
+                      onClose={() => setAskingAbout(null)} />
+      )}
     </div>
   );
 }

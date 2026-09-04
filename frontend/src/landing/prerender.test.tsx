@@ -206,15 +206,22 @@ describe("what a plan costs", () => {
     }
   });
 
-  it("is asked about instead, in a form that submits somewhere", () => {
+  it("is asked about instead, through a door that is in the document", () => {
     // The other half, and the half that makes the first honest: removing a
     // price and leaving nothing in its place would be a page that describes
     // three plans and gives a buyer no way to ask about any of them.
+    //
+    // The fields themselves are no longer here, and that is the change rather
+    // than a regression: the form opens in a dialog (`ContactModal`) on the
+    // press of a plan panel's button, so nothing of it is rendered until
+    // somebody asks for it. What the static document therefore has to carry is
+    // the invitation and the way in — the `#talk` block, its copy, and the
+    // anchors that reach it — because that is all a crawler, or a visitor
+    // whose bundle never arrives, can see.
     const landing = documents.find((d) => d.page.slug === "")!.html;
     expect(landing).toContain('id="talk"');
-    expect(landing).toContain("<form");
-    expect(landing).toContain('name="email"');
-    expect(landing).toContain('name="message"');
+    expect(landing).toContain("Tell us about your business");
+    expect(landing).toContain("Talk to us");
     // The panels lead here, so the jump target has to exist in the same
     // document that links to it.
     expect(landing).toContain('href="#talk"');

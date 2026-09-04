@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { demoCta } from "./cta";
 import { ERP_PAGES } from "./erp";
 import { caseStudy, complianceRows, hasProof, namedCustomers } from "./proof";
-import { FooterBlurb, TrustBand } from "./shared";
+import { DEMO_LENGTH, FooterBlurb, TrustBand } from "./shared";
 import { ContactModal } from "./ContactModal";
 import {
   detectRegion,
@@ -554,11 +554,24 @@ export function Landing({ onEnter, onDemo }: {
         <section id="outcomes">
           <div className="lp-wrap">
             <div className="lp-sec-head">
-              <h2>Four things your desk can do the week after it connects</h2>
+              {/* "…the week after it connects" was here, and no duration is
+                  modelled anywhere in this product — `onboarding.py` has a
+                  four-step checklist and no ETA field. It is the same claim
+                  the Aug 2026 audit removed as "Live in about a week", grown
+                  back in a heading where nobody looked for it.
+
+                  "Unlimited named accounts" went with it, for a different
+                  reason: nothing caps users, but nothing promises they are
+                  free either. Plans are scoped by connected *companies*
+                  (`entitlements.PLAN_SUMMARY`), and this page ends its pricing
+                  conversation in a form — a packaging term settled in a
+                  sub-heading pre-empts the conversation the page says it wants
+                  to have. */}
+              <h2>Four things your desk can do once it connects</h2>
               <p>
                 Each one is arithmetic on your own records, computed the same way
                 every time, and stamped with the policy version that judged it.
-                Unlimited named accounts, each seeing what their role allows.
+                Named accounts, each seeing what their role allows.
               </p>
             </div>
             <div className="lp-two">
@@ -601,8 +614,8 @@ export function Landing({ onEnter, onDemo }: {
                 <p>
                   Signals from your own numbers — margin drift, customer decline,
                   payments slipping — each written up in plain words and each
-                  traceable to the figures that raised it. A handful of accounts
-                  a day, not a dashboard to go and interrogate.
+                  traceable to the figures that raised it. A short list of
+                  accounts, not a dashboard to go and interrogate.
                 </p>
                 <ul>
                   <li>Detectors run over persisted rows, never over a model&rsquo;s guess</li>
@@ -815,11 +828,13 @@ export function Landing({ onEnter, onDemo }: {
               <div className="lp-panel">
                 <h3>Your data. Export any time, erase provably.</h3>
                 <p>
-                  Full export on request. On exit your tenant key is destroyed,
-                  making everything encrypted under it permanently unreadable —
-                  live tables, replicas and backups alike. The signed receipt
-                  lists exactly what that reached and what it did not, and you
-                  can verify it.
+                  One export, everything your organization owns, whenever the
+                  owner asks for it. Erase and your tenant key is destroyed,
+                  which makes the ciphertext written under it inert wherever it
+                  lives — live tables, replicas and backups alike. What was
+                  never encrypted stays readable, and the signed receipt names
+                  both halves rather than the flattering one; you can verify it
+                  yourself.
                 </p>
               </div>
               <div className="lp-panel">
@@ -830,12 +845,26 @@ export function Landing({ onEnter, onDemo }: {
                   other customer.
                 </p>
               </div>
+              {/* Two different events were being promised as one, and only
+                  by reading them together could a reader notice they cannot
+                  both happen: "your data leaves with you" beside "the quote
+                  desk keeps working", next to a panel saying the tenant key is
+                  destroyed. Stopping the subscription and leaving entirely are
+                  separate things and the product treats them separately —
+                  `entitlements.PLAN_SUMMARY[FREE]` is what survives a lapse
+                  ("Quoting, RFQ reading, margin floors and approvals … One
+                  connected company"), and `trust/erasure` is what happens when
+                  somebody actually goes. The true half was borrowed from
+                  `TrialNotice`, where it is true, and attached to the wrong
+                  event here. */}
               <div className="lp-panel">
                 <h3>Your exit. Off-ramps defined, not discovered.</h3>
                 <p>
-                  Stop at any time and your data leaves with you, in a format
-                  you can read. The quote desk keeps working, and your decoded
-                  catalog keeps working as delivered.
+                  Stop paying and nothing is deleted: quoting, margin floors and
+                  approvals carry on for one connected company, and the decision
+                  layer waits until you subscribe again. Leave properly and your
+                  data goes with you in a format you can read — the decoded
+                  catalog included, because it is yours.
                 </p>
               </div>
             </div>
@@ -1000,7 +1029,7 @@ export function Landing({ onEnter, onDemo }: {
                   list rather than prose because a reader deciding whether to
                   give up half an hour is scanning for the shape of it. */}
               <ul className="lp-demo-list">
-                <li><b>30–45 minutes</b>, with whoever prices your quotes</li>
+                <li><b>{DEMO_LENGTH}</b>, with whoever prices your quotes</li>
                 <li><b>A real enquiry</b> of yours, priced on the desk in front of you</li>
                 <li><b>Your margin policy</b>, set up as you would actually set it</li>
                 <li><b>The look-back</b> — what your own history holds, and what it cannot say</li>

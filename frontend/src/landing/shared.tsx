@@ -13,6 +13,15 @@
  * as props and the differences that were accidents removed.
  */
 
+/** How long the demo is, said once.
+ *
+ *  It was "30–45 minutes" on the front page and "Thirty minutes" on all seven
+ *  ERP pages — one meeting, two lengths, told to the same visitor if they read
+ *  both. That is the defect this file exists for, arriving in the one shape a
+ *  shared *component* cannot catch: a phrase inside two different sentences.
+ *  A number a reader could hold us to is worth a constant. */
+export const DEMO_LENGTH = "30–45 minutes";
+
 /** The determinism band — the reason-to-believe, on every public page.
  *
  * `system` names the ERP a sub-page is about, so the sentence reads "Your

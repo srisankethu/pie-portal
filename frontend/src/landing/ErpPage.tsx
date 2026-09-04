@@ -1,6 +1,6 @@
 import { filled } from "./content";
 import { demoCta } from "./cta";
-import { FooterBlurb, TrustBand } from "./shared";
+import { DEMO_LENGTH, FooterBlurb, TrustBand } from "./shared";
 import { ERP_PAGES, type ErpPageData } from "./erp";
 import "./landing.css";
 
@@ -268,7 +268,7 @@ export function ErpPage({ page }: { page: ErpPageData }) {
               : `Your ${page.short} book already knows what your customers pay.`}
           </h2>
             <p>
-              Thirty minutes, your own numbers on the screen, and an honest
+              {DEMO_LENGTH}, your own numbers on the screen, and an honest
               answer about what PIE can and cannot see in {page.name}.
             </p>
             <div className="lp-ctas lp-ctas-centred">

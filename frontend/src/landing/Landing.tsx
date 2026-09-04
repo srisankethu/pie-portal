@@ -5,11 +5,13 @@ import { caseStudy, complianceRows, hasProof, namedCustomers } from "./proof";
 import { DEMO_LENGTH, FooterBlurb, TrustBand } from "./shared";
 import { ContactModal } from "./ContactModal";
 import {
+  EXAMPLE_ITEM,
   detectRegion,
   exampleFor,
   heldToFloor,
   heldToRecommended,
   lineTotal,
+  marginPct,
   unitPrice,
   type Region,
 } from "./worked-example";
@@ -359,6 +361,11 @@ export function Landing({ onEnter, onDemo }: {
               </p>
             </div>
 
+            {/* One grid cell for the card and its caption. Without the
+                wrapper the hero's two-column grid took the caption as a third
+                child and set it under the copy, four hundred pixels from the
+                card it is about. */}
+            <div className="lp-card-cell">
             <div
               className="lp-card"
               role="img"
@@ -369,39 +376,37 @@ export function Landing({ onEnter, onDemo }: {
                  from the same values the card renders, so the two cannot say
                  different things. */
               aria-label={
-                "An illustration of a PIE decision card, drawn like an engineering "
-                + "sheet. Not a real quote and not a customer's figures. "
+                `A PIE decision card for ${EXAMPLE_ITEM}, with sample figures. `
                 + `A customer asked for ${line.units} units at ${unitPrice(price, line.asked)}, `
-                + `below the margin floor of ${unitPrice(price, line.floor)} that this `
-                + `organization's policy sets for the item; it costs ${unitPrice(price, line.cost)} `
-                + `and the recommended price is ${unitPrice(price, line.recommended)}. `
-                + "The line routes for a manager's approval, and a title block says "
-                + "what computes it in the product."
+                + `which is ${marginPct(price)} margin — below the floor of `
+                + `${unitPrice(price, line.floor)} that this organization's policy `
+                + `sets for the item. It costs ${unitPrice(price, line.cost)} and the `
+                + `recommended price is ${unitPrice(price, line.recommended)}. The line `
+                + "routes for a manager's approval, and every fact names the record it "
+                + "came from."
               }
             >
               <span className="lp-corner tl" aria-hidden="true" />
               <span className="lp-corner tr" aria-hidden="true" />
               <span className="lp-corner bl" aria-hidden="true" />
               <span className="lp-corner br" aria-hidden="true" />
-              {/* The second chip was “Quote Q-1147 · line 3”, and the title
-                  block below it carried a policy hash, a thresholds version
-                  and a revision. Every one of them was invented, and together
-                  they did not read as an illustration — they read as a
-                  screenshot of a record, in the exact provenance vocabulary
-                  this site uses everywhere else to mean “this is real”.
-                  Borrowing that vocabulary to dress a drawing is the one
-                  forgery that costs the rest of the page its credit, and it
-                  was the most prominent element on the site.
+              {/* Below this line the card is the product's own decision screen,
+                  element for element: the type-and-priority row, the subject as
+                  the heading, who it is routed to, "Facts · what the data
+                  shows" over a table whose every row names the record it came
+                  from, then the evidence and the actions that screen actually
+                  offers (`platform/PlatformApp.tsx`, the decision detail).
 
-                  So the identifiers are gone rather than made vaguer — a
-                  plausible-looking id is the problem, not its digits — and the
-                  chip that held one now says what the card is. `proof.ts`
-                  hides an entire section rather than name one customer it
-                  cannot; the hero does not get an exemption from that rule for
-                  being the hero. */}
+                  It was a drawing of a card before — its own invented layout,
+                  its own invented identifiers, and a disclaimer chip shouting
+                  that none of it was real, which is a worse answer than the
+                  problem it fixed. A page that will not show its own product is
+                  a page arguing that the product is not worth showing. So: the
+                  real screen, sample figures, said once and quietly under the
+                  card rather than stamped across it. */}
               <div className="lp-card-top">
                 <span className="lp-chip alert">Below floor</span>
-                <span className="lp-chip kind">Illustration · not a real quote</span>
+                <span className="lp-chip kind">Approval needed</span>
               </div>
               {/* Not a heading. The card is one `role="img"` with a full
                   aria-label, so nothing inside it is exposed to a screen
@@ -409,28 +414,44 @@ export function Landing({ onEnter, onDemo }: {
                   first h2, and an h1 followed by an h3 is a skipped level in
                   the document outline that every accessibility checker will
                   find and that no reader benefits from. Styled identically. */}
-              <p className="lp-card-title">This line is priced under your own floor</p>
+              <p className="lp-card-title">{EXAMPLE_ITEM}</p>
               <p className="lp-card-body">
-                <b>{price.customer}</b> asked for {line.units} units at{" "}
-                {unitPrice(price, line.asked)} — below the floor your margin
-                policy sets for this item. It routes for a manager's sign-off:
-                the platform holds it, not the salesperson.
+                {line.units} units for <b>{price.customer}</b>, quoted at{" "}
+                {unitPrice(price, line.asked)} — routed to a sales manager, no
+                individual owner. The platform holds it, not the salesperson.
               </p>
-              <div className="lp-facts">
-                <div className="lp-fact">
-                  <div className="k">Cost</div>
-                  <div className="v lp-num">{unitPrice(price, line.cost)}</div>
-                </div>
-                <div className="lp-fact">
-                  <div className="k">Margin floor</div>
-                  <div className="v lp-num">{unitPrice(price, line.floor)}</div>
-                </div>
-                <div className="lp-fact">
-                  <div className="k">Recommended</div>
-                  <div className="v lp-num">{unitPrice(price, line.recommended)}</div>
-                </div>
-              </div>
-              <div className="lp-actions"><span>Request approval</span><span>Reprice to floor</span></div>
+
+              <div className="lp-facts-mark">Facts &middot; what the data shows</div>
+              <table className="lp-facttable">
+                <tbody>
+                  <tr>
+                    <td>Quoted unit price<span>this quote</span></td>
+                    <td className="lp-fv lp-num">{unitPrice(price, line.asked)}</td>
+                  </tr>
+                  <tr>
+                    <td>Effective unit cost<span>bill</span></td>
+                    <td className="lp-fv lp-num">{unitPrice(price, line.cost)}</td>
+                  </tr>
+                  <tr>
+                    <td>Margin floor<span>your margin policy</span></td>
+                    <td className="lp-fv lp-num">{unitPrice(price, line.floor)}</td>
+                  </tr>
+                  <tr>
+                    <td>Recommended<span>this customer&rsquo;s own history</span></td>
+                    <td className="lp-fv lp-num">{unitPrice(price, line.recommended)}</td>
+                  </tr>
+                  <tr>
+                    <td>Margin at this price<span>computed</span></td>
+                    <td className="lp-fv lp-num warn">{marginPct(price)}</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div className="lp-facts-mark">Evidence used</div>
+              <div className="lp-evi"><span>zoho &middot; invoice</span><span>the price history</span></div>
+              <div className="lp-evi"><span>zoho &middot; bill</span><span>the cost</span></div>
+
+              <div className="lp-actions"><span>Request approval</span><span>Full analysis &rarr;</span></div>
               {/* The title block stays, because what it says about the
                   product is true and is the argument: a number here is
                   computed by a policy you set and stamped with the version of
@@ -441,9 +462,15 @@ export function Landing({ onEnter, onDemo }: {
               <div className="lp-tblock lp-num">
                 <div><span className="k">Computed by</span>your margin policy</div>
                 <div><span className="k">Stamped with</span>its version</div>
-                <div><span className="k">AI's part</span>none</div>
-                <div><span className="k">Sheet</span>illustration</div>
+                <div><span className="k">AI&rsquo;s part</span>none</div>
+                <div><span className="k">Figures</span>sample</div>
               </div>
+            </div>
+            <p className="lp-card-note">
+              The manager&rsquo;s decision card, as the product draws it — with
+              sample figures, because no customer&rsquo;s numbers belong on a
+              public page.
+            </p>
             </div>
           </div>
         </header>

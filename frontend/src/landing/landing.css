@@ -291,6 +291,49 @@
   border: 1px solid var(--color-neutral-300); border-radius: var(--radius-md);
   padding: 7px 14px;
 }
+/* The decision card's own furniture, matching the product's screen rather
+   than approximating it: the section mark over each block, the fact table
+   whose every row names the record it came from, and the evidence rows under
+   it. Class names are the landing page's because only `landing.css` reaches
+   these documents (see ErpPage.tsx) — the *shapes* are
+   `platform/PlatformApp.tsx`'s decision detail. */
+.pie-landing .lp-facts-mark {
+  font-family: var(--font-heading); font-size: 10px; font-weight: 700;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--color-accent-700);
+  margin: 16px 0 6px; padding-top: 12px;
+  border-top: 1px solid var(--color-divider);
+}
+.pie-landing .lp-facttable { width: 100%; border-collapse: collapse; }
+.pie-landing .lp-facttable td {
+  padding: 7px 0; border-bottom: 1px solid var(--color-divider);
+  font-size: 13.5px; color: var(--color-text); vertical-align: baseline;
+}
+.pie-landing .lp-facttable tr:last-child td { border-bottom: 0; }
+/* The source line under each label — the half that makes it a fact rather
+   than an assertion, so it is styled to be read, not to be decorative. */
+.pie-landing .lp-facttable td span {
+  display: block; font-size: 11px; color: var(--color-neutral-700);
+  letter-spacing: 0.01em;
+}
+.pie-landing .lp-facttable .lp-fv {
+  text-align: right; font-weight: 600; font-size: 15px; white-space: nowrap;
+}
+.pie-landing .lp-facttable .lp-fv.warn { color: var(--danger-fg); }
+.pie-landing .lp-evi {
+  display: flex; justify-content: space-between; gap: 12px;
+  font-size: 12.5px; padding: 4px 0; color: var(--color-neutral-700);
+}
+.pie-landing .lp-evi span:first-child { color: var(--color-text); }
+/* Said once, under the card, in the register of a caption. The loud version
+   of this sentence was a chip inside the card reading "not a real quote",
+   which told a reader the screen was not worth looking at. */
+.pie-landing .lp-card-cell { min-width: 0; }
+.pie-landing .lp-card-note {
+  font-size: 12px; line-height: 1.5; color: var(--color-neutral-700);
+  margin: 12px 2px 0;
+}
+
 /* the title block: the drawing's signature strip, carrying the same
    provenance the dashed caption used to */
 .pie-landing .lp-tblock {

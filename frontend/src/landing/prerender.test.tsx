@@ -274,9 +274,27 @@ describe("the worked card is marked as a drawing, not a record", () => {
   // the fabricated identifiers may not come back. This is the same rule
   // `proof.ts` already keeps by hiding a section rather than naming a customer
   // it does not have — the hero is not exempt from it for being the hero.
-  it("says on the card that it is an illustration", () => {
-    expect(markup).toContain("Illustration · not a real quote");
-    expect(markup).toContain("illustration");
+  it("says once, under the card, that the figures are samples", () => {
+    // Under it and in a caption's register — not stamped across the card. The
+    // first fix for the forged record was a chip inside it reading "not a real
+    // quote", which told the reader the screen was not worth looking at; a
+    // page that will not show its own product argues that the product is not
+    // worth showing. The marker has to exist and has to be quiet.
+    expect(markup).toContain("sample figures");
+    expect(markup).toMatch(/Figures<\/span>sample/);
+  });
+
+  it("draws the product's own decision screen, not an invented layout", () => {
+    // The card is the decision detail in `platform/PlatformApp.tsx`, element
+    // for element. These are that screen's own words, and they are here so
+    // that a card redrawn into something the product does not have fails.
+    expect(markup).toContain("Facts · what the data shows");
+    expect(markup).toContain("Evidence used");
+    expect(markup).toContain("Request approval");
+    // Every fact names the record behind it — the property that makes the
+    // screen worth showing at all.
+    expect(markup).toContain("your margin policy");
+    expect(markup).toContain("bill");
   });
 
   it("prints no invented quote id, policy hash or revision", () => {

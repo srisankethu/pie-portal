@@ -53,6 +53,14 @@ export { detectRegion, type Region };
  *  here, and the test holds the card's floor to it. */
 export const MARGIN_FLOOR = 0.15;
 
+/** The item the worked line is for.
+ *
+ *  A real ISO insert designation, and the one the seeded demo book uses, so
+ *  the card names something a distributor recognises rather than "Product A".
+ *  It is not any customer's part number — it is the standard code for that
+ *  geometry, which is the point: this is what the screen looks like. */
+export const EXAMPLE_ITEM = "DNMG 150608-MP insert";
+
 /** One quote line, as the hero card shows it and the plans note re-reads it. */
 export interface WorkedLine {
   /** Units asked for. */
@@ -118,6 +126,20 @@ const EXAMPLES: Record<Region, RegionExample> = {
 
 export function exampleFor(region: Region): RegionExample {
   return EXAMPLES[region];
+}
+
+/** Margin at the price the customer asked for — the figure the card flags.
+ *
+ *  Derived rather than written down, for the reason every other figure here is
+ *  derived: the two regions' costs are not proportional to their prices, so a
+ *  literal would be right for one card and quietly wrong for the other. */
+export function marginAtAsked(p: RegionExample): number {
+  return (p.line.asked - p.line.cost) / p.line.asked;
+}
+
+/** `5.1%` — the app prints one decimal place, so this does too. */
+export function marginPct(p: RegionExample): string {
+  return `${(marginAtAsked(p) * 100).toFixed(1)}%`;
 }
 
 function format(p: RegionExample, amount: number, decimals: number): string {

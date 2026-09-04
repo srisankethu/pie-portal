@@ -73,6 +73,7 @@ from .bind import (
     suggest,
     suggest_group,
     types_for,
+    with_decimal,
 )
 from .evidence import GroupEvidence, SegmentEvidence, gather
 from .safety import MAX_INPUT_LENGTH, UnsafePattern, check_pattern
@@ -104,5 +105,5 @@ __all__ = [
     "UnsafePattern", "apply_bindings", "canonical_bytes", "candidates_for",
     "check_pattern", "content_id",
     "decode", "freeze", "from_dict", "gather", "is_known_slot", "suggest",
-    "suggest_group", "to_jsonl", "types_for",
+    "suggest_group", "to_jsonl", "types_for", "with_decimal",
 ]

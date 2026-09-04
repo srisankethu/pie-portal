@@ -139,6 +139,11 @@ function decoding(over: Partial<SourceDecoding> = {}): SourceDecoding {
                grade: "Grade" },
     rule_set: "zcnc",
     rule_set_resolved: true,
+    // The rule-set path by default. A file decoded by an artifact built for
+    // it is the other case, and a test that means it says so.
+    decoder_id: null,
+    decoder: null,
+    path: "rule_set",
     analysis: {
       sample_rows: 500,
       candidates: [{ rule_set: "zcnc", rows_read: 500, classified: 431,

@@ -201,12 +201,34 @@ class Decoder:
     decoder_id: str
 
     def to_dict(self) -> Dict[str, Any]:
-        return artifact_dict(self.schema_version, self.decimal, self.segments)
+        """The artifact as plain data, **carrying its own id**.
+
+        The id is a sibling of the hashed content and never part of it —
+        :func:`artifact_dict` is what :func:`content_id` is taken over, and it
+        stays exactly as it was, so no existing id moves. It is included here
+        because this is what gets *stored*, and an artifact that does not carry
+        its own checksum is one :func:`from_dict` cannot tell has been edited:
+        the tamper check reads ``payload["decoder_id"]``, so a payload without
+        the key skipped it silently and re-froze under whatever id the new
+        contents hashed to.
+
+        Found by storing one in a database column and then trying to detect an
+        edit to it. Before this, every caller wanting the check had to
+        remember to attach the id itself, and the two places in the test suite
+        that did were the only evidence the check worked at all.
+        """
+        return {**artifact_dict(self.schema_version, self.decimal, self.segments),
+                "decoder_id": self.decoder_id}
 
 
 def artifact_dict(schema_version: int, decimal: str,
                   segments: Sequence[Segment]) -> Dict[str, Any]:
-    """The artifact as plain data, in the shape the id is taken over."""
+    """The artifact as plain data, in the shape the id is taken over.
+
+    Deliberately without ``decoder_id``: a hash cannot cover itself. This is
+    the hashed content; :meth:`Decoder.to_dict` is that plus the id, and is
+    what anything storing or transmitting an artifact should use.
+    """
     return {
         "schema_version": schema_version,
         "decimal": decimal,

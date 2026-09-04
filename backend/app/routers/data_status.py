@@ -1358,14 +1358,35 @@ def _source(session: Session, principal: Principal, connection_id: str,
 
 class DecodingConfigRequest(BaseModel):
     """One file's decoding config, as a person saves it: which of its columns
-    hold the record id, description and grade, and which shipped rule set
-    decodes its descriptions. ``rule_set`` may be empty — the honest state for
-    a file no shipped rule set reads — and the file then waits, by name."""
+    hold the record id, description and grade, and what decodes its
+    descriptions.
+
+    Exactly one of ``rule_set`` (a shipped pack) and ``decoder`` (an artifact
+    built from this file) may be given, and both may be omitted — the honest
+    state for a file nothing reads yet, which then waits by name. Both at once
+    is refused in ``catalog.confirm_decoding``, where the sentence saying why
+    lives.
+
+``decoder`` is the artifact **as ``propose-decoder`` returned it** — its
+    own id must still match its contents, so it is a decoder this deployment
+    produced. The review a person made arrives beside it: ``bindings`` is the
+    confirmed slot and type per capture group, and ``decimal`` is which
+    reading of ``11,1`` they chose. Both are applied server-side and the
+    result is re-frozen under its own id.
+
+    The patterns are deliberately not editable through this. A binding names
+    an attribute and the review exists to catch a wrong one; a pattern is a
+    regular expression that runs over every row of every rebuild, and not
+    offering that door is better than relying on the safety check behind it.
+    """
 
     record_id: str
     description: str
     grade: Optional[str] = None
     rule_set: Optional[str] = None
+    decoder: Optional[dict] = None
+    bindings: Optional[list[dict]] = None
+    decimal: Optional[str] = None
 
 
 @router.put("/catalog/companies/{connection_id}/catalogues/{catalogue_key}"
@@ -1387,7 +1408,9 @@ def save_source_decoding(
     read. Saving here re-reads the stored bytes with the columns given and
     refuses one naming a column the file does not have, and refuses a rule
     set the engine does not ship, so a config that cannot build is never
-    stored. Until it is saved, the file is not decoded.
+    stored. A ``decoder`` is re-frozen and its content id re-derived, so one
+    edited between the review and here is refused rather than stored under an
+    id that no longer describes it. Until it is saved, the file is not decoded.
 
     The bytes are not touched, and the source is not superseded: this changes
     how a file is *read*, and superseding it would say a different file had
@@ -1402,7 +1425,8 @@ def save_source_decoding(
               "grade": body.grade or None}
     try:
         catalog.confirm_decoding(session, row, wanted, body.rule_set,
-                                 actor=principal.user_id)
+                                 actor=principal.user_id, decoder=body.decoder,
+                                 bindings=body.bindings, decimal=body.decimal)
     except ItemMasterError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
     except catalog.CatalogueError as e:
@@ -1449,6 +1473,46 @@ def analyze_source_decoding(
         row.rule_set = analysis["proposed"]
     session.flush()
     return _company_dict(session, connection, principal)
+
+
+@router.post("/catalog/companies/{connection_id}/catalogues/{catalogue_key}"
+             "/sources/{source_key}/propose-decoder")
+def propose_source_decoder(
+    connection_id: str,
+    catalogue_key: str,
+    source_key: str,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Read one stored file and propose a decoder built for it alone.
+
+    The other half of discovery, and the one that needs no shipped grammar:
+    the file's descriptions are clustered into shapes, a pattern is induced
+    per shape and validated over every row, each captured group is measured,
+    and the groups whose meaning the file's own text settles are named. The
+    rest come back with their evidence and the slots they could be, for a
+    person to answer.
+
+    **Proposes and returns; saves nothing.** The source row is not touched —
+    ``PUT .../decoding`` with the reviewed artifact is what stores it, exactly
+    as the rule-set half works. So a proposal can be asked for twice, and
+    compared, without changing what the file currently decodes through.
+
+    Owner-only, and it spends real work on request: inference over the whole
+    file plus, where a live provider is configured, a call per batch of groups
+    it could not name from the text.
+    """
+    from .. import catalog
+    from ..ingestion.item_master import ItemMasterError
+
+    _connection, _row = _catalogue(session, principal, connection_id, catalogue_key)
+    row = _source(session, principal, connection_id, catalogue_key, source_key)
+    try:
+        return catalog.propose_decoder(session, row, principal.organization_id)
+    except ItemMasterError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+    except catalog.CatalogueError as e:
+        raise HTTPException(e.status, str(e)) from e
 
 
 @router.delete("/catalog/companies/{connection_id}/catalogues/{catalogue_key}"

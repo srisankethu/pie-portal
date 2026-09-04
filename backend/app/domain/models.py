@@ -5165,12 +5165,34 @@ class CompanyCorpus(Base):
     #: evidence in ``analysis``, never inherited from the company, the
     #: catalogue or a deployment default. Null until analysis finds exactly one
     #: rule set that reads the file or a person chooses one; a file with no
-    #: rule set is not decoded, and a build says so by name.
+    #: rule set is not decoded, and a build says so by name. Null also when
+    #: this file is decoded by its own ``decoder`` instead — see below.
     rule_set: Mapped[Optional[str]] = mapped_column(String(128))
+    #: A **frozen decoder built for this file and no other** — the other way a
+    #: file can be decoded, and the one that needs no shipped rule set at all.
+    #: Inferred from the file's own descriptions (``decoding.infer``), its
+    #: groups named where the text says so and where a person confirmed a
+    #: proposal (``decoding.bind``, ``decisions.decoder_binding``), and frozen
+    #: content-addressed so decoding it is a pure function of the file's bytes
+    #: and this artifact (``decoding.schema``).
+    #:
+    #: Exactly one of this and ``rule_set`` is set. They are two decode paths,
+    #: not a preference and a fallback: a config naming both would make "which
+    #: one decoded this row" a question about evaluation order, and a config
+    #: naming neither is a file that is not decoded — which a build says by
+    #: name rather than resolving with a default.
+    decoder: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+    #: The content id of ``decoder``, denormalised so a screen and a query can
+    #: name the decoder without loading and re-hashing the artifact. Stored
+    #: rather than derived on read for that reason alone — ``decoding.freeze``
+    #: remains the only thing that computes it, and
+    #: ``catalog.confirm_decoding`` takes it from the frozen artifact.
+    decoder_id: Mapped[Optional[str]] = mapped_column(String(16))
     #: What the discovery step measured: every shipped rule set's own counts
     #: over the first rows of this file (classified, quarantined, the census),
-    #: and which one it proposed on that evidence. Stored so the choice a
-    #: person makes is auditable against what they saw.
+    #: and which one it proposed on that evidence — or, for a proposed decoder,
+    #: its coverage, its unclaimed rows and the evidence behind each binding.
+    #: Stored so the choice a person makes is auditable against what they saw.
     analysis: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     #: When a person saved the decoding config, and who. A proposal is not a
     #: config: until this is set the file is not decoded, however good the

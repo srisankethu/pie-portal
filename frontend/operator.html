@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#f2f2f3" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <!-- Not indexed, and said three ways: here, in the robots.txt the
+         prerenderer writes, and in the deployment note in
+         docs/operator-console.md. This document is the vendor's own console —
+         a crawler has no business in it and neither does a search result. -->
+    <meta name="robots" content="noindex, nofollow" />
+    <title>PIE · Operator console</title>
+    <!-- A second entry point rather than a route inside the app, because the
+         app's every screen assumes a tenant session and this page has none.
+         `docs/operator-console.md` argues that at length; the practical half is
+         that it ships its own bundle, so nothing here can import a screen that
+         would read `principal.organization_id` and find nothing. -->
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/operator/main.tsx"></script>
+  </body>
+</html>

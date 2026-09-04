@@ -932,3 +932,134 @@ durable half. And only one rule set ships with the pinned engine, so a YG-1
 catalogue can be *defined* and its files analysed, but until a YG-1 rule set is
 written in pie-parser the analysis will say so and the file will wait — which
 is the honest answer, and the one the old default hid.
+
+
+## 14. Decoding a file with no rule set at all — the artifact (Stage A, built)
+
+§13 removed the *default* decoder: every price list names which shipped rule
+set decodes it. This removes the shipped rule sets. A file is decoded by a
+**decoder built for that file**, and the work is staged — this section is
+Stage A, which is the part that makes the rest safe to build.
+
+### The problem Stage A solves, and it is not extraction
+
+Working out how an unseen file should be read is a judgement. It looks at the
+text, proposes structure, and a person confirms it — and no judgement is
+reproducible. Decoding, on the other hand, has to be reproducible forever: a
+quote raised last March has to be explainable this March, and the record that
+answered it has to say what produced it.
+
+Those two are reconciled by a **freeze**, not by making inference
+deterministic:
+
+```
+read the file → propose a decoder → a person confirms → FROZEN
+                                                          ↓
+                   file bytes + frozen decoder → records, forever
+```
+
+Inference is a *build* step, in the sense that authoring a migration is: the
+non-reproducible act happens once, produces a reviewed artifact, and the
+artifact is what runs. One rule holds it — **inference never runs at decode
+time** — and `app/decoding/` is the machinery for that rule. Stage A ships no
+inference at all, deliberately: the artifact is data, so it can be written by
+hand, and everything downstream can be built and tested against one before
+anything proposes one.
+
+### The artifact
+
+`app/decoding/schema.py`. A decoder is an ordered list of **segments** — one
+per shape of description the file contains — each a pattern with named groups,
+bindings from those groups to attribute slots, and real rows as examples and
+counterexamples. Plus one file-level declaration: which character its numbers
+use as a decimal point.
+
+Four properties carry the guarantee:
+
+- **Content-addressed.** `decoder_id` is 16 hex of the sha256 of the artifact's
+  canonical JSON — the width pie-parser's own `ruleset_checksum` and `run_id`
+  use, because this stands beside those on a record and replaces them. Every
+  record carries it and the source file's own sha256, so "what produced this
+  row" is answerable from the row alone.
+- **Self-contained.** No references out. Nothing can move underneath a stored
+  decoder, because there is nothing underneath it.
+- **Version-refusing.** The artifact names the executor schema it was frozen
+  against, and a different executor **refuses** it rather than doing its best.
+  Silent re-interpretation under a new executor is the one failure that would
+  destroy the guarantee quietly, so it is an error rather than a behaviour.
+- **Validated at freeze, never at decode.** Every rejection happens in
+  `freeze()`: the pattern compiles and is safe, every binding names a real
+  group and a known slot, no two bindings fill one slot, every example matches
+  and no counterexample does. A decode has no decisions left to take.
+
+### Why the pattern check is static
+
+The obvious defence against a pathological regex is a timeout, and a timeout is
+exactly what this design cannot have: a wall-clock limit makes the same file
+decode into different records on a loaded machine than on an idle one. So
+`app/decoding/safety.py` judges a pattern **once, by its shape** — refusing
+nested unbounded quantifiers (`(a+)+`), alternation inside an unbounded repeat
+(`(a|aa)+`), and backreferences — and rows are bounded to 512 characters before
+matching, with the truncation counted rather than silent. It is deliberately
+conservative: a wrong refusal costs an author a rewrite, a wrong acceptance
+costs a rebuild that never finishes. It also **fails closed** — it walks
+Python's own parse tree through a private name, and the day that name moves it
+refuses everything rather than passing everything.
+
+### The one thing that is not per file
+
+`CORE_SLOTS` — 50 attribute names. Every file gets its own extraction rules,
+but they all extract into the same names, because a quote asks whether this
+drill is equivalent to that one and the answer is a comparison of
+`cutting_dia_mm` against `cutting_dia_mm`. If each file named its own fields
+there would be nothing to compare and equivalence would silently return less.
+Declared in the portal on `pie_service.ATTRIBUTE_FIELDS`' reasoning — it is the
+portal's statement of what a record may hold, and importing the engine's copy
+would let a submodule bump widen it — with a test pinning it as a subset of the
+engine's. A fact the vocabulary has no name for is kept as an `ext:` field and
+is **never compared**: nothing else knows what it means.
+
+There is no `mm`/`inch` type and no unit conversion. The slot name carries the
+unit, so a decoder that read an inch value into a millimetre slot would be a
+wrong number with a real stamp — the class of defect this whole design exists
+to prevent.
+
+### What the real file taught us
+
+The shipped corpus writes `SC DRILL 5.1mm` and `SC DRILL 11,1mm` in the same
+column of the same export. A single decimal convention per decoder was the
+first design and it was wrong: under `dot` the comma rows are refused —
+correctly, since a comma there could be a thousands separator — at a cost of
+several hundred drills. So there is a third convention, `either`, and it is
+still a *declaration* rather than a guess: the same text always converts the
+same way, whatever else the file contains. What it cannot represent is a
+thousands separator, and a file that groups digits must declare `dot` and
+accept what that costs. The convention is in the artifact precisely so the
+choice is recorded rather than assumed.
+
+### How the guarantee is proved
+
+`tests/decision_platform/test_decoder_determinism.py`, and the two kinds of
+test there do different jobs. Most compare one decode to another in the same
+process, which cannot catch a change that moves both. The **golden file** can:
+bytes committed to the repository, so a change to output that somebody's stored
+catalogue depends on fails the gate rather than shipping. And the whole thing
+runs again over the **real 6,717-row corpus**, where one hand-authored segment
+claims 1,219 of the 1,273 drill rows — evidence at the size the guarantee has
+to hold at, rather than on five rows made up to pass.
+
+### Not built here, deliberately
+
+No inference (Stages B and C), and nothing wired into the build path: the
+catalogue build still decodes through the rule set each file's decoding config
+names. Stage A is the foundation the rest lands on, and it is worth having on
+its own — it is the only part that says what "deterministic" means in code
+rather than in a docstring. There is also no CLI: there is no stored decoder
+for one to load yet, and a command with no artifact to run against would be
+surface for a flow that does not exist (§7).
+
+Still open, and it is Stage D: identity namespacing. Today an identity is
+namespaced by the pack's `org_id`. With no packs it should become the
+catalogue — the manufacturer — which is already modelled, but it touches
+`identity/store.py` and getting it wrong makes part numbers stop resolving
+silently.

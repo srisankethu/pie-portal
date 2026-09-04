@@ -1,0 +1,3 @@
+{"cutting_dia_mm":11.1,"decoder_id":"c634710589df9d7e","depth_ratio_xd":5,"description_raw":"SC DRILL 11,1MM 5XD COOLANT","grade":"KC7315","label":"solid_carbide_drill","record_id":"A1","schema_version":1,"segment":"sc-drill","source_sha256":"fixture","through_coolant":true}
+{"cutting_dia_mm":8.0,"decoder_id":"c634710589df9d7e","description_raw":"SC DRILL 8,0MM","grade":"KC7315","label":"solid_carbide_drill","record_id":"A2","schema_version":1,"segment":"sc-drill","source_sha256":"fixture"}
+{"decoder_id":"c634710589df9d7e","description_raw":"CNMG 120408-49 - TN2000","grade":"TN2000","iso_clearance_letter":"N","iso_fixing":"G","iso_shape":"C","iso_tolerance":"M","label":"turning_insert","record_id":"A3","schema_version":1,"segment":"iso-insert","source_sha256":"fixture"}

@@ -625,7 +625,8 @@ export function Landing({ onEnter, onDemo }: {
                   Drop a customer&rsquo;s enquiry in as they wrote it — a pasted
                   email, a line of WhatsApp — and PIE reads it into quote lines
                   and resolves each code against your catalog. Where a code has
-                  no exact match it ranks alternatives on geometry and grade,
+                  no exact match it ranks alternatives on the attributes it
+                  decoded — the dimensions and the material spec —
                   deterministically, and <b>abstains when nothing
                   discriminates</b> rather than inventing one.
                 </p>

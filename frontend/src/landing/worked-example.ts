@@ -53,13 +53,21 @@ export { detectRegion, type Region };
  *  here, and the test holds the card's floor to it. */
 export const MARGIN_FLOOR = 0.15;
 
-/** The item the worked line is for.
+/** The item the worked line is for — a catalogue code and nothing else.
  *
- *  A real ISO insert designation, and the one the seeded demo book uses, so
- *  the card names something a distributor recognises rather than "Product A".
- *  It is not any customer's part number — it is the standard code for that
- *  geometry, which is the point: this is what the screen looks like. */
-export const EXAMPLE_ITEM = "DNMG 150608-MP insert";
+ *  It was "DNMG 150608-MP insert": a real ISO turning-insert designation, the
+ *  one the seeded demo book uses, chosen so the card would name something a
+ *  distributor recognises. The trouble is *which* distributor. This platform
+ *  is sold to distributors of whatever their book holds — the connector
+ *  registry alone spans six ERPs and no vertical — and a carbide insert on
+ *  the front page tells a fastener or a bearings distributor that the product
+ *  was built for somebody else's catalogue. Nothing about the decision on
+ *  that card is specific to a cutting tool.
+ *
+ *  So: a code shaped like a catalogue code, decoding to nothing. It has to
+ *  stay that way — the moment it means something in some trade, it is that
+ *  trade's page again. */
+export const EXAMPLE_ITEM = "Part 4114-08";
 
 /** One quote line, as the hero card shows it and the plans note re-reads it. */
 export interface WorkedLine {

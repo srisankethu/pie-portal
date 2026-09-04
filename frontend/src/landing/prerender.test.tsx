@@ -17,7 +17,7 @@ import { Landing } from "./Landing";
 import connectionsSource from "../../../backend/app/ingestion/connections.py?raw";
 
 import { ERP_PAGES } from "./erp";
-import { exampleFor } from "./worked-example";
+import { EXAMPLE_ITEM, exampleFor } from "./worked-example";
 import { PAGES, landingTokenCss, renderLandingMarkup } from "./prerender";
 
 /** Rendered once and read by every block below — the render is the fixture. */
@@ -320,6 +320,39 @@ describe("the worked card is marked as a drawing, not a record", () => {
     // the dollar region's.
     expect(markup).toContain(exampleFor("INTL").customer);
     expect(markup).not.toContain(exampleFor("IN").customer);
+  });
+});
+
+describe("the public pages name no single trade", () => {
+  // The platform reads whatever book a distributor keeps — the connector
+  // registry alone spans six ERPs and no vertical — so the front page must not
+  // quietly pick one. It did: the worked card's item was a real ISO
+  // turning-insert designation and the RFQ card ranked alternatives on
+  // "geometry and grade", which is a carbide catalogue's vocabulary. A
+  // fasteners distributor reading either learns the product was built for
+  // somebody else.
+  //
+  // The example item is a code that decodes to nothing, and the attributes are
+  // named in the words any catalogue would use. This is the check that keeps
+  // it that way, because the tempting edit is always to make the example more
+  // vivid by making it somebody's.
+  // The attribute words are in here too, and they are the half that would
+  // otherwise go unchecked: "ranks alternatives on geometry and grade" is as
+  // much a carbide catalogue as the part number was.
+  const TRADE = /\b(carbide|DNMG|CNMG|insert|end ?mill|drill bit|fastener|bearing|geometry|grade)s?\b/i;
+
+  it("keeps the landing page's example free of a trade", () => {
+    const landing = documents.find((d) => d.page.slug === "")!.html;
+    const hit = landing.match(TRADE);
+    expect(hit?.[0] ?? null,
+      `the front page names a trade: “${hit?.[0]}”. The example has to read for `
+      + "whatever this distributor sells.").toBeNull();
+  });
+
+  it("uses an item code that decodes to nothing", () => {
+    // Shaped like a catalogue code and meaning nothing in any of them.
+    expect(EXAMPLE_ITEM).not.toMatch(TRADE);
+    expect(documents.find((d) => d.page.slug === "")!.html).toContain(EXAMPLE_ITEM);
   });
 });
 

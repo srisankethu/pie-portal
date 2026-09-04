@@ -1847,3 +1847,14 @@ shims, are mounted but are not flows and are not listed here.
 | POST | `/api/v1/trust/erasure` | owner | Destroy the tenant data key and issue a signed receipt listing both what died and what survives in plaintext; irreversible, idempotent if already… |
 | GET | `/api/v1/trust/export` | owner | Everything the organization owns as JSON, including the cross-connector identity graph no single source system holds |
 | GET | `/api/v1/trust/payloads` | owner | Every model payload logged for this org with findings summary; ?reveal=true decrypts the actual sent text for its owner |
+| GET | `/api/v1/operator/whoami` | operator key | Confirm a key is live and name its holder — the console's sign-in, so a bad key is reported at the door rather than as an empty queue |
+| GET | `/api/v1/operator/enquiries` | operator key | The demo-request queue. Waiting, oldest first (what `app.contact list` prints); `?handled=true` is the answered history the CLI cannot show |
+| POST | `/api/v1/operator/enquiries/{contact_request_id}/handled` | operator key | Record that somebody replied; stamped with the operator's own id, never a caller-supplied name; a second stamp is refused (400) |
+| GET | `/api/v1/operator/requests` | operator key | The three ask-queues in one answer — wanted at sign-up, requested from inside the product, asked from the public site |
+| POST | `/api/v1/operator/requests/{request_id}/decide` | operator key | Grant (`apply: true`) or refuse an in-product plan request via `entitlements.decide_request`; 409 if already decided |
+| GET | `/api/v1/operator/organizations` | operator key | Every tenant with its licensed plan, currency and start date — vendor billing metadata, nothing from inside the book |
+| POST | `/api/v1/operator/organizations/{organization_id}/plan` | operator key | Put a tenant on a plan through `entitlements.set_plan`, the one function that grants anything |
+| POST | `/api/v1/operator/organizations/{organization_id}/access` | operator key | Open a time-boxed break-glass grant with a justification the customer reads verbatim; under 10 characters is refused |
+| DELETE | `/api/v1/operator/access/{grant_id}` | operator key | Hand the key back before it expires (idempotent) |
+| GET | `/api/v1/operator/organizations/{organization_id}/support` | operator key | The only panel that reads inside a tenant: seat count and last sync. 403 without a live grant, and every read writes an ACCESSED event |
+| GET | `/api/v1/operator/organizations/{organization_id}/access` | operator key | Whether a grant is open now, and the last 50 access events — the record *of* break-glass, so readable without one |

@@ -640,22 +640,28 @@ def test_every_tenant_scoped_table_is_covered_or_deliberately_named(migrated):
         "a table named here no longer carries organization_id")
 
 
-def test_the_three_tables_without_a_tenant_column_are_still_the_same_three(migrated):
+def test_the_tables_without_a_tenant_column_are_still_the_ones_we_named(migrated):
     """`zoho_credentials` belongs to a person rather than a company,
-    `process_leases` is infrastructure about processes, and `contact_requests`
-    is written by somebody who has no organization yet — the public site's
-    enquiry form, filled in before there is a tenant to scope the row to. None
-    of the three can take this policy shape at all: a policy keyed on a column
-    that does not exist is not a control.
+    `process_leases` is infrastructure about processes, `contact_requests` is
+    written by somebody who has no organization yet — the public site's form,
+    filled in before there is a tenant to scope the row to — and
+    `operator_keys` is PIE's own staff credential, which is not a tenant's data
+    at all. None of the four can take this policy shape: a policy keyed on a
+    column that does not exist is not a control.
 
-    A *fourth* appearing means a model was added without a tenant column, which
+    A *fifth* appearing means a model was added without a tenant column, which
     is a decision worth making on purpose rather than discovering when it
-    leaks."""
+    leaks. `operator_keys` is what that decision looks like when it is made
+    deliberately — `docs/operator-console.md` argues it, and the row it adds
+    grants no reading inside a tenant: the console reaches one only through
+    `trust/access`, which is why the policied tables below still decide what an
+    operator can see."""
     from app.db import Base
 
     unscoped = {t.name for t in Base.metadata.sorted_tables
                 if "organization_id" not in t.c}
-    assert unscoped == {"zoho_credentials", "process_leases", "contact_requests"}
+    assert unscoped == {"zoho_credentials", "process_leases", "contact_requests",
+                        "operator_keys"}
 
 
 # ── the unauthenticated paths, which have no tenant until they find one ─────

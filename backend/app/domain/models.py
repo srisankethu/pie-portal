@@ -5329,3 +5329,75 @@ class CompanyCatalogue(Base):
     #: Null until the first build: a row is a catalogue's definition first and
     #: its build report second, and "never built" must not date itself.
     built_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+
+
+# ── the vendor's own console ─────────────────────────────────────────────────
+#
+# Everything above this line is a tenant's data or a tenant's metadata. The
+# table below is neither: it is how PIE — the vendor — signs in to operate the
+# platform. `docs/operator-console.md` is the design and states why this is a
+# separate credential rather than a flag on `users`.
+
+
+class OperatorKey(Base):
+    """One credential for one member of PIE's own staff. Not a tenant login.
+
+    Deliberately its own table beside :class:`ApiKey`, which it otherwise
+    resembles closely enough that sharing one would look like reuse. It would
+    not be. An ``ApiKey`` resolves to an :class:`~app.authz.Principal` carrying
+    an ``organization_id``, and every control in this codebase — the cost and
+    margin withholding, the scope checks, row-level security — is downstream of
+    that field being set. An operator credential is the one thing in the system
+    with *no* organization, so putting it in the same table would mean one
+    verification path that sometimes returns a tenant-bound caller and
+    sometimes returns a tenant-bypassing one, told apart by a nullable column.
+    That is the shape of every "the check was there, on the other branch"
+    incident this repository has recorded.
+
+    So: a separate table, a separate prefix (``pieop_``), a separate verifier,
+    and no code path from a customer credential to this row.
+
+    **What holding one does *not* grant.** Reading inside a tenant. The 58
+    policied tables are fail-closed under row-level security and stay that way:
+    an operator sees nothing in them until ``trust/access`` records a
+    break-glass grant with a stated reason, and that reason is shown to the
+    customer. This row is the identity a grant is opened *by*
+    (``access_grants.staff_user_id``); it is not a bypass.
+
+    ``operator_id`` is the person, stable across key rotations, and it is what
+    lands in ``contact_requests.handled_by`` and in every access event. Two
+    live keys for one operator — a laptop and a phone — are two rows sharing
+    one ``operator_id``, which is why it is not the primary key.
+    """
+
+    __tablename__ = "operator_keys"
+
+    #: The non-secret half of the presented credential, and the lookup handle,
+    #: exactly as ``api_keys.key_id`` is. Random, so it carries nothing about
+    #: the person holding it.
+    key_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+
+    #: Who this is, in the audit. Free-form but meant to be short and stable —
+    #: ``sanketh``, not ``Sri Sanketh Uppalapati (laptop, Sept)``. It is the
+    #: string a customer reads in their own access log, so it should name a
+    #: person somebody could ask about.
+    operator_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    #: What the operator recognises this particular key by. Not an identifier.
+    name: Mapped[str] = mapped_column(String(120), default="")
+
+    #: PBKDF2 over the secret half, in ``app/passwords.py``'s format — the same
+    #: storage a password gets, for the same reason.
+    secret_hash: Mapped[str] = mapped_column(String(256))
+    secret_hint: Mapped[str] = mapped_column(String(8), default="")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_now, index=True)
+    #: Advanced lazily like ``api_keys.last_used_at``. Null means a key that was
+    #: minted and never used, which is a thing worth being able to see.
+    last_used_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True))
+    #: Set, never deleted. Who operated this platform in March is a question
+    #: that outlives the laptop the key was on.
+    revoked_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True))

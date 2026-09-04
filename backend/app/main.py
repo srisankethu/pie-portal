@@ -24,7 +24,8 @@ from .routers import (accounts, admin, ai_settings, api_keys, approvals,
                       attribution,
                       commercial, connections, data_status,
                       decisions, enquiries, entitlements, identity, internal,
-                      onboarding, organizations, outcomes, platform_auth,
+                      onboarding, operator, organizations, outcomes,
+                      platform_auth,
                       quote, resolve,
                       insight, quote_intelligence, quote_support,
                       retrospective, trust)
@@ -387,6 +388,13 @@ app.include_router(organizations.router)
 # key that could mint another key turns one leak into a permanent foothold.
 app.include_router(resolve.router)
 app.include_router(api_keys.router)
+
+# The vendor's own console, and the third kind of credential this app takes
+# after a session cookie and a tenant API key. Mounted last because it is the
+# only router whose caller is not a tenant at all: `docs/operator-console.md`
+# says why that is a separate table and a separate verifier rather than a role,
+# and `routers/operator` says what it may and may not read.
+app.include_router(operator.router)
 
 
 # ── the two prefixes that were never versioned ───────────────────────────────

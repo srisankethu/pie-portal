@@ -250,10 +250,16 @@ for (const page of pages) {
 }
 
 // Crawl files. /api/ is the backend proxy — token-gated anyway, but nothing
-// there is a page. Assets and the public pages stay allowed.
+// there is a page. /operator.html is PIE's own console: it refuses every
+// request without an operator key, so this is not what protects it — it is
+// what keeps it out of a search result, which is a different job and the one
+// robots.txt can actually do. The document carries `noindex` itself as well,
+// because a crawler that ignores this file still reads that.
+// Assets and the public pages stay allowed.
 await writeFile(
   path.join(DIST, "robots.txt"),
-  `User-agent: *\nDisallow: /api/\n\nSitemap: ${SITE_ORIGIN}/sitemap.xml\n`,
+  `User-agent: *\nDisallow: /api/\nDisallow: /operator.html\n\n`
+  + `Sitemap: ${SITE_ORIGIN}/sitemap.xml\n`,
 );
 
 // Generated from the same registry the documents are, so a page cannot exist

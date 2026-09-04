@@ -530,7 +530,12 @@ def test_the_migration_gives_an_existing_company_its_default_catalogue(tmp_path)
     c.commit()
     c.close()
 
-    assert _alembic(db, "upgrade", "head").returncode == 0
+    # `m1cats` by name rather than `head`: this is a test about one migration,
+    # and the `downgrade -1` below is what reverses it. Written against `head`
+    # it passed only while m1cats *was* the head, and broke on the next
+    # revision — the downgrade then undid that one instead and the assertions
+    # were about a schema this test never asked for.
+    assert _alembic(db, "upgrade", "m1cats").returncode == 0
     c = sqlite3.connect(db)
     pk = [r[1] for r in c.execute("PRAGMA table_info(company_catalogues)") if r[5]]
     assert pk == ["organization_id", "connection_id", "catalogue_key"]

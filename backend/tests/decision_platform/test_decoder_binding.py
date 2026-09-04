@@ -386,6 +386,21 @@ def test_a_binding_set_is_the_whole_answer_for_the_segments_it_names():
     assert [f.slot for f in fewer.segments[0].fields] == ["depth_ratio_xd"]
 
 
+def test_changing_the_decimal_convention_is_a_new_artifact():
+    """The one thing inference cannot infer — whether ``11,1`` is eleven point
+    one or eleven thousand one hundred, since both readings parse. A new id,
+    because the same patterns under a different convention decode the same
+    rows to *different numbers*, which is exactly what an id must move for."""
+    decoder = _decoder(DRILLS)
+    other = decoding.with_decimal(decoder, "comma")
+    assert other.decimal == "comma"
+    assert other.decoder_id != decoder.decoder_id
+    assert ([s.pattern for s in other.segments]
+            == [s.pattern for s in decoder.segments])
+    with pytest.raises(DecoderError):
+        decoding.with_decimal(decoder, "point")
+
+
 def test_apply_refuses_a_segment_this_decoder_does_not_have():
     """The one check ``freeze`` cannot make, because it sees a segment and not
     a decoder."""

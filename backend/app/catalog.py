@@ -42,6 +42,7 @@ from typing import Any, Dict, List, Optional
 
 from . import clock, retrieval
 from .config import settings
+from .decoding import infer
 
 log = logging.getLogger("pie_portal.catalog")
 
@@ -223,6 +224,110 @@ def run_parse(corpus: Path, rule_set: Path, out: Path) -> Dict[str, Any]:
     }
 
 
+def run_decoder(source: Any, decoder_payload: Dict[str, Any], out: Path,
+                limit: Optional[int] = None,
+                expect_id: Optional[str] = None) -> Dict[str, Any]:
+    """Decode one file through its own frozen decoder into one JSONL.
+
+    The portal-side twin of :func:`run_parse`, and the same contract: it takes
+    a file and one decoder, writes decoded records and a quarantine beside
+    them, and returns counts plus the stamp. What differs is everything behind
+    it — no shipped grammar, no pack, no rule set. The artifact was built from
+    this file and decoding it is a pure function of the file's bytes and that
+    artifact (:mod:`app.decoding`).
+
+    **Re-frozen on the way in**, through
+    :func:`app.decoding.schema.from_dict`: a stored artifact is validated and
+    its content id re-derived from the bytes on every load, so a decoder edited
+    in the database decodes nothing rather than decoding differently under an
+    id that no longer describes it. The artifact carries its own id
+    (:meth:`app.decoding.schema.Decoder.to_dict`), so that check needs nothing
+    from the row; ``expect_id`` cross-checks the denormalised
+    ``company_corpora.decoder_id`` as well, which catches the one case the
+    artifact alone cannot — a whole artifact swapped for another valid one.
+
+    Rows are read through :func:`app.ingestion.item_master.emit_rows` — the
+    same function the rule-set path normalises with — so "which of this file's
+    columns hold the part number, the description and the grade" has one answer
+    for both paths. Streamed into the decode for the reason
+    :func:`normalised_corpus` gives: materialising a 33 MB file cost 394 MB.
+
+    The stamp carries ``run_id`` and no engine fields, because there are none
+    to carry honestly. ``run_id`` is a content id over the file's sha256 and
+    the decoder's id — the same question pie-parser's ``run_id`` answers,
+    which input and which rules produced this — so :func:`_union_version`
+    keeps working unchanged. ``org_id`` is deliberately **not** here: the
+    namespace is a fact about the company rather than about one decode, and
+    :func:`_merge_decoded` is where it is stated. The records themselves also
+    carry ``decoder_id`` and the decoder's ``schema_version``, stamped by the
+    executor; the latter shares a name with the engine's record-schema version,
+    which is worth knowing when reading :func:`catalog_stamp` off a
+    portal-decoded file.
+    """
+    from .decoding import content_id, decode, from_dict, to_jsonl
+    from .ingestion import item_master
+
+    started = time.perf_counter()
+    decoder = from_dict(decoder_payload)
+    if expect_id and expect_id != decoder.decoder_id:
+        raise CatalogueError(
+            f"This file's config says it is decoded by {expect_id} and the "
+            f"stored artifact is {decoder.decoder_id}. The two disagree, so "
+            f"nothing here knows which decoder the records already on disk "
+            f"came from. Propose a decoder for the file again and save it.",
+            status=409)
+    try:
+        table = item_master.read_table(source.content, source.filename,
+                                       source.content_type or "")
+        mapping = (getattr(source, "mapping", None)
+                   or item_master.suggest_mapping(table))
+        report = item_master.ingest_report(table, mapping)
+        rows = list(item_master.emit_rows(table, mapping, report, limit=limit))
+    except item_master.ItemMasterError as e:
+        raise item_master.ItemMasterError(
+            f"{source.filename or source_key_of(source)}: {e}") from e
+    _release(source)
+
+    result = decode(rows, decoder, source_sha256=source.sha256 or "")
+    run_id = content_id({"source_sha256": source.sha256 or "",
+                         "decoder_id": decoder.decoder_id})
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    tmp.write_bytes(to_jsonl(result.records))
+    os.replace(tmp, out)
+    # Quarantined rows are kept, not dropped — "unknown means unknown" is
+    # pie-parser's contract and the executor's, and losing the rows at this
+    # boundary would break both.
+    with out.with_suffix(".quarantine.jsonl").open("w", encoding="utf-8") as fh:
+        for held in result.quarantined:
+            fh.write(json.dumps({"record_id": held.record_id,
+                                 "description_raw": held.description,
+                                 "reason": held.reason, "detail": held.detail},
+                                sort_keys=True, separators=(",", ":")) + "\n")
+
+    report["rows_emitted"] = len(rows)
+    report["source_key"] = source_key_of(source)
+    report["filename"] = source.filename
+    report["sha256"] = source.sha256
+    log.info("Decoded %d records from %s through decoder %s (%d quarantined)",
+             len(result.records), source.filename or source_key_of(source),
+             decoder.decoder_id, len(result.quarantined))
+    return {
+        # The executor's own summary, verbatim — counts it measured, never a
+        # rate this function computed about them.
+        "report": result.summary(),
+        "stamp": {"run_id": run_id},
+        "decoder_id": decoder.decoder_id,
+        "records": len(result.records),
+        "quarantined": len(result.quarantined),
+        "rows_read": result.rows_read,
+        "duration_s": round(time.perf_counter() - started, 2),
+        "corpus_fingerprint": source.sha256 or "",
+        "ingest": report,
+    }
+
+
 # ── per connected company ────────────────────────────────────────────────────
 #
 # Everything above this line is generic: a parse, a stamp, and whether the
@@ -390,15 +495,50 @@ def rule_set_path(rule_set_id: Optional[str]) -> Optional[Path]:
 # ── the decoding config: how one price list is read and decoded ─────────────
 
 
+#: How a file's descriptions are decoded. Two paths, and a config names
+#: exactly one of them.
+#:
+#: ``rule_set`` — one of pie-parser's shipped org-layer packs. Fifty slots
+#: richly bound and a grade grammar behind them; it reads the files it was
+#: written for and nothing else.
+#: ``decoder`` — an artifact built for *this file*, inferred from its own
+#: descriptions and frozen (``app.decoding``). It needs no shipped grammar at
+#: all, which is the point, and it starts knowing only what the file says.
+#:
+#: Not a preference and a fallback. A config naming both would make "which
+#: decoded this row" a question about evaluation order; a config naming
+#: neither is a file that is not decoded, and a build says which file by name.
+DECODE_RULE_SET = "rule_set"
+DECODE_DECODER = "decoder"
+
+
+def decode_path(source: Any) -> Optional[str]:
+    """Which of the two paths this file's saved config names, or None.
+
+    None for a config that is unconfirmed, that names neither, or whose rule
+    set the pinned engine no longer ships — the three ways a file ends up not
+    decodable, all of which a build reports rather than resolves.
+    """
+    if getattr(source, "decoding_confirmed_at", None) is None:
+        return None
+    if getattr(source, "mapping", None) is None:
+        return None
+    if getattr(source, "decoder", None):
+        return DECODE_DECODER
+    if rule_set_path(getattr(source, "rule_set", None)) is not None:
+        return DECODE_RULE_SET
+    return None
+
+
 def decoding_config(source: Any) -> Dict[str, Any]:
     """One price list's decoding config as the screen and the API see it.
 
     Two halves and a status. ``columns`` says which of the file's own columns
-    are read; ``rule_set`` says which shipped rule set decodes the
-    descriptions; ``analysis`` is the evidence the proposal rested on, kept so
-    a person's choice can be checked against what they saw. ``ready`` is the
-    one question a build asks: saved, with a rule set the engine still ships.
-    A proposal that was never saved is not ready, however good it looked.
+    are read; ``rule_set`` or ``decoder_id`` says what decodes the
+    descriptions, and ``path`` says which of the two it is; ``analysis`` is the
+    evidence the proposal rested on, kept so a person's choice can be checked
+    against what they saw. ``ready`` is the one question a build asks. A
+    proposal that was never saved is not ready, however good it looked.
     """
     confirmed = getattr(source, "decoding_confirmed_at", None)
     rule_set = getattr(source, "rule_set", None) or None
@@ -406,6 +546,9 @@ def decoding_config(source: Any) -> Dict[str, Any]:
         "columns": getattr(source, "mapping", None),
         "rule_set": rule_set,
         "rule_set_resolved": rule_set_path(rule_set) is not None,
+        "decoder_id": getattr(source, "decoder_id", None) or None,
+        "decoder": getattr(source, "decoder", None) or None,
+        "path": decode_path(source),
         "analysis": getattr(source, "analysis", None),
         "confirmed_at": clock.iso(clock.aware(confirmed)) if confirmed else None,
         "confirmed_by": getattr(source, "decoding_confirmed_by", None) if confirmed else None,
@@ -414,12 +557,10 @@ def decoding_config(source: Any) -> Dict[str, Any]:
 
 
 def decoding_ready(source: Any) -> bool:
-    """Whether this file can be decoded: a saved config naming a rule set the
-    engine ships. Nothing else counts — not a proposal, not a rule set the
-    pin no longer has."""
-    return (getattr(source, "decoding_confirmed_at", None) is not None
-            and getattr(source, "mapping", None) is not None
-            and rule_set_path(getattr(source, "rule_set", None)) is not None)
+    """Whether this file can be decoded: a saved config naming one of the two
+    decode paths. Nothing else counts — not a proposal, not a rule set the pin
+    no longer has, not a decoder that was proposed and never confirmed."""
+    return decode_path(source) is not None
 
 
 def analyze_source(raw: bytes, filename: str = "", content_type: str = "",
@@ -540,40 +681,146 @@ class _Probe:
 
 
 def confirm_decoding(session: Any, source: Any, columns: Dict[str, Any],
-                     rule_set_id: Optional[str], actor: Optional[str]) -> Any:
-    """Save one file's decoding config: the columns a person confirmed and the
-    rule set they chose. The step between "shown" and "decoded".
+                     rule_set_id: Optional[str], actor: Optional[str],
+                     decoder: Optional[Dict[str, Any]] = None,
+                     bindings: Optional[List[Dict[str, str]]] = None,
+                     decimal: Optional[str] = None) -> Any:
+    """Save one file's decoding config: the columns a person confirmed and what
+    they chose to decode with. The step between "shown" and "decoded".
 
     Re-reads the stored bytes with the columns given and refuses one naming a
     column the file does not have, so a config that cannot build is never
-    stored; refuses a rule set the engine does not ship for the same reason.
-    ``rule_set_id`` may be empty — the honest state for a file no shipped rule
-    set reads — and the config is then saved but not *ready*: the file's
-    columns are on record, and the build names it as waiting for a rule set.
+    stored.
+
+    **One decode path, or neither.** ``rule_set_id`` names a shipped pack;
+    ``decoder`` is a frozen artifact built for this file. Both together is
+    refused: which one decoded a row would become a question about evaluation
+    order, and the answer would be invisible on the row. Neither is allowed and
+    is the honest state for a file nothing reads yet — the config is saved but
+    not *ready*, the columns are on record, and a build names the file as
+    waiting.
+
+    A ``decoder`` is re-frozen here through
+    :func:`app.decoding.schema.from_dict` before it is stored, which re-runs
+    every check — the patterns compile, are safe, match their own examples and
+    reject their own counterexamples, and every binding names a group that
+    exists and a slot the vocabulary knows. A decoder that does not survive
+    that is refused with the sentence saying why, so a config that cannot
+    decode is never stored.
+
+    **The patterns come from a proposal; only the answers come from the
+    caller.** ``decoder`` must be an artifact whose own id matches its
+    contents, which is what a proposal returns — so it is a decoder this
+    deployment produced and can verify, not one somebody wrote. The person's
+    review arrives as ``bindings`` (a slot and a type per group) and
+    ``decimal``, applied here through
+    :func:`app.decoding.bind.apply_bindings`, which re-freezes and gives the
+    result its own id.
+
+    That split is deliberate. A binding is a choice among values this file's
+    own evidence allows, and the worst a wrong one can do is name a dimension
+    wrongly — bad, and visible, and what the review is for. A *pattern* is a
+    regular expression that will run over every row of every rebuild, so
+    accepting one from a request would be accepting arbitrary matching work
+    from a caller. :mod:`app.decoding.safety` would still refuse the dangerous
+    shapes, and not offering the door at all is better than relying on it.
 
     The bytes are not touched and the source is not superseded: this changes
     how a file is *read*, and superseding it would say a different file had
     arrived.
     """
+    from .decoding import DecoderError, from_dict
     from .ingestion import item_master
 
     table = item_master.read_table(source.content, source.filename,
                                    source.content_type or "")
     settled = dict(columns)
     item_master.check_mapping(table, settled)
+    if rule_set_id and decoder:
+        raise CatalogueError(
+            "This config names both a shipped rule set and a decoder built "
+            "for the file. It can name one or the other: two decoders would "
+            "make which of them read a row a question about evaluation order, "
+            "and nothing on the row would answer it.", status=400)
     if rule_set_id and rule_set_path(rule_set_id) is None:
         known = ", ".join(r["id"] for r in available_rule_sets()) or "none"
         raise CatalogueError(
             f"No rule set called {rule_set_id!r} ships with this engine. "
             f"Available: {known}.", status=400)
+    frozen = None
+    if decoder:
+        from .decoding import apply_bindings, with_decimal
+
+        try:
+            frozen = from_dict(decoder)
+            if bindings is not None:
+                frozen = apply_bindings(frozen, bindings)
+            if decimal and decimal != frozen.decimal:
+                frozen = with_decimal(frozen, decimal)
+        except DecoderError as e:
+            raise CatalogueError(
+                f"This decoder cannot be stored: {e}", status=400) from e
     source.mapping = settled
     source.ingest = item_master.describe(table, settled)
     source.rule_set = rule_set_id or None
+    source.decoder = frozen.to_dict() if frozen else None
+    source.decoder_id = frozen.decoder_id if frozen else None
     source.decoding_confirmed_at = clock.now()
     source.decoding_confirmed_by = actor
     _release(source)
     session.flush()
     return source
+
+
+def propose_decoder(session: Any, source: Any, org: str) -> Dict[str, Any]:
+    """Read this file and propose a decoder for it, with everything to review.
+
+    The three inferred stages joined, over the file's own descriptions and
+    nothing else: :mod:`app.decoding.infer` proposes the shapes,
+    :mod:`app.decoding.evidence` measures what each captured group holds, and
+    ``decisions.decoder_binding`` names the groups the text settles and asks
+    about the rest.
+
+    **Proposes; never saves.** Nothing here writes to the source row. A person
+    reads the review, changes what they disagree with, and
+    :func:`confirm_decoding` is what stores the result — the same "show,
+    validate, save, then decode" flow the rule-set half has.
+
+    The descriptions are read through the file's *saved columns* where it has
+    them and the suggested ones otherwise, because which column holds the
+    description is the question the columns half of the config answers and
+    guessing it again here would be a second answer to it. Read through
+    :func:`app.ingestion.item_master.emit_rows`, so they are exactly the rows
+    a decode will see — a proposal induced from rows the decode then skips
+    would report coverage of a file that is not the one being decoded.
+    """
+    from .decisions import decoder_binding
+    from .ingestion import item_master
+
+    table = item_master.read_table(source.content, source.filename,
+                                   source.content_type or "")
+    columns = dict(getattr(source, "mapping", None)
+                   or item_master.suggest_mapping(table))
+    item_master.check_mapping(table, columns)
+    report = item_master.ingest_report(table, columns)
+    descriptions = [row[1] for row in
+                    item_master.emit_rows(table, columns, report)
+                    if (row[1] or "").strip()]
+    _release(source)
+    if not descriptions:
+        raise CatalogueError(
+            f"Column {columns['description']!r} of this file holds no "
+            f"descriptions to read, so there is nothing to propose a decoder "
+            f"from.", status=422)
+
+    proposal = infer.propose(descriptions)
+    out: Dict[str, Any] = {"proposal": proposal.to_dict(), "review": None}
+    if proposal.decoder is None:
+        return out
+    review = decoder_binding.review(proposal.decoder, descriptions,
+                                    session=session, organization_id=org)
+    out["review"] = review.to_dict()
+    return out
 
 
 def rule_sets_in_use(session: Any, org: str) -> List[str]:
@@ -1031,9 +1278,29 @@ def built_catalogues(connection_id: str) -> List[Dict[str, Any]]:
 
 
 def _merge_decoded(members: List[Dict[str, Any]], out: Path,
-                   tag: str) -> Dict[str, Any]:
+                   tag: str, namespace: str) -> Dict[str, Any]:
     """Merge decoded JSONL files into one, newest first, one record per part
     number per namespace — the collision rule, stated once.
+
+    **``namespace`` is stamped onto every record as ``org_id``, and that is
+    where this company's numbering authority is decided.** pie-parser's
+    ``record_namespace`` reads ``org_id`` first and its docstring says what the
+    field means: *the organisation, not the manufacturer* — ``record_id`` is
+    the number the distributor's own system issued, unique inside that system
+    and nowhere else. Under packs the value was the org pack's id, a proxy for
+    the organisation that happened to be constant across every company in a
+    deployment. There are no packs on the decoder path, so there is no proxy,
+    and the portal states the real answer: the connection.
+
+    Uniform across **both** decode paths, which is the part that matters. A
+    company with one file decoded through a shipped rule set (stamped ``zcnc``
+    by the pack) and one through its own decoder would otherwise hold two
+    namespaces, and the same material number in both would stop being a
+    collision the merge resolves and become a key present in two namespaces —
+    which ``AuthoritativeIndex`` answers as a structured AMBIGUOUS abstention
+    instead of the newest record. Overwriting the pack's value here is what
+    keeps that from happening, and it is why this is done at the merge rather
+    than at each decode.
 
     pie-parser's ``AuthoritativeIndex`` indexes identifiers per namespace and
     treats a duplicate inside one namespace as a collision that **never
@@ -1065,6 +1332,21 @@ def _merge_decoded(members: List[Dict[str, Any]], out: Path,
 
     seen: set = set()
     duplicates: Dict[str, str] = {}
+    #: ``catalog_number_full`` is the *manufacturer's* number, and two
+    #: manufacturers reusing one is normal rather than an error — but the index
+    #: namespaces both identifiers by the one ``record_namespace`` field, so
+    #: inside one company they land in one space and a repeat is a collision
+    #: that resolves for neither. This is a conflation in the index that
+    #: several catalogues per company makes live, and it cannot be fixed from
+    #: here: the record can carry one namespace, and ``record_id`` is the
+    #: identifier that must have the company's.
+    #:
+    #: So the repeat is **counted and named, and both records are kept**.
+    #: Dropping one would lose a product over its secondary identifier; the
+    #: honest answer is that this catalogue number stops resolving and somebody
+    #: is told which one.
+    catalog_seen: Dict[str, str] = {}
+    catalog_collisions: Dict[str, str] = {}
     kept_per_member: List[int] = []
     out.parent.mkdir(parents=True, exist_ok=True)
     tmp = out.with_suffix(out.suffix + ".tmp")
@@ -1077,12 +1359,23 @@ def _merge_decoded(members: List[Dict[str, Any]], out: Path,
                     if not line:
                         continue
                     rec = json.loads(line)
+                    # Stamped before the key is taken, so the key is the one
+                    # the index will use rather than the one the decode path
+                    # happened to leave behind.
+                    rec["org_id"] = namespace
                     key = (str(record_namespace(rec)).strip().upper(),
                            str(rec.get("record_id") or "").strip().upper())
                     if key[1] and key in seen:
                         duplicates.setdefault(key[1], member["key"])
                         continue
                     seen.add(key)
+                    catalog_number = str(
+                        rec.get("catalog_number_full") or "").strip().upper()
+                    if catalog_number:
+                        first = catalog_seen.setdefault(catalog_number,
+                                                        member["key"])
+                        if first != member["key"]:
+                            catalog_collisions.setdefault(catalog_number, first)
                     rec[tag] = member["key"]
                     fh.write(json.dumps(rec, sort_keys=True, separators=(",", ":"))
                              + "\n")
@@ -1093,7 +1386,12 @@ def _merge_decoded(members: List[Dict[str, Any]], out: Path,
             "duplicates": len(duplicates),
             # A handful, named. The full list would be unbounded and the count
             # is what says whether this is a stray or a structural overlap.
-            "duplicate_examples": sorted(duplicates)[:10]}
+            "duplicate_examples": sorted(duplicates)[:10],
+            # Kept, not dropped — see `catalog_seen` above. These are the
+            # catalogue numbers that will not resolve, and naming them is the
+            # only useful thing this merge can do about them.
+            "catalog_collisions": len(catalog_collisions),
+            "catalog_collision_examples": sorted(catalog_collisions)[:10]}
 
 
 # ── the union: what a company resolves against ───────────────────────────────
@@ -1167,9 +1465,25 @@ def union_catalogue(connection_id: str) -> Optional[UnionCatalogue]:
 
     De-duplicated across catalogues by :func:`_merge_decoded`'s rule, the
     most recently *built* catalogue winning, with each record tagged
-    ``catalogue_key``. A part number two manufacturers both use is not a
-    duplicate: their records sit in different namespaces and the engine
-    reports a bare lookup of it as ambiguous, which is the right answer.
+    ``catalogue_key``.
+
+    **On one namespace, which this used to describe wrongly.** It said a part
+    number two manufacturers both use is not a duplicate, their records
+    sitting in different namespaces. That was never true of any deployment —
+    one org pack ships, so every catalogue of every company was stamped
+    ``zcnc`` and the merge de-duplicated across manufacturers all along — and
+    it is not true now, deliberately: :func:`_merge_decoded` stamps this
+    company's own namespace on every record, whichever path decoded it.
+
+    The sentence was also confused about which identifier it was talking
+    about. ``record_id`` is the *distributor's* material number, so the same
+    one in two of their catalogues is their own master contradicting itself,
+    and newest-wins with the collision named is the right answer.
+    ``catalog_number_full`` is the *manufacturer's* number, where reuse
+    between manufacturers is entirely normal — and that one the index cannot
+    keep apart, because both identifiers share the single
+    ``record_namespace`` field. Those repeats are counted, named and **kept**
+    rather than resolved; see :func:`_merge_decoded`.
 
     Rebuilt only when a member's file has changed (size or modification time),
     which the manifest beside the union records.
@@ -1203,7 +1517,7 @@ def _write_union(connection_id: str, members: List[Dict[str, Any]],
                      reverse=True)
     merged = _merge_decoded(
         [{"key": m["catalogue_key"], "path": m["path"]} for m in ordered],
-        out, tag="catalogue_key")
+        out, tag="catalogue_key", namespace=connection_id)
     per_catalogue = [{
         "catalogue_key": m["catalogue_key"],
         "name": m["name"],
@@ -1322,9 +1636,9 @@ def build_for_company(session: Any, org: str, connection_id: str,
         raise CatalogueError(
             f"Not decoded: {names} "
             f"{'has' if len(waiting) == 1 else 'have'} no saved decoding config. "
-            f"Open the file's decoding, check the columns and the rule set the "
-            f"analysis proposed, and save it — nothing is decoded through a "
-            f"default.")
+            f"Open the file's decoding and save one — either a decoder "
+            f"proposed from the file itself, or a shipped rule set that reads "
+            f"it. Nothing is decoded through a default.")
 
     out = company_catalog_path(connection_id, catalogue_key)
     started = time.perf_counter()
@@ -1334,16 +1648,29 @@ def build_for_company(session: Any, org: str, connection_id: str,
         try:
             decoded: List[Dict[str, Any]] = []
             for source in sources:
-                rule_set = rule_set_path(source.rule_set)
                 target = tmpdir / f"{len(decoded)}.jsonl"
-                ingest = normalised_corpus(source, rule_set, tmpdir / "corpus.csv")
-                result = run_parse(tmpdir / "corpus.csv", rule_set, target)
+                # Which path decodes this file is the file's config to say, and
+                # `decode_path` is the one place that reads it. Neither path is
+                # a fallback for the other: a file naming neither never reaches
+                # here, having been refused by name above.
+                path = decode_path(source)
+                if path == DECODE_DECODER:
+                    result = run_decoder(source, source.decoder, target,
+                                         expect_id=source.decoder_id)
+                    ingest = result["ingest"]
+                else:
+                    rule_set = rule_set_path(source.rule_set)
+                    ingest = normalised_corpus(source, rule_set,
+                                               tmpdir / "corpus.csv")
+                    result = run_parse(tmpdir / "corpus.csv", rule_set, target)
                 per_file.append({
                     "source_key": source_key_of(source),
                     "corpus_id": source.corpus_id,
                     "filename": source.filename,
                     "sha256": source.sha256,
+                    "decoded_by": path,
                     "rule_set": source.rule_set,
+                    "decoder_id": result.get("decoder_id"),
                     "stamp": result["stamp"],
                     "records": result["records"],
                     "rows_read": result["rows_read"],
@@ -1356,8 +1683,11 @@ def build_for_company(session: Any, org: str, connection_id: str,
                 })
                 decoded.append({"key": source_key_of(source), "path": str(target),
                                 "quarantine": str(target.with_suffix(".quarantine.jsonl"))})
-            # Newest file first: a later file is a later statement.
-            merged = _merge_decoded(list(reversed(decoded)), out, tag="source_key")
+            # Newest file first: a later file is a later statement. The
+            # namespace is this company's, whichever path decoded each file —
+            # see `_merge_decoded`.
+            merged = _merge_decoded(list(reversed(decoded)), out,
+                                    tag="source_key", namespace=connection_id)
             with out.with_suffix(".quarantine.jsonl").open("w", encoding="utf-8") as q:
                 for d in decoded:
                     qpath = Path(d["quarantine"])
@@ -1383,6 +1713,8 @@ def build_for_company(session: Any, org: str, connection_id: str,
                                       for f in per_file),
         "collisions": merged["duplicates"],
         "collision_examples": merged["duplicate_examples"],
+        "catalog_collisions": merged["catalog_collisions"],
+        "catalog_collision_examples": merged["catalog_collision_examples"],
         "sampled": False,
     }
     row.records = merged["records"]
@@ -1396,6 +1728,10 @@ def build_for_company(session: Any, org: str, connection_id: str,
     for field in STAMP_FIELDS:
         values = {f["stamp"].get(field) for f in per_file}
         setattr(row, field, values.pop() if len(values) == 1 else None)
+    # Set rather than read off a record, for the reason `_merge_decoded`
+    # gives: the namespace is a fact about this company, and the value a
+    # decode left behind is either a pack's proxy for it or nothing at all.
+    row.org_id = connection_id
     row.built_by = actor
     row.built_at = clock.now()
     session.flush()

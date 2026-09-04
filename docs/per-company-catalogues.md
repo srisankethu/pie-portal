@@ -1314,3 +1314,148 @@ pie-parser rule set (`run_parse`), so Stages A–C are the substrate and not yet
 the road. Replacing that call — and with it, deciding how identity namespacing
 works when there is no pack id to namespace by — is Stage D, and it is the part
 that touches `identity/store.py`.
+
+---
+
+## 17. The decoder as a decode path, and one namespace (Stage D, built)
+
+§§14–16 built the substrate: an artifact that decodes reproducibly, inference
+that proposes one from a file, and a binding step that names what it captured.
+None of it was wired into a build. This is where it becomes a path a build
+takes — and where a question the packs answered by accident has to be answered
+on purpose.
+
+### Two paths, and a config names exactly one
+
+`company_corpora` gains `decoder` (the frozen artifact) and `decoder_id` (its
+content id), migration `n1dec`. A file's decoding config now names either a
+shipped **rule set** or a **decoder** built for that file, and `decode_path` is
+the one place that reads which.
+
+Not a preference and a fallback. A config naming both is refused — which of
+them read a row would become a question about evaluation order, and nothing on
+the row would answer it. A config naming neither is still a file that is not
+decoded, and a build still says which file by name.
+
+`build_for_company` picks per file, so a company mid-migration can hold one
+file read by `zcnc` and one read by its own decoder in the same catalogue, each
+row of `built_from` saying which path produced it.
+
+### What the two paths actually cost, measured
+
+This is the number that decided the design, and it is why Stage D is **not** a
+switchover. Both paths over the shipped 6,717-row corpus:
+
+| | rule set (`zcnc`) | decoder inferred from the file |
+|---|---|---|
+| Records | 6,717 (100%) | 4,342 (64.6%) |
+| Quarantined | 0 | 2,375 |
+| Attribute values per record | **10.1** | **1.4** |
+
+Flipping the build today would lose a third of the records and seven eighths of
+the attributes. So the rule-set path stays, and the two run side by side.
+
+The gap is not mostly where it looks, either. Six of those 10.1 values —
+`grade_system`, `material_class`, `toughness_index`, `applications`,
+`grade_segment`, and `grade` itself — come from the **grade column**, not the
+description: the pack decodes `TN2000` into a grade system and a material class
+through a second grammar. The portal's decoder reads descriptions and carries
+the grade code through unparsed. Closing that is a decoder over the grade
+column, which is a stage of its own and not something to bodge into this one.
+
+### The namespace, stated rather than borrowed
+
+`record_namespace` in pie-parser reads `org_id` first, and its docstring says
+what the field means: *the organisation, not the manufacturer* — `record_id` is
+the number the distributor's own system issued, unique inside that system and
+nowhere else. Under packs the value was the org pack's id, which is a **proxy**
+for the organisation that happened to be constant across every company in a
+deployment, because exactly one org pack ships.
+
+There is no pack on the decoder path, so there is no proxy. `_merge_decoded`
+now stamps the connection's own id as `org_id`, and does it for **both** paths.
+
+That uniformity is the part that matters. A company with one file stamped
+`zcnc` by the pack and one stamped with its own id would hold two namespaces,
+and the same material number in both would stop being a collision the merge
+resolves — newest wins, counted and named — and become a key present in two
+spaces, which `AuthoritativeIndex` answers as a structured AMBIGUOUS abstention.
+A part number that silently stops resolving is the defect no record count
+reveals, and it is the one this whole merge exists to prevent.
+
+Stamped *before* the de-duplication key is taken, so the key is the one the
+index will use rather than the one the decode path happened to leave behind.
+
+### One namespace field, two numbering authorities
+
+The honest limitation, named because it cannot be fixed from this side.
+
+`AuthoritativeIndex` keeps two maps — one for `record_id`, one for
+`catalog_number_full` — and namespaces **both** by the single
+`record_namespace` field. But those identifiers have different authorities:
+
+- `record_id` is the *distributor's* material number. All of a company's
+  catalogues share one, so the same number twice is their own master
+  contradicting itself. Newest-wins with the collision named is right.
+- `catalog_number_full` is the *manufacturer's* number. Two manufacturers
+  reusing one is entirely normal — and inside one company they now land in one
+  space, where the index treats the repeat as a collision that resolves for
+  neither.
+
+A record carries one namespace and `record_id` is the identifier that must have
+the company's, so the manufacturer's number is the one that loses. pie-parser
+is a separate repository and a pinned submodule, so the index cannot be changed
+from here.
+
+What Stage D does instead: **counts the repeats, names them, and keeps both
+records.** Dropping one would lose a product over its secondary identifier;
+`ingest.catalog_collisions` and `catalog_collision_examples` say which
+catalogue numbers have stopped resolving and somebody is told. This also
+corrected `union_catalogue`'s docstring, which claimed two manufacturers'
+records sat in different namespaces — never true of any deployment, since one
+org pack ships and every catalogue was stamped `zcnc` all along.
+
+### Propose, review, save — and the split that keeps patterns out of requests
+
+`POST …/sources/{key}/propose-decoder` runs the three inferred stages over the
+file and returns the proposal plus the binding review. It **saves nothing**, so
+a proposal can be asked for twice and compared without changing what the file
+currently decodes through.
+
+`PUT …/sources/{key}/decoding` then takes the artifact *as the proposal
+returned it* — its own id must still match its contents — plus `bindings` (a
+slot and a type per group) and `decimal`. The server applies those and
+re-freezes under a new id.
+
+That split is deliberate. A wrong **binding** names a dimension wrongly: bad,
+visible, and exactly what the review is for. A **pattern** is a regular
+expression that will run over every row of every rebuild, so accepting one from
+a request would be accepting arbitrary matching work from a caller.
+`decoding.safety` would still refuse the dangerous shapes, and not offering the
+door is better than relying on the check behind it.
+
+Two integrity checks, in the two places each can mean something:
+
+- `confirm_decoding` requires the *proposed* artifact's id to match its
+  contents, which is the evidence it came from a proposal. It does **not**
+  refuse a changed one after bindings are applied — a review exists so a person
+  can disagree with it, and the result legitimately has a new id.
+- `run_decoder` re-freezes the stored artifact on every load and cross-checks
+  the denormalised `decoder_id` column, so an artifact edited in the database,
+  or swapped for another valid one, decodes nothing.
+
+Making that work needed a fix in Stage A: `Decoder.to_dict()` did not include
+`decoder_id`, so `from_dict`'s tamper check — which reads
+`payload["decoder_id"]` — was skipped silently for any payload that had not had
+the id attached by hand. Two places in the test suite did attach it, and they
+were the only evidence the check worked. The id is now part of `to_dict` and
+still absent from `artifact_dict`, which is what the hash is taken over, so no
+existing id moved.
+
+### Still not done
+
+No UI. The API is complete and tested, but nothing on the Decoded catalogue
+screen calls `propose-decoder` yet, so a decoder can be proposed and confirmed
+through the API and not by a person on a screen. That, and a decoder for the
+**grade column**, are what stand between this and the rule-set path being
+removable.

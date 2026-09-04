@@ -809,12 +809,60 @@ export interface SourceDecoding {
   /** Whether the pinned engine still ships the rule set named. A stored id
    *  the pin no longer has resolves to nothing rather than to a guess. */
   rule_set_resolved: boolean;
+  /** The content id of the decoder built for this file, when that is what
+   *  decodes it. Sixteen hex characters, and what a screen names rather than
+   *  re-hashing the artifact. */
+  decoder_id: string | null;
+  /** That decoder as stored — its decimal convention and its segments, each
+   *  with a pattern, its bindings and the real rows it was validated against.
+   *  Carries its own `decoder_id`, so an edited copy is refused rather than
+   *  saved under an id that no longer describes it. */
+  decoder: DecoderArtifact | null;
+  /** Which of the two decode paths this config names, or null for a file
+   *  nothing reads yet. Not a preference and a fallback: `rule_set` is a
+   *  grammar pie-parser ships, `decoder` was built from this file, and a
+   *  config naming both is refused. */
+  path: 'rule_set' | 'decoder' | null;
   /** The evidence the proposal rested on, kept so a person's choice can be
    *  read against what they saw. Null for a file stored before it. */
   analysis: SourceAnalysis | null;
   confirmed_at: string | null;
   confirmed_by: string | null;
   ready: boolean;
+}
+
+/** One capture group of one segment, and the slot it fills. */
+export interface DecoderBinding {
+  group: string;
+  slot: string;
+  type: 'text' | 'integer' | 'number' | 'flag';
+}
+
+/** One shape of description a file contains, and how to read it.
+ *
+ *  `examples` and `counterexamples` are real rows from the file. They are not
+ *  documentation: freezing refuses a segment whose pattern does not match
+ *  every example or matches any counterexample. */
+export interface DecoderSegment {
+  id: string;
+  pattern: string;
+  fields: DecoderBinding[];
+  examples: string[];
+  counterexamples: string[];
+  label?: string | null;
+}
+
+/** A frozen decoder for one file: content-addressed, self-contained, and
+ *  carrying the executor version it was frozen against.
+ *
+ *  `decoder_id` is the sha256 of the artifact's canonical JSON, so "which
+ *  decoder produced this row" is answerable from the row alone. It is a
+ *  sibling of the hashed content and never part of it. */
+export interface DecoderArtifact {
+  schema_version: number;
+  decimal: 'dot' | 'comma' | 'either';
+  segments: DecoderSegment[];
+  decoder_id: string;
 }
 
 /** One file as the last build read it: through which rule set, with its own

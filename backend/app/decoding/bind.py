@@ -351,6 +351,23 @@ def apply_bindings(decoder: Decoder,
                   schema_version=decoder.schema_version)
 
 
+def with_decimal(decoder: Decoder, decimal: str) -> Decoder:
+    """The same segments under a different decimal convention, re-frozen.
+
+    A review choice, and the one thing inference cannot infer: whether ``11,1``
+    in this file is eleven point one or eleven thousand one hundred is not
+    answerable from the text, since both readings parse. The artifact records
+    which reading a person chose.
+
+    A **new** artifact with its own id, for the same reason
+    :func:`apply_bindings` produces one — the same patterns under a different
+    convention decode the same rows to different numbers, which is precisely
+    the kind of change an id has to move for.
+    """
+    return freeze(decoder.segments, decimal=decimal,
+                  schema_version=decoder.schema_version)
+
+
 def _binding(entry: Mapping[str, str]):
     from .schema import FieldBinding
 

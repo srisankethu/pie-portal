@@ -2,7 +2,7 @@
 //
 // Until this screen existed the catalogue was a terminal step — `python
 // scripts/build_catalog.py` — with no way to see from the product whether one
-// existed, how old it was, or which pack and ruleset produced it. Those last
+// existed, how old it was, or which rules and ruleset produced it. Those last
 // two are the point, not decoration: `run_id` derives from the input bytes
 // plus the ruleset checksum, so the stamp shown here is what says WHICH
 // catalogue answered a given resolution.
@@ -16,11 +16,11 @@
 //
 // One organization can read three companies' books, and those three have three
 // different item masters — and each of those companies sells several
-// manufacturers' ranges. A pack is one manufacturer's decoder: Kennametal's
-// price lists read through Kennametal's pack and YG-1's through YG-1's, and a
-// single pack over both files would quarantine half of them. So a company
-// keeps **one catalogue per manufacturer** — its own files, its own pack, its
-// own build and stamp — and resolves against the **union** of everything it
+// manufacturers' ranges. A rule set is one manufacturer's decoder: Kennametal's
+// price lists read through Kennametal's rules and YG-1's through YG-1's, and a
+// single rule set over both files would quarantine half of them. So a company
+// keeps **one catalogue per manufacturer** — its own files, its own build and
+// stamp — and resolves against the **union** of everything it
 // has built. The union is the server's: it is assembled from the built files,
 // its record count and its duplicate count come from its own manifest, and
 // this screen reports them once per company rather than adding the
@@ -46,29 +46,38 @@
 // inside one catalogue are a grid (`CatalogSources`), for the opposite
 // reason: how many exports a business keeps grows with the business.
 //
-// Busy, problem and pack-trial state are keyed by company **and** catalogue.
-// One catalogue building must not freeze the others in the same company —
-// they are different files through different packs, and the server serialises
-// the builds itself. A company-level action (adding a catalogue) is keyed by
-// the company alone.
+// Busy and problem state are keyed by company **and** catalogue. One catalogue
+// building must not freeze the others in the same company — they are different
+// files through different rule sets, and the server serialises the builds
+// itself. A company-level action (adding a catalogue) is keyed by the company
+// alone.
 //
-// Two things this screen got wrong, both fixed here and both the same mistake.
+// **There is no default decoder, and this screen is built around that.** A
+// catalogue used to choose one pack and every file in it was decoded through
+// that pack, which is wrong twice over: two exports of one manufacturer's range
+// do not agree about their own column names, and a catalogue that acquires a
+// second manufacturer's price list decodes it through the first one's grammars
+// and gets a wrong catalogue carrying a real stamp. So the config belongs to
+// the FILE. Every upload starts as an unknown format: it is analysed on its own
+// evidence — its headers, and every shipped rule set run over its first rows —
+// a config is *proposed*, a person checks it against the counts and saves it,
+// and only then is that file decoded. AWAITING DECODING is the state in
+// between, and the build refuses by name rather than falling back to anything.
 //
-// The Pack control was a `Select` over whatever `/catalog/companies` returned.
-// Where the engine ships no packs — `deploy/backend.Dockerfile` builds an image
-// without the private submodule on purpose, and says so — that is an empty
-// dropdown that opens onto nothing. The server has always sent the reason in
-// `source.reason`; this screen simply never rendered it, so the one state a
-// person cannot fix by clicking harder looked like a broken menu. An empty
-// control that does not say why is the interface version of the benign default
-// CLAUDE.md §1 forbids.
+// Every count on this screen and in that analysis is the parser's own, served
+// verbatim. Nothing here ranks rule sets or computes a fit percentage: the
+// numbers such a score would be made of are the ones `catalog.run_parse`
+// already refuses to recompute, and one figure would hide the distinction that
+// decides the choice — a rule set that classifies few rows is wrong for this
+// file, one that errors could not read it at all, and none of them reading it
+// means a rule set has to be written before this manufacturer decodes at all.
 //
-// And a pack was chosen by its identifier. `zcnc` says nothing about whether it
-// reads *your* export, so `pack-fit` runs each shipped pack over a sample of
-// this catalogue's own files and reports the parser's counts for each. The
-// counts are the parser's; nothing here computes a score, because a fit number
-// this screen invented would be a second parse-rate calculation next to the
-// one `catalog.run_parse` already refuses to duplicate.
+// The one control that still has to say why it is empty is the rule set menu.
+// Where the engine ships none — `deploy/backend.Dockerfile` builds an image
+// without the private submodule on purpose, and says so — an empty dropdown
+// opens onto nothing. The server sends the reason in `source.reason`, and an
+// empty control that does not say why is the interface version of the benign
+// default CLAUDE.md §1 forbids.
 
 import { useCallback, useEffect, useState } from "react";
 import Alert from "@mui/material/Alert";
@@ -81,7 +90,6 @@ import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import LinearProgress from "@mui/material/LinearProgress";
-import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 
@@ -89,24 +97,25 @@ import { papi } from "./api";
 import { CatalogSources, fileSize, megabytes } from "./CatalogSources";
 import { EmptyState, ErrorState, LoadingState, PercentageValue, StatusChip } from "./kit";
 import type { CatalogueUnion, CompanyCatalogue, CompanyCatalogueEntry,
-              CompanyCatalogues as View, PackFit, PlatformSession } from "./types";
+              CompanyCatalogues as View, PlatformSession } from "./types";
 import { CatalogLearning } from "./CatalogLearning";
 import { Bp, Labelled, Tip } from "./ui";
 import { formatDateTime, since } from "../when";
 
 type Tone = "good" | "warn" | "bad" | "neutral";
-type Pack = { id: string; path: string };
+type RuleSet = { id: string; path: string };
 
 /** The one state word for a catalogue, from the facts the server sends.
  *
- *  Ordered by what has to be fixed first: without a pack or a corpus there is
- *  nothing to build, so those are named ahead of NOT BUILT rather than
- *  collapsed into it. "You have not built it" is not useful advice to someone
- *  who has nothing to build it from. */
+ *  Ordered by what has to be fixed first: without a file, or with one nobody
+ *  has said how to decode, there is nothing to build — so those are named
+ *  ahead of NOT BUILT rather than collapsed into it. "You have not built it"
+ *  is not useful advice to someone whose build would be refused by name. */
 function chipFor(c: CompanyCatalogueEntry): { label: string; tone: Tone } {
-  if (!c.pack_id) return { label: "NO PACK CHOSEN", tone: "neutral" };
-  if (!c.pack_resolved) return { label: "PACK NOT FOUND", tone: "bad" };
   if (c.sources.length === 0) return { label: "NO EXPORT", tone: "neutral" };
+  if (c.awaiting_decoding.length > 0) {
+    return { label: "AWAITING DECODING", tone: "warn" };
+  }
   if (c.built_but_missing_on_disk) return { label: "NEEDS REBUILD", tone: "warn" };
   if (!c.exists) return { label: "NOT BUILT", tone: "warn" };
   if (c.stale) return { label: "OUT OF DATE", tone: "warn" };
@@ -130,128 +139,45 @@ function nameOf(c: CompanyCatalogueEntry): string {
   return c.name || c.catalogue_key;
 }
 
-/** The key busy, problem and pack-trial state are held under. A company-level
- *  action uses the connection id alone. */
+/** The key busy and problem state are held under. A company-level action uses
+ *  the connection id alone. */
 function keyOf(c: CompanyCatalogueEntry): string {
   return `${c.connection_id}/${c.catalogue_key}`;
 }
 
-/** Every shipped pack, tried against a sample of one catalogue's own files.
+/** Name the manufacturer a catalogue holds. Nothing else is decided here.
  *
- *  The counts are the parser's. This panel deliberately does **not** rank the
- *  packs or compute a fit percentage: the numbers that would go into such a
- *  score are the ones `catalog.run_parse` already refuses to recompute, and a
- *  single "83% fit" would hide the distinction that actually decides the
- *  choice — a pack that classifies few rows is wrong for this export, and a
- *  pack that errors could not read it at all. Those are different answers.
- *
- *  Quarantined is shown beside classified rather than subtracted from it,
- *  because "unknown means unknown" is the engine's contract: a quarantined row
- *  is kept, and a pack that quarantines most of a file has told you something.
+ *  Nothing is uploaded, built or said about decoding: every price list
+ *  uploaded into this catalogue brings its own config, worked out from that
+ *  file alone. This only creates the thing the files and the build belong to.
  */
-function PackFitPanel({ fit, chosen, onChoose, onClose }: {
-  fit: PackFit;
-  chosen: string | null;
-  onChoose: (packId: string) => void;
-  onClose: () => void;
-}) {
-  if (!fit.available) {
-    return (
-      <Alert severity="info" sx={{ mb: 1.5 }} onClose={onClose}>
-        <AlertTitle>Nothing to try a pack against</AlertTitle>
-        {fit.reason}
-      </Alert>
-    );
-  }
-  return (
-    <Alert severity="info" sx={{ mb: 1.5 }} onClose={onClose}
-           icon={false}>
-      <AlertTitle>
-        Each pack over the first {fit.sample_rows} rows of these files
-      </AlertTitle>
-      {/* A fact panel, not a grid: the row count is the pack vocabulary the
-          pinned engine ships — a property of the engine, fixed for a given
-          deployment — which is the case ui-standards §3 keeps as a table. */}
-      <table className="facttable" aria-label="Parse counts per pack">
-        <tbody>
-          {fit.packs.map((p) => (
-            <tr key={p.pack_id}>
-              <td>
-                {p.pack_id}
-                {p.pack_id === chosen && (
-                  <span className="fsrc" style={{ marginLeft: 6 }}>chosen</span>
-                )}
-              </td>
-              <td className="fv">
-                {p.error ? (
-                  <span>could not read these files — {p.error}</span>
-                ) : (
-                  <>
-                    {p.classified} classified, {p.quarantined} quarantined
-                    <span className="fsrc" style={{ marginLeft: 8 }}>
-                      of {p.rows_read} rows
-                    </span>
-                    {p.pack_id !== chosen && (
-                      <Button size="small" sx={{ ml: 1 }}
-                              onClick={() => onChoose(p.pack_id)}>
-                        Use this
-                      </Button>
-                    )}
-                  </>
-                )}
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </Alert>
-  );
-}
-
-/** Define a catalogue: the manufacturer's name, and the pack that decodes it.
- *
- *  Nothing is uploaded or built here — this only creates the thing the files
- *  and the build then belong to. The pack may be left for later, because the
- *  honest way to choose one is the trial, and the trial needs a file first.
- *  With exactly one shipped pack it is pre-chosen: there is nothing to choose
- *  between, and a required empty menu would be a step for its own sake. */
-function AddCatalogueDialog({ packs, busy, onClose, onAdd }: {
-  packs: Pack[];
+function AddCatalogueDialog({ busy, onClose, onAdd }: {
   busy: boolean;
   onClose: () => void;
-  onAdd: (name: string, packId: string | null) => void;
+  onAdd: (name: string) => void;
 }) {
   const [name, setName] = useState("");
-  const [pack, setPack] = useState(packs.length === 1 ? packs[0].id : "");
   return (
     <Dialog open onClose={onClose} fullWidth maxWidth="xs">
       <DialogTitle>Add a catalogue</DialogTitle>
       <DialogContent>
         <DialogContentText sx={{ mb: 2 }}>
           One per manufacturer this company sells — Kennametal, YG-1 — because
-          each one&apos;s price lists decode through that manufacturer&apos;s
-          own pack. The company resolves against all of them at once.
+          each one phrases a part number and a description its own way. The
+          company resolves against all of them at once. How each of its price
+          lists is decoded is settled per file, after it is uploaded.
         </DialogContentText>
         <Stack spacing={2.5} sx={{ mt: 1 }}>
           <TextField autoFocus fullWidth size="small" label="Name" value={name}
                      disabled={busy} required
                      helperText="The manufacturer, as the screen should call it."
                      onChange={(e) => setName(e.target.value)} />
-          <TextField select fullWidth size="small" label="Pack" value={pack}
-                     disabled={busy || packs.length === 0}
-                     helperText={packs.length === 0
-                       ? "none available"
-                       : "The decoder for this manufacturer's part numbers. Can be chosen after a file is uploaded, on the parser's own counts."}
-                     onChange={(e) => setPack(e.target.value)}>
-            <MenuItem value="">— choose later —</MenuItem>
-            {packs.map((p) => <MenuItem key={p.id} value={p.id}>{p.id}</MenuItem>)}
-          </TextField>
         </Stack>
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={busy}>Cancel</Button>
         <Button variant="contained" disabled={busy || !name.trim()}
-                onClick={() => onAdd(name.trim(), pack || null)}>
+                onClick={() => onAdd(name.trim())}>
           Add
         </Button>
       </DialogActions>
@@ -362,12 +288,13 @@ function UnionFacts({ union, total }: { union: CatalogueUnion; total: number }) 
 /** Everything one catalogue can be asked to do, bound to it by the parent so
  *  the section itself never spells a URL or holds a token. */
 interface CatalogueActions {
-  setPack: (packId: string) => void;
-  tryPacks: () => void;
   build: () => void;
   upload: (file: File, sourceKey?: string) => void;
-  map: (sourceKey: string, mapping: { record_id: string; description: string;
-                                      grade?: string | null }) => void;
+  saveDecoding: (sourceKey: string,
+                 config: { record_id: string; description: string;
+                           grade?: string | null;
+                           rule_set?: string | null }) => void;
+  analyze: (sourceKey: string) => void;
   removeSource: (sourceKey: string) => void;
   rename: (name: string) => void;
   remove: () => void;
@@ -379,17 +306,15 @@ interface CatalogueActions {
  *  Not its own `Bp`. A Paper inside a Paper is a surface with no meaning of
  *  its own; a rule between sections says "same company, next manufacturer"
  *  without suggesting the catalogue could be opened as a thing in itself. */
-function CatalogueSection({ company, catalogue, packs, canManage, busy, problem,
-                            fit, on, onCloseFit, onCloseProblem }: {
+function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
+                            problem, on, onCloseProblem }: {
   company: CompanyCatalogue;
   catalogue: CompanyCatalogueEntry;
-  packs: Pack[];
+  ruleSets: RuleSet[];
   canManage: boolean;
   busy: boolean;
   problem: string | null;
-  fit: PackFit | null;
   on: CatalogueActions;
-  onCloseFit: () => void;
   onCloseProblem: () => void;
 }) {
   const c = catalogue;
@@ -398,12 +323,22 @@ function CatalogueSection({ company, catalogue, packs, canManage, busy, problem,
   const label = company.label || company.connection_id;
   const [renaming, setRenaming] = useState(false);
   const [confirmRemove, setConfirmRemove] = useState(false);
-  // Families the pack actually saw rows for, the parser's "(unresolved)"
+  // Families the rule set actually saw rows for, the parser's "(unresolved)"
   // census excluded — that count is shown as its own quarantine row.
   const families = report
     ? Object.entries(report.by_family).filter(([f]) => f !== "(unresolved)")
     : [];
   const newTokens = report ? Object.entries(report.new_tokens_top) : [];
+  const builtFrom = c.built_from ?? [];
+  // The rule sets the last build actually decoded through, distinct. Read off
+  // the files rather than off the catalogue: there is no catalogue-level
+  // decoder to read, and with two files that needed different rule sets there
+  // is no single answer either.
+  const decodedThrough = [...new Set(builtFrom.map((f) => f.rule_set ?? "—"))];
+  // The files a build would refuse by name, as a person sees them: filenames,
+  // not source keys.
+  const awaiting = c.awaiting_decoding.map(
+    (key) => c.sources.find((x) => x.source_key === key)?.filename ?? key);
 
   return (
     <Box sx={{ borderTop: 1, borderColor: "divider", pt: 1.5, mt: 1.5 }}>
@@ -422,36 +357,13 @@ function CatalogueSection({ company, catalogue, packs, canManage, busy, problem,
         <Box sx={{ flex: 1 }} />
         {canManage && (
           <>
-            {/* Disabled where there is nothing to choose, and the reason is
-                stated under the control rather than left to an empty menu.
-                `helperText` on a disabled field is the one place a person is
-                already looking when a dropdown does nothing. */}
-            <TextField
-              select size="small" label="Pack"
-              sx={{ minWidth: 160 }}
-              value={packs.some((p) => p.id === c.pack_id) ? c.pack_id : ""}
-              disabled={busy || packs.length === 0}
-              helperText={packs.length === 0 ? "none available" : undefined}
-              onChange={(e) => on.setPack(e.target.value)}
-            >
-              {packs.map((p) => (
-                <MenuItem key={p.id} value={p.id}>{p.id}</MenuItem>
-              ))}
-            </TextField>
-            {/* Offered whenever there is a pack and a file, not only where
-                there are several packs to choose between. With one shipped
-                pack the question is not "which of these" but "does this one
-                read my file at all" — and that is the more important of the
-                two, because the answer decides whether a pack has to be
-                written. */}
-            {packs.length > 0 && c.sources.length > 0 && (
-              <Button size="small" disabled={busy} onClick={on.tryPacks}>
-                {packs.length > 1 ? "Which pack fits?" : "Try this pack"}
-              </Button>
-            )}
+            {/* Off until every file has a saved config the engine can run.
+                The server refuses such a build by name; a control that cannot
+                succeed is the interface's version of the benign default, and
+                the alert below says which file is waiting. */}
             <Button
               variant={c.exists ? "outlined" : "contained"} size="small"
-              disabled={busy || c.sources.length === 0 || !c.pack_resolved}
+              disabled={busy || c.sources.length === 0 || !c.decoding_ready}
               onClick={on.build}
             >
               {busy ? "Working…" : c.exists ? "Rebuild" : "Build"}
@@ -490,15 +402,28 @@ function CatalogueSection({ company, catalogue, packs, canManage, busy, problem,
           rebuilding restores it exactly.
         </Alert>
       )}
-      {fit && (
-        <PackFitPanel fit={fit} chosen={c.pack_id} onClose={onCloseFit}
-                      onChoose={(packId) => { onCloseFit(); on.setPack(packId); }} />
+      {awaiting.length > 0 && (
+        // Named, because "not built" is not useful advice to somebody whose
+        // build would be refused by name — and because the reason it is
+        // refused is the architecture rather than an error.
+        <Alert severity="warning" sx={{ mb: 1.5 }}>
+          <AlertTitle>
+            Not decoded yet: {awaiting.join(", ")}
+          </AlertTitle>
+          Nothing is decoded through a default. Each file is analysed on its
+          own — its columns, and every rule set this engine ships run over its
+          first rows — and it is decoded only once somebody has read those
+          counts and saved a decoding config for it. Open <b>Decoding</b> on
+          {awaiting.length === 1 ? " that file" : " each of those files"} below.
+        </Alert>
       )}
 
       <Box sx={{ mb: 1.5 }}>
         <CatalogSources
-          catalogue={c} label={label} canManage={canManage} busy={busy}
-          onUpload={on.upload} onMap={on.map} onRemove={on.removeSource}
+          catalogue={c} label={label} ruleSets={ruleSets}
+          canManage={canManage} busy={busy}
+          onUpload={on.upload} onSaveDecoding={on.saveDecoding}
+          onAnalyze={on.analyze} onRemove={on.removeSource}
         />
       </Box>
 
@@ -534,15 +459,20 @@ function CatalogueSection({ company, catalogue, packs, canManage, busy, problem,
               </tr>
               <tr>
                 <td>
-                  <Labelled tip="The decoder: the rules that read how this manufacturer phrases a description. Chosen from what the engine ships — never uploaded, because a pack is regexes the engine runs over every row of a file, and a pattern that backtracks catastrophically would be an outage a tenant could upload for themselves. Which one fits is answerable: 'Which pack fits?' runs each of them over a sample of these files.">
-                    Pack
+                  <Labelled tip="The rule sets the last build actually decoded these files through — each file its own, because each carries its own decoding config. Chosen from what the engine ships, never uploaded: a rule set is regexes the engine runs over every row of a file, and a pattern that backtracks catastrophically would be an outage a tenant could upload for themselves.">
+                    Decoded through
                   </Labelled>
                 </td>
                 <td className="fv">
-                  {c.pack_id ?? "not chosen"}
-                  {c.pack_id && !c.pack_resolved && (
+                  {builtFrom.length === 0 ? "not decoded yet"
+                    : decodedThrough.join(", ")}
+                  {/* Where two files needed different rule sets, one name for
+                      the catalogue would be a wrong answer to "what decoded
+                      this record" — so each file's own is named. */}
+                  {decodedThrough.length > 1 && (
                     <div className="fsrc">
-                      this engine does not ship a pack by that name
+                      {builtFrom.map((f) => `${f.filename} → ${f.rule_set ?? "—"}`)
+                                .join(" · ")}
                     </div>
                   )}
                   {c.exists && c.stamp.pack_id && (
@@ -557,18 +487,18 @@ function CatalogueSection({ company, catalogue, packs, canManage, busy, problem,
                 <>
                   <tr>
                     <td>
-                      <Labelled tip="The pack's content hash. run_id derives from the input bytes plus this checksum, so this value — with the pack version — is what says which catalogue answered a given resolution.">
+                      <Labelled tip="The rule set's content hash. run_id derives from the input bytes plus this checksum, so this value — with the version — is what says which build answered a given resolution. Each file is decoded on its own, so where two files went through different rule sets there is no single checksum and each file's own is the answer.">
                         Ruleset checksum
                       </Labelled>
                     </td>
                     <td className="fv" style={{ fontFamily: "var(--font-mono, monospace)" }}>
-                      {c.stamp.ruleset_checksum}
+                      {c.stamp.ruleset_checksum ?? "differs per file"}
                     </td>
                   </tr>
                   <tr>
                     <td>Run id<div className="fsrc">input bytes + ruleset</div></td>
                     <td className="fv" style={{ fontFamily: "var(--font-mono, monospace)" }}>
-                      {c.stamp.run_id}
+                      {c.stamp.run_id ?? "differs per file"}
                     </td>
                   </tr>
                   <tr>
@@ -600,7 +530,7 @@ function CatalogueSection({ company, catalogue, packs, canManage, busy, problem,
                   <tr><td>Classified</td><td className="fv">{c.records}</td></tr>
                   <tr>
                     <td>
-                      <Labelled tip="Rows the pack could not place in any family. Kept beside the catalogue rather than dropped — unknown means unknown.">
+                      <Labelled tip="Rows the rule set could not place in any family. Kept beside the catalogue rather than dropped — unknown means unknown.">
                         Quarantined
                       </Labelled>
                     </td>
@@ -609,7 +539,7 @@ function CatalogueSection({ company, catalogue, packs, canManage, busy, problem,
                   {report && (
                     <tr>
                       <td>
-                        <Labelled tip="Tokens the grammars did not recognise, captured verbatim by the parser. A growing list here is the signal a pack needs new vocabulary.">
+                        <Labelled tip="Tokens the grammars did not recognise, captured verbatim by the parser. A growing list here is the signal a rule set needs new vocabulary.">
                           New tokens captured
                         </Labelled>
                       </td>
@@ -638,10 +568,47 @@ function CatalogueSection({ company, catalogue, packs, canManage, busy, problem,
         </div>
 
         {/* Per-family census and parse rate, straight from the parser's run
-            report. The row count is the pack's declared family vocabulary — a
-            property of the pack's structure, not of the size of the business
-            — which is the fixed-shape case that stays a plain table rather
-            than a DataGrid. */}
+            report. The row count is the rule set's declared family vocabulary
+            — a property of its structure, not of the size of the business —
+            which is the fixed-shape case that stays a plain table rather than
+            a DataGrid.
+
+            Only where there IS one report. Each file is decoded on its own, so
+            a catalogue built from several has a report per file and none of
+            its own; summing their censuses here would be the recomputation
+            `catalog.run_parse` exists to make unnecessary. The per-file counts
+            below stand in for it, and are a table for the same reason: their
+            row count is the files one catalogue holds, capped by the server's
+            own per-catalogue ceiling, and it is a fixed handful of label-and-
+            value rows rather than a list anybody sorts. The files themselves
+            — a list that does grow with the business — are the grid above. */}
+        {c.exists && !report && builtFrom.length > 1 && (
+          <div>
+            <table className="facttable"
+                   aria-label={`Per-file parse counts for ${label} · ${nameOf(c)}`}>
+              <tbody>
+                {builtFrom.map((f) => (
+                  <tr key={f.source_key}>
+                    <td>
+                      {f.filename}
+                      <div className="fsrc">{f.rule_set ?? "—"}</div>
+                    </td>
+                    <td className="fv">
+                      {f.records} classified
+                      <div className="fsrc">
+                        {f.quarantined} quarantined of {f.rows_read} rows read
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="st-help" style={{ marginTop: 6 }}>
+              Each file&apos;s own counts, from its own decode — the parser&apos;s
+              numbers, not added up here.
+            </p>
+          </div>
+        )}
         {c.exists && report && (
           <div>
             <table className="facttable"
@@ -710,11 +677,6 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
    *  must not freeze the others, in its company or in another. */
   const [busy, setBusy] = useState<string | null>(null);
   const [problem, setProblem] = useState<{ id: string; message: string } | null>(null);
-  /** The trial's result, for the one catalogue it was asked about. Not stored
-   *  per catalogue: it is a sample measured a moment ago against files that
-   *  can change, so keeping several around would show two answers of
-   *  different ages side by side. */
-  const [fit, setFit] = useState<{ id: string; result: PackFit } | null>(null);
   /** Which company the add-a-catalogue dialog is open for. */
   const [adding, setAdding] = useState<string | null>(null);
 
@@ -743,45 +705,23 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
   }
 
   /** One request against one key: only that key's controls go quiet, and a
-   *  failure is attributed to it rather than to the page.
-   *
-   *  Generic over the result because two callers need it and they do different
-   *  things with what comes back — an action returns the company's finished
-   *  state, the pack trial returns a measurement. The same six lines written
-   *  twice would be six lines that eventually disagree about which of the two
-   *  clears `busy`.
-   */
-  async function acting<T>(id: string, action: () => Promise<T>,
-                          done: (result: T) => void) {
+   *  failure is attributed to it rather than to the page. Every one of these
+   *  answers with the company's finished state, so the company is replaced
+   *  from the response rather than re-fetching the whole list — including the
+   *  re-analysis, which writes a fresh proposal beside one file. */
+  async function run(id: string, action: () => Promise<CompanyCatalogue>) {
     setBusy(id);
     setProblem(null);
     try {
-      done(await action());
+      replace(await action());
     } catch (e) {
-      // The server names the specific cause — a column the file lacks, a pack
-      // the engine no longer ships, a name that yields no key — so it is
-      // shown verbatim rather than summarised away.
+      // The server names the specific cause — a column the file lacks, a rule
+      // set the engine no longer ships, the files a build was refused over —
+      // so it is shown verbatim rather than summarised away.
       setProblem({ id, message: (e as Error).message });
     } finally {
       setBusy(null);
     }
-  }
-
-  /** An action that returns the company's finished state, so the company is
-   *  replaced from the response rather than re-fetching the whole list. */
-  function run(id: string, action: () => Promise<CompanyCatalogue>) {
-    return acting(id, action, replace);
-  }
-
-  /** Run the trial for one catalogue. Shares `busy` with the actions, because
-   *  it is a parse per pack and a build queued behind it would sit on the
-   *  lock. */
-  function tryPacks(c: CompanyCatalogueEntry) {
-    setFit(null);
-    const id = keyOf(c);
-    return acting(id, () => papi.companyPackFit(
-      session.token, c.connection_id, c.catalogue_key),
-      (result) => setFit({ id, result }));
   }
 
   /** Every action one catalogue's section can take, bound to it here so the
@@ -791,13 +731,13 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
     const id = keyOf(c);
     const { connection_id: cid, catalogue_key: key } = c;
     return {
-      setPack: (packId) => run(id, () => papi.setCompanyPack(t, cid, key, packId)),
-      tryPacks: () => tryPacks(c),
       build: () => run(id, () => papi.buildCompanyCatalog(t, cid, key)),
       upload: (file, sourceKey) =>
         run(id, () => papi.uploadCompanyCorpus(t, cid, key, file, sourceKey)),
-      map: (sourceKey, mapping) =>
-        run(id, () => papi.setSourceMapping(t, cid, key, sourceKey, mapping)),
+      saveDecoding: (sourceKey, config) =>
+        run(id, () => papi.saveSourceDecoding(t, cid, key, sourceKey, config)),
+      analyze: (sourceKey) =>
+        run(id, () => papi.analyzeSource(t, cid, key, sourceKey)),
       removeSource: (sourceKey) =>
         run(id, () => papi.removeCompanySource(t, cid, key, sourceKey)),
       rename: (name) => run(id, () => papi.renameCompanyCatalogue(t, cid, key, name)),
@@ -837,7 +777,7 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
     );
   }
 
-  const packs = view.packs;
+  const ruleSets = view.rule_sets;
   const addingTo = adding
     ? view.companies.find((c) => c.connection_id === adding) ?? null : null;
 
@@ -888,18 +828,20 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
                 {problem.message}
               </Alert>
             )}
-            {packs.length === 0 && view.can_manage && (
+            {ruleSets.length === 0 && view.can_manage && (
               // The state the empty dropdown used to render as nothing at all.
               // `source.reason` distinguishes an uninitialised submodule from a
               // present engine with a missing corpus, which are different
               // fixes. Once per company, not per catalogue: it is a fact about
               // the deployment, and saying it three times says it less.
               <Alert severity="warning" sx={{ mb: 1.5 }}>
-                <AlertTitle>No pack is available to decode with</AlertTitle>
-                A pack is the decoder the engine ships — the rules that read a
-                part number and a description. This deployment has none, so
-                nothing can be built until that is fixed; uploading a file here
-                still works and it will decode once a pack is available.
+                <AlertTitle>No rule set is available to decode with</AlertTitle>
+                A rule set is a decoder the engine ships — the rules that read
+                how one manufacturer phrases a description. This deployment has
+                none, so no file&apos;s decoding config can name one and nothing
+                can be built until that is fixed; uploading a file here still
+                works, and it decodes once a rule set is available and its
+                config is saved.
                 {view.source.reason ? ` ${view.source.reason}` : ""}
               </Alert>
             )}
@@ -910,19 +852,17 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
               <EmptyState
                 title="No catalogue yet"
                 reason={view.can_manage
-                  ? "Add one per manufacturer this company sells — Kennametal, YG-1 — with Add a catalogue above. Each decodes that manufacturer's price lists through its own pack, and the company resolves against all of them. Until one is built, its resolutions answer UNKNOWN — not zero coverage."
+                  ? "Add one per manufacturer this company sells — Kennametal, YG-1 — with Add a catalogue above. Each price list uploaded into one carries its own decoding config, and the company resolves against all of them. Until one is built, its resolutions answer UNKNOWN — not zero coverage."
                   : "Nothing has been defined for this company to decode. Its resolutions answer UNKNOWN — not zero coverage — until an owner adds a catalogue per manufacturer it sells, such as Kennametal or YG-1, and builds it."}
               />
             ) : c.catalogues.map((cat) => {
               const id = keyOf(cat);
               return (
                 <CatalogueSection
-                  key={id} company={c} catalogue={cat} packs={packs}
+                  key={id} company={c} catalogue={cat} ruleSets={ruleSets}
                   canManage={view.can_manage} busy={busy === id}
                   problem={problem?.id === id ? problem.message : null}
-                  fit={fit?.id === id ? fit.result : null}
                   on={actionsFor(cat)}
-                  onCloseFit={() => setFit(null)}
                   onCloseProblem={() => setProblem(null)}
                 />
               );
@@ -933,12 +873,12 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
 
       {addingTo && (
         <AddCatalogueDialog
-          packs={packs} busy={busy === addingTo.connection_id}
+          busy={busy === addingTo.connection_id}
           onClose={() => setAdding(null)}
-          onAdd={(name, packId) => {
+          onAdd={(name) => {
             setAdding(null);
             run(addingTo.connection_id, () => papi.createCompanyCatalogue(
-              session.token, addingTo.connection_id, { name, pack_id: packId }));
+              session.token, addingTo.connection_id, { name }));
           }} />
       )}
 

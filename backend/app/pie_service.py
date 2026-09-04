@@ -226,16 +226,20 @@ class Resolution:
         }
 
 
-#: ``pack_families``' memo, keyed by pack path. Kept per path because packs
-#: are per company now and an organization may read several. A *failed* read is
-#: deliberately not cached: a pack fetched after boot must be seen on the next
-#: call, or every family edit stays refused until a restart for a failure that
-#: has been fixed.
+#: ``rule_set_families``' memo, keyed by rule-set path. Kept per path because
+#: an organization's price lists decode through several. A *failed* read is
+#: deliberately not cached: a rule set fetched after boot must be seen on the
+#: next call, or every family edit stays refused until a restart for a failure
+#: that has been fixed.
 _families_memo: Dict[str, tuple] = {}
 
 
-def pack_families(pack_path: Optional[Path] = None) -> Optional[tuple]:
-    """The family vocabulary one pack declares, or None if it cannot be read.
+def rule_set_families(rule_set_path: Path) -> Optional[tuple]:
+    """The family vocabulary one rule set declares, or None if it cannot be read.
+
+    A rule set is what pie-parser keeps as an org-layer pack; the portal calls
+    it by what it is to the portal — the decoder half of one price list's
+    decoding config — and there is no default one, so the path is required.
 
     Read from the manifest alone: resolving a code needs the whole engine, but
     the vocabulary is one YAML list, and a policy save must not pay for grammar
@@ -244,27 +248,24 @@ def pack_families(pack_path: Optional[Path] = None) -> Optional[tuple]:
     "what counts as a declared family" keeps exactly one definition — the one
     ``load_pack`` itself uses.
 
-    ``None`` means *this pack is not readable here* — a checkout without the
-    private submodule, or a pack id this engine no longer ships — which is a
+    ``None`` means *this rule set is not readable here* — a checkout without
+    the private submodule, or an id this engine no longer ships — which is a
     different answer from an empty vocabulary. The caller must treat it as
     "there is nothing to validate against", never as "every name is fine";
     ``commercial.policy.save_for_org`` refuses a family edit outright in that
     state rather than waving it through.
 
-    **A pack per company, so a pack argument.** This used to read
-    ``settings.PIE_PACK`` and document at length why one deployment meant one
-    organisation layer: the catalogue was built from one pack into one
-    process-wide index, so making the *vocabulary* per organisation while the
-    index stayed shared would have left two organisations validating names
-    against different packs and resolving products against the same one. That
-    reasoning was sound and its premise is gone — each company now builds its
-    own catalogue through its own pack — so the vocabulary follows the pack
-    that actually decoded the rows. ``commercial.policy`` unions the packs of
-    the organization's companies, which is the honest vocabulary for a policy
-    that applies to all of them.
+    **A rule set per price list, so a path argument and no default.** This
+    used to read ``settings.PIE_PACK`` and document at length why one
+    deployment meant one organisation layer: the catalogue was built from one
+    pack into one process-wide index. That premise is gone — every price list
+    decodes through the rule set its own decoding config names — so the
+    vocabulary follows the rule sets that actually decoded the rows.
+    ``commercial.policy`` unions the rule sets the organization's saved
+    decoding configs name, which is the honest vocabulary for a policy that
+    applies to all of them.
     """
-    pack_path = pack_path or settings.PIE_PACK
-    cached = _families_memo.get(str(pack_path))
+    cached = _families_memo.get(str(rule_set_path))
     if cached is not None:
         return cached
     try:
@@ -273,7 +274,7 @@ def pack_families(pack_path: Optional[Path] = None) -> Optional[tuple]:
             sys.path.insert(0, root)
         # Asked of the engine rather than read out of the manifest by hand.
         # This used to yaml.safe_load PIE_PACK/manifest.yaml and pass the raw
-        # document to families_from_config, which worked while a pack was one
+        # document to families_from_config, which worked while a rule set was one
         # flat directory. Packs are layered now — an organisation layer extends
         # a shared nomenclature layer — and `families` moved to the layer, so
         # reading the org manifest directly found none and the vocabulary went
@@ -282,11 +283,11 @@ def pack_families(pack_path: Optional[Path] = None) -> Optional[tuple]:
         # is the drift CLAUDE.md §2 is about: load_pack already owns it.
         from engine.pack import load_pack  # noqa: PLC0415
 
-        families = tuple(load_pack(pack_path).families)
-        _families_memo[str(pack_path)] = families
+        families = tuple(load_pack(rule_set_path).families)
+        _families_memo[str(rule_set_path)] = families
         return families
-    except Exception:  # noqa: BLE001 — an absent pack must not 500 a policy save
-        log.warning("PIE pack manifest unreadable; no family vocabulary to "
+    except Exception:  # noqa: BLE001 — an absent rule set must not 500 a policy save
+        log.warning("PIE rule-set manifest unreadable; no family vocabulary to "
                     "validate against", exc_info=True)
         return None
 
@@ -334,7 +335,7 @@ class _View:
     #: once tried and unavailable, like ``retriever``.
     reranker: Any = None
     #: The catalogues the union was made from, as ``catalog.union_catalogue``
-    #: reports them: key, name, pack, stamp and record count each.
+    #: reports them: key, name, rule sets, stamp and record count each.
     catalogues: List[Dict[str, Any]] = field(default_factory=list)
 
 
@@ -441,8 +442,9 @@ class PieService:
             else:
                 self._views.pop(connection_id, None)
         # The family vocabulary too: a company that has just rebuilt may have
-        # done so through a different pack, and a memo from the previous one
-        # would validate its policy against a vocabulary nothing decodes with.
+        # done so through a different rule set, and a memo from the previous
+        # one would validate its policy against a vocabulary nothing decodes
+        # with.
         _families_memo.clear()
 
     # ── exact catalogue identity ─────────────────────────────────────────────
@@ -598,7 +600,7 @@ class PieService:
         """The version of the catalogue this company resolves against.
 
         With one catalogue it is that catalogue's ruleset checksum: pie-parser
-        derives it from the input bytes plus the pack's own checksum, which is
+        derives it from the input bytes plus the rule set's own checksum, which is
         what makes a rerun reproducible — and it is the one fact that explains,
         months later, why the same RFQ text resolved to a different product
         than it does today. With several it is a hash over every member's key,
@@ -613,7 +615,7 @@ class PieService:
 
     def catalogues(self, connection_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """Which manufacturers' catalogues this company resolves against, each
-        with its key, name, pack and stamp — the members behind
+        with its key, name, rule sets and stamp — the members behind
         :meth:`catalog_version`. Empty when it has none."""
         view = self._view(connection_id)
         return [dict(c) for c in view.catalogues] if view else []
@@ -677,9 +679,10 @@ class PieService:
 
         ``version`` is the company's ruleset checksum, and it is what keeps two
         companies apart here — deliberately *instead of* the connection id.
-        Two companies that uploaded the same export and chose the same pack
-        have byte-identical catalogues, so they have identical answers, and a
-        key carrying the connection would miss a hit that is genuinely correct.
+        Two companies that uploaded the same export and saved the same rule
+        set for it have byte-identical catalogues, so they have identical
+        answers, and a key carrying the connection would miss a hit that is
+        genuinely correct.
 
         **An empty version is never cached.** It means the checksum could not
         be read, and every company whose checksum is unreadable would otherwise

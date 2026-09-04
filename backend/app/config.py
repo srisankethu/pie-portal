@@ -106,9 +106,11 @@ class Settings:
     # Disable in constrained deploys and build from the screen instead.
     AUTO_BUILD_CATALOG: bool = os.environ.get("AUTO_BUILD_CATALOG", "1") != "0"
 
-    # The corpus a *first* company inherits as its seed, and the pack it is
-    # decoded through. Not a runtime fallback: once a company has uploaded its
-    # own export, neither of these is read for it again.
+    # The corpus a *first* company inherits as its seed, and the rule set it
+    # ships with — the one written against exactly this file. Not a runtime
+    # fallback: once a company has uploaded its own export, neither of these
+    # is read for it again, and nothing uploaded is ever decoded through
+    # PIE_PACK by default.
     PIE_CORPUS: Path = _path_env(
         "PIE_CORPUS",
         PIE_PARSER_ROOT / "corpora" / "kmt_zcnc_2026-07_nomenclature.csv",
@@ -120,12 +122,12 @@ class Settings:
     # directory; the nomenclature layer is reached through the manifest and is
     # never named here.
     #
-    # This is a per-*catalogue* choice, and it is stored per catalogue — a
-    # company keeps one catalogue per manufacturer it sells, and
-    # `company_catalogues.pack_choice` holds the id, resolved against what the
-    # engine ships by `catalog.pack_for`. What is left here is the default the
-    # seed uses and the fallback `master_health --pack` takes, naming the only
-    # org layer the pinned engine has.
+    # Which rule set decodes a file is a per-*file* fact — each uploaded price
+    # list carries its own decoding config (`company_corpora.rule_set`),
+    # proposed by analysing that file and saved by a person, and there is no
+    # default. What is left here is the seed's own pairing and the fallback
+    # `master_health --pack` takes, naming the only org layer the pinned engine
+    # has.
     PIE_PACK: Path = _path_env("PIE_PACK",
                                PIE_PARSER_ROOT / "packs" / "org" / "zcnc")
 

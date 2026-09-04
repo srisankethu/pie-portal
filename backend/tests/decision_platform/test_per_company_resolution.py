@@ -237,10 +237,13 @@ def test_the_shipped_corpus_seeds_the_first_company_and_it_resolves(maker, tmp_p
     corpus = catalog.current_corpus(s, ORG, SLS)
     assert corpus is not None
     assert corpus.size_bytes == settings.PIE_CORPUS.stat().st_size
-    # The pack it was decoded through, chosen for the catalogue rather than
-    # left unset — a corpus with no pack builds nothing.
-    row = catalog.catalogue_row(s, ORG, SLS, catalog.DEFAULT_CATALOGUE)
-    assert catalog.pack_for(row) is not None
+    # The seed arrives with its own decoding config, saved by the seed: the
+    # rule set that was written against exactly this file, on the same footing
+    # as a config a person saved. Nothing else is decoded through a default,
+    # and a file with no saved config builds nothing.
+    assert catalog.catalogue_row(s, ORG, SLS, catalog.DEFAULT_CATALOGUE) is not None
+    assert catalog.decoding_ready(corpus)
+    assert corpus.decoding_confirmed_at is not None
 
     built = catalog.ensure_company_catalogues(s)
     s.commit()

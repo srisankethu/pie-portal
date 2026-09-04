@@ -971,7 +971,7 @@ def sync_run_log_text(
 # ("what data is this deployment running on, and how fresh"); a `catalog.py`
 # router would be a second home for the data-status concern.
 #
-# The setup path it gives: a company uploads its item master, picks the pack
+# The setup path it gives: a company uploads a price list, saves the config
 # that decodes it, and builds. There is no deployment-wide catalogue behind
 # these any more — a company with no corpus resolves nothing, which is the
 # honest answer (see `docs/per-company-catalogues.md` §6).
@@ -1005,8 +1005,9 @@ def catalog_companies(
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Every connected company, each of its catalogues with its chosen pack
-    and state, and the union each company resolves against.
+    """Every connected company, each of its catalogues with every price
+    list's decoding config and state, and the union each company resolves
+    against.
 
     Readable by any signed-in user, like `/catalog` and `/status`: which
     catalogue answered a resolution is the same entitlement as knowing when the
@@ -1019,10 +1020,10 @@ def catalog_companies(
         "scope": "company",
         "companies": [_company_dict(session, c, principal)
                       for c in list_connections(session, principal.organization_id)],
-        # What a catalogue may choose from. Chosen, never uploaded — a pack is
-        # regexes the engine runs over every row, and accepting one from a
-        # tenant is accepting arbitrary patterns to execute.
-        "packs": catalog.available_packs(),
+        # What a decoding config may name. Shipped, never uploaded — a rule
+        # set is regexes the engine runs over every row, and accepting one
+        # from a tenant is accepting arbitrary patterns to execute.
+        "rule_sets": catalog.available_rule_sets(),
         "source": catalog.source_state(),
         "max_corpus_bytes": catalog.MAX_CORPUS_BYTES,
         "max_catalogues": catalog.MAX_CATALOGUES,
@@ -1127,11 +1128,10 @@ def _catalogue(session: Session, principal: Principal, connection_id: str,
 
 
 class CatalogueRequest(BaseModel):
-    """A new catalogue: the manufacturer's name, and optionally the pack that
-    decodes their price lists."""
+    """A new catalogue: the manufacturer's name. Nothing about decoding — each
+    price list uploaded into it brings its own decoding config."""
 
     name: str
-    pack_id: Optional[str] = None
 
 
 @router.post("/catalog/companies/{connection_id}/catalogues")
@@ -1143,23 +1143,22 @@ def create_company_catalogue(
 ) -> dict:
     """Add a catalogue to this company — one per manufacturer it sells.
 
-    A distributor carries Kennametal and YG-1 and more, and each one's price
-    lists decode through that manufacturer's own pack, so each is its own
-    catalogue: its own files, its own pack, its own build. The company
-    resolves against all of them at once. Nothing is uploaded or built here;
-    this defines the catalogue the files and the build then belong to.
+    A distributor carries Kennametal and YG-1 and more, so each is its own
+    catalogue: that manufacturer's product universe, built from the price
+    lists uploaded into it. The company resolves against all of them at once.
+    Nothing is uploaded, built or decided about decoding here — every file
+    brings its own decoding config — this only defines the catalogue the files
+    and the build then belong to.
 
     Refused with the reason when the name yields no key, the key is already in
-    use, the company is at its ceiling, or the pack is one the engine does not
-    ship — a stored definition that cannot build would leave a person with a
-    catalogue and no statement of why.
+    use, or the company is at its ceiling.
     """
     from .. import catalog
 
     connection = _company(session, principal, connection_id)
     try:
         catalog.create_catalogue(session, principal.organization_id, connection_id,
-                                 body.name, pack_id=body.pack_id)
+                                 body.name)
     except catalog.CatalogueError as e:
         raise HTTPException(e.status, str(e)) from e
     return _company_dict(session, connection, principal)
@@ -1256,6 +1255,13 @@ def upload_company_corpus(
     Scoped to one catalogue: a Kennametal price list goes into the Kennametal
     catalogue and supersedes nothing in YG-1's.
 
+    **Every upload starts as an unknown format.** The file is analysed on its
+    own before the row is written — which of its columns are read, and which
+    of the engine's shipped rule sets decode it, with the parser's counts for
+    each — and what comes back is a *proposal*, stored beside the file for a
+    person to check and save. Nothing is decoded until they do, and nothing is
+    inherited from the company, the catalogue or a default.
+
     CSV or Excel. A workbook is read with ``openpyxl``, which is already a
     dependency; ``python-multipart`` is still not, because the browser sends the
     file as a raw body and one file needs no form fields.
@@ -1297,7 +1303,7 @@ def upload_company_corpus(
             f"one first.")
 
     try:
-        mapping, ingest = catalog.prepare_source(payload, name, content_type)
+        analysis = catalog.analyze_source(payload, name, content_type)
     except ItemMasterError as e:
         # The reason, verbatim: it names the column it could not find and lists
         # the headers the file does have, which is what makes it actionable.
@@ -1318,8 +1324,13 @@ def upload_company_corpus(
         size_bytes=len(payload),
         sha256=digest,
         content=payload,
-        mapping=mapping,
-        ingest=ingest,
+        mapping=analysis["columns"],
+        ingest=analysis["ingest"],
+        # The proposal, unconfirmed: a rule set only where the file's own
+        # evidence chose one, and never saved on the person's behalf.
+        rule_set=analysis["proposed"],
+        analysis={k: analysis[k] for k in ("sample_rows", "candidates",
+                                            "proposed", "reason")},
         uploaded_by=principal.user_id,
         uploaded_at=now,
     ))
@@ -1345,31 +1356,38 @@ def _source(session: Session, principal: Principal, connection_id: str,
                         "This catalogue has no source file by that name.")
 
 
-class SourceMappingRequest(BaseModel):
-    """Which of one file's columns hold the record id, description and grade."""
+class DecodingConfigRequest(BaseModel):
+    """One file's decoding config, as a person saves it: which of its columns
+    hold the record id, description and grade, and which shipped rule set
+    decodes its descriptions. ``rule_set`` may be empty — the honest state for
+    a file no shipped rule set reads — and the file then waits, by name."""
 
     record_id: str
     description: str
     grade: Optional[str] = None
+    rule_set: Optional[str] = None
 
 
 @router.put("/catalog/companies/{connection_id}/catalogues/{catalogue_key}"
-            "/sources/{source_key}/mapping")
-def set_source_mapping(
+            "/sources/{source_key}/decoding")
+def save_source_decoding(
     connection_id: str,
     catalogue_key: str,
     source_key: str,
-    body: SourceMappingRequest,
+    body: DecodingConfigRequest,
     principal: Principal = Depends(require_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Correct which columns of one source file the parse reads.
+    """Save one file's decoding config — the step between shown and decoded.
 
-    The mapping is guessed at upload from the headers, and a guess is sometimes
-    wrong — a master carrying both ``Old Code`` and ``Item Code``, a sheet whose
-    description column is called ``Particulars``. Setting it here re-reads the
-    stored bytes with the new mapping and refuses one naming a column the file
-    does not have, so a mapping that cannot build is never stored.
+    The analysis at upload proposes the columns from the headers and a rule
+    set from the parser's own counts, and a proposal is sometimes wrong — a
+    master carrying both ``Old Code`` and ``Item Code``, a sheet whose
+    description column is called ``Particulars``, a file two rule sets both
+    read. Saving here re-reads the stored bytes with the columns given and
+    refuses one naming a column the file does not have, and refuses a rule
+    set the engine does not ship, so a config that cannot build is never
+    stored. Until it is saved, the file is not decoded.
 
     The bytes are not touched, and the source is not superseded: this changes
     how a file is *read*, and superseding it would say a different file had
@@ -1383,12 +1401,52 @@ def set_source_mapping(
     wanted = {"record_id": body.record_id, "description": body.description,
               "grade": body.grade or None}
     try:
-        mapping, ingest = catalog.prepare_source(
-            row.content, row.filename, row.content_type or "", mapping=wanted)
+        catalog.confirm_decoding(session, row, wanted, body.rule_set,
+                                 actor=principal.user_id)
     except ItemMasterError as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
-    row.mapping = mapping
-    row.ingest = ingest
+    except catalog.CatalogueError as e:
+        raise HTTPException(e.status, str(e)) from e
+    return _company_dict(session, connection, principal)
+
+
+@router.post("/catalog/companies/{connection_id}/catalogues/{catalogue_key}"
+             "/sources/{source_key}/analyze")
+def analyze_source_decoding(
+    connection_id: str,
+    catalogue_key: str,
+    source_key: str,
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """Analyse one stored file again, from its bytes alone.
+
+    Every shipped rule set is run over its first rows and the parser's counts
+    reported for each — the same discovery an upload runs — so a file stored
+    before rule sets were analysed, or one whose columns were corrected, gets
+    a fresh proposal. Writes the proposal beside the file and nothing else:
+    a saved config stays saved, and the proposal stays a proposal until a
+    person saves it.
+
+    Owner-only, like the build: it spends a parse per rule set on request.
+    """
+    from .. import catalog
+    from ..ingestion.item_master import ItemMasterError
+
+    connection, _row = _catalogue(session, principal, connection_id, catalogue_key)
+    row = _source(session, principal, connection_id, catalogue_key, source_key)
+    try:
+        analysis = catalog.analyze_source(row.content, row.filename,
+                                          row.content_type or "",
+                                          columns=row.mapping)
+    except ItemMasterError as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e)) from e
+    row.analysis = {k: analysis[k] for k in ("sample_rows", "candidates",
+                                              "proposed", "reason")}
+    row.ingest = analysis["ingest"]
+    if row.decoding_confirmed_at is None:
+        row.mapping = analysis["columns"]
+        row.rule_set = analysis["proposed"]
     session.flush()
     return _company_dict(session, connection, principal)
 
@@ -1417,65 +1475,6 @@ def remove_company_source(
     return _company_dict(session, connection, principal)
 
 
-@router.get("/catalog/companies/{connection_id}/catalogues/{catalogue_key}/pack-fit")
-def company_pack_fit(
-    connection_id: str,
-    catalogue_key: str,
-    principal: Principal = Depends(require_owner),
-    session: Session = Depends(get_session),
-) -> dict:
-    """Try every shipped pack against a sample of this catalogue's files.
-
-    A pack identifier says nothing about whether it reads a given export, so
-    this reports the parser's own counts for each one and lets a person choose
-    on evidence rather than by name. It writes nothing — no catalogue, no row —
-    and it runs only packs the pinned engine ships, so it adds no execution
-    surface that a build does not already have.
-
-    Owner-only, unlike reading the catalogue's state: it spends a parse per pack
-    on request, which belongs behind the same role that can trigger a build.
-    """
-    from .. import catalog
-
-    _catalogue(session, principal, connection_id, catalogue_key)
-    return catalog.pack_fit(session, principal.organization_id, connection_id,
-                            catalogue_key=catalogue_key)
-
-
-class CompanyPackRequest(BaseModel):
-    """Which of the shipped org-layer packs decodes this catalogue's files."""
-
-    pack_id: str
-
-
-@router.put("/catalog/companies/{connection_id}/catalogues/{catalogue_key}/pack")
-def set_company_pack(
-    connection_id: str,
-    catalogue_key: str,
-    body: CompanyPackRequest,
-    principal: Principal = Depends(require_owner),
-    session: Session = Depends(get_session),
-) -> dict:
-    """Choose the pack this catalogue decodes through.
-
-    An id, validated against what the pinned engine ships. Refused rather than
-    stored when it names nothing: a stored choice that resolves to no pack
-    would leave the catalogue unable to build with no statement of why.
-    """
-    from .. import catalog
-
-    connection, row = _catalogue(session, principal, connection_id, catalogue_key)
-    known = {p["id"] for p in catalog.available_packs()}
-    if body.pack_id not in known:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"No pack called {body.pack_id!r} ships with this engine. "
-            f"Available: {', '.join(sorted(known)) or 'none'}.")
-    row.pack_choice = body.pack_id
-    session.flush()
-    return _company_dict(session, connection, principal)
-
-
 @router.post("/catalog/companies/{connection_id}/catalogues/{catalogue_key}/build")
 def build_company_catalog(
     connection_id: str,
@@ -1483,8 +1482,11 @@ def build_company_catalog(
     principal: Principal = Depends(require_owner),
     session: Session = Depends(get_session),
 ) -> dict:
-    """Decode this catalogue's stored files through its chosen pack, and
-    refresh the union the company resolves against.
+    """Decode this catalogue's stored files, each through its own saved
+    decoding config, and refresh the union the company resolves against.
+
+    Refused by name when any file has no saved config — there is no default
+    rule set to fall back to, and the answer says which file to open.
 
     Synchronous, on a measurement rather than an assumption: the shipped
     6,717-row corpus parses and writes in under two seconds in-process, and
@@ -1495,19 +1497,13 @@ def build_company_catalog(
     from .. import catalog
     from ..ingestion.item_master import ItemMasterError
 
-    connection, row = _catalogue(session, principal, connection_id, catalogue_key)
-    pack = catalog.pack_for(row)
-    if pack is None:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            "This catalogue has no pack chosen, so there is nothing to decode "
-            "its files with. Choose one first.")
+    connection, _row = _catalogue(session, principal, connection_id, catalogue_key)
     try:
         catalog.build_for_company(session, principal.organization_id,
-                                  connection_id, pack, actor=principal.user_id,
+                                  connection_id, actor=principal.user_id,
                                   catalogue_key=catalogue_key)
-    except FileNotFoundError as e:
-        raise HTTPException(status.HTTP_409_CONFLICT, str(e)) from e
+    except catalog.CatalogueError as e:
+        raise HTTPException(e.status, str(e)) from e
     except ItemMasterError as e:
         # One of the files stopped being readable — usually a mapping whose
         # column a re-upload renamed. Its own message, which names the file,

@@ -3,9 +3,10 @@
 
 Each company keeps a catalogue per manufacturer it sells, and each decodes
 its own price lists (`backend/data/catalogues/<connection_id>/<catalogue_key>/
-products.jsonl`) through its own pack; the company resolves against the union
-of them, written beside those under `_union/`. A company that has
-uploaded nothing inherits the corpus shipping in the ./pie-parser submodule,
+products.jsonl`) through each file's own saved decoding config; the company
+resolves against the union of them, written beside those under `_union/`. A
+company that has uploaded nothing inherits the corpus shipping in the
+./pie-parser submodule,
 once — that seed is what keeps a deployment resolving across the move from one
 shared catalogue to one per company.
 

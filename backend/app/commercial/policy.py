@@ -559,33 +559,34 @@ def load_for_org(session: Session, organization_id: str) -> CommercialThresholds
 
 def _family_vocabulary(session: Session,
                        organization_id: str) -> Optional[tuple]:
-    """Every family name this organization's catalogues can actually decode.
+    """Every family name this organization's price lists actually decode into.
 
-    The union, not one catalogue's, because a margin policy is the
-    organization's: a family that only the second company — or only one
-    manufacturer's catalogue — sells is still a family this policy prices, and
-    validating against a single pack would refuse a name that decodes
-    perfectly well for the catalogue that uses it.
+    The union, not one file's, because a margin policy is the organization's:
+    a family that only the second company — or only one manufacturer's price
+    list — sells is still a family this policy prices, and validating against
+    a single rule set would refuse a name that decodes perfectly well for the
+    file that uses it.
     Narrower than "accept anything": a name no company's pack declares still
     cannot be saved, which is the whole point of checking.
 
-    ``None`` — not an empty tuple — when no company has a readable pack, so the
-    caller can tell "nothing to validate against" from "nothing is valid" and
-    refuse rather than wave the edit through.
+    ``None`` — not an empty tuple — when no saved decoding config names a
+    readable rule set, so the caller can tell "nothing to validate against"
+    from "nothing is valid" and refuse rather than wave the edit through.
     """
     from .. import catalog
-    from ..pie_service import pack_families
+    from ..pie_service import rule_set_families
 
     names: set = set()
     read_any = False
-    # Every catalogue of every company: a company keeps one per manufacturer,
-    # each decoded through its own pack, and a family only YG-1's pack
-    # declares is still a family this policy prices.
-    for row in catalog.catalogue_rows_for_org(session, organization_id):
-        pack = catalog.pack_for(row)
-        if pack is None:
+    # Every rule set a saved decoding config in this organization names,
+    # across every company and catalogue: a price list decodes through its
+    # own, and a family only YG-1's rule set declares is still a family this
+    # policy prices.
+    for rule_set_id in catalog.rule_sets_in_use(session, organization_id):
+        path = catalog.rule_set_path(rule_set_id)
+        if path is None:
             continue
-        families = pack_families(pack)
+        families = rule_set_families(path)
         if families is None:
             continue
         read_any = True

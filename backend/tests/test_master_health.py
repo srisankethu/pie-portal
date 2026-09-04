@@ -22,6 +22,7 @@ import pytest
 
 from app.master_health import analysis, policy as policy_module
 from app.master_health.cli import main
+from app.config import settings
 from app.master_health.geometry import GATED_SLOTS, DecodeOutcome, DecodeRun, decode_names
 from app.master_health.profile import (
     ROLES,
@@ -483,7 +484,9 @@ def test_the_real_engine_gates_an_insert_and_refuses_a_screw():
         MasterRow(2, "A", "CNMG 120408-49 - TN2000", "KMT", Decimal("1"), Decimal("1"), "H", "pcs"),
         MasterRow(3, "B", "M3X11 SCREW", "", Decimal("1"), Decimal("1"), "H", "pcs"),
     ]
-    run = decode_names(rows)
+    # The rule set is named, never defaulted: which one reads an export is a
+    # fact about that file, and `decode_names` refuses to guess.
+    run = decode_names(rows, settings.PIE_PACK)
     assert run.available, run.unavailable_reason
     assert run.covered_brands, "the pack must declare the brands it claims"
     assert run.outcomes[2].gated is True
@@ -506,7 +509,8 @@ def test_a_real_catalogue_record_links_by_identity_and_an_invented_one_does_not(
     ])
     rows, _ = read_export(export, load_profile("zoho"))
     report = analysis.build_report(
-        rows=rows, profile=load_profile("zoho"), decode=decode_names(rows),
+        rows=rows, profile=load_profile("zoho"),
+        decode=decode_names(rows, settings.PIE_PACK),
         policy=policy_module.load_policy(),
         # Bound to the company being measured, the way the CLI binds them:
         # a lookup that did not name a company would answer from nothing.

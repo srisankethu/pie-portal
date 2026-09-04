@@ -95,16 +95,34 @@ def _hdr(c, email="s.menon@pie.example"):
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
-def _create(c, hdr, name, pack="zcnc"):
-    return c.post(f"{BASE}/catalogues", json={"name": name, "pack_id": pack},
-                  headers=hdr)
+def _create(c, hdr, name):
+    return c.post(f"{BASE}/catalogues", json={"name": name}, headers=hdr)
 
 
-def _upload(c, hdr, key, content, filename="prices.csv", source_key=None):
+def _upload(c, hdr, key, content, filename="prices.csv", source_key=None,
+            decode=True):
+    """Upload one price list into one catalogue and save the decoding config
+    its own analysis proposed — the flow, in the two steps it has."""
     url = f"{BASE}/catalogues/{key}/corpus?filename={filename}"
     if source_key is not None:
         url += f"&source_key={source_key}"
-    return c.post(url, content=content, headers={**hdr, "Content-Type": "text/csv"})
+    r = c.post(url, content=content, headers={**hdr, "Content-Type": "text/csv"})
+    if decode and r.status_code == 200:
+        return _confirm(c, hdr, r.json(), key)
+    return r
+
+
+def _confirm(c, hdr, body, key):
+    """Save the decoding config the newest file of one catalogue proposed."""
+    source = _cat(body, key)["sources"][-1]
+    columns = source["decoding"]["columns"]
+    return c.put(
+        f"{BASE}/catalogues/{key}/sources/{source['source_key']}/decoding",
+        json={"record_id": columns["record_id"],
+              "description": columns["description"],
+              "grade": columns.get("grade"),
+              "rule_set": source["decoding"]["rule_set"]},
+        headers=hdr)
 
 
 def _build(c, hdr, key):
@@ -245,15 +263,96 @@ def test_removing_a_catalogue_takes_effect_at_once_and_keeps_its_files(client):
     assert client.delete(f"{BASE}/catalogues/yg-1", headers=hdr).status_code == 404
 
 
+# ── every file brings its own decoding config ───────────────────────────────
+
+@requires_pie
+def test_each_file_is_decoded_through_its_own_config_and_stamped_with_it(client):
+    """Two price lists in one catalogue, decoded separately and merged after.
+
+    The build is *file + its decoding config → decoded records*, so each file
+    carries its own stamp — its own ``run_id`` over its own bytes and its own
+    rule set — and the catalogue reports them per file rather than pretending
+    one decode produced them all. That is what makes a catalogue holding two
+    manufacturers' phrasings possible at all.
+    """
+    hdr = _hdr(client)
+    _create(client, hdr, "Kennametal")
+    _upload(client, hdr, "kennametal", HEADER + b"K-1,SC DRILL 6.00MM 3XD,KC7315\n",
+            "master.csv", "master")
+    body = _upload(client, hdr, "kennametal",
+                   HEADER + b"K-2,SC DRILL 8.00MM 5XD,KC7315\n",
+                   "extra.csv", "extra").json()
+    assert all(s["decoding"]["ready"] for s in _cat(body, "kennametal")["sources"])
+
+    built = _cat(_build(client, hdr, "kennametal").json(), "kennametal")
+    assert built["records"] == 2
+    files = {f["source_key"]: f for f in built["built_from"]}
+    assert sorted(files) == ["extra", "master"]
+    for f in files.values():
+        assert f["rule_set"] == "zcnc"
+        assert f["stamp"]["run_id"] and f["stamp"]["ruleset_checksum"]
+        assert f["records"] == 1
+        assert f["report"]["total"] == 1        # the parser's own, per file
+    # Two files, two decodes, two run ids: the stamp is the file's, not the
+    # catalogue's, and the catalogue leaves it null rather than picking one.
+    assert (files["master"]["stamp"]["run_id"]
+            != files["extra"]["stamp"]["run_id"])
+    assert built["stamp"].get("run_id") is None
+    assert built["stamp"]["ruleset_checksum"]   # both files agree on this one
+
+
+def test_a_second_file_is_analysed_afresh_and_inherits_nothing(client):
+    """Every upload starts as an unknown format.
+
+    A file uploaded into a catalogue that already holds a decoded one does not
+    inherit its neighbour's config, and a file uploaded into a *second*
+    catalogue does not inherit the first's: each is analysed on its own bytes
+    and waits for its own config to be saved. This is the whole point of
+    removing the default — a YG-1 price list must never be quietly decoded
+    through Kennametal's grammars because that is what the company used last.
+    """
+    hdr = _hdr(client)
+    _create(client, hdr, "Kennametal")
+    _create(client, hdr, "YG-1")
+    _upload(client, hdr, "kennametal", HEADER + b"K-1,SC DRILL 6.00MM 3XD,KC7315\n",
+            "master.csv", "master")
+
+    # A second file in the same catalogue: proposed on its own evidence, and
+    # not ready until somebody saves it.
+    same = _upload(client, hdr, "kennametal",
+                   HEADER + b"K-2,SC DRILL 8.00MM 5XD,KC7315\n",
+                   "extra.csv", "extra", decode=False).json()
+    extra = next(x for x in _cat(same, "kennametal")["sources"]
+                 if x["source_key"] == "extra")
+    assert extra["decoding"]["confirmed_at"] is None
+    assert extra["decoding"]["ready"] is False
+    assert extra["decoding"]["analysis"]["candidates"]
+
+    # And a file in another catalogue, the same way.
+    other = _upload(client, hdr, "yg-1", HEADER + b"Y-1,SC DRILL 10.00MM 5XD,KC7315\n",
+                    "yg.csv", "yg", decode=False).json()
+    assert _cat(other, "yg-1")["sources"][0]["decoding"]["ready"] is False
+    assert _cat(other, "yg-1")["decoding_ready"] is False
+    assert _cat(other, "yg-1")["awaiting_decoding"] == ["yg"]
+
+    # The build refuses by name rather than decoding either of them.
+    refused = client.post(f"{BASE}/catalogues/kennametal/build", headers=hdr)
+    assert refused.status_code == 409
+    assert "extra.csv" in refused.json()["detail"]
+    assert "master.csv" not in refused.json()["detail"]
+
+
 # ── defining catalogues ─────────────────────────────────────────────────────
 
 def test_a_catalogue_is_keyed_by_its_name_and_refused_when_that_cannot_work(
         client, monkeypatch):
     hdr = _hdr(client)
-    body = _create(client, hdr, "Kennametal (2026)", pack=None).json()
+    body = _create(client, hdr, "Kennametal (2026)").json()
     assert _keys(body) == ["kennametal-2026"]
     assert _cat(body, "kennametal-2026")["name"] == "Kennametal (2026)"
-    assert _cat(body, "kennametal-2026")["pack_id"] is None
+    # A catalogue decides nothing about decoding: it has no files yet, and
+    # each file it gets will bring its own config.
+    assert _cat(body, "kennametal-2026")["sources"] == []
     assert _cat(body, "kennametal-2026")["exists"] is False
     assert _cat(body, "kennametal-2026")["records"] is None
 
@@ -266,20 +365,16 @@ def test_a_catalogue_is_keyed_by_its_name_and_refused_when_that_cannot_work(
     # The union's own directory is not a name a catalogue may take.
     assert _create(client, hdr, "_union").status_code == 422
 
-    bad_pack = _create(client, hdr, "YG-1", pack="../../etc")
-    assert bad_pack.status_code == 400
-    assert "zcnc" in bad_pack.json()["detail"] or "none" in bad_pack.json()["detail"]
-
     monkeypatch.setattr(catalog, "MAX_CATALOGUES", 2)
-    assert _create(client, hdr, "YG-1", pack=None).status_code == 200
-    third = _create(client, hdr, "Sandvik", pack=None)
+    assert _create(client, hdr, "YG-1").status_code == 200
+    third = _create(client, hdr, "Sandvik")
     assert third.status_code == 409
     assert "limit of 2" in third.json()["detail"]
 
 
 def test_a_catalogue_can_be_renamed_but_keeps_its_key(client):
     hdr = _hdr(client)
-    _create(client, hdr, "default", pack=None)
+    _create(client, hdr, "default")
     body = client.patch(f"{BASE}/catalogues/default", json={"name": "Kennametal"},
                         headers=hdr).json()
     assert _keys(body) == ["default"]
@@ -295,14 +390,14 @@ def test_files_belong_to_one_catalogue(client, monkeypatch):
     source ceiling is per catalogue, and a file is addressed only through the
     catalogue it was uploaded to."""
     hdr = _hdr(client)
-    _create(client, hdr, "Kennametal", pack=None)
-    _create(client, hdr, "YG-1", pack=None)
+    _create(client, hdr, "Kennametal")
+    _create(client, hdr, "YG-1")
     monkeypatch.setattr(catalog, "MAX_SOURCES", 1)
 
     a = _upload(client, hdr, "kennametal", HEADER + b"A,A TOOL,KC725M\n",
-                "prices.csv", "prices").json()
+                "prices.csv", "prices", decode=False).json()
     b = _upload(client, hdr, "yg-1", HEADER + b"B,B TOOL,KC725M\n",
-                "prices.csv", "prices").json()
+                "prices.csv", "prices", decode=False).json()
     # The same source key in two catalogues is two files.
     assert [s["source_key"] for s in _cat(b, "kennametal")["sources"]] == ["prices"]
     assert [s["source_key"] for s in _cat(b, "yg-1")["sources"]] == ["prices"]
@@ -310,7 +405,7 @@ def test_files_belong_to_one_catalogue(client, monkeypatch):
             != _cat(b, "yg-1")["sources"][0]["corpus_id"])
     # At the ceiling in one catalogue, not in the other.
     assert _upload(client, hdr, "kennametal", HEADER + b"C,C TOOL,KC725M\n",
-                   "more.csv", "more").status_code == 409
+                   "more.csv", "more", decode=False).status_code == 409
 
     # Addressed through its own catalogue only.
     assert client.delete(f"{BASE}/catalogues/yg-1/sources/nope",
@@ -321,19 +416,20 @@ def test_files_belong_to_one_catalogue(client, monkeypatch):
     assert [s["source_key"] for s in _cat(gone, "yg-1")["sources"]] == ["prices"]
 
     # A catalogue the company does not have is not there, for every action.
-    assert _upload(client, hdr, "sandvik", HEADER + b"S,S TOOL,KC725M\n"
-                   ).status_code == 404
+    assert _upload(client, hdr, "sandvik", HEADER + b"S,S TOOL,KC725M\n",
+                   decode=False).status_code == 404
     assert client.post(f"{BASE}/catalogues/sandvik/build", headers=hdr).status_code == 404
-    assert client.put(f"{BASE}/catalogues/sandvik/pack", json={"pack_id": "zcnc"},
+    assert client.put(f"{BASE}/catalogues/sandvik/sources/x/decoding",
+                      json={"record_id": "MM#", "description": "d"},
                       headers=hdr).status_code == 404
 
 
 def test_defining_and_removing_catalogues_is_owner_only(client):
     hdr = _hdr(client)
-    _create(client, hdr, "Kennametal", pack=None)
+    _create(client, hdr, "Kennametal")
     for email in ("r.nair@pie.example", "m.rao@pie.example"):
         other = _hdr(client, email)
-        assert _create(client, other, "YG-1", pack=None).status_code == 403
+        assert _create(client, other, "YG-1").status_code == 403
         assert client.patch(f"{BASE}/catalogues/kennametal", json={"name": "x"},
                             headers=other).status_code == 403
         assert client.delete(f"{BASE}/catalogues/kennametal",
@@ -357,11 +453,17 @@ def test_a_catalogue_built_before_directories_is_moved_not_rebuilt(client, monke
     s = client.Maker()
     s.add(models.CompanyCatalogue(
         organization_id="org_pie", connection_id="cx_sls", catalogue_key="default",
-        name="", pack_choice="zcnc", records=1, built_at=__import__("app.clock").clock.now(),
-        ruleset_checksum="abc", run_id="r1"))
+        name="", records=1, built_at=__import__("app.clock").clock.now(),
+        ruleset_checksum="abc", run_id="r1",
+        sources=[{"source_key": "old.csv", "rule_set": "zcnc",
+                  "stamp": {"run_id": "r1", "ruleset_checksum": "abc"}}]))
     s.add(models.CompanyCorpus(
         organization_id="org_pie", connection_id="cx_sls", catalogue_key="default",
-        source_key="old.csv", filename="old.csv", size_bytes=1, sha256="x", content=b"x"))
+        source_key="old.csv", filename="old.csv", size_bytes=1, sha256="x", content=b"x",
+        mapping={"record_id": "MM#", "description": "Material Description",
+                 "grade": None},
+        rule_set="zcnc", decoding_confirmed_at=__import__("app.clock").clock.now(),
+        decoding_confirmed_by="test"))
     s.commit()
 
     legacy = settings.PIE_CATALOG.parent / "catalogues" / "cx_sls" / "products.jsonl"
@@ -394,13 +496,14 @@ def _alembic(db_path: Path, *args: str) -> subprocess.CompletedProcess:
 
 
 def test_the_migration_gives_an_existing_company_its_default_catalogue(tmp_path):
-    """``m1cats`` re-keys the table and carries the pack choice across.
+    """``m1cats`` re-keys the table and moves the decoder onto each file.
 
-    A company that had built keeps its row under ``default`` with the pack it
-    chose on the connection; a company that had only uploaded gets a
-    ``default`` definition so its files still belong to a catalogue; every
-    corpus row is filed under ``default``. Reversible, and the reverse keeps
-    the uploaded bytes.
+    A company that had built keeps its row under ``default``; a company that
+    had only uploaded gets a ``default`` definition so its files still belong
+    to a catalogue; every corpus row is filed under ``default``, and each live
+    file carries the company's recorded decoder as its own saved decoding
+    config — a recorded decision, never a default applied to an unknown file.
+    Reversible, and the reverse keeps the uploaded bytes.
     """
     import json
 
@@ -432,11 +535,17 @@ def test_the_migration_gives_an_existing_company_its_default_catalogue(tmp_path)
     pk = [r[1] for r in c.execute("PRAGMA table_info(company_catalogues)") if r[5]]
     assert pk == ["organization_id", "connection_id", "catalogue_key"]
     rows = list(c.execute(
-        "SELECT connection_id, catalogue_key, pack_choice, built_at IS NOT NULL "
+        "SELECT connection_id, catalogue_key, built_at IS NOT NULL "
         "FROM company_catalogues ORDER BY connection_id"))
-    assert rows == [("c1", "default", "zcnc", 1), ("c2", "default", None, 0)]
-    assert list(c.execute("SELECT catalogue_key FROM company_corpora")) == [
-        ("default",), ("default",)]
+    assert rows == [("c1", "default", 1), ("c2", "default", 0)]
+    # The decoder is a fact about a file now: the company that had chosen one
+    # has it on its file, confirmed; the company that never chose has none,
+    # and its file waits for a decoding config rather than getting a default.
+    assert list(c.execute(
+        "SELECT connection_id, catalogue_key, rule_set, "
+        "decoding_confirmed_at IS NOT NULL FROM company_corpora "
+        "ORDER BY connection_id")) == [
+        ("c1", "default", "zcnc", 1), ("c2", "default", None, 0)]
     c.close()
 
     assert _alembic(db, "downgrade", "-1").returncode == 0

@@ -4,21 +4,23 @@ A catalogue is ``products.jsonl`` produced by pie-parser's ``run_parser`` over
 one company's item-master export. It is large (~13 MB) and deterministic, so it
 is gitignored and rebuilt from the corpus rather than committed.
 
-**Catalogues belong to a connected company, and there is no deployment-wide
-default.** A company keeps one catalogue *per manufacturer it sells* —
-Kennametal's price lists decoded through Kennametal's pack, YG-1's through
-YG-1's — each into ``data/catalogues/<connection_id>/<catalogue_key>/``, and it
-resolves against the **union** of them, written beside those files under
+**Catalogues belong to a connected company, every price list carries its own
+decoding config, and there is no default decoder.** A company keeps one
+catalogue *per manufacturer it sells*, each into
+``data/catalogues/<connection_id>/<catalogue_key>/``; each price list uploaded
+into a catalogue is analysed on its own to find how it is read and which of
+the engine's shipped rule sets decodes it, a person saves that decoding
+config, and the build decodes each file through its own. The company resolves
+against the **union** of its built catalogues, written beside them under
 ``_union/``. A company that has uploaded nothing has no catalogue and resolves
 nothing — which is the honest answer, and the one thing that could be worse is
 answering from another company's.
 
-The corpus that ships inside the pinned submodule (``settings.PIE_CORPUS``,
-``settings.PIE_PACK``) is the **seed**, not a runtime fallback: on start-up
-:func:`seed_company_catalogues` gives it to each organization's first company
-where that company has no export of its own, so a deployment that has been
-resolving against the old shared catalogue keeps resolving after the cutover.
-Nothing reads it once a company has its own.
+The corpus that ships inside the pinned submodule (``settings.PIE_CORPUS``) is
+the **seed**, not a runtime fallback: on start-up :func:`seed_company_catalogues`
+gives it to each organization's first company where that company has no export
+of its own, with the decoding config it ships with (``settings.PIE_PACK`` is
+the rule set written against exactly that file). Nothing else reads either.
 
 ``docs/per-company-catalogues.md`` is the design and the sequencing.
 """
@@ -106,16 +108,18 @@ def source_state() -> Dict[str, Any]:
         "reason": reason,
         "pie_parser_root": str(settings.PIE_PARSER_ROOT),
         "corpus": str(settings.PIE_CORPUS),
-        "pack": str(settings.PIE_PACK),
+        # The rule set the seed is decoded through — the one written against
+        # that file. Not a default for anything uploaded.
+        "seed_rule_set": str(settings.PIE_PACK),
     }
 
 
-def pack_columns(pack_path: Path) -> Dict[str, str]:
-    """What this pack calls the three columns the pipeline reads.
+def rule_set_columns(rule_set: Path) -> Dict[str, str]:
+    """What column names this rule set's own pipeline expects.
 
-    Which headers a corpus uses is the *pack's* to say — it is a fact about one
-    organisation's export, and pie-parser's org layer declares it. Asked here
-    rather than restated at each caller: these three literals were once
+    These are the headers the normalisation writes, not the headers an uploaded
+    file has: a file keeps its own, and its decoding config says which of them
+    fills each role. Asked here rather than restated at each caller: these three literals were once
     duplicated between this file and pie-parser's ``tools/run_parser.py``, so a
     second distributor's corpus needed the same edit made twice, in two
     repositories, and one of them would eventually be missed. There are two
@@ -133,19 +137,20 @@ def pack_columns(pack_path: Path) -> Dict[str, str]:
         sys.path.insert(0, root)
     from engine.pack import load_pack  # noqa: PLC0415
 
-    return getattr(load_pack(pack_path), "columns", None) or {
+    return getattr(load_pack(rule_set), "columns", None) or {
         "record_id": "MM#", "description": "Material Description",
         "grade": "Grade"}
 
 
-def run_parse(corpus: Path, pack_path: Path, out: Path) -> Dict[str, Any]:
-    """Decode one corpus through one pack into one JSONL. The single parse.
+def run_parse(corpus: Path, rule_set: Path, out: Path) -> Dict[str, Any]:
+    """Decode one corpus through one rule set into one JSONL. The single parse.
 
     Every build reaches the pipeline through here, for the reason CLAUDE.md §2
     gives: a second invocation of the same pipeline is the semantic duplication
     that drifts, and the two would eventually disagree about the payload gate
-    or the atomic write. It is deliberately company-blind — it takes paths, not
-    a connection — so the one place that knows about companies is
+    or the atomic write. It is deliberately company- and file-blind — it takes
+    paths, not a connection and not a corpus row — so the one place that knows
+    whose file this is and which config decodes it is
     :func:`build_for_company`.
 
     Returns the counts, the parser's own report and the stamp taken off an
@@ -167,13 +172,14 @@ def run_parse(corpus: Path, pack_path: Path, out: Path) -> Dict[str, Any]:
     log.info("Building PIE catalogue from %s ...", corpus)
     started = time.perf_counter()
     out.parent.mkdir(parents=True, exist_ok=True)
-    pack = load_pack(pack_path)
-    # Which headers the corpus uses is the *pack's* to say, and `pack_columns`
-    # is where that is asked — the same answer the normalisation that produced
-    # this corpus was written against. Loading the pack twice costs milliseconds
-    # against a parse measured in seconds; two copies of the fallback literals
-    # would cost a corpus that normalises to headers the parse then cannot find.
-    columns = pack_columns(pack_path)
+    pack = load_pack(rule_set)
+    # Which headers this corpus uses is the rule set's to say, and
+    # `rule_set_columns` is where that is asked — the same answer the
+    # normalisation that produced this corpus was written against. Loading the
+    # rule set twice costs milliseconds against a parse measured in seconds;
+    # two copies of the fallback literals would cost a corpus that normalises
+    # to headers the parse then cannot find.
+    columns = rule_set_columns(rule_set)
     mapping = ColumnMapping(
         record_id=columns["record_id"], description=columns["description"],
         grade=columns["grade"]
@@ -221,16 +227,20 @@ def run_parse(corpus: Path, pack_path: Path, out: Path) -> Dict[str, Any]:
 #
 # Everything above this line is generic: a parse, a stamp, and whether the
 # seed corpus is present. Everything below belongs to one connected company —
-# and, within it, to one of that company's catalogues.
+# and, within it, to one of that company's catalogues, and within that to one
+# uploaded price list.
 #
-# **A company keeps a catalogue per manufacturer.** A distributor sells
-# Kennametal and YG-1 and a dozen more, and each manufacturer's price lists
-# are decoded through that manufacturer's own pack. So a catalogue is the unit
-# of *building* — its own source files, its own pack, its own
-# ``products.jsonl`` — and the **union** of a company's built catalogues is
-# what that company *resolves against*. The union is derived from the members
-# and rebuilt whenever one of them changes; nothing is stored for it beyond
-# the file and a manifest saying which builds it was made from.
+# **A company keeps a catalogue per manufacturer, and every price list carries
+# its own decoding config.** A catalogue is a manufacturer's product universe:
+# a set of uploaded price lists built into its own ``products.jsonl``. It owns
+# no decoder. Each price list is read and decoded through a *decoding config*
+# of its own — which of its columns hold the part number, description and
+# grade, and which of the engine's shipped rule sets decodes its descriptions
+# — proposed by analysing that file and saved by a person. There is no default
+# rule set: a file without a saved config is not decoded, and a build says
+# which file is missing one. A build decodes each file through its own config
+# and merges the results; the **union** of a company's built catalogues is
+# what that company resolves against.
 
 
 #: What an uploaded corpus may weigh. The shipped corpus is 6,717 rows and a
@@ -240,8 +250,8 @@ def run_parse(corpus: Path, pack_path: Path, out: Path) -> Dict[str, Any]:
 MAX_CORPUS_BYTES = 32 * 1024 * 1024
 
 #: How many files one catalogue may keep as sources at once. A ceiling rather
-#: than a limit anyone should reach: a build reads every one of them on every
-#: rebuild, and a catalogue with fifty price lists has a data problem the
+#: than a limit anyone should reach: a build decodes every one of them on
+#: every rebuild, and a catalogue with fifty price lists has a data problem the
 #: build cannot fix. Refused by name, so the answer says what to do
 #: (replace a source, or remove one) instead of failing at build time.
 MAX_SOURCES = 20
@@ -270,13 +280,15 @@ _KEY_STRIP = re.compile(r"[^a-z0-9]+")
 
 
 class CatalogueError(ValueError):
-    """A catalogue could not be created or removed, with the sentence saying why.
+    """A catalogue could not be created, built or removed, with the sentence
+    saying why.
 
     ``status`` is the HTTP status the router answers with, decided here where
     the reason is known rather than re-derived from the message: a name that
-    yields no key is the caller's input (422), a key already in use or a
-    company at its ceiling is a conflict (409), a pack the engine does not ship
-    is a bad choice (400), a catalogue that is not there is not there (404).
+    yields no key is the caller's input (422), a key already in use, a company
+    at its ceiling or a file with no decoding config is a conflict (409), a
+    rule set the engine does not ship is a bad choice (400), a catalogue that
+    is not there is not there (404).
     """
 
     def __init__(self, message: str, status: int = 409) -> None:
@@ -328,16 +340,25 @@ def union_catalog_path(connection_id: str) -> Path:
     return catalogue_dir(connection_id, UNION_DIR) / "products.jsonl"
 
 
-def available_packs() -> List[Dict[str, str]]:
-    """The org-layer packs the pinned engine ships, for a catalogue to choose from.
+# ── rule sets: what the engine ships, never what a tenant uploads ────────────
 
-    Chosen, never uploaded. A pack is grammars and regexes the engine compiles
-    and runs over every row of a corpus, so accepting one from a tenant means
-    executing tenant-supplied patterns — a catastrophic-backtracking expression
-    is then a denial of service somebody can upload for themselves, against a
-    build that is a synchronous request. Listing what ships keeps that surface
-    at zero. `docs/per-company-catalogues.md` §1.2 has the argument and what an
-    uploaded bundle would have to carry.
+
+def available_rule_sets() -> List[Dict[str, str]]:
+    """The rule sets the pinned engine ships, for a decoding config to name.
+
+    A rule set is what pie-parser keeps as an org-layer pack under
+    ``packs/org/<id>``: the routing, grammars, patterns and repairs that read
+    how one kind of export phrases a description, over the shared nomenclature
+    layer it names. In this codebase it is only ever *the decoder for a file*,
+    which is why it is called that here rather than "pack".
+
+    Shipped, never uploaded. A rule set is grammars and regexes the engine
+    compiles and runs over every row of a corpus, so accepting one from a
+    tenant means executing tenant-supplied patterns — a catastrophic-
+    backtracking expression is then a denial of service somebody can upload for
+    themselves, against a build that is a synchronous request. Listing what
+    ships keeps that surface at zero. `docs/per-company-catalogues.md` §1.2
+    has the argument and what an uploaded bundle would have to carry.
     """
     root = settings.PIE_PARSER_ROOT / "packs" / "org"
     if not root.is_dir():
@@ -350,33 +371,230 @@ def available_packs() -> List[Dict[str, str]]:
     return out
 
 
-def resolve_pack(pack_id: Optional[str]) -> Optional[Path]:
-    """A pack identifier as a path, against what the engine ships — or None.
+def rule_set_path(rule_set_id: Optional[str]) -> Optional[Path]:
+    """A rule set identifier as a path, against what the engine ships — or None.
 
-    An id naming a pack this engine does not have resolves to None rather than
-    to a guess: the pin can move under a stored choice, and answering with a
-    different pack than the one recorded would make the stamp a lie.
+    An id naming a rule set this engine does not have resolves to None rather
+    than to a guess: the pin can move under a stored choice, and answering
+    with a different decoder than the one recorded would make the stamp a lie.
     """
-    chosen = (pack_id or "").strip()
+    chosen = (rule_set_id or "").strip()
     if not chosen:
         return None
-    for pack in available_packs():
-        if pack["id"] == chosen:
-            return Path(pack["path"])
+    for rule_set in available_rule_sets():
+        if rule_set["id"] == chosen:
+            return Path(rule_set["path"])
     return None
 
 
-def pack_for(catalogue: Any) -> Optional[Path]:
-    """The pack one catalogue decodes through, or None if it has not chosen one.
+# ── the decoding config: how one price list is read and decoded ─────────────
 
-    Stored on ``CompanyCatalogue.pack_choice`` as an *identifier*, resolved to
-    a path here. It used to live on the company (``ZohoConnection.config``)
-    while a company had one catalogue; it is a fact about the catalogue, and
-    ``m1cats`` moved it.
+
+def decoding_config(source: Any) -> Dict[str, Any]:
+    """One price list's decoding config as the screen and the API see it.
+
+    Two halves and a status. ``columns`` says which of the file's own columns
+    are read; ``rule_set`` says which shipped rule set decodes the
+    descriptions; ``analysis`` is the evidence the proposal rested on, kept so
+    a person's choice can be checked against what they saw. ``ready`` is the
+    one question a build asks: saved, with a rule set the engine still ships.
+    A proposal that was never saved is not ready, however good it looked.
     """
-    if catalogue is None:
-        return None
-    return resolve_pack(getattr(catalogue, "pack_choice", None))
+    confirmed = getattr(source, "decoding_confirmed_at", None)
+    rule_set = getattr(source, "rule_set", None) or None
+    return {
+        "columns": getattr(source, "mapping", None),
+        "rule_set": rule_set,
+        "rule_set_resolved": rule_set_path(rule_set) is not None,
+        "analysis": getattr(source, "analysis", None),
+        "confirmed_at": clock.iso(clock.aware(confirmed)) if confirmed else None,
+        "confirmed_by": getattr(source, "decoding_confirmed_by", None) if confirmed else None,
+        "ready": decoding_ready(source),
+    }
+
+
+def decoding_ready(source: Any) -> bool:
+    """Whether this file can be decoded: a saved config naming a rule set the
+    engine ships. Nothing else counts — not a proposal, not a rule set the
+    pin no longer has."""
+    return (getattr(source, "decoding_confirmed_at", None) is not None
+            and getattr(source, "mapping", None) is not None
+            and rule_set_path(getattr(source, "rule_set", None)) is not None)
+
+
+def analyze_source(raw: bytes, filename: str = "", content_type: str = "",
+                   columns: Optional[Dict[str, Any]] = None,
+                   sample_rows: int = 0) -> Dict[str, Any]:
+    """Work out how one uploaded file should be decoded, from the file alone.
+
+    Every upload starts as an unknown format, so this is the discovery step:
+    read the file as a table, settle which of its columns hold the part
+    number, description and grade (suggested from the headers, or as given),
+    and then run **every rule set the engine ships** over the first rows and
+    report the parser's own counts for each — classified, quarantined, the
+    per-family census. Nothing here is inherited from the company, the
+    catalogue or a deployment default; a second file from the same
+    manufacturer is analysed afresh, because its headers may not match and
+    its phrasing may not either.
+
+    **What it proposes, and what it refuses to.** A rule set is proposed only
+    when exactly one of them classified any sampled row: that is the file's
+    own evidence choosing. Where several read the file the counts are shown
+    and a person chooses — ranking them by a number this module invented
+    would be the second parse-rate calculation ``run_parse`` refuses to have.
+    Where none reads it, the proposal is empty and the reason says so: the
+    file needs a rule set nobody has written yet, and no amount of choosing
+    from the menu fixes that. A proposal is never a config: it becomes one
+    when a person saves it (``confirm_decoding``).
+
+    Raises ``ingestion.item_master.ItemMasterError`` when the file cannot be
+    read as a table or the columns cannot be identified, with the sentence
+    written for the person who uploaded it.
+    """
+    import tempfile
+
+    from .ingestion import item_master
+
+    table = item_master.read_table(raw, filename, content_type)
+    settled = dict(columns) if columns else item_master.suggest_mapping(table)
+    item_master.check_mapping(table, settled)
+    ingest = item_master.describe(table, settled)
+    sample_rows = sample_rows or item_master.SAMPLE_ROWS
+
+    rule_sets = available_rule_sets()
+    candidates: List[Dict[str, Any]] = []
+    if rule_sets:
+        probe = _Probe(raw, filename, content_type, settled)
+        with _build_lock:
+            tmpdir = Path(tempfile.mkdtemp(prefix="pie-analyse-"))
+            try:
+                for rule_set in rule_sets:
+                    path = Path(rule_set["path"])
+                    try:
+                        normalised_corpus(probe, path, tmpdir / "sample.csv",
+                                          limit=sample_rows)
+                        result = run_parse(tmpdir / "sample.csv", path,
+                                           tmpdir / f"{rule_set['id']}.jsonl")
+                    except Exception as e:  # noqa: BLE001 — one rule set failing is a result
+                        # Reported against that rule set rather than raised: a
+                        # rule set the engine ships but cannot run on this file
+                        # is precisely what the analysis is for, and it must
+                        # not hide the others.
+                        log.info("rule set %s could not decode %s: %s",
+                                 rule_set["id"], filename, e)
+                        candidates.append({"rule_set": rule_set["id"],
+                                           "error": f"{type(e).__name__}: {e}"})
+                        continue
+                    candidates.append({
+                        "rule_set": rule_set["id"],
+                        "rows_read": result["rows_read"],
+                        "classified": result["records"],
+                        "quarantined": result["quarantined"],
+                        "report": result["report"],
+                    })
+            finally:
+                # Nothing here is a catalogue: an analysis that left a
+                # products.jsonl behind would be a company resolving against a
+                # rule set nobody chose.
+                for leftover in tmpdir.glob("*"):
+                    leftover.unlink(missing_ok=True)
+                tmpdir.rmdir()
+
+    readers = [c["rule_set"] for c in candidates if c.get("classified")]
+    if not rule_sets:
+        reason = source_state()["reason"] or "This engine ships no rule sets."
+    elif not readers:
+        reason = ("No rule set this engine ships reads this file: none of them "
+                  "classified a single sampled row. Its manufacturer needs a rule "
+                  "set written before it can be decoded.")
+    elif len(readers) > 1:
+        reason = ("More than one rule set reads this file. Choose one on the "
+                  "counts above; nothing here ranks them.")
+    else:
+        reason = None
+    return {
+        "columns": settled,
+        "ingest": ingest,
+        "sample_rows": sample_rows,
+        "candidates": candidates,
+        "proposed": readers[0] if len(readers) == 1 else None,
+        "reason": reason,
+    }
+
+
+class _Probe:
+    """An in-memory stand-in for a corpus row, so :func:`normalised_corpus`
+    can read a file that has not been stored yet — the analysis runs before
+    the row is written, on purpose, so a file that cannot be read is refused
+    rather than stored and unusable."""
+
+    def __init__(self, content: bytes, filename: str, content_type: str,
+                 mapping: Dict[str, Any]) -> None:
+        self.content = content
+        self.filename = filename
+        self.content_type = content_type
+        self.mapping = mapping
+        self.source_key = filename
+        self.corpus_id = ""
+        self.sha256 = hashlib.sha256(content).hexdigest()
+
+
+def confirm_decoding(session: Any, source: Any, columns: Dict[str, Any],
+                     rule_set_id: Optional[str], actor: Optional[str]) -> Any:
+    """Save one file's decoding config: the columns a person confirmed and the
+    rule set they chose. The step between "shown" and "decoded".
+
+    Re-reads the stored bytes with the columns given and refuses one naming a
+    column the file does not have, so a config that cannot build is never
+    stored; refuses a rule set the engine does not ship for the same reason.
+    ``rule_set_id`` may be empty — the honest state for a file no shipped rule
+    set reads — and the config is then saved but not *ready*: the file's
+    columns are on record, and the build names it as waiting for a rule set.
+
+    The bytes are not touched and the source is not superseded: this changes
+    how a file is *read*, and superseding it would say a different file had
+    arrived.
+    """
+    from .ingestion import item_master
+
+    table = item_master.read_table(source.content, source.filename,
+                                   source.content_type or "")
+    settled = dict(columns)
+    item_master.check_mapping(table, settled)
+    if rule_set_id and rule_set_path(rule_set_id) is None:
+        known = ", ".join(r["id"] for r in available_rule_sets()) or "none"
+        raise CatalogueError(
+            f"No rule set called {rule_set_id!r} ships with this engine. "
+            f"Available: {known}.", status=400)
+    source.mapping = settled
+    source.ingest = item_master.describe(table, settled)
+    source.rule_set = rule_set_id or None
+    source.decoding_confirmed_at = clock.now()
+    source.decoding_confirmed_by = actor
+    _release(source)
+    session.flush()
+    return source
+
+
+def rule_sets_in_use(session: Any, org: str) -> List[str]:
+    """Every rule set a saved decoding config in this organization names,
+    across every company and catalogue. The vocabulary a margin policy is
+    validated against is the union of what these declare."""
+    from sqlalchemy import select
+
+    from .domain import models
+
+    rows = session.scalars(
+        select(models.CompanyCorpus.rule_set)
+        .where(models.CompanyCorpus.organization_id == org,
+               models.CompanyCorpus.superseded_at.is_(None),
+               models.CompanyCorpus.decoding_confirmed_at.is_not(None),
+               models.CompanyCorpus.rule_set.is_not(None))
+        .distinct())
+    return sorted({r for r in rows if r})
+
+
+# ── catalogues: one per manufacturer ─────────────────────────────────────────
 
 
 def catalogue_rows(session: Any, org: str, connection_id: str) -> List[Any]:
@@ -403,32 +621,17 @@ def catalogue_row(session: Any, org: str, connection_id: str,
     """One catalogue's row, or None. Organization-scoped, like the list."""
     from .domain import models
 
-    row = session.get(models.CompanyCatalogue, (org, connection_id, catalogue_key))
-    return row
+    return session.get(models.CompanyCatalogue, (org, connection_id, catalogue_key))
 
 
-def catalogue_rows_for_org(session: Any, org: str) -> List[Any]:
-    """Every catalogue of every company in this organization."""
-    from sqlalchemy import select
+def create_catalogue(session: Any, org: str, connection_id: str, name: str) -> Any:
+    """Define a new catalogue for this company: a manufacturer, by name.
 
-    from .domain import models
-
-    return list(session.scalars(
-        select(models.CompanyCatalogue)
-        .where(models.CompanyCatalogue.organization_id == org)
-        .order_by(models.CompanyCatalogue.connection_id,
-                  models.CompanyCatalogue.catalogue_key)))
-
-
-def create_catalogue(session: Any, org: str, connection_id: str, name: str,
-                     pack_id: Optional[str] = None) -> Any:
-    """Define a new catalogue for this company: a name, and optionally a pack.
-
-    Nothing is built and nothing is uploaded here; the row is what the files
-    and the build then belong to. Refuses a name that yields no key, a key the
-    company already uses, and a pack the engine does not ship — each with the
-    sentence a person can act on, because a stored definition that cannot
-    build would leave them with a catalogue and no statement of why.
+    Nothing is uploaded or built here, and nothing about decoding is decided:
+    a catalogue is the manufacturer's product universe, and each price list
+    uploaded into it brings its own decoding config. Refuses a name that
+    yields no key, a key the company already uses, and a company at its
+    ceiling — each with the sentence a person can act on.
     """
     from .domain import models
 
@@ -442,14 +645,9 @@ def create_catalogue(session: Any, org: str, connection_id: str, name: str,
         raise CatalogueError(
             f"This company already has {len(existing)} catalogues, which is the "
             f"limit of {MAX_CATALOGUES}. Remove one first.")
-    if pack_id and resolve_pack(pack_id) is None:
-        known = ", ".join(p["id"] for p in available_packs()) or "none"
-        raise CatalogueError(
-            f"No pack called {pack_id!r} ships with this engine. Available: {known}.",
-            status=400)
     row = models.CompanyCatalogue(
         organization_id=org, connection_id=connection_id, catalogue_key=key,
-        name=(name or "").strip()[:255], pack_choice=(pack_id or None))
+        name=(name or "").strip()[:255])
     session.add(row)
     session.flush()
     return row
@@ -470,10 +668,7 @@ def rename_catalogue(session: Any, org: str, connection_id: str,
     row.name = cleaned[:255]
     session.flush()
     if row.built_at is not None:
-        write_sidecar(connection_id, catalogue_key, row.name, row.pack_choice,
-                      row.built_at, {k: getattr(row, k) for k in STAMP_FIELDS
-                                     if getattr(row, k, None) is not None},
-                      row.records)
+        write_sidecar(connection_id, catalogue_key, row)
         refresh_union(connection_id)
     return row
 
@@ -505,12 +700,15 @@ def delete_catalogue(session: Any, org: str, connection_id: str,
     refresh_union(connection_id)
 
 
+# ── price lists: the files a catalogue is built from ─────────────────────────
+
+
 def current_corpora(session: Any, org: str, connection_id: str,
                     catalogue_key: str = DEFAULT_CATALOGUE) -> List[Any]:
     """Every file one catalogue would be built from, oldest first.
 
-    Oldest first because that is the order :func:`combined_corpus` resolves
-    collisions in: the newest source wins, so it must be written last.
+    Oldest first because that is the order collisions are resolved in: the
+    newest source wins, so it is decoded last and read first by the merge.
 
     Scoped to the organization in the query rather than checked after it, like
     ``_skip_rows`` in the data router: a connection id from another tenant must
@@ -556,20 +754,22 @@ def source_key_of(row: Any) -> str:
 
 
 def sources_digest(sources: List[Any]) -> str:
-    """A hash over the set of files a build would read.
+    """A hash over the set of files a build would read, and how each is decoded.
 
-    Over each source's key and content digest, sorted, so it is a property of
-    the *set* rather than of the order it was assembled in. This is what makes
-    "out of date" answerable once a catalogue has several files: adding a
-    source, replacing one and removing one all move this hash, and none of the
-    three is visible in a single ``corpus_id``.
+    Over each source's key, content digest and rule set, sorted, so it is a
+    property of the *set* rather than of the order it was assembled in. This
+    is what makes "out of date" answerable once a catalogue has several files:
+    adding a source, replacing one, removing one and changing one's rule set
+    all move this hash, and none of the four is visible in a single
+    ``corpus_id``.
     """
-    parts = sorted(f"{source_key_of(s)}:{s.sha256}" for s in sources)
+    parts = sorted(f"{source_key_of(s)}:{s.sha256}:{getattr(s, 'rule_set', '') or ''}"
+                   for s in sources)
     return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()
 
 
 def _release(source: Any) -> None:
-    """Forget one source's bytes, so a merge holds one file rather than all.
+    """Forget one source's bytes, so a build holds one file rather than all.
 
     Best effort by design: a detached row, or one built by hand in a test, has
     no session to expire it against and needs none — it was never the case this
@@ -585,108 +785,63 @@ def _release(source: Any) -> None:
         log.debug("could not expire the content of a corpus row", exc_info=True)
 
 
-def combined_corpus(sources: List[Any], pack_path: Path, out: Path,
-                    limit: Optional[int] = None) -> Dict[str, Any]:
-    """Write every source, normalised to the pack's columns, as one CSV.
+def normalised_corpus(source: Any, rule_set: Path, out: Path,
+                      limit: Optional[int] = None) -> Dict[str, Any]:
+    """Write one file, read through its own columns, as the CSV its rule set parses.
 
-    Three things happen here, and the third is the one with teeth.
+    *Normalisation* is through the mapping stored with the file, into the
+    column names this rule set declares — so a price list calling the part
+    number ``Part No`` decodes without being edited. *Streaming*: the file is
+    read row by row and written straight to ``out``; materialising it cost
+    394 MB of resident memory for one 33 MB file (see
+    ``ingestion.item_master.Table``).
 
-    *Normalisation* is per source, through the mapping stored with it, into the
-    column names this pack declares — so a catalogue can build from an item
-    master calling the part number ``MM#`` and a price list calling it
-    ``Part No`` without either file being edited.
+    One file, deliberately. A catalogue used to be merged as CSV first and
+    parsed once through one rule set; now each file is decoded through its own
+    rule set, so the merge happens *after* the parse, on decoded records
+    (:func:`_merge_decoded`), where the collision rule lives once for files
+    and for catalogues alike.
 
-    *Streaming*: each source is read row by row and written straight to ``out``.
-    Materialising them cost 394 MB of resident memory for one 33 MB file (see
-    ``ingestion.item_master.Table``), and a catalogue may keep twenty.
-
-    *De-duplication* is by record id, and the newest source wins. This is not
-    tidying. pie-parser's ``AuthoritativeIndex`` indexes identifiers per
-    namespace and treats a duplicate inside one namespace as a collision that
-    **never resolves** — so emitting the same part number from two files would
-    not give a wrong answer, it would silently stop that part number resolving
-    at all, which is a defect nobody would find by looking at record counts.
-    Newest-wins is a policy and it is stated as one: a later file is a later
-    statement about the same product. Every collision is counted and the first
-    of them named, because the same part number in two price lists is a real
-    disagreement and the answer is to tell somebody, not to pick quietly.
-
-    The sources are therefore read **newest first**, so the row that wins is
-    the first one seen and only the keys have to be remembered rather than the
-    rows. The output is in that order; nothing downstream depends on the order
-    of a corpus, and a given set of files always produces the same bytes.
-
-    ``limit`` reads only the first rows of each source, for the pack-fit trial.
+    ``limit`` reads only the first rows, for the analysis.
     """
     from .ingestion import item_master
 
-    headers = pack_columns(pack_path)
+    headers = rule_set_columns(rule_set)
     order = [headers.get(role) or role for role in item_master.ROLES]
 
-    seen: set = set()
-    collisions: Dict[str, str] = {}
-    per_source: List[Dict[str, Any]] = []
-
+    emitted = 0
     out.parent.mkdir(parents=True, exist_ok=True)
     with out.open("w", encoding="utf-8", newline="") as fh:
         writer = csv.writer(fh, lineterminator="\n")
         writer.writerow(order)
-        for source in reversed(sources):
-            # Named per file. "The build failed" over six sources is not
-            # something a person can act on, and the reason a file has stopped
-            # being readable is usually specific to that file — a mapping whose
-            # column was renamed in a re-upload, a workbook saved in an older
-            # format.
-            report: Dict[str, Any] = {}
-            emitted = 0
-            try:
-                table = item_master.read_table(
-                    source.content, source.filename, source.content_type or "")
-                mapping = (getattr(source, "mapping", None)
-                           or item_master.suggest_mapping(table))
-                report = item_master.ingest_report(table, mapping)
-                # Streamed, not collected: `list()` around this generator would
-                # put the whole file back in memory, which is the one thing this
-                # function exists to avoid.
-                for row in item_master.emit_rows(table, mapping, report,
-                                                 limit=limit):
-                    if row[0] in seen:
-                        # An older file restating a part number a newer one
-                        # already gave. Recorded against the file that lost,
-                        # which is the one somebody would go and look at.
-                        collisions.setdefault(row[0], source_key_of(source))
-                        continue
-                    seen.add(row[0])
-                    writer.writerow(row)
-                    emitted += 1
-            except item_master.ItemMasterError as e:
-                raise item_master.ItemMasterError(
-                    f"{source.filename or source_key_of(source)}: {e}") from e
-            report["rows_emitted"] = emitted
-            report["source_key"] = source_key_of(source)
-            report["filename"] = source.filename
-            report["sha256"] = source.sha256
-            per_source.append(report)
-            # Released as soon as this file has been written out. `content` is
-            # deferred, so it arrived on demand a moment ago; without this the
-            # session would hold every source's bytes at once by the end of the
-            # loop, which is the profile deferring it was for.
-            _release(source)
-
-    return {
-        # Oldest first, matching how the screen lists them; the reading order
-        # above is an implementation detail of the collision rule.
-        "sources": list(reversed(per_source)),
-        "rows_kept": len(seen),
-        "rows_in": sum(r["rows_read"] for r in per_source),
-        "rows_skipped_blank_key": sum(r["rows_skipped_blank_key"]
-                                      for r in per_source),
-        "collisions": len(collisions),
-        # A handful, named. The full list would be unbounded and the count is
-        # what says whether this is a stray or a structural overlap.
-        "collision_examples": sorted(collisions)[:10],
-        "sampled": any(r["sampled"] for r in per_source),
-    }
+        # Named per file. "The build failed" over six sources is not something
+        # a person can act on, and the reason a file has stopped being readable
+        # is usually specific to that file — a mapping whose column was renamed
+        # in a re-upload, a workbook saved in an older format.
+        try:
+            table = item_master.read_table(
+                source.content, source.filename, source.content_type or "")
+            mapping = (getattr(source, "mapping", None)
+                       or item_master.suggest_mapping(table))
+            report = item_master.ingest_report(table, mapping)
+            # Streamed, not collected: `list()` around this generator would
+            # put the whole file back in memory, which is the one thing this
+            # function exists to avoid.
+            for row in item_master.emit_rows(table, mapping, report, limit=limit):
+                writer.writerow(row)
+                emitted += 1
+        except item_master.ItemMasterError as e:
+            raise item_master.ItemMasterError(
+                f"{source.filename or source_key_of(source)}: {e}") from e
+    report["rows_emitted"] = emitted
+    report["source_key"] = source_key_of(source)
+    report["filename"] = source.filename
+    report["sha256"] = source.sha256
+    # Released as soon as this file has been written out. `content` is
+    # deferred, so it arrived on demand a moment ago; without this a session
+    # would hold every source's bytes at once by the end of a build.
+    _release(source)
+    return report
 
 
 def company_catalog_state(session: Any, org: str, connection_id: str,
@@ -697,18 +852,19 @@ def company_catalog_state(session: Any, org: str, connection_id: str,
     catalogue with no build says nothing about coverage, and rendering that
     as a zero is the benign default §1 forbids. A row that has never been
     built (``built_at`` null) is a *definition*: it reports its name and its
-    pack, and nothing a build would have stamped.
+    files, and nothing a build would have stamped.
+
+    ``decoding_ready`` is whether every file has a saved decoding config the
+    engine can run; ``awaiting_decoding`` names the ones that do not, because
+    "not built" is not useful advice to someone whose build would be refused
+    by name.
 
     ``stale`` is the one genuinely new fact: a catalogue built from a corpus
     that has since been superseded is still a real catalogue with a real stamp,
     but it is no longer built from what was last uploaded. Saying so is the
     difference between "out of date" and "wrong", and only one of them is
-    urgent.
-
-    With several sources, staleness is a comparison of *digests over the set* —
-    a source added or removed changes what a build would read while leaving the
-    newest ``corpus_id`` untouched, so the old single-id comparison would have
-    called that catalogue current. It is kept as the fallback for a row built
+    urgent. With several sources, staleness is a comparison of *digests over
+    the set*; the single-id comparison is kept as the fallback for a row built
     before the digest column existed, where it is still the honest answer.
     """
     row = catalogue_row(session, org, connection_id, catalogue_key)
@@ -717,7 +873,7 @@ def company_catalog_state(session: Any, org: str, connection_id: str,
     corpus = sources[-1] if sources else None
     path = company_catalog_path(connection_id, catalogue_key)
     on_disk = path.exists()
-    pack = pack_for(row)
+    awaiting = [source_key_of(s) for s in sources if not decoding_ready(s)]
 
     if not built or not sources:
         stale = False
@@ -731,32 +887,27 @@ def company_catalog_state(session: Any, org: str, connection_id: str,
         "catalogue_key": catalogue_key,
         "name": (row.name if row else "") or "",
         "scope": "catalogue",
-        # The pack *chosen* for this catalogue, and whether the pinned engine
-        # still ships it. A stored id the engine no longer has resolves to
-        # nothing rather than to a guess — the pin can move under a stored
-        # choice, and answering from a different pack would make the stamp
-        # lie. `stamp.pack_id` below is the engine's own record of what a
-        # build actually decoded through.
-        "pack_id": (row.pack_choice if row else None) or None,
-        "pack_resolved": pack is not None,
         "exists": built and on_disk,
         # A row without its file is a rebuild waiting to happen, not a
         # catalogue. Named rather than silently treated as absent, because the
         # two have different fixes and only this one is free.
         "built_but_missing_on_disk": built and not on_disk,
+        "decoding_ready": bool(sources) and not awaiting,
+        "awaiting_decoding": awaiting,
         "records": row.records if (built and on_disk) else None,
         "rows_read": row.rows_read if built else None,
         "quarantined": row.quarantined if built else None,
         "duration_s": row.duration_s if built else None,
         "built_at": clock.iso(clock.aware(row.built_at)) if built else None,
         "built_by": row.built_by if built else None,
-        "pack": row.pack if built else None,
         "report": row.report if built else None,
         "stamp": ({k: getattr(row, k) for k in STAMP_FIELDS
                    if getattr(row, k, None) is not None} if built else {}),
-        # What merging the sources did, and — for a built catalogue — which
-        # files it read. Kept out of `report`, which is the parser's own dict
-        # served verbatim and must not gain fields the parser did not write.
+        # What merging the files did, and — for a built catalogue — which
+        # files it decoded, each through which rule set, with each file's own
+        # stamp, counts and report. Kept out of `report`, which is the
+        # parser's own dict served verbatim and must not gain fields the
+        # parser did not write.
         "ingest": row.ingest if built else None,
         "built_from": row.sources if built else None,
         # The newest source, kept under its original name: a screen dates a
@@ -778,8 +929,8 @@ def company_catalog_state(session: Any, org: str, connection_id: str,
             "sha256": s.sha256,
             "uploaded_at": clock.iso(clock.aware(s.uploaded_at)),
             "uploaded_by": s.uploaded_by,
-            "mapping": getattr(s, "mapping", None),
             "ingest": getattr(s, "ingest", None),
+            "decoding": decoding_config(s),
         } for s in sources],
         "stale": stale,
     }
@@ -801,27 +952,35 @@ def company_state(session: Any, org: str, connection_id: str) -> Dict[str, Any]:
     }
 
 
+# ── the sidecar, and the merge shared by catalogues and the union ────────────
+
+
 def _sidecar_path(connection_id: str, catalogue_key: str) -> Path:
     return catalogue_dir(connection_id, catalogue_key) / CATALOGUE_SIDECAR
 
 
-def write_sidecar(connection_id: str, catalogue_key: str, name: str,
-                  pack_choice: Optional[str], built_at: Any,
-                  stamp: Dict[str, Any], records: int) -> None:
+def write_sidecar(connection_id: str, catalogue_key: str, row: Any) -> None:
     """What a built catalogue says about itself beside its file.
 
     The union is assembled from the disk alone — in the resolver, which has no
     session, and at start-up before any request — so the facts it needs
-    (which catalogue this is, when it was built, what stamp its rows carry)
-    travel with the file rather than only in the row.
+    (which catalogue this is, when it was built, what its files were decoded
+    through and stamped with) travel with the file rather than only in the
+    row.
     """
     payload = {
         "catalogue_key": catalogue_key,
-        "name": name or "",
-        "pack_choice": pack_choice,
-        "built_at": clock.iso(clock.aware(built_at)) if built_at else None,
-        "stamp": dict(stamp),
-        "records": records,
+        "name": row.name or "",
+        "built_at": clock.iso(clock.aware(row.built_at)) if row.built_at else None,
+        "stamp": {k: getattr(row, k) for k in STAMP_FIELDS
+                  if getattr(row, k, None) is not None},
+        "records": row.records or 0,
+        "rule_sets": sorted({s.get("rule_set") for s in (row.sources or [])
+                             if s.get("rule_set")}),
+        # Every file's run id, so the union's version can move when any one
+        # file of any catalogue is rebuilt from different bytes.
+        "run_ids": sorted(f"{s.get('source_key')}:{(s.get('stamp') or {}).get('run_id') or ''}"
+                          for s in (row.sources or [])),
     }
     path = _sidecar_path(connection_id, catalogue_key)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -854,18 +1013,90 @@ def built_catalogues(connection_id: str) -> List[Dict[str, Any]]:
         except (OSError, ValueError):
             meta = {}
         stat = products.stat()
+        stamp = dict(meta.get("stamp") or catalog_stamp(products))
         out.append({
             "catalogue_key": entry.name,
             "name": str(meta.get("name") or ""),
-            "pack_choice": meta.get("pack_choice"),
             "built_at": meta.get("built_at") or clock.iso(
                 clock.aware(datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc))),
-            "stamp": dict(meta.get("stamp") or catalog_stamp(products)),
+            "stamp": stamp,
+            "rule_sets": list(meta.get("rule_sets") or []),
+            "run_ids": list(meta.get("run_ids") or (
+                [f":{stamp['run_id']}"] if stamp.get("run_id") else [])),
             "path": str(products),
             "size": stat.st_size,
             "mtime_ns": stat.st_mtime_ns,
         })
     return out
+
+
+def _merge_decoded(members: List[Dict[str, Any]], out: Path,
+                   tag: str) -> Dict[str, Any]:
+    """Merge decoded JSONL files into one, newest first, one record per part
+    number per namespace — the collision rule, stated once.
+
+    pie-parser's ``AuthoritativeIndex`` indexes identifiers per namespace and
+    treats a duplicate inside one namespace as a collision that **never
+    resolves** — so keeping the same part number from two files would not
+    give a wrong answer, it would silently stop that part number resolving at
+    all, which is a defect nobody would find by looking at record counts.
+    ``members`` arrive newest first, so the first record seen for a key is the
+    one kept: a later file, or a later build, is a later statement about the
+    same product. Every collision is counted and the first of them named,
+    because two documents disagreeing about one product is a real
+    disagreement and the answer is to tell somebody, not to pick quietly.
+
+    Each kept record is tagged with ``tag`` (``source_key`` for a catalogue's
+    files, ``catalogue_key`` for a company's catalogues) — the portal's own
+    provenance field on a decoded record, so a resolution can say where a
+    record came from without a second map to keep in step with the file.
+    Deterministic in the members, so an identical merge produces identical
+    bytes.
+    """
+    root = str(settings.PIE_PARSER_ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    try:
+        from identity.store import record_namespace  # noqa: PLC0415
+    except ImportError:  # the engine is absent: the same rule, stated once more
+        def record_namespace(rec: Dict[str, Any]) -> str:  # type: ignore[misc]
+            return str(rec.get("org_id") or rec.get("pack_id")
+                       or rec.get("manufacturer") or rec.get("brand") or "")
+
+    seen: set = set()
+    duplicates: Dict[str, str] = {}
+    kept_per_member: List[int] = []
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    with tmp.open("w", encoding="utf-8") as fh:
+        for member in members:
+            kept = 0
+            with Path(member["path"]).open("r", encoding="utf-8") as src:
+                for line in src:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    rec = json.loads(line)
+                    key = (str(record_namespace(rec)).strip().upper(),
+                           str(rec.get("record_id") or "").strip().upper())
+                    if key[1] and key in seen:
+                        duplicates.setdefault(key[1], member["key"])
+                        continue
+                    seen.add(key)
+                    rec[tag] = member["key"]
+                    fh.write(json.dumps(rec, sort_keys=True, separators=(",", ":"))
+                             + "\n")
+                    kept += 1
+            kept_per_member.append(kept)
+    os.replace(tmp, out)
+    return {"records": sum(kept_per_member), "kept": kept_per_member,
+            "duplicates": len(duplicates),
+            # A handful, named. The full list would be unbounded and the count
+            # is what says whether this is a stray or a structural overlap.
+            "duplicate_examples": sorted(duplicates)[:10]}
+
+
+# ── the union: what a company resolves against ───────────────────────────────
 
 
 @dataclass
@@ -874,15 +1105,16 @@ class UnionCatalogue:
 
     path: Path
     #: What a resolution is stamped with: a hash over every member's key and
-    #: ``run_id``. The run id is pie-parser's own fingerprint of a build — the
-    #: input bytes plus the ruleset checksum — so this moves when any member
-    #: is rebuilt from different files or through a different pack, and stays
-    #: put across an identical rebuild. The ruleset checksum alone would not
-    #: do: it is the *pack's* hash, the same for two companies decoding
-    #: different item masters through ``zcnc``, and a resolution cache keyed
-    #: on it would hand one company the other's answer. Empty when any
-    #: member's stamp could not be read — and an empty version is never
-    #: cached, which is the safe direction.
+    #: the run ids of the files it was built from. A run id is pie-parser's
+    #: own fingerprint of one decode — the input bytes plus the rule set's
+    #: checksum — so this moves when any file of any catalogue is rebuilt from
+    #: different bytes or through a different rule set, and stays put across
+    #: an identical rebuild. The ruleset checksum alone would not do: it is the
+    #: *rule set's* hash, the same for two companies decoding different item
+    #: masters through ``zcnc``, and a resolution cache keyed on it would hand
+    #: one company the other's answer. Empty when any member's run ids could
+    #: not be read — and an empty version is never cached, which is the safe
+    #: direction.
     version: str
     records: int
     #: Part numbers two catalogues both claimed inside one numbering space.
@@ -906,11 +1138,15 @@ def _union_version(members: List[Dict[str, Any]]) -> str:
     """See :attr:`UnionCatalogue.version`. One rule whatever the count, so the
     value means the same thing for a company with one catalogue as for one
     with five."""
-    run_ids = [str((m.get("stamp") or {}).get("run_id") or "") for m in members]
-    if not members or not all(run_ids):
+    parts: List[str] = []
+    for m in members:
+        run_ids = [r for r in m.get("run_ids") or [] if r and not r.endswith(":")]
+        if not run_ids:
+            return ""
+        parts.extend(f"{m['catalogue_key']}:{r}" for r in run_ids)
+    if not parts:
         return ""
-    parts = sorted(f"{m['catalogue_key']}:{r}" for m, r in zip(members, run_ids))
-    return hashlib.sha256("\n".join(parts).encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha256("\n".join(sorted(parts)).encode("utf-8")).hexdigest()[:16]
 
 
 def _read_manifest(connection_id: str) -> Optional[Dict[str, Any]]:
@@ -929,25 +1165,14 @@ def union_catalogue(connection_id: str) -> Optional[UnionCatalogue]:
     company has no built catalogue, which is "resolves nothing" and must not
     be an empty file that reads as a catalogue of nothing.
 
-    **De-duplicated across catalogues, and counted.** Two catalogues can claim
-    one part number inside the same numbering space — two Kennametal price
-    lists kept as two catalogues, say — and pie-parser's ``AuthoritativeIndex``
-    treats a duplicate identifier inside one namespace as a collision that
-    never resolves, exactly as it does inside one catalogue
-    (:func:`combined_corpus`). The most recently *built* catalogue wins, on the
-    same reasoning as newest-file-wins there, and the count is reported so a
-    person can see that two of their catalogues overlap. A part number two
-    manufacturers both use is not a duplicate: their records sit in different
-    namespaces and the engine reports a bare lookup of it as ambiguous, which
-    is the right answer.
-
-    Each union record carries ``catalogue_key`` — the one portal field added
-    to a decoded record — so a resolution can say which manufacturer's
-    catalogue answered without a second map to keep in step with the file.
+    De-duplicated across catalogues by :func:`_merge_decoded`'s rule, the
+    most recently *built* catalogue winning, with each record tagged
+    ``catalogue_key``. A part number two manufacturers both use is not a
+    duplicate: their records sit in different namespaces and the engine
+    reports a bare lookup of it as ambiguous, which is the right answer.
 
     Rebuilt only when a member's file has changed (size or modification time),
-    which the manifest beside the union records. Deterministic in the members,
-    so an identical rebuild produces identical bytes.
+    which the manifest beside the union records.
     """
     members = built_catalogues(connection_id)
     out = union_catalog_path(connection_id)
@@ -971,63 +1196,30 @@ def union_catalogue(connection_id: str) -> Optional[UnionCatalogue]:
 
 def _write_union(connection_id: str, members: List[Dict[str, Any]],
                  out: Path) -> UnionCatalogue:
-    root = str(settings.PIE_PARSER_ROOT)
-    if root not in sys.path:
-        sys.path.insert(0, root)
-    try:
-        from identity.store import record_namespace  # noqa: PLC0415
-    except ImportError:  # the engine is absent: the same rule, stated once more
-        def record_namespace(rec: Dict[str, Any]) -> str:  # type: ignore[misc]
-            return str(rec.get("org_id") or rec.get("pack_id")
-                       or rec.get("manufacturer") or rec.get("brand") or "")
-
     # Newest build first, so the first record seen for a key is the one kept.
     # The key breaks a tie between two builds stamped the same instant, so the
     # outcome is a function of the members and never of directory order.
     ordered = sorted(members, key=lambda m: (m["built_at"] or "", m["catalogue_key"]),
                      reverse=True)
-    seen: set = set()
-    duplicates: Dict[str, str] = {}
-    records = 0
-    per_catalogue: List[Dict[str, Any]] = []
-    out.parent.mkdir(parents=True, exist_ok=True)
-    tmp = out.with_suffix(out.suffix + ".tmp")
-    with tmp.open("w", encoding="utf-8") as fh:
-        for member in ordered:
-            kept = 0
-            with Path(member["path"]).open("r", encoding="utf-8") as src:
-                for line in src:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    rec = json.loads(line)
-                    key = (str(record_namespace(rec)).strip().upper(),
-                           str(rec.get("record_id") or "").strip().upper())
-                    if key[1] and key in seen:
-                        duplicates.setdefault(key[1], member["catalogue_key"])
-                        continue
-                    seen.add(key)
-                    rec["catalogue_key"] = member["catalogue_key"]
-                    fh.write(json.dumps(rec, sort_keys=True, separators=(",", ":"))
-                             + "\n")
-                    kept += 1
-            records += kept
-            per_catalogue.append({
-                "catalogue_key": member["catalogue_key"],
-                "name": member["name"],
-                "pack_id": member["pack_choice"],
-                "built_at": member["built_at"],
-                "records": kept,
-                **{k: member["stamp"].get(k) for k in
-                   ("ruleset_checksum", "run_id", "pack_version", "org_id")
-                   if member["stamp"].get(k) is not None},
-            })
-    os.replace(tmp, out)
+    merged = _merge_decoded(
+        [{"key": m["catalogue_key"], "path": m["path"]} for m in ordered],
+        out, tag="catalogue_key")
+    per_catalogue = [{
+        "catalogue_key": m["catalogue_key"],
+        "name": m["name"],
+        "rule_sets": m["rule_sets"],
+        "built_at": m["built_at"],
+        "records": kept,
+        **{k: m["stamp"].get(k) for k in
+           ("ruleset_checksum", "run_id", "pack_version", "org_id")
+           if m["stamp"].get(k) is not None},
+    } for m, kept in zip(ordered, merged["kept"])]
     per_catalogue.sort(key=lambda c: (c["catalogue_key"] != DEFAULT_CATALOGUE,
                                       c["catalogue_key"]))
     union = UnionCatalogue(
-        path=out, version=_union_version(members), records=records,
-        duplicates=len(duplicates), duplicate_examples=sorted(duplicates)[:10],
+        path=out, version=_union_version(members), records=merged["records"],
+        duplicates=merged["duplicates"],
+        duplicate_examples=merged["duplicate_examples"],
         catalogues=per_catalogue)
     manifest = {
         "members": _members_fingerprint(members),
@@ -1040,8 +1232,8 @@ def _write_union(connection_id: str, members: List[Dict[str, Any]],
     mtmp.write_text(json.dumps(manifest, indent=1), encoding="utf-8")
     os.replace(mtmp, _union_manifest_path(connection_id))
     log.info("union catalogue for connection %s: %d records from %d catalogue(s), "
-             "%d duplicated across them", connection_id, records, len(members),
-             len(duplicates))
+             "%d duplicated across them", connection_id, union.records,
+             len(members), union.duplicates)
     return union
 
 
@@ -1084,47 +1276,95 @@ def union_state(connection_id: str) -> Optional[Dict[str, Any]]:
     }
 
 
+# ── the build: each file through its own config, then merged ────────────────
+
+
 def build_for_company(session: Any, org: str, connection_id: str,
-                      pack_path: Path, actor: Optional[str] = None,
+                      actor: Optional[str] = None,
                       catalogue_key: str = DEFAULT_CATALOGUE) -> Dict[str, Any]:
-    """Decode every file one catalogue holds, through its pack, and refresh
-    the union the company resolves against.
+    """Decode every file one catalogue holds, each through its own decoding
+    config, merge the results, and refresh the union the company resolves
+    against.
 
-    The merged corpus is written to a temporary file for the parse and removed
-    after: pie-parser's ``CsvAdapter`` reads a path, and the durable copies are
-    the rows — materialising them beside the output would put a second source
-    of truth on the disk that §1.1 of the design says cannot be trusted to
-    survive.
+    **File + its decoding config → decoded records**, and nothing else. A file
+    without a saved config is refused by name before anything is decoded —
+    there is no default rule set to fall back to, and a build that quietly
+    decoded a YG-1 price list through Kennametal's grammars would be a wrong
+    catalogue with a real stamp.
 
-    Stores the run report and the stamp as a row rather than a sidecar file,
-    for the same reason. Raises ``FileNotFoundError`` when the catalogue has
-    no files, which is a state to report rather than an error to log, and
-    ``ingestion.item_master.ItemMasterError`` when one of its files can no
-    longer be read as a table — named per file, because "the build failed" over
-    six sources is not something a person can act on.
+    Each file is normalised to its rule set's columns in a temporary file and
+    parsed on its own, so its stamp — ``run_id`` over its bytes and its rule
+    set — is its own; the merge then keeps one record per part number
+    (:func:`_merge_decoded`). The temporary files are removed after: the
+    durable copies are the rows, and a tenant's item master left in /tmp is a
+    disclosure.
+
+    Stores the run report and the stamp as a row rather than a sidecar file.
+    Raises :class:`CatalogueError` when the catalogue has no files or one of
+    them has no saved decoding config, and
+    ``ingestion.item_master.ItemMasterError`` when a file can no longer be
+    read as a table — named per file, because "the build failed" over six
+    sources is not something a person can act on.
     """
+    import shutil
     import tempfile
 
     from .domain import models
 
     sources = current_corpora(session, org, connection_id, catalogue_key)
     if not sources:
-        raise FileNotFoundError(
+        raise CatalogueError(
             "This catalogue has no price list or item-master export on file. "
             "Upload one before building it.")
+    waiting = [s for s in sources if not decoding_ready(s)]
+    if waiting:
+        names = ", ".join(s.filename or source_key_of(s) for s in waiting)
+        raise CatalogueError(
+            f"Not decoded: {names} "
+            f"{'has' if len(waiting) == 1 else 'have'} no saved decoding config. "
+            f"Open the file's decoding, check the columns and the rule set the "
+            f"analysis proposed, and save it — nothing is decoded through a "
+            f"default.")
 
     out = company_catalog_path(connection_id, catalogue_key)
+    started = time.perf_counter()
+    per_file: List[Dict[str, Any]] = []
     with _build_lock:
-        tmpdir = tempfile.mkdtemp(prefix="pie-corpus-")
-        tmp_corpus = Path(tmpdir) / "corpus.csv"
+        tmpdir = Path(tempfile.mkdtemp(prefix="pie-build-"))
         try:
-            combine = combined_corpus(sources, pack_path, tmp_corpus)
-            result = run_parse(tmp_corpus, pack_path, out)
+            decoded: List[Dict[str, Any]] = []
+            for source in sources:
+                rule_set = rule_set_path(source.rule_set)
+                target = tmpdir / f"{len(decoded)}.jsonl"
+                ingest = normalised_corpus(source, rule_set, tmpdir / "corpus.csv")
+                result = run_parse(tmpdir / "corpus.csv", rule_set, target)
+                per_file.append({
+                    "source_key": source_key_of(source),
+                    "corpus_id": source.corpus_id,
+                    "filename": source.filename,
+                    "sha256": source.sha256,
+                    "rule_set": source.rule_set,
+                    "stamp": result["stamp"],
+                    "records": result["records"],
+                    "rows_read": result["rows_read"],
+                    "quarantined": result["quarantined"],
+                    "report": result["report"],
+                    **{k: ingest[k] for k in ("rows_read", "rows_kept",
+                                              "rows_skipped_blank_key", "sampled")
+                       if k in ingest},
+                    "rows_emitted": ingest["rows_emitted"],
+                })
+                decoded.append({"key": source_key_of(source), "path": str(target),
+                                "quarantine": str(target.with_suffix(".quarantine.jsonl"))})
+            # Newest file first: a later file is a later statement.
+            merged = _merge_decoded(list(reversed(decoded)), out, tag="source_key")
+            with out.with_suffix(".quarantine.jsonl").open("w", encoding="utf-8") as q:
+                for d in decoded:
+                    qpath = Path(d["quarantine"])
+                    if qpath.exists():
+                        q.write(qpath.read_text(encoding="utf-8"))
         finally:
-            # The bytes are in the rows; nothing is lost by removing them here,
-            # and leaving a tenant's item master in /tmp is a disclosure.
-            tmp_corpus.unlink(missing_ok=True)
-            Path(tmpdir).rmdir()
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
     row = catalogue_row(session, org, connection_id, catalogue_key)
     if row is None:
@@ -1134,26 +1374,32 @@ def build_for_company(session: Any, org: str, connection_id: str,
         session.add(row)
     row.corpus_id = sources[-1].corpus_id
     row.corpus_digest = sources_digest(sources)
-    row.sources = [{
-        "source_key": source_key_of(s),
-        "corpus_id": s.corpus_id,
-        "filename": s.filename,
-        "sha256": s.sha256,
-    } for s in sources]
-    row.ingest = combine
-    row.pack = str(pack_path)
-    row.records = result["records"]
-    row.rows_read = result["rows_read"]
-    row.quarantined = result["quarantined"]
-    row.duration_s = result["duration_s"]
-    row.report = result["report"]
+    row.sources = per_file
+    row.ingest = {
+        "sources": per_file,
+        "rows_in": sum(f["rows_read"] for f in per_file),
+        "rows_kept": merged["records"],
+        "rows_skipped_blank_key": sum(f.get("rows_skipped_blank_key", 0)
+                                      for f in per_file),
+        "collisions": merged["duplicates"],
+        "collision_examples": merged["duplicate_examples"],
+        "sampled": False,
+    }
+    row.records = merged["records"]
+    row.rows_read = sum(f["rows_read"] for f in per_file)
+    row.quarantined = sum(f["quarantined"] for f in per_file)
+    row.duration_s = round(time.perf_counter() - started, 2)
+    # The parser's report, verbatim, where there is one; with several files
+    # each has its own in `sources`, and summing censuses here would be the
+    # recomputation the parser has already made unnecessary.
+    row.report = per_file[0]["report"] if len(per_file) == 1 else None
     for field in STAMP_FIELDS:
-        setattr(row, field, result["stamp"].get(field))
+        values = {f["stamp"].get(field) for f in per_file}
+        setattr(row, field, values.pop() if len(values) == 1 else None)
     row.built_by = actor
     row.built_at = clock.now()
     session.flush()
-    write_sidecar(connection_id, catalogue_key, row.name, row.pack_choice,
-                  row.built_at, result["stamp"], result["records"])
+    write_sidecar(connection_id, catalogue_key, row)
     refresh_union(connection_id)
     return company_catalog_state(session, org, connection_id, catalogue_key)
 
@@ -1174,115 +1420,6 @@ def _index_for_retrieval(out: Path) -> None:
                     "rebuilt on first use", out, exc_info=True)
 
 
-def prepare_source(raw: bytes, filename: str = "", content_type: str = "",
-                   mapping: Optional[Dict[str, Any]] = None,
-                   ) -> tuple[Dict[str, Optional[str]], Dict[str, Any]]:
-    """Read an upload as a table, settle its column mapping, and say what it holds.
-
-    Called *before* the row is written rather than at build time: an upload that
-    is accepted and then fails to build leaves the catalogue holding a file it
-    cannot use and no message saying why. It lives here rather than in the
-    router, which stays a mapping layer (§3).
-
-    Returns the mapping to store and the ingest report to store beside it.
-    Raises ``ingestion.item_master.ItemMasterError`` with a sentence written for
-    the person who uploaded the file.
-
-    **What it no longer checks is the pack's own column names.** It used to
-    refuse any file whose headers were not the ones the chosen pack declares,
-    which made every export other than the one this platform was written
-    against unusable — and the fix a person needed was to rename spreadsheet
-    columns to match a pack they cannot see. The mapping replaced that: the file
-    keeps its own headers, the mapping says which of them fills each role, and
-    `combined_corpus` renames the columns on the way into the parse. So the
-    refusal here is narrower and more useful — a file whose part number or
-    description cannot be *identified at all*, with its headers listed so the
-    person can say which column it is.
-    """
-    from .ingestion import item_master
-
-    table = item_master.read_table(raw, filename, content_type)
-    settled = dict(mapping) if mapping else item_master.suggest_mapping(table)
-    item_master.check_mapping(table, settled)
-    return settled, item_master.describe(table, settled)
-
-
-def pack_fit(session: Any, org: str, connection_id: str,
-             sample_rows: int = 0,
-             catalogue_key: str = DEFAULT_CATALOGUE) -> Dict[str, Any]:
-    """Try every shipped pack against a sample of one catalogue's files.
-
-    Which pack decodes an export is not a question a person can answer from a
-    dropdown of identifiers — ``zcnc`` says nothing about whether it reads
-    their file. So this runs the real pipeline over the first rows of the real
-    sources and reports **the parser's own counts** for each pack: classified,
-    quarantined, and the per-family census it produced. It computes no score
-    and no rate of its own; ranking packs by a number this module invented
-    would be exactly the second parse-rate calculation ``run_parse`` refuses.
-
-    Safe by construction, and this is why it can exist at all: it executes only
-    the packs the pinned engine ships. No tenant-supplied pattern is compiled
-    (see :func:`available_packs`), so the trial adds no execution surface — it
-    only spends CPU that the build was going to spend anyway.
-
-    ``available: False`` with a reason when there is nothing to try, never an
-    empty result that reads as "no pack fits".
-    """
-    import tempfile
-
-    from .ingestion import item_master
-
-    sample_rows = sample_rows or item_master.SAMPLE_ROWS
-    packs = available_packs()
-    sources = current_corpora(session, org, connection_id, catalogue_key)
-    if not packs:
-        return {"available": False, "reason": source_state()["reason"] or (
-            "This engine ships no org-layer packs."), "packs": []}
-    if not sources:
-        return {"available": False, "reason": (
-            "This catalogue has no item-master export on file yet, so there is "
-            "nothing to try a pack against."), "packs": []}
-
-    out: List[Dict[str, Any]] = []
-    with _build_lock:
-        tmpdir = Path(tempfile.mkdtemp(prefix="pie-packfit-"))
-        try:
-            for pack in packs:
-                path = tmpdir / f"{pack['id']}.jsonl"
-                try:
-                    combine = combined_corpus(sources, Path(pack["path"]),
-                                              tmpdir / "corpus.csv",
-                                              limit=sample_rows)
-                    result = run_parse(tmpdir / "corpus.csv",
-                                       Path(pack["path"]), path)
-                except Exception as e:  # noqa: BLE001 — one pack failing is a result
-                    # Reported against that pack rather than raised: a pack the
-                    # engine ships but cannot run on this file is precisely
-                    # what the trial is for, and it must not hide the others.
-                    log.info("pack %s could not decode %s/%s: %s",
-                             pack["id"], connection_id, catalogue_key, e)
-                    out.append({"pack_id": pack["id"],
-                                "error": f"{type(e).__name__}: {e}"})
-                    continue
-                out.append({
-                    "pack_id": pack["id"],
-                    "rows_read": result["rows_read"],
-                    "classified": result["records"],
-                    "quarantined": result["quarantined"],
-                    "report": result["report"],
-                    "sampled": combine["sampled"],
-                })
-        finally:
-            # Nothing here is a catalogue: a trial that left a products.jsonl
-            # behind would be a company resolving against a pack it never chose.
-            for leftover in tmpdir.glob("*"):
-                leftover.unlink(missing_ok=True)
-            tmpdir.rmdir()
-
-    return {"available": True, "reason": None, "sample_rows": sample_rows,
-            "packs": out}
-
-
 # ── the seed: what a deployment that predates per-company catalogues gets ────
 
 
@@ -1294,8 +1431,13 @@ def seed_company_catalogues(session: Any,
     catalogue built from ``settings.PIE_CORPUS``. Removing that default without
     putting it somewhere turns every quote line UNRESOLVED on deploy — a
     regression that looks exactly like the engine being down. So the corpus
-    becomes the first company's *default* catalogue's corpus, once, and the
-    pack it was decoded through becomes that catalogue's pack.
+    becomes the first company's *default* catalogue's one price list, once.
+
+    **Its decoding config is the one it ships with**, not a default. The
+    shipped corpus and ``settings.PIE_PACK`` are one pairing — the rule set
+    was written against exactly this file — so the seed's config names that
+    rule set and is confirmed by the seed itself, on the same footing as a
+    config a person saved. No other file ever reads ``PIE_PACK``.
 
     Deliberately conservative, because it writes on somebody's behalf:
 
@@ -1306,7 +1448,6 @@ def seed_company_catalogues(session: Any,
       first — because which of three legal entities sells this catalogue's
       product is a question this function cannot answer, and guessing three
       times is worse than guessing once;
-    * an existing pack choice on that catalogue is left alone;
     * a missing corpus file seeds nothing and is not an error. The engine is
       optional in ``deploy/backend.Dockerfile``, so an image built without it
       has no seed to give — and that deployment was not resolving before this
@@ -1316,6 +1457,7 @@ def seed_company_catalogues(session: Any,
     a migration, so a deployment that later gains the submodule (or its first
     connection) is seeded on the next start rather than never.
     """
+    from .ingestion import item_master
     from .ingestion.connections import list_connections
     from .domain import models
 
@@ -1337,36 +1479,32 @@ def seed_company_catalogues(session: Any,
             continue
         first = companies[0]
         raw = settings.PIE_CORPUS.read_bytes()
+        table = item_master.read_table(raw, settings.PIE_CORPUS.name, "text/csv")
+        columns = item_master.suggest_mapping(table)
         session.add(models.CompanyCorpus(
             organization_id=org,
             connection_id=first.connection_id,
             catalogue_key=DEFAULT_CATALOGUE,
             # Keyed by its filename like any other source, so the company can
             # replace or remove the seed from the screen once it has its own
-            # export. No mapping is stored: the shipped corpus uses the shipped
-            # pack's own column names, which is exactly the case
-            # `suggest_mapping` reads correctly, and inventing a mapping here
-            # would state a fact about a file this function did not read.
+            # export.
             source_key=settings.PIE_CORPUS.name,
             filename=settings.PIE_CORPUS.name,
             content_type="text/csv",
             size_bytes=len(raw),
             sha256=hashlib.sha256(raw).hexdigest(),
             content=raw,
+            mapping=columns,
+            ingest=item_master.describe(table, columns),
+            rule_set=settings.PIE_PACK.name,
+            decoding_confirmed_at=clock.now(),
+            decoding_confirmed_by=actor,
             uploaded_by=actor,
         ))
-        # The catalogue the seed belongs to, defined if it is not, and given the
-        # pack the shipped corpus is decoded through where none is chosen.
-        # `pack_for` resolves an *identifier* against what this engine ships,
-        # so the id is what is stored.
-        row = catalogue_row(session, org, first.connection_id, DEFAULT_CATALOGUE)
-        if row is None:
-            row = models.CompanyCatalogue(
+        if catalogue_row(session, org, first.connection_id, DEFAULT_CATALOGUE) is None:
+            session.add(models.CompanyCatalogue(
                 organization_id=org, connection_id=first.connection_id,
-                catalogue_key=DEFAULT_CATALOGUE, name="")
-            session.add(row)
-        if pack_for(row) is None:
-            row.pack_choice = settings.PIE_PACK.name
+                catalogue_key=DEFAULT_CATALOGUE, name=""))
         session.flush()
         log.info("seeded the shipped corpus to company %s of organization %s",
                  first.connection_id, org)
@@ -1394,17 +1532,14 @@ def _adopt_legacy_file(connection_id: str, row: Any) -> None:
         if (root / name).is_file():
             os.replace(root / name, target.parent / name)
     if row.built_at is not None:
-        write_sidecar(connection_id, DEFAULT_CATALOGUE, row.name, row.pack_choice,
-                      row.built_at, {k: getattr(row, k) for k in STAMP_FIELDS
-                                     if getattr(row, k, None) is not None},
-                      row.records)
+        write_sidecar(connection_id, DEFAULT_CATALOGUE, row)
     log.info("adopted the pre-catalogue file for company %s into %s",
              connection_id, target.parent)
 
 
 def ensure_company_catalogues(session: Any,
                               actor: str = "auto-build") -> List[Dict[str, Any]]:
-    """Build any catalogue whose corpus is on record but whose file is not.
+    """Build any catalogue whose files are on record but whose output is not.
 
     The catalogue is derived: the corpus rows are durable and the JSONL is not,
     so a redeploy onto a container with a fresh disk arrives with every company
@@ -1413,8 +1548,9 @@ def ensure_company_catalogues(session: Any,
     noticing, days later, that resolution has quietly stopped.
 
     Honours ``AUTO_BUILD_CATALOG``: with it off, a catalogue reports NOT BUILT
-    and somebody builds it from the screen. Never falls back to another
-    company's catalogue — that is the one outcome worse than an empty screen.
+    and somebody builds it from the screen. A catalogue with a file awaiting
+    its decoding config is left NOT BUILT and logged by file — never decoded
+    through a default. Never falls back to another company's catalogue.
 
     **Commits per catalogue**, which is unusual for a function taking a session
     and is CLAUDE.md §4's rule rather than an exception to it: this is a
@@ -1442,16 +1578,16 @@ def ensure_company_catalogues(session: Any,
             _adopt_legacy_file(connection_id, row)
         if company_catalog_path(connection_id, catalogue_key).exists():
             continue
-        pack = pack_for(row)
-        if pack is None:
-            log.info("catalogue %s of company %s has files but no pack this engine "
-                     "ships; it is NOT BUILT until one is chosen",
-                     catalogue_key, connection_id)
-            continue
         try:
-            build_for_company(session, org, connection_id, pack, actor=actor,
+            build_for_company(session, org, connection_id, actor=actor,
                               catalogue_key=catalogue_key)
             session.commit()
+        except CatalogueError as e:
+            # A file awaiting its decoding config: a state, not a failure.
+            log.info("catalogue %s of company %s is NOT BUILT: %s",
+                     catalogue_key, connection_id, e)
+            session.rollback()
+            continue
         except Exception:  # noqa: BLE001 — one catalogue must not stop the boot
             log.exception("could not build catalogue %s for company %s",
                           catalogue_key, connection_id)

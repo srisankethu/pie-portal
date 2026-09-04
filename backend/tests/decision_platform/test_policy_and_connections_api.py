@@ -17,6 +17,7 @@ from sqlalchemy.orm import sessionmaker
 import dbsupport
 from app.commercial import policy
 from app.commercial.config import load_commercial_thresholds
+from app import clock
 from app.config import settings
 from app.db import get_session
 from app.domain import models
@@ -59,21 +60,30 @@ def client():
 
 
 def _connect_a_company(c, pack: str = ""):
-    """Give this organization one company decoding through a shipped pack.
+    """Give this organization one company with one price list on file, decoded
+    through a shipped rule set.
 
     The family vocabulary a policy is validated against is the union of the
-    organization's companies' packs — so a family edit needs a company, and the
-    connection tests further down need an organization with none. Set up per
-    test rather than in the fixture for that reason.
+    rule sets this organization's saved decoding configs name — so a family
+    edit needs a file whose config is saved, and the connection tests further
+    down need an organization with none. Set up per test rather than in the
+    fixture for that reason.
     """
     s = c.Maker()
     s.add(models.ZohoConnection(connection_id="cx_policy", organization_id="org_pie",
                                 label="SLS Engineers", zoho_organization_id="zpack"))
-    # The pack is a catalogue's, not the company's: a company keeps one
-    # catalogue per manufacturer, each decoded through its own pack.
     s.add(models.CompanyCatalogue(organization_id="org_pie", connection_id="cx_policy",
-                                  catalogue_key="default", name="",
-                                  pack_choice=pack or settings.PIE_PACK.name))
+                                  catalogue_key="default", name=""))
+    # The rule set is the *file's*, saved as its decoding config: no company,
+    # catalogue or deployment default decides how a price list is decoded.
+    s.add(models.CompanyCorpus(
+        organization_id="org_pie", connection_id="cx_policy",
+        catalogue_key="default", source_key="master.csv", filename="master.csv",
+        size_bytes=1, sha256="x", content=b"x",
+        mapping={"record_id": "MM#", "description": "Material Description",
+                 "grade": None},
+        rule_set=pack or settings.PIE_PACK.name,
+        decoding_confirmed_at=clock.now(), decoding_confirmed_by="test"))
     s.commit()
     s.close()
 
@@ -192,7 +202,7 @@ def test_without_a_readable_pack_a_family_edit_is_refused_not_waved_through(
     of the policy stays editable — only the vocabulary-bound map is held."""
     import app.pie_service as pie_service
     _connect_a_company(client)
-    monkeypatch.setattr(pie_service, "pack_families", lambda _pack=None: None)
+    monkeypatch.setattr(pie_service, "rule_set_families", lambda _path: None)
 
     r = _patch(client, OWNER, {"target_margin_by_family": {"reamer": 0.30}})
     assert r.status_code == 400

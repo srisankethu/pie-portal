@@ -78,7 +78,6 @@ def give_company_a_catalogue(connection_id: str) -> Path:
     its catalogue existed is remembered as having none.
     """
     from app import catalog, retrieval
-    from app.config import settings
     from app.pie_service import pie_service
 
     source = shared_catalogue()
@@ -91,9 +90,8 @@ def give_company_a_catalogue(connection_id: str) -> Path:
         _link(source, target)
         # What a build writes beside its file, so the union can be assembled
         # from the disk alone the way it is for a catalogue a person built.
-        catalog.write_sidecar(connection_id, catalog.DEFAULT_CATALOGUE, "",
-                              settings.PIE_PACK.name, None,
-                              catalog.catalog_stamp(source), 0)
+        catalog.write_sidecar(connection_id, catalog.DEFAULT_CATALOGUE,
+                              _row_for(source))
     union = catalog.union_catalogue(connection_id)
     assert union is not None
     # The retrieval index too, built once per worker over this one-member
@@ -108,6 +106,30 @@ def give_company_a_catalogue(connection_id: str) -> Path:
             _link(shared, index)
     pie_service.reload(connection_id)
     return target
+
+
+class _row_for:
+    """What ``write_sidecar`` reads off a built catalogue's row, for a
+    catalogue that was linked into place rather than built.
+
+    The stamp and the run id are read from the linked file's own records, so
+    the union assembled from it carries the same version a real build's would
+    — which is the point of linking rather than faking: the file is
+    byte-for-byte what this company's own build would have produced.
+    """
+
+    def __init__(self, decoded: Path) -> None:
+        from app import catalog
+        from app.config import settings
+
+        stamp = catalog.catalog_stamp(decoded)
+        self.name = ""
+        self.built_at = None
+        self.records = 0
+        self.sources = [{"source_key": settings.PIE_CORPUS.name,
+                         "rule_set": settings.PIE_PACK.name, "stamp": stamp}]
+        for field in catalog.STAMP_FIELDS:
+            setattr(self, field, stamp.get(field))
 
 
 def _shared_union_index(union_path: Path) -> Optional[Path]:

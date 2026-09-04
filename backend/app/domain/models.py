@@ -5091,7 +5091,7 @@ class CompanyCorpus(Base):
     ``source_key`` column carries: an item master exported from the ERP, a
     manufacturer's range extension, a price list covering products the master
     has not caught up with. They are merged into one corpus at build time
-    (``catalog.combined_corpus``), which is where the record-id collisions
+    (``catalog._merge_decoded``), which is where the record-id collisions
     between them are resolved and counted — pie-parser's ``AuthoritativeIndex``
     treats a duplicate identifier inside one namespace as a collision that
     never resolves, so merging without de-duplicating would silently stop a
@@ -5143,13 +5143,40 @@ class CompanyCorpus(Base):
     filename: Mapped[str] = mapped_column(String(255), default="")
     content_type: Mapped[str] = mapped_column(String(128), default="")
     size_bytes: Mapped[int] = mapped_column(Integer, default=0)
+    # ── the decoding config: how THIS file is read and decoded ──────────────
+    #
+    # Every upload starts as an unknown format. Nothing decodes a file until
+    # a decoding config exists for it, and there is no default one: the
+    # config is proposed by analysing the file (``catalog.analyze_source``),
+    # shown with the parser's own counts, and saved by a person. It has two
+    # halves, kept as columns rather than one JSON blob because the first
+    # predates the second and is read by the merge on its own.
+
     #: Which of this file's columns hold the record id, the description and the
-    #: grade. An organisation fact about *this file*, not about the pack: two
-    #: exports of the same catalogue call the part number ``MM#`` and
-    #: ``Part No``, and asking a person to rename spreadsheet columns to match
-    #: a pack is asking them to do the platform's job. Null means "not stated" —
-    #: `ingestion.item_master.suggest_mapping` reads the headers instead.
+    #: grade. A fact about *this file*: two exports of the same catalogue call
+    #: the part number ``MM#`` and ``Part No``, and asking a person to rename
+    #: spreadsheet columns is asking them to do the platform's job. Null means
+    #: "not stated" — `ingestion.item_master.suggest_mapping` reads the headers
+    #: instead.
     mapping: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+    #: Which of the engine's shipped rule sets decodes this file's
+    #: descriptions — the grammars, vocabularies and repairs pie-parser keeps
+    #: as an org-layer pack (``packs/org/<id>``). Chosen for this file on the
+    #: evidence in ``analysis``, never inherited from the company, the
+    #: catalogue or a deployment default. Null until analysis finds exactly one
+    #: rule set that reads the file or a person chooses one; a file with no
+    #: rule set is not decoded, and a build says so by name.
+    rule_set: Mapped[Optional[str]] = mapped_column(String(128))
+    #: What the discovery step measured: every shipped rule set's own counts
+    #: over the first rows of this file (classified, quarantined, the census),
+    #: and which one it proposed on that evidence. Stored so the choice a
+    #: person makes is auditable against what they saw.
+    analysis: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+    #: When a person saved the decoding config, and who. A proposal is not a
+    #: config: until this is set the file is not decoded, however good the
+    #: proposal looked — "show, validate, save, then decode" is the flow.
+    decoding_confirmed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    decoding_confirmed_by: Mapped[Optional[str]] = mapped_column(String(64))
     #: What reading this file kept and what it left out: the columns mapped, the
     #: columns dropped, and which of those were commercial. Evidence for the
     #: nomenclature-only rule that a person can check against their own file,
@@ -5190,19 +5217,19 @@ class CompanyCatalogue(Base):
     safe to lose.
 
     **One row per catalogue, several catalogues per company.** A distributor
-    sells more than one manufacturer, and each manufacturer's price lists are
-    decoded through that manufacturer's pack: Kennametal's through ``zcnc``,
-    YG-1's through a YG-1 pack. So a company keeps a catalogue *per
-    manufacturer*, each a set of source files and a pack of its own, built into
-    its own ``products.jsonl`` under
-    ``data/catalogues/<connection_id>/<catalogue_key>/``. What the company
+    sells more than one manufacturer, so a company keeps a catalogue *per
+    manufacturer* — that manufacturer's product universe — each a set of
+    price lists built into its own ``products.jsonl`` under
+    ``data/catalogues/<connection_id>/<catalogue_key>/``. The catalogue owns
+    no decoder: every price list carries its own decoding config
+    (:class:`CompanyCorpus`), and a build decodes each file through its own
+    and merges the results. What the company
     *resolves against* is the union of them, written beside those files by
     ``catalog.union_catalogue`` and never stored here — it is derived from the
     rows below and rebuilt whenever one of them changes.
 
     The row exists **before the first build**: it is the catalogue's definition
-    — its key, its name, the pack chosen for it — and ``built_at`` is null until
-    a build stamps it. A rebuild replaces the stamp in place. There is no
+    — its key and its name — and ``built_at`` is null until a build stamps it. A rebuild replaces the stamp in place. There is no
     history of superseded builds here and there is not meant to be, on
     ``customer_item_metrics``' reasoning — it is derived state, and the corpus
     rows behind it are the append-only half.
@@ -5222,20 +5249,12 @@ class CompanyCatalogue(Base):
     #: The name a person gave it, for the screen. Empty for a migrated row,
     #: which the screen shows under its key.
     name: Mapped[str] = mapped_column(String(255), default="", server_default="")
-    #: The pack *chosen* for this catalogue, as the identifier of one the
-    #: engine ships, resolved to a path by ``catalog.pack_for``. Distinct from
-    #: ``pack_id`` below, which is the engine's own stamp of the nomenclature
-    #: layer a build actually decoded through: the choice is a person's and
-    #: may name a pack the pin no longer has, in which case it resolves to
-    #: nothing rather than to a guess.
-    pack_choice: Mapped[Optional[str]] = mapped_column(String(255))
 
-    #: Which corpus this was decoded from, and which pack decoded it. Both are
-    #: part of the answer to "which catalogue answered", alongside the stamp.
-    #: ``corpus_id`` names the newest of the sources; with several of them it is
-    #: no longer the whole answer, which is what ``corpus_digest`` is for.
+    #: Which corpus this was decoded from. Part of the answer to "which
+    #: catalogue answered", alongside the stamp. ``corpus_id`` names the newest
+    #: of the sources; with several of them it is no longer the whole answer,
+    #: which is what ``corpus_digest`` is for.
     corpus_id: Mapped[Optional[str]] = mapped_column(String(64))
-    pack: Mapped[str] = mapped_column(String(255), default="")
 
     #: A hash over the set of sources this was built from — every live source's
     #: key and content digest. What makes "out of date" answerable once a
@@ -5245,8 +5264,10 @@ class CompanyCatalogue(Base):
     #: ``corpus_id`` comparison is still the honest answer.
     corpus_digest: Mapped[Optional[str]] = mapped_column(String(64))
     #: The sources themselves, as they were at build time — filename, key,
-    #: digest and rows contributed. Provenance: with several files merged, "what
-    #: is in this catalogue" is not answerable from a single filename.
+    #: digest, the rule set each was decoded through, its own stamp and the
+    #: parser's counts and report for it. Provenance: with several files
+    #: merged, each through its own decoding config, "what is in this
+    #: catalogue" is not answerable from a single filename or a single stamp.
     sources: Mapped[Optional[list[Any]]] = mapped_column(JSON)
     #: What merging them did: rows in, rows kept, and the record ids that
     #: appeared in more than one file. A collision is resolved in favour of the
@@ -5260,15 +5281,19 @@ class CompanyCatalogue(Base):
     quarantined: Mapped[int] = mapped_column(Integer, default=0)
     duration_s: Mapped[Optional[float]] = mapped_column(Float)
 
-    #: pie-parser's own ``RunReport.to_dict()``, stored whole and served
-    #: verbatim. The portal never recomputes a census or a parse rate — a
-    #: second parse-rate calculation is the semantic duplication CLAUDE.md §2
-    #: is about, and the parser has already answered.
+    #: pie-parser's own ``RunReport.to_dict()`` for a catalogue built from one
+    #: file, stored whole and served verbatim; null for one built from several,
+    #: where each file's report sits in ``sources``. The portal never
+    #: recomputes a census or a parse rate — a second parse-rate calculation is
+    #: the semantic duplication CLAUDE.md §2 is about, and the parser has
+    #: already answered, per file.
     report: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
 
-    #: The stamp every emitted record carries. ``run_id`` derives from the
-    #: input bytes plus ``ruleset_checksum``, so these are what say *which*
-    #: catalogue answered a given resolution.
+    #: The stamp every emitted record carries, where every file of the
+    #: catalogue agrees on it — null where two files decoded through different
+    #: rule sets, in which case ``sources`` carries each file's own. ``run_id``
+    #: derives from the input bytes plus ``ruleset_checksum``, so these are
+    #: what say *which* build answered a given resolution.
     pack_id: Mapped[Optional[str]] = mapped_column(String(128))
     pack_version: Mapped[Optional[str]] = mapped_column(String(64))
     org_id: Mapped[Optional[str]] = mapped_column(String(128))

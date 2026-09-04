@@ -26,7 +26,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CatalogScreen } from "./CatalogScreen";
 import { papi } from "./api";
 import type { CatalogueUnion, CompanyCatalogue, CompanyCatalogueEntry,
-              CompanyCatalogues, CompanySource, PlatformSession } from "./types";
+              CompanyCatalogues, CompanySource, SourceDecoding,
+              PlatformSession } from "./types";
 
 const SESSION: PlatformSession = {
   token: "t", role: "OWNER", name: "S. Menon", user_id: "u1",
@@ -34,16 +35,19 @@ const SESSION: PlatformSession = {
 };
 
 /** One manufacturer's catalogue inside a company. Built nothing by default;
- *  spread `BUILT` over it for a catalogue with a stamp. */
+ *  spread `BUILT` over it for a catalogue with a stamp.
+ *
+ *  `decoding_ready` and `awaiting_decoding` are DERIVED from the files, the
+ *  way the server derives them, so a fixture cannot hand the screen a
+ *  catalogue that is ready and holds a file nobody has said how to decode. */
 function catalogue(over: Partial<CompanyCatalogueEntry> = {}): CompanyCatalogueEntry {
-  return {
+  const entry = {
     connection_id: "conn-a",
     catalogue_key: "kennametal",
     name: "Kennametal",
     scope: "catalogue",
-    pack_id: "zcnc",
-    pack_resolved: true,
-    pack: null,
+    decoding_ready: true,
+    awaiting_decoding: [],
     exists: false,
     built_but_missing_on_disk: false,
     records: null,
@@ -61,6 +65,20 @@ function catalogue(over: Partial<CompanyCatalogueEntry> = {}): CompanyCatalogueE
     stale: false,
     ...over,
   };
+  const awaiting = entry.sources.filter((x) => !x.decoding.ready)
+                                .map((x) => x.source_key);
+  return { ...entry, awaiting_decoding: awaiting,
+           decoding_ready: entry.sources.length > 0 && awaiting.length === 0 };
+}
+
+/** The header a catalogue's — or a company's — own state chip sits in.
+ *
+ *  Each FILE now carries a state word of its own (its decoding config, not the
+ *  catalogue's build), and one of them is also READY. So an assertion about a
+ *  catalogue's state is scoped to the line its name is on rather than to the
+ *  page, which is what it always meant. */
+function stateOf(name: string): HTMLElement {
+  return screen.getByText(name, { selector: "b" }).parentElement as HTMLElement;
 }
 
 /** The union the server would describe for these catalogues — its built
@@ -76,7 +94,8 @@ function union(entries: CompanyCatalogueEntry[],
     duplicates: 0,
     duplicate_examples: [],
     catalogues: built.map((e) => ({
-      catalogue_key: e.catalogue_key, name: e.name, pack_id: e.pack_id,
+      catalogue_key: e.catalogue_key, name: e.name,
+      rule_sets: (e.built_from ?? []).map((f) => f.rule_set ?? "—"),
       built_at: e.built_at, records: e.records ?? 0,
       ruleset_checksum: e.stamp.ruleset_checksum, run_id: e.stamp.run_id,
     })),
@@ -110,7 +129,32 @@ function withUnion(c: CompanyCatalogue, over: Partial<CatalogueUnion>): CompanyC
   return { ...c, union: { ...(c.union ?? union(c.catalogues)), ...over } };
 }
 
-/** One uploaded file, with the ingest report the server stores beside it.
+/** One file's saved decoding config: the columns confirmed, the rule set
+ *  chosen, and the analysis that proposed both. Ready by default — the state
+ *  a file reaches once somebody has checked it — because every other state is
+ *  a deliberate case a test names. */
+function decoding(over: Partial<SourceDecoding> = {}): SourceDecoding {
+  return {
+    columns: { record_id: "MM#", description: "Material Description",
+               grade: "Grade" },
+    rule_set: "zcnc",
+    rule_set_resolved: true,
+    analysis: {
+      sample_rows: 500,
+      candidates: [{ rule_set: "zcnc", rows_read: 500, classified: 431,
+                     quarantined: 69 }],
+      proposed: "zcnc",
+      reason: null,
+    },
+    confirmed_at: "2026-08-30T05:02:00Z",
+    confirmed_by: "s.menon@pie.example",
+    ready: true,
+    ...over,
+  };
+}
+
+/** One uploaded file, with the ingest report and the decoding config the
+ *  server stores beside it.
  *
  *  `commercial_columns_dropped` is populated in the default because the screen
  *  claiming "nomenclature only" has to be checkable: the test below asserts the
@@ -126,8 +170,7 @@ function source(over: Partial<CompanySource> = {}): CompanySource {
     sha256: "abc",
     uploaded_at: "2026-08-30T05:00:00Z",
     uploaded_by: "s.menon@pie.example",
-    mapping: { record_id: "MM#", description: "Material Description",
-               grade: "Grade" },
+    decoding: decoding(),
     ingest: {
       columns: ["MM#", "Material Description", "Grade", "New ZCNC Price"],
       mapped: { record_id: "MM#", description: "Material Description",
@@ -173,7 +216,19 @@ const BUILT: Partial<CompanyCatalogueEntry> = {
     uploaded_by: "s.menon@pie.example",
   },
   built_from: [{ source_key: "item-master.csv", corpus_id: "cor1",
-                 filename: "item-master.csv", sha256: "abc" }],
+                 filename: "item-master.csv", sha256: "abc",
+                 rule_set: "zcnc",
+                 stamp: {
+                   pack_id: "kennametal_widia", pack_version: "0.10.0",
+                   org_id: "zcnc", org_version: "0.10.0",
+                   ruleset_checksum: "f67131512eb97513",
+                   run_id: "2b5c96f97de49436",
+                   engine_version: "0.10.0", schema_version: "1.0.0",
+                 },
+                 records: 6717, rows_read: 6717, quarantined: 0,
+                 rows_kept: 6717, rows_skipped_blank_key: 0,
+                 rows_emitted: 6717,
+                 report: null }],
   report: {
     total: 6717,
     by_family: { turning_insert: 2273, milling_insert: 897 },
@@ -189,12 +244,12 @@ function view(companies: CompanyCatalogue[],
   return {
     scope: "company",
     companies,
-    packs: [{ id: "zcnc", path: "/pie-parser/packs/org/zcnc" }],
+    rule_sets: [{ id: "zcnc", path: "/pie-parser/packs/org/zcnc" }],
     source: {
       available: true, reason: null,
       pie_parser_root: "/pie-parser",
       corpus: "/pie-parser/corpora/corpus.csv",
-      pack: "/pie-parser/packs/org/zcnc",
+      seed_rule_set: "/pie-parser/packs/org/zcnc",
     },
     max_corpus_bytes: 33_554_432,
     max_catalogues: 8,
@@ -227,17 +282,18 @@ describe("the decoded catalogue screen", () => {
     // there is no report.
     expect(screen.queryByLabelText(/Per-family parse rates/)).toBeNull();
     expect(document.body.textContent ?? "").not.toMatch(/%/);
-    expect(screen.queryByText("READY")).toBeNull();
+    // Scoped to the catalogue's own line: the file below it is READY to
+    // decode, which says nothing about whether the catalogue was built.
+    expect(within(stateOf("Kennametal")).queryByText("READY")).toBeNull();
   });
 
   it("names what is missing rather than saying only 'not built'", async () => {
-    // No export uploaded, and no pack chosen. "You have not built it" is not
-    // useful advice to somebody who has nothing to build it from.
-    vi.spyOn(papi, "companyCatalogues").mockResolvedValue(
-      view([company({ pack_id: null, pack_resolved: false })]));
+    // Nothing uploaded at all. "You have not built it" is not useful advice to
+    // somebody who has nothing to build it from.
+    vi.spyOn(papi, "companyCatalogues").mockResolvedValue(view([company()]));
     render(<CatalogScreen session={SESSION} />);
 
-    expect(await screen.findByText("NO PACK CHOSEN")).toBeTruthy();
+    expect(await screen.findByText("NO EXPORT")).toBeTruthy();
     expect(screen.getByText(/answer UNKNOWN — not zero coverage — until a file is uploaded/)).toBeTruthy();
     // Nothing to build from, so the build control cannot succeed and is off.
     expect(screen.getByRole("button", { name: "Build" })).toHaveProperty("disabled", true);
@@ -248,8 +304,8 @@ describe("the decoded catalogue screen", () => {
       view([company({ ...BUILT, sources: [source()] })]));
     render(<CatalogScreen session={SESSION} />);
 
-    expect(await screen.findByText("READY")).toBeTruthy();
-    expect(screen.getByText(/6717 decoded records/)).toBeTruthy();
+    await screen.findByText(/6717 decoded records/);
+    expect(within(stateOf("Kennametal")).getByText("READY")).toBeTruthy();
     // The two facts that say WHICH catalogue answered — not just how many rows.
     expect(screen.getByText("f67131512eb97513")).toBeTruthy();
     expect(screen.getByText("2b5c96f97de49436")).toBeTruthy();
@@ -292,7 +348,8 @@ describe("the decoded catalogue screen", () => {
 
     const built = (await screen.findByText("SLS Engineers")).closest(".bp");
     expect(built).toBeTruthy();
-    expect(within(built as HTMLElement).getByText("READY")).toBeTruthy();
+    expect(within(built as HTMLElement).getByText(/6717 decoded records/))
+      .toBeTruthy();
 
     const other = (screen.getByText("4U Precision")).closest(".bp");
     expect(within(other as HTMLElement).getByText("NOT BUILT")).toBeTruthy();
@@ -302,30 +359,43 @@ describe("the decoded catalogue screen", () => {
     expect(within(other as HTMLElement).queryByText("f67131512eb97513")).toBeNull();
   });
 
-  it("says why the pack list is empty instead of offering an empty menu", async () => {
+  it("says why no rule set is available instead of offering an empty menu", async () => {
     // The defect this screen shipped with. `deploy/backend.Dockerfile` builds
-    // an image without the private pie-parser submodule on purpose, so `packs`
-    // is legitimately empty in production — and the control rendered as a
-    // dropdown that opened onto nothing, with the server's own explanation
-    // sitting unused in `source.reason`. An empty control that does not say
-    // why is the interface's version of the benign default §1 forbids.
+    // an image without the private pie-parser submodule on purpose, so
+    // `rule_sets` is legitimately empty in production — and the control
+    // rendered as a dropdown that opened onto nothing, with the server's own
+    // explanation sitting unused in `source.reason`. An empty control that
+    // does not say why is the interface's version of the benign default §1
+    // forbids.
     const reason = "pie-parser is not present at /app/pie-parser — the "
       + "private submodule is not initialised.";
     vi.spyOn(papi, "companyCatalogues").mockResolvedValue(
-      view([company({ pack_id: null, pack_resolved: false })], {
-        packs: [],
+      view([company({
+        // The file such a deployment actually holds: uploaded, analysed
+        // against nothing, and naming no rule set because there was none to
+        // name.
+        sources: [source({ decoding: decoding({
+          rule_set: null, rule_set_resolved: false, confirmed_at: null,
+          confirmed_by: null, ready: false,
+          analysis: { sample_rows: 500, candidates: [], proposed: null,
+                      reason: "This engine ships no rule sets." },
+        }) })],
+      })], {
+        rule_sets: [],
         source: { available: false, reason, pie_parser_root: "/app/pie-parser",
                   corpus: "/app/pie-parser/corpora/corpus.csv",
-                  pack: "/app/pie-parser/packs/org/zcnc" },
+                  seed_rule_set: "/app/pie-parser/packs/org/zcnc" },
       }));
     render(<CatalogScreen session={SESSION} />);
 
-    expect(await screen.findByText(/No pack is available to decode with/))
+    expect(await screen.findByText(/No rule set is available to decode with/))
       .toBeTruthy();
     expect(screen.getByText(new RegExp(reason.slice(0, 40)))).toBeTruthy();
-    // And the control itself is off rather than empty: a menu with no items is
-    // indistinguishable from one that failed to open.
-    expect(screen.getByText("none available")).toBeTruthy();
+    // And the menu a file's config would name one in says the same, where a
+    // person actually meets it: empty, but not silently.
+    fireEvent.click(screen.getByRole("button", { name: "Decoding" }));
+    expect(await screen.findByText(/none available — this deployment ships no rule set/))
+      .toBeTruthy();
   });
 
   it("names the columns it ignored, so nomenclature-only is checkable", async () => {
@@ -336,7 +406,7 @@ describe("the decoded catalogue screen", () => {
       view([company({ ...BUILT, sources: [source()] })]));
     render(<CatalogScreen session={SESSION} />);
 
-    await screen.findByText("READY");
+    await screen.findByText(/6717 decoded records/);
     expect(screen.getByText(/New ZCNC Price/)).toBeTruthy();
   });
 
@@ -362,7 +432,7 @@ describe("the decoded catalogue screen", () => {
       })]));
     render(<CatalogScreen session={SESSION} />);
 
-    await screen.findByText("READY");
+    await screen.findByText(/6717 decoded records/);
     expect(screen.getByText("item-master.csv")).toBeTruthy();
     expect(screen.getByText("range.csv")).toBeTruthy();
     expect(screen.getByText("prices.xlsx")).toBeTruthy();
@@ -374,53 +444,186 @@ describe("the decoded catalogue screen", () => {
     expect(screen.getByText(/newest file's row was used/)).toBeTruthy();
   });
 
-  it("offers the pack trial even when only one pack ships", async () => {
-    // The condition was `packs.length > 1` — "which of these" — which hid the
-    // trial in exactly the deployment that ships one pack. With one pack the
-    // question is not which of them but whether that one reads this file at
-    // all, and its answer is what decides whether a pack has to be written.
-    vi.spyOn(papi, "companyCatalogues").mockResolvedValue(
-      view([company({ sources: [source()] })]));
-    render(<CatalogScreen session={SESSION} />);
-
-    expect(await screen.findByRole("button", { name: "Try this pack" }))
-      .toBeTruthy();
-  });
-
-  it("reports the parser's counts per pack, and ranks nothing", async () => {
-    vi.spyOn(papi, "companyCatalogues").mockResolvedValue(
-      view([company({ sources: [source()] })]));
-    vi.spyOn(papi, "companyPackFit").mockResolvedValue({
-      available: true, reason: null, sample_rows: 500,
-      packs: [{ pack_id: "zcnc", rows_read: 500, classified: 431,
-                quarantined: 69, sampled: true }],
-    });
-    render(<CatalogScreen session={SESSION} />);
-
-    fireEvent.click(await screen.findByRole("button", { name: "Try this pack" }));
-    expect(await screen.findByText(/431 classified, 69 quarantined/))
-      .toBeTruthy();
-    // Counts, not a score. A "86% fit" here would be a rate this screen
-    // computed — the one thing the catalogue surface never does.
-    expect(document.body.textContent ?? "").not.toMatch(/%/);
-  });
-
-  it("says what to do about a file stored before its columns were read", async () => {
-    // The seeded corpus, and any upload from before mapping existed, has no
-    // ingest report — so there are no headers to offer. Three empty menus and a
-    // disabled Save is a dead end; the file still builds, and re-uploading it
-    // is what puts its columns on record.
+  it("names a file nobody has said how to decode, and will not build", async () => {
+    // The state that exists because there is no default decoder: a file is
+    // uploaded, analysed and proposed, and until somebody saves that proposal
+    // it is not decoded. "Not built" would be true and useless — the server
+    // refuses this build by name, so the screen names it first.
     vi.spyOn(papi, "companyCatalogues").mockResolvedValue(
       view([company({
-        sources: [source({ mapping: null, ingest: null,
-                           filename: "kmt_zcnc_2026-07.csv" })],
+        sources: [source({ source_key: "yg1-prices.xlsx",
+                           filename: "yg1-prices.xlsx",
+                           decoding: decoding({ confirmed_at: null,
+                                                confirmed_by: null,
+                                                ready: false }) })],
       })]));
     render(<CatalogScreen session={SESSION} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Columns" }));
+    expect(await screen.findByText("AWAITING DECODING")).toBeTruthy();
+    expect(screen.getByText(/Not decoded yet: yg1-prices\.xlsx/)).toBeTruthy();
+    expect(screen.getByText(/Nothing is decoded through a default/)).toBeTruthy();
+    // The file's own state says the same thing in a word, beside the file.
+    expect(screen.getByText("NOT SAVED")).toBeTruthy();
+    // And the control that cannot succeed is off rather than failing on click.
+    expect(screen.getByRole("button", { name: "Build" }))
+      .toHaveProperty("disabled", true);
+  });
+
+  it("shows the parser's counts per rule set, ranks nothing, and saves a config", async () => {
+    vi.spyOn(papi, "companyCatalogues").mockResolvedValue(
+      view([company({
+        sources: [source({ decoding: decoding({
+          rule_set: null, rule_set_resolved: false, confirmed_at: null,
+          confirmed_by: null, ready: false,
+          analysis: {
+            sample_rows: 500,
+            candidates: [
+              { rule_set: "zcnc", rows_read: 500, classified: 431,
+                quarantined: 69 },
+              { rule_set: "yg1", error: "PackError: no grammar matched" },
+            ],
+            proposed: "zcnc", reason: null,
+          },
+        }) })],
+      })]));
+    const save = vi.spyOn(papi, "saveSourceDecoding").mockResolvedValue(
+      company({ ...BUILT, sources: [source()] }));
+    render(<CatalogScreen session={SESSION} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Decoding" }));
+
+    // The evidence, per rule set, as the parser counted it — including the one
+    // that could not read the file at all, which is an answer rather than a
+    // failure of the analysis.
+    expect(await screen.findByText(/431 classified, 69 quarantined/)).toBeTruthy();
+    expect(screen.getByText(/of 500 rows/)).toBeTruthy();
+    expect(screen.getByText(/could not read this file/)).toBeTruthy();
+    expect(screen.getByText("proposed")).toBeTruthy();
+    // Counts, not a score. An "86% fit" here would be a rate this screen
+    // computed — the one thing the catalogue surface never does.
+    expect(document.body.textContent ?? "").not.toMatch(/%/);
+    // And the copy says the file is not decoded until this is saved.
+    expect(screen.getByText(/this file is not decoded until this is saved/))
+      .toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save decoding config" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(
+      "t", "conn-a", "kennametal", "item-master.csv",
+      { record_id: "MM#", description: "Material Description",
+        grade: "Grade", rule_set: "zcnc" }));
+  });
+
+  it("says plainly when no rule set reads a file, and saves it without one", async () => {
+    // The answer no menu can fix: this manufacturer needs a rule set written.
+    // Saving the columns with none is the honest state — the file's columns go
+    // on record, and the build names it rather than decoding it through
+    // somebody else's grammars.
+    vi.spyOn(papi, "companyCatalogues").mockResolvedValue(
+      view([company({
+        sources: [source({ decoding: decoding({
+          rule_set: null, rule_set_resolved: false, confirmed_at: null,
+          confirmed_by: null, ready: false,
+          analysis: {
+            sample_rows: 500,
+            candidates: [{ rule_set: "zcnc", rows_read: 500, classified: 0,
+                           quarantined: 500 }],
+            proposed: null,
+            reason: "No rule set this engine ships reads this file: none of "
+              + "them classified a single sampled row. Its manufacturer needs "
+              + "a rule set written before it can be decoded.",
+          },
+        }) })],
+      })]));
+    const save = vi.spyOn(papi, "saveSourceDecoding").mockResolvedValue(
+      company({ sources: [source()] }));
+    render(<CatalogScreen session={SESSION} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Decoding" }));
+    expect(await screen.findByText(/needs a rule set written before it can be decoded/))
+      .toBeTruthy();
+    expect(screen.getByText(/0 classified, 500 quarantined/)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Save decoding config" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(
+      "t", "conn-a", "kennametal", "item-master.csv",
+      { record_id: "MM#", description: "Material Description",
+        grade: "Grade", rule_set: null }));
+  });
+
+  it("re-analyses a stored file rather than making somebody upload it again", async () => {
+    vi.spyOn(papi, "companyCatalogues").mockResolvedValue(
+      view([company({ sources: [source()] })]));
+    const analyze = vi.spyOn(papi, "analyzeSource").mockResolvedValue(
+      company({ sources: [source()] }));
+    render(<CatalogScreen session={SESSION} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Decoding" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Re-analyse" }));
+    await waitFor(() => expect(analyze).toHaveBeenCalledWith(
+      "t", "conn-a", "kennametal", "item-master.csv"));
+  });
+
+  it("says what to do about a file stored before its columns were read", async () => {
+    // The seeded corpus, and any upload from before the analysis existed, has
+    // no ingest report — so there are no headers to offer. Three empty menus
+    // and a disabled Save is a dead end; re-analysing reads the stored bytes
+    // and puts its columns and the parser's counts on record.
+    vi.spyOn(papi, "companyCatalogues").mockResolvedValue(
+      view([company({
+        sources: [source({ ingest: null, filename: "kmt_zcnc_2026-07.csv",
+                           decoding: decoding({ columns: null, analysis: null,
+                                                confirmed_at: null,
+                                                confirmed_by: null,
+                                                ready: false }) })],
+      })]));
+    render(<CatalogScreen session={SESSION} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Decoding" }));
     expect(await screen.findByText(/stored before its columns were read/))
       .toBeTruthy();
-    expect(screen.queryByRole("button", { name: /Save and re-read/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Save decoding config/ })).toBeNull();
+    // Re-analysing reads the stored bytes again, which is what puts its
+    // headers on record — no re-upload needed for that any more.
+    expect(screen.getByRole("button", { name: "Re-analyse" })).toBeTruthy();
+  });
+
+  it("names each file's own rule set and counts where one catalogue needed two", async () => {
+    // Each file is decoded on its own, so with two of them there is no single
+    // stamp and no single run report — and stating one would name the wrong
+    // rule set for half the records. The catalogue-level fields come back null
+    // in that case, and these are where the facts are.
+    const second = { ...(BUILT.built_from ?? [])[0],
+                     source_key: "range.csv", filename: "range.csv",
+                     corpus_id: "cor2", rule_set: "yg1",
+                     records: 300, rows_read: 340, quarantined: 40,
+                     rows_emitted: 300,
+                     stamp: { ...BUILT.stamp, ruleset_checksum: "aaaa1111bbbb2222",
+                              run_id: "cccc3333dddd4444" } };
+    vi.spyOn(papi, "companyCatalogues").mockResolvedValue(
+      view([company({
+        ...BUILT,
+        // What the server sends when two files disagree: no report of the
+        // catalogue's own, and a stamp with nothing they share.
+        report: null,
+        stamp: { engine_version: "0.10.0", schema_version: "1.0.0" },
+        built_from: [...(BUILT.built_from ?? []), second],
+        sources: [source(),
+                  source({ source_key: "range.csv", filename: "range.csv",
+                           corpus_id: "cor2" })],
+      })]));
+    render(<CatalogScreen session={SESSION} />);
+
+    await screen.findByText(/6717 decoded records/);
+    // Both rule sets, and which file went through which.
+    expect(screen.getByText(/zcnc, yg1/)).toBeTruthy();
+    expect(screen.getByText(/item-master\.csv → zcnc · range\.csv → yg1/))
+      .toBeTruthy();
+    // Per file, the parser's own counts — never a census added up here.
+    expect(screen.getByLabelText(/Per-file parse counts/)).toBeTruthy();
+    expect(screen.queryByLabelText(/Per-family parse rates/)).toBeNull();
+    expect(screen.getByText(/40 quarantined of 340 rows read/)).toBeTruthy();
+    // And the stamp says it has no single value rather than rendering blank.
+    expect(screen.getAllByText("differs per file")).toHaveLength(2);
   });
 
   it("shows a small file's size in a unit that is not 0.0 MB", async () => {
@@ -444,7 +647,7 @@ describe("the decoded catalogue screen", () => {
       view([company({ ...BUILT, sources: [source()] })], { can_manage: false }));
     render(<CatalogScreen session={SESSION} />);
 
-    await waitFor(() => expect(screen.getByText("READY")).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/6717 decoded records/)).toBeTruthy());
     // The state is readable — the controls are not. The server refuses the
     // POST as well; this only keeps the screen honest about it.
     expect(screen.queryByRole("button", { name: /Rebuild/ })).toBeNull();
@@ -467,6 +670,13 @@ describe("one catalogue per manufacturer", () => {
                          filename: "yg1-prices.xlsx", corpus_id: "cor9" })],
       stamp: { ...BUILT.stamp, ruleset_checksum: "aaaa1111bbbb2222",
                run_id: "cccc3333dddd4444" },
+      built_from: [{ ...(BUILT.built_from ?? [])[0],
+                     source_key: "yg1-prices.xlsx",
+                     filename: "yg1-prices.xlsx", corpus_id: "cor9",
+                     rule_set: "yg1", records: 3000, rows_read: 3000,
+                     rows_emitted: 3000,
+                     stamp: { ...BUILT.stamp, ruleset_checksum: "aaaa1111bbbb2222",
+                              run_id: "cccc3333dddd4444" } }],
     });
     return company({}, { catalogues: [kennametal, yg1],
                          union: union([kennametal, yg1]) });
@@ -482,7 +692,8 @@ describe("one catalogue per manufacturer", () => {
 
     expect(await screen.findByText("Kennametal", { selector: "b" })).toBeTruthy();
     expect(screen.getByText("YG-1", { selector: "b" })).toBeTruthy();
-    expect(screen.getAllByText("READY")).toHaveLength(2);
+    expect(within(stateOf("Kennametal")).getByText("READY")).toBeTruthy();
+    expect(within(stateOf("YG-1")).getByText("READY")).toBeTruthy();
     expect(screen.getByText(/6717 decoded records/)).toBeTruthy();
     expect(screen.getByText(/3000 decoded records/)).toBeTruthy();
     // Each catalogue's provenance, under its own heading.
@@ -511,7 +722,7 @@ describe("one catalogue per manufacturer", () => {
     expect(screen.getByText(/1234567, 7654321/)).toBeTruthy();
   });
 
-  it("adds a catalogue by name and pack, and takes the company from the response", async () => {
+  it("adds a catalogue by name alone, and takes the company from the response", async () => {
     const before = company({ ...BUILT, sources: [source()] });
     const after: CompanyCatalogue = {
       ...before,
@@ -528,15 +739,15 @@ describe("one catalogue per manufacturer", () => {
                      { target: { value: "YG-1" } });
     fireEvent.click(within(dialog).getByRole("button", { name: "Add" }));
 
-    // With exactly one shipped pack it is pre-chosen — there is nothing to
-    // choose between — so the post carries it without a menu being opened.
-    expect(create).toHaveBeenCalledWith("t", "conn-a", { name: "YG-1", pack_id: "zcnc" });
+    // Nothing is decided about decoding here: each price list uploaded into
+    // this catalogue brings its own config, worked out from that file alone.
+    expect(create).toHaveBeenCalledWith("t", "conn-a", { name: "YG-1" });
     // The response is the whole company, and it replaces the one on screen:
     // the new catalogue's section appears beside the built one.
     expect(await screen.findByText("YG-1", { selector: "b" })).toBeTruthy();
     expect(screen.getByText("Kennametal", { selector: "b" })).toBeTruthy();
-    expect(screen.getByText("NO EXPORT")).toBeTruthy();
-    expect(screen.getByText("READY")).toBeTruthy();
+    expect(within(stateOf("YG-1")).getByText("NO EXPORT")).toBeTruthy();
+    expect(within(stateOf("Kennametal")).getByText("READY")).toBeTruthy();
   });
 
   it("removes a catalogue only through the confirm dialog, by its key", async () => {

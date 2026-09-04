@@ -25,6 +25,8 @@ from datetime import date
 from decimal import Decimal
 
 import pytest
+
+from app.config import settings
 from sqlalchemy.orm import sessionmaker
 
 import dbsupport
@@ -254,11 +256,13 @@ def test_geometry_is_gated_on_full_iso_slot_fill_not_on_a_family_route():
     carry a non-Kennametal manufacturer — an `M3X11` screw routes to
     `turning_insert`. Restricted to shape + edge + radius, misroutes fall to
     0.05%. So the screw must be refused even though it routes."""
+    # The rule set is named, never defaulted — `decode_names` has no fallback,
+    # and here the shipped one is the subject of the measurement.
     decoded = read_geometry({
         "insert": "CNMG 120408 MP KCP25",
         "screw": "M3X11 SCREW",
         "holder": "SDJCR 2020K11",
-    })
+    }, settings.PIE_PACK)
     assert decoded is not None, "the engine is present; this must not refuse"
     assert decoded["insert"] is True
     assert decoded["screw"] is False
@@ -268,7 +272,8 @@ def test_geometry_is_gated_on_full_iso_slot_fill_not_on_a_family_route():
 @pytest.mark.requires_pie
 def test_the_decode_is_deterministic_over_the_same_names():
     names = {"a": "CNMG 120408 MP KCP25", "b": "TCMT 110204 HP KC5010"}
-    assert read_geometry(names) == read_geometry(dict(reversed(list(names.items()))))
+    assert (read_geometry(names, settings.PIE_PACK)
+            == read_geometry(dict(reversed(list(names.items()))), settings.PIE_PACK))
 
 
 # ── the master's gap versus the corpus's gap ────────────────────────────────

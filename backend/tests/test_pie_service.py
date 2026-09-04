@@ -227,15 +227,15 @@ def test_a_failed_pack_read_is_not_memoized(monkeypatch, tmp_path):
     that has already been fixed. Only a successful read is cached."""
     import app.pie_service as ps
 
-    real_pack = ps.settings.PIE_PACK
+    real_rule_set = ps.settings.PIE_PACK
     monkeypatch.setattr(ps, "_families_memo", {})
-    assert ps.pack_families(tmp_path / "nowhere") is None   # the honest answer…
+    assert ps.rule_set_families(tmp_path / "nowhere") is None   # the honest answer…
 
-    families = ps.pack_families(real_pack)     # …and not a remembered one
+    families = ps.rule_set_families(real_rule_set)   # …and not a remembered one
     assert families, "the pack became readable and the next call must see it"
     # The memo is per pack: a second company's pack is read on its own terms
     # rather than answered from the first one's vocabulary.
-    assert ps.pack_families(tmp_path / "nowhere") is None
+    assert ps.rule_set_families(tmp_path / "nowhere") is None
 
 
 # --- an unverified comparison is not an equivalence -------------------------

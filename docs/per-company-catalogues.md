@@ -510,97 +510,6 @@ default §1 forbids.
   "Discontinued" tab into the catalogue is worse than reading one sheet. It is
   logged, not surfaced. A sheet picker is the obvious fix if a real file needs it.
 
-## 13. Several catalogues per company, one per manufacturer (built)
-
-**What was wrong.** A company had one catalogue: one set of files, one pack,
-one `products.jsonl`, and the pack was a fact about the *company*
-(`zoho_connections.config["pie_pack"]`). A distributor does not sell one
-manufacturer. Kennametal's price lists decode through Kennametal's pack and
-YG-1's through a YG-1 pack, and "which pack does this company use" has no
-single answer — so the second manufacturer's files either went into the
-wrong catalogue or nowhere.
-
-**The grain is now the catalogue.** `company_catalogues` is keyed
-`(organization_id, connection_id, catalogue_key)` and carries the catalogue's
-definition — `name`, `pack_choice` — as well as its build; a row exists from
-the moment a catalogue is *created* and `built_at` stays null until it is
-built. `company_corpora.catalogue_key` says which catalogue a file feeds. The
-key is a slug of the name given at creation (`Kennametal (2026)` →
-`kennametal-2026`), fixed for the catalogue's life because it is the directory
-on disk and every corpus row's address; a rename changes only the name.
-`m1cats` re-keys the table in place on Postgres (a batch recreate would have
-dropped `h2rls`'s policy), files every existing row under `default`, and
-copies the connection's pack choice onto that row; the app never reads the
-config key again.
-
-On disk: `data/catalogues/<connection_id>/<catalogue_key>/products.jsonl`
-with a `catalogue.json` sidecar (key, name, pack, build time, stamp) so the
-union below can be assembled from the disk alone. A file built before
-catalogues had directories is moved into `default/` at boot
-(`catalog._adopt_legacy_file`) — moved, not rebuilt: its bytes are the ones
-its row's stamp describes.
-
-**What a company resolves against is the union.** `catalog.union_catalogue`
-concatenates every built catalogue into
-`data/catalogues/<connection_id>/_union/products.jsonl`, and that one file is
-what `pie_service._view` loads and hands the engine as `pie_data`. The
-engine's identity step reads one file (`resolve_rfq._identity_resolver`), and
-a union file keeps that step exactly as it is — no engine change, no second
-index to keep in step. Each union record carries one portal field,
-`catalogue_key`, which is how a `Candidate` and the resolution API's
-`product.catalogue` say which manufacturer's catalogue answered;
-`engine.catalogues[]` lists the members with their own stamps.
-
-Two rules inside the union, both stated because they are policy:
-
-- **De-duplicated across catalogues, newest build wins, counted.** Two
-  catalogues through one pack share one identity namespace (pie-parser's
-  `record_namespace` is the org pack id), and `AuthoritativeIndex` treats a
-  duplicate inside one namespace as a collision that never resolves — so a
-  union that kept both rows would silently stop that part number resolving.
-  The most recently built catalogue's row is kept, on the same reasoning as
-  newest-file-wins inside a catalogue, and the count and examples are
-  reported on the screen. A part number two *manufacturers* both use sits in
-  two namespaces and is not a duplicate; a bare lookup of it is ambiguous,
-  which is the right answer. Refusing two catalogues per pack was considered
-  and rejected: it blocks a legitimate split (Kennametal and WIDIA as two
-  catalogues through `zcnc`) and it would have made this feature untestable
-  against the one pack that ships.
-- **The version is over run ids, not the ruleset checksum.**
-  `catalog_version` used to be the pack's own hash, identical for every
-  catalogue `zcnc` decodes — so two companies with different item masters
-  shared resolution-cache keys, and one could be served the other's answer.
-  The union's version is a hash over each member's `catalogue_key` and
-  `run_id` (input bytes plus ruleset), one rule whatever the count. It moves
-  when any member is rebuilt from different files or through a different
-  pack and stays put across an identical rebuild. The resolution API still
-  reports it under `engine.ruleset_checksum`; each catalogue's own checksum
-  is in `engine.catalogues[]`.
-
-The union is rebuilt when a member's file changes (size or mtime, recorded
-in `_union/union.json`), eagerly after every build and removal
-(`catalog.refresh_union`, which also drops the resident view — the
-`pie_service.reload` that nothing used to call after a build) and lazily on
-first load. The retrieval index and the dense sidecar are built beside the
-union, since the union is what is searched; the per-catalogue files carry
-none.
-
-**Screen and routes.** Every catalogue route nests under
-`/catalog/companies/{connection_id}/catalogues/{catalogue_key}/…`, with
-`POST …/catalogues` to define one, `PATCH` to rename and `DELETE` to remove
-(files superseded, never deleted; union refreshed at once). The Decoded
-catalogue screen shows a company as a surface holding one section per
-catalogue — its own files, pack, build and census — and the union's facts
-once. A source ceiling is per catalogue; `MAX_CATALOGUES` (10) bounds the
-union.
-
-**Accepted, and stated.** The union manifest is overwritten on every
-refresh, so a composite version on an append-only quote snapshot names *a*
-set of builds but cannot be decomposed once a member has been rebuilt; the
-per-line `catalogue` the API reports is the durable half. A replica that
-never reloaded serves its resident union until eviction, as it did the
-single file before.
-
 ## 12. Retrieval: the nearest descriptions as extra options (built)
 
 §10 answered "the pack does not read my file". This answers the next thing a
@@ -889,3 +798,137 @@ from the environment this was built in and no tenant has two thousand pairs
 yet, so the seam is tested against a fake embedder that satisfies the
 protocol — re-ranking, persistence, provenance and the model id on the stamp
 are pinned; the quality of any particular model is not.
+
+## 13. Several catalogues per company, and no default decoder (built)
+
+Two things were wrong, and they are one change.
+
+**A company had one catalogue.** One set of files, one pack, one
+`products.jsonl`. A distributor sells several manufacturers, so that never fit.
+
+**A decoder was a fact about the company.** The pack lived on
+`zoho_connections.config["pie_pack"]`, so every file a company uploaded was
+decoded through whatever it had chosen once — and "which pack does this company
+use" has no answer for a company selling Kennametal and YG-1. Worse, it made
+the wrong thing easy: a YG-1 price list uploaded into a company set to `zcnc`
+decoded through Kennametal's grammars and produced a catalogue that was wrong
+while carrying a real provenance stamp.
+
+### The shape now
+
+```
+Catalogue (the company's canonical product knowledge, the union)
+└── Manufacturer catalogue          company_catalogues, keyed catalogue_key
+    ├── Price list 1                company_corpora
+    │   └── Decoding config 1       columns + rule set, on that row
+    └── Price list 2
+        └── Decoding config 2
+```
+
+A **catalogue** is a manufacturer's product universe and owns no decoder. A
+**price list** is one uploaded document. A **decoding config** is what it takes
+to decode *that* document: which of its own columns hold the part number, the
+description and the grade, and which **rule set** decodes its descriptions. A
+rule set is what pie-parser keeps as an org-layer pack; the portal calls it by
+what it is to the portal, because that is the only thing it is here.
+
+**There is no default.** `settings.PIE_PACK` names the rule set the shipped
+seed corpus was written against, and it is read in exactly two places: the seed
+(§6), which stores it as that one file's own saved config, and `master_health
+--rule-set`'s error message. Nothing uploaded is ever decoded through it.
+
+### The upload flow
+
+Upload → the file is read as a table and its columns settled → **every** shipped
+rule set is run over its first rows and the parser's own counts reported for
+each → a config is *proposed* → a person checks it and saves it
+(`PUT …/sources/{key}/decoding`) → the build decodes the file through it.
+
+`catalog.analyze_source` does the discovery, and what it refuses to do is the
+point: it proposes a rule set only when exactly one classified any sampled row.
+Where several read the file the counts are shown and a person chooses — ranking
+them by a number this module invented would be the second parse-rate
+calculation `run_parse` refuses to have. Where none reads it, the proposal is
+empty and the reason says so: that file needs a rule set nobody has written
+yet, and no amount of choosing from the menu fixes it. A proposal is never a
+config. `decoding_confirmed_at` is what a build looks at, and
+`POST …/sources/{key}/analyze` re-runs the discovery on a stored file without
+touching a saved config.
+
+**Failing clearly rather than falling back.** A build with any file lacking a
+saved config is refused with the files named
+(`Not decoded: yg1-prices.xlsx has no saved decoding config…`), the catalogue
+reports `decoding_ready: false` and `awaiting_decoding: [...]`, and the screen
+says so on the file's own row. `ensure_company_catalogues` logs it and leaves
+the catalogue NOT BUILT rather than decoding it at boot.
+
+### The build
+
+`build_for_company` decodes **each file on its own** through its own rule set
+and merges the decoded records afterwards, where the old code normalised every
+file into one CSV and parsed it once through one pack. So each file carries its
+own stamp — its `run_id` over its own bytes and its own rule set — and
+`company_catalogues.sources` holds one entry per file with that stamp, its rule
+set and the parser's own report for it. The row's own stamp fields are null
+where two files disagree, and `report` is null with more than one file: summing
+two censuses here would be the recomputation the parser has already made
+unnecessary.
+
+Merging moved to `_merge_decoded`, which is the collision rule stated once and
+used twice — across the files of one catalogue, and across the catalogues of
+one company. pie-parser's `AuthoritativeIndex` treats a duplicate identifier
+inside one namespace as a collision that never resolves, so a merge that kept
+both rows would silently stop that part number resolving; the newest statement
+wins (a later file, a later build) and the overlap is counted and named. Each
+kept record is tagged with where it came from — `source_key` inside a
+catalogue, `catalogue_key` in the union — which is how a resolution says which
+manufacturer's catalogue answered without a second map to keep in step.
+
+### The union, and what a company resolves against
+
+`catalog.union_catalogue` merges every built catalogue into
+`data/catalogues/<connection_id>/_union/products.jsonl`, and that one file is
+what `pie_service._view` loads and hands the engine as `pie_data`. The engine's
+identity step reads one path (`resolve_rfq._identity_resolver`), so a union
+file keeps that step exactly as it is — no engine change, no second index. It
+is assembled from the disk (each catalogue's `catalogue.json` sidecar) so it
+can be built in the resolver, at start-up, or in a test that linked a file into
+place, and it is rebuilt when a member's file changes.
+
+`catalog_version` is a hash over each member's key and the **run ids of the
+files it was built from**. The ruleset checksum alone would not do: it is the
+rule set's hash, identical for two companies decoding different item masters
+through `zcnc`, so a resolution cache keyed on it could hand one company the
+other's answer. One rule whatever the count, so the value means the same thing
+for a company with one catalogue as for one with five.
+
+### What moved, and what the migration does
+
+`m1cats` re-keys `company_catalogues` to
+`(organization_id, connection_id, catalogue_key)` — in place on Postgres,
+because a batch recreate would drop `h2rls`'s tenant policy; via batch on
+SQLite, which has no policies and cannot alter a key in place. It adds `name`,
+makes `built_at` nullable (a row is a definition before it is a build) and
+drops `pack`. It adds `catalogue_key` and the decoding-config columns to
+`company_corpora`, files every existing row under `default`, and **carries the
+company's recorded pack choice onto each of its live files** as that file's own
+saved config, marked confirmed by the migration — a recorded decision, not a
+default applied to an unknown file. A company holding files but no catalogue
+row gets its `default` definition. Downgrade supersedes rather than deletes the
+non-default files.
+
+`commercial.policy` validates family names against the union of the rule sets
+this organization's saved configs name (`catalog.rule_sets_in_use`), and
+`master_health` takes `--rule-set` with no fallback: absent, nothing is decoded
+and geometry coverage is UNKNOWN, which is what that module says everywhere
+else.
+
+### Accepted, and stated
+
+The union manifest is overwritten on every refresh, so a composite version on
+an append-only quote snapshot names *a* set of builds but cannot be decomposed
+once a member has been rebuilt; the per-line `catalogue` the API reports is the
+durable half. And only one rule set ships with the pinned engine, so a YG-1
+catalogue can be *defined* and its files analysed, but until a YG-1 rule set is
+written in pie-parser the analysis will say so and the file will wait — which
+is the honest answer, and the one the old default hid.

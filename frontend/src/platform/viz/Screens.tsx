@@ -26,6 +26,7 @@ import { ChartTip, InlineLink, Unavailable, VarianceIndicator } from "../kit";
 import { DataGrid, numeric } from "../DataGrid";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
+import { vizPath } from "../route";
 import { Figure, Panel, stateOf } from "./Panel";
 import {
   BAND_COLOR, BUCKET_LABEL, BUCKET_MEANING, BUCKET_SHADE, BUCKET_SIGN,
@@ -213,9 +214,7 @@ export function OpportunityScreen({
 }
 
 // ── Lost Revenue Explorer ───────────────────────────────────────────────────
-export function LostRevenueScreen({
-  session, onNavigate,
-}: { session: PlatformSession; onNavigate: (r: string) => void }) {
+export function LostRevenueScreen({ session }: { session: PlatformSession }) {
   const [months, setMonths] = useState(3);
   const { data, loading, error, reload } = useInsight(
     "lostRevenue",
@@ -284,7 +283,7 @@ export function LostRevenueScreen({
               <ul className="cause-members">
                 {(c.customers as Record<string, unknown>[] ?? []).slice(0, 5).map((m, i) => (
                   <li key={i}>
-                    <InlineLink onClick={() => onNavigate(`customer/${String(m.customer_id)}`)}>
+                    <InlineLink to={vizPath(`customer/${String(m.customer_id)}`)}>
                       {String(m.label)}
                     </InlineLink>
                     <span className="viz-muted"> −{money(Number(m.lost))}</span>
@@ -526,7 +525,7 @@ export function JourneyScreen({
           <ul className="cause-members">
             {(dormant.customers as Record<string, unknown>[] ?? []).slice(0, 8).map((c, i) => (
               <li key={i}>
-                <InlineLink onClick={() => onNavigate(`customer/${String(c.customer_id)}`)}>
+                <InlineLink to={vizPath(`customer/${String(c.customer_id)}`)}>
                   {String(c.label)}
                 </InlineLink>
                 <span className="viz-muted">

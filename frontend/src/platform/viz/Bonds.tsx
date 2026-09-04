@@ -57,6 +57,7 @@ import TextField from "@mui/material/TextField";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
+import { vizPath } from "../route";
 import { Figure, Panel, stateOf } from "./Panel";
 import { Seg } from "./Seg";
 import { pct, useInsight } from "./useInsight";
@@ -155,9 +156,7 @@ function WatchPicker({
   );
 }
 
-export function BondsScreen({
-  session, onNavigate,
-}: { session: PlatformSession; onNavigate: (r: string) => void }) {
+export function BondsScreen({ session }: { session: PlatformSession }) {
   const [months, setMonths] = useState("24");
   const { data, loading, error, reload } = useInsight(
     "bonds",
@@ -451,7 +450,7 @@ export function BondsScreen({
       )}
 
       {chosen && <FacetBreakdown bond={chosen} sourcesDiffer={sourcesDiffer}
-                                 onOpen={onNavigate} onClose={() => setSelected(null)} />}
+                                 onClose={() => setSelected(null)} />}
 
       <Unavailable items={rows(data?.unavailable)} verb="not in the score" />
 
@@ -778,10 +777,10 @@ function usePrefersReducedMotion(): boolean {
 
 // ── the breakdown ───────────────────────────────────────────────────────────
 function FacetBreakdown({
-  bond, sourcesDiffer, onOpen, onClose,
+  bond, sourcesDiffer, onClose,
 }: {
   bond: Row; sourcesDiffer: boolean;
-  onOpen: (r: string) => void; onClose: () => void;
+  onClose: () => void;
 }) {
   const facets = (bond.facets as Record<string, number | null>) ?? {};
   const missing = (bond.missing_facets as string[] | undefined) ?? [];
@@ -802,7 +801,7 @@ function FacetBreakdown({
                         tone={BAND_TONE[String(bond.band)] ?? "neutral"} />
           )}
           {isCustomer && (
-            <InlineLink onClick={() => onOpen(`customer/${String(bond.counterparty_id)}`)}>
+            <InlineLink to={vizPath(`customer/${String(bond.counterparty_id)}`)}>
               Open the account
             </InlineLink>
           )}

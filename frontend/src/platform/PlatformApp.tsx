@@ -493,7 +493,26 @@ export default function PlatformApp() {
     setError(null);
     // Back to the public front, not to a bare form: signing out is leaving.
     setDoor("landing");
-  }, []);
+    // And leaving takes the address with it. The door changed here and the URL
+    // did not, so signing out of `/#/account/CUST-123` drew the public landing
+    // page under an address bar still naming that customer — a screen the
+    // browser is no longer showing and whoever is holding it may no longer be
+    // allowed to read. `replace`, so Back does not lead to the screen just
+    // left.
+    //
+    // `intended` goes with it, because it is the same fact stored twice.
+    // It is seeded from the arrival URL, and a session restored from storage
+    // never reaches `signIn` to spend it — so it outlived the session that set
+    // it, and the next person to sign in on this tab was sent to the previous
+    // person's account screen. Clearing the address and leaving the ref would
+    // have fixed the half that is visible and kept the half that acts.
+    //
+    // Anything that does want a destination carried across the sign-in detour
+    // records it *after* this call. `handleAuthLoss` is the one that does, and
+    // says so.
+    intended.current = null;
+    navigate(PATH.home, { replace: true });
+  }, [navigate]);
 
   const signOut = useCallback(() => {
     // Tell the server first, and do not wait for it or let it fail the sign-out:
@@ -508,13 +527,17 @@ export default function PlatformApp() {
   /** A dead session must return the user to sign-in, not strand them inside
    *  application chrome that looks live but can load nothing. */
   const handleAuthLoss = useCallback(() => {
-    // Where they were, so signing back in returns them there rather than to
-    // home. Captured before signOut swaps the shell for the landing page.
-    intended.current = location.pathname + location.search;
     // `forgetSession`, not `signOut`: the session is already gone, and posting
     // to /auth/logout with a dead credential answers 401, which is an auth loss,
     // which calls this again. Local cleanup only.
     forgetSession();
+    // Where they were, so signing back in returns them there rather than to
+    // home. Recorded *after* the line above, which clears this ref along with
+    // the address bar — an expiry is not a departure, and this is the one
+    // caller that has somewhere to come back to. `location` is still this
+    // render's, so it reads the screen they were on rather than the home the
+    // navigate is on its way to.
+    intended.current = location.pathname + location.search;
     // The toast lives inside the signed-in shell, which is about to unmount —
     // the message has to survive onto the sign-in screen to be seen at all.
     setNotice("Your session expired. Please sign in again.");
@@ -1195,7 +1218,7 @@ export default function PlatformApp() {
             {/* ── the visualization layer ── */}
             <Route path={PATH.weather} element={<WeatherScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.opportunities} element={<OpportunityScreen session={session} onNavigate={goViz} />} />
-            <Route path={PATH.lostRevenue} element={<LostRevenueScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.lostRevenue} element={<LostRevenueScreen session={session} />} />
             {/* Two answers to one question, stacked rather than split across two
                 nav items: the journey chart is month by month, the migration
                 matrix is period against period and names who moved. `journey`
@@ -1206,13 +1229,13 @@ export default function PlatformApp() {
               element={
                 <div className="screen-stack">
                   <JourneyScreen session={session} onNavigate={goViz} />
-                  <MigrationMatrix session={session} months={3} onNavigate={goViz} />
+                  <MigrationMatrix session={session} months={3} />
                 </div>
               }
             />
             <Route path={PATH.simulate} element={<SimulatorScreen session={session} />} />
             <Route path={PATH.landscape} element={<LandscapeScreen session={session} onNavigate={goViz} />} />
-            <Route path={PATH.composition} element={<CompositionScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.composition} element={<CompositionScreen session={session} />} />
             <Route path={PATH.cadence} element={<CadenceScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.payments} element={<PaymentsScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.payables} element={<PayablesScreen session={session} onNavigate={goViz} />} />
@@ -1222,9 +1245,9 @@ export default function PlatformApp() {
             <Route path={PATH.stock} element={<StockScreen session={session} />} />
             <Route path={PATH.gmroi} element={<GmroiScreen session={session} />} />
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
-            <Route path={PATH.bonds} element={<BondsScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.bonds} element={<BondsScreen session={session} />} />
             <Route path={PATH.mix} element={<MixScreen session={session} onNavigate={goViz} />} />
-            <Route path={PATH.dependency} element={<DependencyScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.dependency} element={<DependencyScreen session={session} />} />
             <Route path={PATH.targets} element={<TargetWallScreen session={session} />} />
             <Route path={PATH.catalogue} element={<CatalogueScreen session={session} />} />
             <Route path={PATH.quoteOutcomes} element={<QuoteOutcomesScreen session={session} />} />
@@ -1473,7 +1496,7 @@ function HomeScreen({
           to the panel above it would trade one blank screen for another. */}
       {mayReadDaily && (
         <Suspense fallback={<LoadingState rows={2} label="Reading this morning…" />}>
-          <DailyScreen session={session} onNavigate={onNavigate} />
+          <DailyScreen session={session} />
         </Suspense>
       )}
 
@@ -2267,7 +2290,7 @@ function CustomerScreen({
         </div>
         <div className="screen-stack">
           <JourneyScreen session={session} onNavigate={onNavigate} />
-          <MigrationMatrix session={session} months={3} onNavigate={onNavigate} />
+          <MigrationMatrix session={session} months={3} />
         </div>
       </div>
     );

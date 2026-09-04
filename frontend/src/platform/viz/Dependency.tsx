@@ -41,7 +41,10 @@ import { EntityName } from "../EntityName";
 import { EmptyState, InlineLink, MetricCard, StatusChip, Unavailable } from "../kit";
 import { CompanyScope } from "../CompanyFilter";
 import type { CompanyScopeOption } from "../CompanyFilter";
+import { useNavigate } from "react-router-dom";
+
 import { DataGrid, numeric } from "../DataGrid";
+import { vizPath } from "../route";
 import type { EntityOrigin, PlatformSession } from "../types";
 import { Panel, stateOf } from "./Panel";
 import { pct, useInsight } from "./useInsight";
@@ -54,8 +57,8 @@ const rows = (v: unknown): Row[] => (v as Row[] | undefined) ?? [];
 const num = (v: unknown): number => Number(v ?? 0);
 
 export function DependencyScreen({
-  session, onNavigate,
-}: { session: PlatformSession; onNavigate: (r: string) => void }) {
+  session,
+}: { session: PlatformSession }) {
   // Server-side, because this screen's output is shares of a total: a row
   // filter would put one company's list under three companies' arithmetic.
   const [scope, setScope] = useState("");
@@ -130,7 +133,6 @@ export function DependencyScreen({
             concentration={(vendors?.concentration as Row) ?? {}}
             sourcesDiffer={sourcesDiffer}
             side="vendor"
-            onOpen={() => undefined}
           />
         )}
         <Side
@@ -140,7 +142,7 @@ export function DependencyScreen({
           concentration={(customers.concentration as Row) ?? {}}
           sourcesDiffer={sourcesDiffer}
           side="customer"
-          onOpen={(id) => onNavigate(`customer/${id}`)}
+          openPath={(id) => vizPath(`customer/${id}`)}
         />
         <Side
           title="Customers we are waiting on"
@@ -149,7 +151,7 @@ export function DependencyScreen({
           concentration={(receivables.concentration as Row) ?? {}}
           sourcesDiffer={sourcesDiffer}
           side="receivable"
-          onOpen={(id) => onNavigate(`customer/${id}`)}
+          openPath={(id) => vizPath(`customer/${id}`)}
           // An unfolded state and a fully-collected book both have no rows.
           // The server says which, because rendered the same way the first
           // would read as "nobody owes us anything".
@@ -262,7 +264,7 @@ function DaysToPay({ figure }: { figure: Row }) {
 }
 
 function Side({
-  title, question, rows: list, concentration, sourcesDiffer, side, onOpen,
+  title, question, rows: list, concentration, sourcesDiffer, side, openPath,
   children, emptyReason,
 }: {
   title: string;
@@ -271,11 +273,19 @@ function Side({
   concentration: Row;
   sourcesDiffer: boolean;
   side: "vendor" | "customer" | "receivable";
-  onOpen: (id: string) => void;
+  /** Where a row goes, given its entity id — or absent where a row goes
+   *  nowhere, which is the supplier half: there is no supplier screen to open.
+   *  A path rather than a handler, because the name is an `<a href>` now and
+   *  only the grid below it still needs a click. One prop for both, so the
+   *  destination is written once: it used to be `onOpen`, built as
+   *  `customer/${id}` by each caller, and the supplier half passed
+   *  `() => undefined` — a callback that existed to be never called. */
+  openPath?: (id: string) => string;
   children?: ReactNode;
   /** Why this half has no rows, when that is a claim rather than a blank. */
   emptyReason?: string;
 }) {
+  const navigate = useNavigate();
   const isVendor = side === "vendor";
   const isOwed = side === "receivable";
   // Bars are drawn against the largest row *in view*, which is a comparison
@@ -352,8 +362,8 @@ function Side({
 
               {target && <TargetTrack target={target} />}
 
-              {!isVendor && (
-                <InlineLink onClick={() => onOpen(String(r.entity_id))}>
+              {openPath && (
+                <InlineLink to={openPath(String(r.entity_id))}>
                   Open
                 </InlineLink>
               )}
@@ -370,8 +380,9 @@ function Side({
             pageSize={15}
             twoLineRows
             getRowId={(r) => String(r.entity_id)}
-            onRowClick={isVendor ? undefined
-                                 : (r) => onOpen(String(r.entity_id))}
+            onRowClick={openPath
+              ? (r) => navigate(openPath(String(r.entity_id)))
+              : undefined}
             columns={[
               {
                 field: "label", headerName: isVendor ? "Supplier" : "Customer",

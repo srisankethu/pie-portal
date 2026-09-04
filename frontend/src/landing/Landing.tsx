@@ -283,7 +283,28 @@ export function Landing({ onEnter, onDemo }: {
       <div className="lp-sheet">
         <nav className="lp-nav">
           <div className="lp-wrap lp-nav-inner">
-            <a className="lp-logo" href="#top" onClick={closeMenu}>PIE<span>.</span></a>
+            {/* The logo goes to the top of this page without writing `#top`
+                into the address bar. It used to be `href="#top"`, and a
+                fragment link is a navigation: pressing the logo left the
+                visitor on a URL that reads like a section deep-link and
+                survives a copy-paste, a share and a bookmark. `href="/"` is
+                the honest destination — it is where the mark points, it is
+                what a hover and a middle-click show — and the handler cancels
+                the reload on the one path where a reload is pointless, which
+                is a plain click on the page that is already `/`. A modified
+                click keeps the real link, and a reader without JavaScript
+                (the prerendered document ships no bundle) reloads `/` and
+                arrives at the top, which is the same place. */}
+            <a
+              className="lp-logo"
+              href="/"
+              onClick={(e) => {
+                if (e.metaKey || e.ctrlKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                e.preventDefault();
+                closeMenu();
+                window.scrollTo({ top: 0 });
+              }}
+            >PIE<span>.</span></a>
             <button
               type="button"
               className="lp-nav-toggle"
@@ -346,10 +367,22 @@ export function Landing({ onEnter, onDemo }: {
                 re-derivable from the rows your desk already wrote. It reads the
                 ERP you already run and replaces none of it.
               </p>
+              {/* Both branches fall back to `#how`, and only the label and the
+                  handler differ. `#demo` named no section — `sections` lists
+                  "demo" to letter the closing block, whose id is `talk` — so
+                  the href was a destination that does not exist. `demo` stops
+                  the jump, which hid it: the only presses that reach the href
+                  are the ones the handler never sees, and a middle-click on
+                  "See it on sample data" opened a second tab on `/#demo`, the
+                  same landing page, scrolled nowhere, with no sample data in
+                  it. `#how` is where a reader who cannot be given the live
+                  workspace should land anyway — it is the block that shows
+                  what they would have seen — which is what the right-hand
+                  branch already says. */}
               <div className="lp-ctas">
                 <a className="lp-btn solid" {...heroDemo.props}>{heroDemo.label}</a>
                 {onDemo
-                  ? <a className="lp-btn" href="#demo" onClick={demo}>See it on sample data</a>
+                  ? <a className="lp-btn" href="#how" onClick={demo}>See it on sample data</a>
                   : <a className="lp-btn" href="#how">See how it works</a>}
               </div>
               {/* What the button actually buys, so the press is not a

@@ -75,3 +75,57 @@ describe("an error a salesperson can hit offers a way to act on it", () => {
       /Could not read the connection status[\s\S]{0,120}onRetry=\{load\}/);
   });
 });
+
+// Where the address bar points once the session is gone.
+//
+// Signing out swapped the shell for the public landing page and left the URL
+// alone, so `/#/account/CUST-123` stayed in the address bar over a page that
+// shows no account — a screen the browser is no longer drawing, named to
+// whoever is now holding it. `intended` was the same fact stored a second
+// time: seeded from the arrival URL, never spent when a session is restored
+// from storage rather than signed into, so the next person to sign in on that
+// tab was sent to the previous person's account screen.
+//
+// Both live in `forgetSession`, which is also the auth-loss path — and that
+// one *does* have somewhere to come back to, so it records its destination
+// after the call rather than before. That ordering is the whole of the
+// difference between the two behaviours and is invisible to a reader who
+// skims, which is why it is pinned rather than commented alone.
+describe("signing out clears where the session was", () => {
+  /** The body of a `useCallback` declared with this name, up to its deps. */
+  const bodyOf = (name: string) => {
+    const start = src.indexOf(`const ${name} = useCallback(`);
+    expect(start, `${name} is not a useCallback any more`).toBeGreaterThan(0);
+    const end = src.indexOf("}, [", start);
+    expect(end, `${name} has no deps array`).toBeGreaterThan(start);
+    return src.slice(start, end);
+  };
+
+  it("sends the browser back to home, replacing the screen just left", () => {
+    const body = bodyOf("forgetSession");
+    // The guard against a vacuous pass: this only means anything while
+    // `forgetSession` is still the one place a session is dropped locally.
+    expect(body).toContain("clearPlatformSession()");
+    expect(body).toContain('setDoor("landing")');
+    expect(body).toMatch(/navigate\(PATH\.home,\s*\{\s*replace:\s*true\s*\}\)/);
+  });
+
+  it("drops the destination the previous session arrived on", () => {
+    expect(bodyOf("forgetSession")).toContain("intended.current = null");
+  });
+
+  it("still lets an expired session come back to where it was", () => {
+    // The half that must survive the clear above, and the order is the reason
+    // it does. Recorded before `forgetSession()`, it would be set and then
+    // wiped one line later — the deep-link recovery would be gone and every
+    // assertion here would still read as if it were present.
+    const body = bodyOf("handleAuthLoss");
+    const forget = body.indexOf("forgetSession()");
+    const record = body.indexOf("intended.current = location");
+    expect(forget, "handleAuthLoss no longer forgets the session").toBeGreaterThan(0);
+    expect(record, "handleAuthLoss no longer records where they were")
+      .toBeGreaterThan(0);
+    expect(record, "the destination is recorded before it is cleared")
+      .toBeGreaterThan(forget);
+  });
+});

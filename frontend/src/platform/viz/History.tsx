@@ -16,6 +16,7 @@ import { InlineLink, Unavailable, VarianceIndicator } from "../kit";
 import { Tip } from "../../Tip";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
+import { vizPath } from "../route";
 import { Figure, Panel, stateOf } from "./Panel";
 import { pct, useInsight } from "./useInsight";
 import { thinLabels, useMeasure } from "./useMeasure";
@@ -267,12 +268,9 @@ const BAND_MEANING: Record<string, string> = {
   KEY: "Top fifth",
 };
 
-export function MigrationMatrix({
-  session, months, onNavigate,
-}: {
+export function MigrationMatrix({ session, months }: {
   session: PlatformSession;
   months: number;
-  onNavigate: (route: string) => void;
 }) {
   const { data, loading, error, reload } = useInsight(
     "migration",
@@ -342,8 +340,7 @@ export function MigrationMatrix({
                 .sort((a, b) => Math.abs(Number(b.revenue_delta)) - Math.abs(Number(a.revenue_delta)))
                 .map((c, i) => (
                   <li key={i} className={`mig-move ${direction(String(c.from), String(c.to), rank)}`}>
-                    <MoveButton cell={c} open={open} setOpen={setOpen}
-                                onNavigate={onNavigate} />
+                    <MoveButton cell={c} open={open} setOpen={setOpen} />
                   </li>
                 ))}
             </ol>
@@ -427,7 +424,7 @@ export function MigrationMatrix({
             <ul>
               {members.map((m, i) => (
                 <li key={i}>
-                  <InlineLink onClick={() => onNavigate(`customer/${String(m.customer_id)}`)}>
+                  <InlineLink to={vizPath(`customer/${String(m.customer_id)}`)}>
                     {String(m.label)}
                   </InlineLink>
                   <span className="viz-muted">
@@ -449,12 +446,11 @@ function direction(from: string, to: string, rank: (b: string) => number): strin
 }
 
 function MoveButton({
-  cell, open, setOpen, onNavigate,
+  cell, open, setOpen,
 }: {
   cell: Record<string, unknown>;
   open: string | null;
   setOpen: (v: string | null) => void;
-  onNavigate: (route: string) => void;
 }) {
   const key = `${cell.from}>${cell.to}`;
   const members = (cell.members as Record<string, unknown>[]) ?? [];
@@ -477,7 +473,7 @@ function MoveButton({
         <ul className="mig-members-inline">
           {members.map((m, i) => (
             <li key={i}>
-              <InlineLink onClick={() => onNavigate(`customer/${String(m.customer_id)}`)}>
+              <InlineLink to={vizPath(`customer/${String(m.customer_id)}`)}>
                 {String(m.label)}
               </InlineLink>
               <span className="viz-muted">

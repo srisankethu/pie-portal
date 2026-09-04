@@ -22,15 +22,30 @@
 //
 // **Each file carries its own decoding config, and this is where it is checked
 // and saved.** There is no default decoder: an upload is analysed on its own
-// evidence — its headers, and every shipped rule set run over its first rows —
-// and what comes back is a *proposal*. It decodes nothing until a person opens
-// Decoding, reads the parser's counts and saves. So a file's state here is one
-// of three, and only one of them builds: READY, NOT SAVED (a proposal nobody
-// has confirmed) and NO RULE SET (columns saved, but no shipped rule set reads
-// this manufacturer — which is a rule set somebody has to write, not a menu
-// somebody has to find).
+// evidence and what comes back is a *proposal*. It decodes nothing until a
+// person opens Decoding and saves. So a file's state here is one of three, and
+// only one of them builds: READY, NOT SAVED (a proposal nobody has confirmed)
+// and NO DECODER (columns saved, and still nothing that reads the
+// descriptions).
+//
+// **Two ways a file can be decoded, and a config names exactly one.** Either a
+// rule set pie-parser ships — fifty attributes richly bound and a grade
+// grammar behind them, for the manufacturers it was written for — or a
+// **decoder built from this file's own descriptions**, which needs no shipped
+// grammar and starts knowing only what the file says. The dialog offers them
+// as a toggle rather than as two sections, because the server refuses a config
+// naming both: a form that can express only one answer is the honest shape of
+// a rule that allows only one.
+//
+// The decoder half is a review, and the review is a grid. Every varying part
+// of every shape comes back with what the file actually put in it and the
+// attribute it reads as — 330 of them on the shipped corpus, of which the
+// file's own text names twelve. Slot and type are editable; the patterns are
+// not, because a binding names a dimension and this review exists to catch a
+// bad one, while a pattern is a regular expression that would run over every
+// row of every rebuild.
 
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -39,15 +54,20 @@ import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
+import LinearProgress from "@mui/material/LinearProgress";
 import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
+import ToggleButton from "@mui/material/ToggleButton";
+import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Tooltip from "@mui/material/Tooltip";
+import Typography from "@mui/material/Typography";
 
 import type { ColDef } from "./DataGrid";
 import { DataGrid } from "./DataGrid";
 import { EmptyState, StatusChip } from "./kit";
-import type { BuiltFile, CompanyCatalogueEntry, CompanySource } from "./types";
+import type { BindingChoice, BindingSuggestion, BuiltFile, CompanyCatalogueEntry,
+              CompanySource, DecoderArtifact, DecoderProposalResponse } from "./types";
 import { Tip } from "./ui";
 import { formatDateTime } from "../when";
 
@@ -106,8 +126,22 @@ function rowsOf(source: CompanySource, built?: BuiltFile): string {
 function decodingChip(source: CompanySource): { label: string; tone: "good" | "warn" } {
   const d = source.decoding;
   if (!d.confirmed_at || !d.columns) return { label: "NOT SAVED", tone: "warn" };
-  if (!d.rule_set || !d.rule_set_resolved) return { label: "NO RULE SET", tone: "warn" };
+  if (!d.path) return { label: "NO DECODER", tone: "warn" };
   return { label: "READY", tone: "good" };
+}
+
+/** Which of the two paths decodes this file, for the row that lists it.
+ *
+ *  Named rather than left to the READY chip, because the two are not
+ *  interchangeable: one is a grammar pie-parser ships for a manufacturer, the
+ *  other was built from this file's own descriptions and knows only what the
+ *  file says. Which one read a row is the first thing anybody asks when a
+ *  decoded value looks wrong. */
+function decodedBy(source: CompanySource): string {
+  const d = source.decoding;
+  if (d.path === "rule_set") return d.rule_set ?? "";
+  if (d.path === "decoder") return `decoder ${d.decoder_id ?? ""}`.trim();
+  return "—";
 }
 
 /** The evidence a decoding config is chosen on: every shipped rule set over
@@ -185,6 +219,312 @@ function AnalysisEvidence({ source, busy, onAnalyze }: {
   );
 }
 
+/** One row of the binding review: a capture group, its evidence, and the slot
+ *  a person is confirming for it. */
+interface ReviewRow {
+  id: string;
+  segment: string;
+  group: string;
+  kind: string;
+  occurrences: number;
+  rowsMatched: number;
+  samples: string;
+  around: string;
+  slot: string;
+  type: string;
+  source: string;
+  reason: string;
+  detail: string;
+  candidates: string[];
+  types: string[];
+}
+
+/** Which types a group's own values would survive, narrowest first.
+ *
+ *  Mirrors `decoding.bind.types_for` rather than offering all four: a group
+ *  holding `5.1` typed as an integer is a thousand rows quarantined at decode
+ *  time, and the server refuses it — a form that can only express valid
+ *  answers is the better half of that pair, exactly as the column pickers
+ *  above only offer headers the file has. */
+function typesFor(row: BindingSuggestion): string[] {
+  const e = row.evidence;
+  const out: string[] = [];
+  if (e?.all_integer) out.push("integer");
+  if (e?.all_numeric) out.push("number");
+  out.push("text");
+  if (e?.kind === "optional") out.push("flag");
+  return out;
+}
+
+/** One row's confirmed answer, as the dialog holds it while it is open. */
+export interface BindingEdit { slot: string; type: string }
+
+/** The review's edits with one row's answer applied.
+ *
+ *  Exported and pure because it is the only logic in this dialog worth
+ *  testing on its own: driving ag-grid's cell editor through the DOM to reach
+ *  it would test the grid, and a test that cannot reach a rule is how the rule
+ *  below got written twice.
+ *
+ *  **Choosing a slot with no type yet defaults the type**, to the narrowest
+ *  the group's own values support. A binding needs both and nothing on the
+ *  screen says so, so without this, picking an attribute on a row nobody had
+ *  named saved *nothing* — the row looked answered and the decoder did not
+ *  read it.
+ *
+ *  Clearing the slot clears the type with it. A type without a slot is not a
+ *  binding, and leaving one behind would make the next slot chosen inherit a
+ *  type from an attribute it has nothing to do with.
+ */
+export function nextEdits(prev: Record<string, BindingEdit>, id: string,
+                          patch: Partial<BindingEdit>,
+                          types: string[]): Record<string, BindingEdit> {
+  const was = prev[id];
+  const slot = patch.slot ?? was?.slot ?? "";
+  if (!slot) return { ...prev, [id]: { slot: "", type: "" } };
+  return {
+    ...prev,
+    [id]: { slot, type: patch.type ?? was?.type ?? types[0] ?? "text" },
+  };
+}
+
+/** The types one row of the review may take, found by its id.
+ *
+ *  The dialog holds the edits and the panel holds the rows, so the answer has
+ *  to be reachable from the id alone — the alternative is passing the row up
+ *  through the edit callback, which would make the callback's shape depend on
+ *  the grid's. */
+function typesForGroup(proposal: DecoderProposalResponse | null,
+                       id: string): string[] {
+  const found = (proposal?.review?.suggestions ?? [])
+    .find((sg) => `${sg.segment}/${sg.group}` === id);
+  return found ? typesFor(found) : [];
+}
+
+/** Why a group has no suggestion, in a sentence rather than a code.
+ *
+ *  The codes are stable and the screen is not the place to learn them. Two of
+ *  them mean *nothing may be bound here at all* — no evidence, or two
+ *  different words one binding cannot express — and those read differently
+ *  from "nobody has decided yet", which is a question waiting for the person
+ *  reading it. */
+const DECLINE_REASON: Record<string, string> = {
+  NO_OCCURRENCES: "No row uses this part, so there is nothing to bind it on.",
+  NO_UNIT: "The file writes no unit here, so its text does not say what this is.",
+  AMBIGUOUS_UNIT: "The unit narrows it, but not to one slot — choose which.",
+  MIXED_VALUES: "This part holds two different words, which one binding cannot express. Splitting it is inference's job.",
+  UNKNOWN_WORD: "One word, and not one the vocabulary knows.",
+  SLOT_TAKEN: "Another group of this segment already reads that slot.",
+  FROM_UNIT: "Named from the unit written next to it in the file.",
+  FROM_WORD: "Named from the word this part contains.",
+  FROM_MODEL: "Named by a model, from the evidence — check it.",
+};
+
+/** The binding review: every capture group of a proposed decoder, what the
+ *  file actually put in it, and the slot it fills.
+ *
+ *  **A grid, not a fact panel** (`docs/ui-standards.md` §3). The row count is
+ *  the number of varying parts in one manufacturer's descriptions — 330 on the
+ *  shipped corpus — which is set by the file rather than by the shape of the
+ *  screen. That is the test, and this is the case the rule exists for.
+ *
+ *  Every group appears, named or not. A review listing only the answered ones
+ *  is a review a person can finish without ever seeing what nobody decided
+ *  about — and on a real file that is 318 of the 330.
+ *
+ *  Slot and type are editable cells; the options offered are what that
+ *  group's own evidence allows, so a wrong answer here is a wrong *attribute*
+ *  rather than a decoder that cannot build. The patterns are not editable at
+ *  all: a binding names a dimension and this review exists to catch a bad one,
+ *  but a pattern is a regular expression that runs over every row of every
+ *  rebuild. */
+function BindingReviewGrid({ suggestions, edits, onEdit }: {
+  suggestions: BindingSuggestion[];
+  edits: Record<string, BindingEdit>;
+  onEdit: (id: string, patch: Partial<BindingEdit>) => void;
+}) {
+  const rows = useMemo<ReviewRow[]>(() => suggestions.map((sg) => {
+    const id = `${sg.segment}/${sg.group}`;
+    const edit = edits[id];
+    const e = sg.evidence ?? null;
+    const around = [e?.left ? `…${e.left}` : "", e?.right ? `${e.right}…` : ""]
+      .filter(Boolean).join("  ▸  ");
+    return {
+      id,
+      segment: sg.segment,
+      group: sg.group,
+      kind: e?.kind ?? "",
+      occurrences: e?.occurrences ?? 0,
+      rowsMatched: e?.rows_matched ?? 0,
+      samples: (e?.samples ?? []).join(", "),
+      around,
+      slot: edit?.slot ?? sg.slot ?? "",
+      type: edit?.type ?? sg.type ?? "",
+      source: sg.source,
+      reason: sg.reason,
+      detail: sg.detail ?? "",
+      candidates: sg.candidates,
+      types: typesFor(sg),
+    };
+  // `edits` is read here on purpose: an edited row must re-render with the
+  // person's answer rather than the proposal's.
+  }), [suggestions, edits]);
+
+  const columns: ColDef<ReviewRow>[] = [
+    { field: "segment", headerName: "Shape", minWidth: 150, flex: 1 },
+    { field: "group", headerName: "Part", width: 90 },
+    {
+      field: "samples", headerName: "What it holds", minWidth: 220, flex: 2,
+      tooltipValueGetter: (p) => (p.data?.samples ?? ""),
+    },
+    {
+      field: "around", headerName: "Written around it", minWidth: 150, flex: 1,
+      // The unit is the whole basis for a name the file itself settles, so it
+      // is a column rather than a detail behind a click.
+    },
+    {
+      field: "occurrences", headerName: "In rows", width: 110,
+      type: "numericColumn",
+      valueFormatter: (p) => `${p.value} / ${p.data?.rowsMatched ?? 0}`,
+    },
+    {
+      field: "slot", headerName: "Reads as", minWidth: 200, flex: 1,
+      editable: (p) => (p.data?.candidates.length ?? 0) > 0,
+      cellEditor: "agSelectCellEditor",
+      cellEditorParams: (p: { data?: ReviewRow }) =>
+        ({ values: ["", ...(p.data?.candidates ?? [])] }),
+      valueFormatter: (p) => p.value || "— not bound —",
+    },
+    {
+      field: "type", headerName: "As a", width: 130,
+      editable: (p) => Boolean(p.data?.slot),
+      cellEditor: "agSelectCellEditor",
+      cellEditorParams: (p: { data?: ReviewRow }) =>
+        ({ values: p.data?.types ?? [] }),
+    },
+    {
+      field: "reason", headerName: "Why", minWidth: 240, flex: 2,
+      valueFormatter: (p) =>
+        (DECLINE_REASON[p.value as string] ?? p.value)
+        + (p.data?.detail ? ` (${p.data.detail})` : ""),
+      tooltipValueGetter: (p) =>
+        DECLINE_REASON[p.data?.reason ?? ""] ?? p.data?.reason ?? "",
+    },
+  ];
+
+  return (
+    <DataGrid<ReviewRow>
+      rows={rows} columns={columns} getRowId={(r) => r.id} pageSize={25}
+      // A fixed height because this sits inside a dialog: sized to its rows,
+      // three hundred and thirty of them would push the save button off the
+      // screen, which is the one control the review exists to reach.
+      height={420}
+      onCellValueChanged={(row, field, value) =>
+        onEdit(row.id, { [field]: String(value ?? "") })}
+      ariaLabel="Capture groups of the proposed decoder, and the attribute each reads as"
+      empty={<EmptyState title="No parts to review"
+                         reason="This decoder captures nothing that varies, so there is nothing to name." />}
+    />
+  );
+}
+
+/** Propose a decoder from this file, review what it captured, and save it.
+ *
+ *  The other half of "how is this file decoded", and the half that needs no
+ *  shipped grammar. Nothing is proposed until somebody asks — inference reads
+ *  the whole file and, where a live provider is configured, spends a call per
+ *  batch of groups the text could not name.
+ *
+ *  Three numbers carry the judgement and none of them is a score: how many of
+ *  the file's rows a segment claimed, how many groups the file's own text
+ *  named, and how many are still open. Whether that is good enough is the
+ *  reviewer's call, which is why there is no "83% fit" here — the same reason
+ *  the rule-set evidence above shows counts rather than a rate. */
+function DecoderPanel({ source, busy, proposal, proposing, error, edits,
+                       decimal, onPropose, onEdit, onDecimal }: {
+  source: CompanySource;
+  busy: boolean;
+  proposal: DecoderProposalResponse | null;
+  proposing: boolean;
+  error: string | null;
+  edits: Record<string, BindingEdit>;
+  decimal: string;
+  onPropose: () => void;
+  onEdit: (id: string, patch: Partial<BindingEdit>) => void;
+  onDecimal: (v: string) => void;
+}) {
+  const saved = source.decoding.decoder;
+  const p = proposal?.proposal;
+  const review = proposal?.review;
+
+  return (
+    <Box sx={{ mt: 2.5 }}>
+      <Stack direction="row" spacing={2}
+             sx={{ mb: 1.5, alignItems: "center",
+                   justifyContent: "space-between", flexWrap: "wrap",
+                   rowGap: 1 }}>
+        <Box>
+          <Typography variant="subtitle2">A decoder built from this file</Typography>
+          <Typography variant="caption" color="text.secondary">
+            {saved
+              ? `Saved: ${saved.decoder_id}, ${saved.segments.length} shape${saved.segments.length === 1 ? "" : "s"}, reading ${saved.decimal === "either" ? "either decimal separator" : `“${saved.decimal === "dot" ? "." : ","}” as the decimal point`}.`
+              : "Nothing shipped reads this file. Inference reads its descriptions, works out the shapes in them, and proposes a decoder for this file alone."}
+          </Typography>
+        </Box>
+        <Button size="small" variant={saved ? "outlined" : "contained"}
+                disabled={busy || proposing} onClick={onPropose}>
+          {proposal ? "Propose again" : "Propose a decoder"}
+        </Button>
+      </Stack>
+
+      {proposing && <LinearProgress sx={{ mb: 1.5 }} />}
+      {error && <Alert severity="error" sx={{ mb: 1.5 }}>{error}</Alert>}
+
+      {p && !p.decoder && (
+        <Alert severity="warning">
+          {p.reason ?? "No decoder could be proposed from this file."}
+        </Alert>
+      )}
+
+      {p?.decoder && review && (
+        <>
+          <Alert severity="info" sx={{ mb: 1.5 }}>
+            {p.claimed} of {p.rows_read} rows fall into{" "}
+            {p.decoder.segments.length} shape
+            {p.decoder.segments.length === 1 ? "" : "s"}; {p.unclaimed} match
+            none and would be kept unread. Of {review.suggestions.length}{" "}
+            varying parts, {review.from_surface} are named by the file&apos;s own
+            text{review.from_model > 0
+              ? `, ${review.from_model} by a model (${review.provider})`
+              : ""}, and {review.unnamed} are open.
+            {review.reason === "PROVIDER_FAILED"
+              && " The model could not be reached, so only the file's own text has been read."}
+            {review.reason === "UNREADABLE_REPLY"
+              && " The model's answer could not be read, so only the file's own text has been read."}
+          </Alert>
+          {p.unclaimed > 0 && p.unclaimed_samples.length > 0 && (
+            <Alert severity="warning" sx={{ mb: 1.5 }}>
+              Rows no shape matched, as examples:{" "}
+              {p.unclaimed_samples.slice(0, 4).join("  ·  ")}
+            </Alert>
+          )}
+          <TextField select size="small" label="Decimal separator" value={decimal}
+                     disabled={busy} sx={{ mb: 1.5, minWidth: 260 }}
+                     onChange={(e) => onDecimal(e.target.value)}
+                     helperText="Whether 11,1 in this file is eleven point one or eleven thousand one hundred. Not answerable from the text — both readings parse.">
+            <MenuItem value="either">either . or , is the decimal point</MenuItem>
+            <MenuItem value="dot">. is the decimal point</MenuItem>
+            <MenuItem value="comma">, is the decimal point</MenuItem>
+          </TextField>
+          <BindingReviewGrid suggestions={review.suggestions} edits={edits}
+                             onEdit={onEdit} />
+        </>
+      )}
+    </Box>
+  );
+}
+
+
 /** Check and save how ONE file is decoded: its columns, and the rule set that
  *  reads its descriptions.
  *
@@ -200,14 +540,19 @@ function AnalysisEvidence({ source, busy, onAnalyze }: {
  *  and the build names it rather than quietly decoding it through somebody
  *  else's grammars.
  */
-function DecodingDialog({ source, ruleSets, busy, onClose, onSave, onAnalyze }: {
+function DecodingDialog({ source, ruleSets, busy, onClose, onSave, onAnalyze,
+                         onPropose }: {
   source: CompanySource;
   ruleSets: { id: string; path: string }[];
   busy: boolean;
   onClose: () => void;
   onSave: (config: { record_id: string; description: string;
-                     grade?: string | null; rule_set?: string | null }) => void;
+                     grade?: string | null; rule_set?: string | null;
+                     decoder?: DecoderArtifact | null;
+                     bindings?: BindingChoice[] | null;
+                     decimal?: string | null }) => void;
   onAnalyze: () => void;
+  onPropose: () => Promise<DecoderProposalResponse>;
 }) {
   const columns = source.ingest?.columns ?? [];
   const d = source.decoding;
@@ -219,6 +564,56 @@ function DecodingDialog({ source, ruleSets, busy, onClose, onSave, onAnalyze }: 
   const [description, setDescription] = useState(settled?.description ?? "");
   const [grade, setGrade] = useState(settled?.grade ?? "");
   const [ruleSet, setRuleSet] = useState(d.rule_set ?? d.analysis?.proposed ?? "");
+  // Which path this dialog is composing. Opens on what the file already uses,
+  // and on the rule set otherwise — the state a file has always started in.
+  const [path, setPath] = useState<"rule_set" | "decoder">(
+    d.path === "decoder" ? "decoder" : "rule_set");
+  const [proposal, setProposal] = useState<DecoderProposalResponse | null>(null);
+  const [proposing, setProposing] = useState(false);
+  const [proposeError, setProposeError] = useState<string | null>(null);
+  // The person's answers, over the proposal's. Kept apart from the proposal
+  // rather than folded into it, so "what a machine suggested" and "what
+  // somebody confirmed" stay distinguishable while the dialog is open — and
+  // re-proposing does not silently keep edits made against different groups.
+  const [edits, setEdits] = useState<Record<string, BindingEdit>>({});
+  const [decimal, setDecimal] = useState<string>(d.decoder?.decimal ?? "either");
+
+  async function propose() {
+    setProposing(true);
+    setProposeError(null);
+    try {
+      const next = await onPropose();
+      setProposal(next);
+      setEdits({});
+      setDecimal(next.proposal.decoder?.decimal ?? "either");
+    } catch (e) {
+      setProposeError(e instanceof Error ? e.message
+                                         : "The proposal could not be read.");
+    } finally {
+      setProposing(false);
+    }
+  }
+
+  /** The binding set as it stands: the proposal's answers with the person's
+   *  over them, and only the rows that name a slot.
+   *
+   *  A row with no slot contributes nothing rather than a null binding — an
+   *  unbound group is a group the decoder does not read, which is a different
+   *  thing from one it reads as nothing. */
+  function bindings(): BindingChoice[] {
+    const out: BindingChoice[] = [];
+    for (const sg of proposal?.review?.suggestions ?? []) {
+      const edit = edits[`${sg.segment}/${sg.group}`];
+      const slot = edit?.slot ?? sg.slot ?? "";
+      const type = edit?.type ?? sg.type ?? "";
+      if (!slot || !type) continue;
+      out.push({ segment: sg.segment, group: sg.group, slot,
+                 type: type as BindingChoice["type"] });
+    }
+    return out;
+  }
+
+  const decoderReady = Boolean(proposal?.proposal.decoder);
 
   const field = (label: string, tip: string, value: string,
                  set: (v: string) => void, optional = false) => (
@@ -231,7 +626,10 @@ function DecodingDialog({ source, ruleSets, busy, onClose, onSave, onAnalyze }: 
   );
 
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="sm">
+    // Wider for the review, which is a grid of every varying part in the
+    // file; the columns form alone reads better narrow.
+    <Dialog open onClose={onClose} fullWidth
+            maxWidth={path === "decoder" ? "lg" : "sm"}>
       <DialogTitle>How is {source.filename} decoded?</DialogTitle>
       <DialogContent>
         {columns.length === 0 ? (
@@ -263,41 +661,91 @@ function DecodingDialog({ source, ruleSets, busy, onClose, onSave, onAnalyze }: 
           {field("Grade",
                  "Optional. Leave as none where the grade is inside the description.",
                  grade, setGrade, true)}
-          <TextField select fullWidth size="small" label="Rule set" value={ruleSet}
-                     disabled={busy} onChange={(e) => setRuleSet(e.target.value)}
-                     helperText={
-                       d.rule_set && !d.rule_set_resolved
-                         ? `This engine no longer ships ${d.rule_set}, which this file names — it decodes nothing until another is chosen.`
-                         : ruleSets.length === 0
-                           ? "none available — this deployment ships no rule set"
-                           : "The decoder for this manufacturer's descriptions, from what the engine ships. The counts below are what says whether it reads this file."}>
-            <MenuItem value="">— none yet —</MenuItem>
-            {ruleSets.map((r) => (
-              <MenuItem key={r.id} value={r.id}>{r.id}</MenuItem>
-            ))}
-            {/* A rule set this file names and the pinned engine no longer has.
-                Offered rather than dropped: silently blanking the menu would
-                make a stored choice look like no choice at all. */}
-            {d.rule_set && !ruleSets.some((r) => r.id === d.rule_set) && (
-              <MenuItem value={d.rule_set}>
-                {d.rule_set} — not shipped by this engine
-              </MenuItem>
-            )}
-          </TextField>
         </Stack>
+
+        {/* Two paths, and a config names exactly one. A toggle rather than a
+            pair of sections, because the server refuses a config naming both:
+            a form that can express only one answer is the honest shape of a
+            rule that says only one is allowed. */}
+        <Box sx={{ mt: 3 }}>
+          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+            What decodes the descriptions?
+          </Typography>
+          <ToggleButtonGroup exclusive size="small" value={path}
+                             disabled={busy}
+                             onChange={(_e, v) => v && setPath(v)}
+                             aria-label="How this file's descriptions are decoded">
+            <ToggleButton value="rule_set">A rule set the engine ships</ToggleButton>
+            <ToggleButton value="decoder">A decoder built from this file</ToggleButton>
+          </ToggleButtonGroup>
+        </Box>
+
+        {path === "rule_set" ? (
+          <>
+            <TextField select fullWidth size="small" label="Rule set" value={ruleSet}
+                       sx={{ mt: 2.5 }}
+                       disabled={busy} onChange={(e) => setRuleSet(e.target.value)}
+                       helperText={
+                         d.rule_set && !d.rule_set_resolved
+                           ? `This engine no longer ships ${d.rule_set}, which this file names — it decodes nothing until another is chosen.`
+                           : ruleSets.length === 0
+                             ? "none available — this deployment ships no rule set"
+                             : "The decoder for this manufacturer's descriptions, from what the engine ships. The counts below are what says whether it reads this file."}>
+              <MenuItem value="">— none yet —</MenuItem>
+              {ruleSets.map((r) => (
+                <MenuItem key={r.id} value={r.id}>{r.id}</MenuItem>
+              ))}
+              {/* A rule set this file names and the pinned engine no longer
+                  has. Offered rather than dropped: silently blanking the menu
+                  would make a stored choice look like no choice at all. */}
+              {d.rule_set && !ruleSets.some((r) => r.id === d.rule_set) && (
+                <MenuItem value={d.rule_set}>
+                  {d.rule_set} — not shipped by this engine
+                </MenuItem>
+              )}
+            </TextField>
+          </>
+        ) : (
+          <DecoderPanel source={source} busy={busy} proposal={proposal}
+                        proposing={proposing} error={proposeError} edits={edits}
+                        decimal={decimal} onPropose={propose}
+                        onDecimal={setDecimal}
+                        onEdit={(id, patch) => setEdits((prev) =>
+                          nextEdits(prev, id, patch,
+                                    typesForGroup(proposal, id)))} />
+        )}
         </>
         )}
-        <AnalysisEvidence source={source} busy={busy} onAnalyze={onAnalyze} />
+        {/* Outside the columns guard, and outside the path branch when there
+            are none. A file stored before its headers were read has nothing to
+            choose *from*, and re-analysing is the only thing that helps it —
+            nesting this under the rule-set panel took that button away from
+            exactly the file that needs it, which is the state this dialog's
+            first branch exists to explain. */}
+        {(columns.length === 0 || path === "rule_set") && (
+          <AnalysisEvidence source={source} busy={busy} onAnalyze={onAnalyze} />
+        )}
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={busy}>
           {columns.length === 0 ? "Close" : "Cancel"}
         </Button>
         {columns.length > 0 && (
-        <Button variant="contained" disabled={busy || !recordId || !description}
-                onClick={() => onSave({ record_id: recordId, description,
-                                        grade: grade || null,
-                                        rule_set: ruleSet || null })}>
+        <Button variant="contained"
+                disabled={busy || !recordId || !description
+                          || (path === "decoder" && !decoderReady)}
+                onClick={() => onSave(
+                  path === "decoder"
+                    ? { record_id: recordId, description, grade: grade || null,
+                        rule_set: null,
+                        decoder: proposal?.proposal.decoder ?? null,
+                        bindings: bindings(), decimal }
+                    // Sending `decoder: null` explicitly rather than omitting
+                    // it: a person switching this file back to a rule set is
+                    // saying the decoder no longer decodes it, and a config
+                    // that kept both would be one the server refuses.
+                    : { record_id: recordId, description, grade: grade || null,
+                        rule_set: ruleSet || null, decoder: null })}>
           Save decoding config
         </Button>
         )}
@@ -307,7 +755,8 @@ function DecodingDialog({ source, ruleSets, busy, onClose, onSave, onAnalyze }: 
 }
 
 export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
-                                onUpload, onSaveDecoding, onAnalyze, onRemove }: {
+                                onUpload, onSaveDecoding, onAnalyze, onPropose,
+                                onRemove }: {
   catalogue: CompanyCatalogueEntry;
   /** The company's label, for the grid's name: a company keeps one of these
    *  per manufacturer, so the catalogue's own name alone does not say whose
@@ -322,8 +771,16 @@ export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
   onSaveDecoding: (sourceKey: string,
                    config: { record_id: string; description: string;
                              grade?: string | null;
-                             rule_set?: string | null }) => void;
+                             rule_set?: string | null;
+                             decoder?: DecoderArtifact | null;
+                             bindings?: BindingChoice[] | null;
+                             decimal?: string | null }) => void;
   onAnalyze: (sourceKey: string) => void;
+  /** Read one file and propose a decoder for it. Returns the proposal rather
+   *  than going through the caller that replaces catalogue state, because it
+   *  saves nothing — a proposal that quietly changed this screen would be one
+   *  nobody had confirmed. */
+  onPropose: (sourceKey: string) => Promise<DecoderProposalResponse>;
   onRemove: (sourceKey: string) => void;
 }) {
   /** Which file's decoding is open, by key rather than by value: re-analysing
@@ -369,9 +826,9 @@ export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
       cellRenderer: (p: { data: CompanySource }) => {
         const chip = decodingChip(p.data);
         return <StatusChip label={chip.label} tone={chip.tone}
-                           tip={p.data.decoding.rule_set
-                             ? `Decoded through ${p.data.decoding.rule_set}.`
-                             : "No rule set decodes this file yet, so a build will name it rather than decode it."} />;
+                           tip={p.data.decoding.path
+                             ? `Decoded through ${decodedBy(p.data)}.`
+                             : "Nothing decodes this file yet, so a build will name it rather than decode it."} />;
       },
       valueGetter: (p: { data?: CompanySource }) =>
         p.data ? decodingChip(p.data).label : "",
@@ -528,6 +985,7 @@ export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
           source={decoding} ruleSets={ruleSets} busy={busy}
           onClose={() => setDecodingKey(null)}
           onAnalyze={() => onAnalyze(decoding.source_key)}
+          onPropose={() => onPropose(decoding.source_key)}
           onSave={(config) => {
             onSaveDecoding(decoding.source_key, config);
             setDecodingKey(null);

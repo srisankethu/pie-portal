@@ -1,4 +1,4 @@
-import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, PhraseAliases, RetrievalReport, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteFieldSpec, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { BindingChoice, DecoderArtifact, DecoderProposalResponse, AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, PhraseAliases, RetrievalReport, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteFieldSpec, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -801,7 +801,10 @@ export const papi = {
                        sourceKey: string,
                        config: { record_id: string; description: string;
                                  grade?: string | null;
-                                 rule_set?: string | null }) =>
+                                 rule_set?: string | null;
+                                 decoder?: DecoderArtifact | null;
+                                 bindings?: BindingChoice[] | null;
+                                 decimal?: string | null }) =>
     req<CompanyCatalogue>(
       `${catalogueUrl(connectionId, catalogueKey)}`
       + `/sources/${encodeURIComponent(sourceKey)}/decoding`,
@@ -816,6 +819,24 @@ export const papi = {
     req<CompanyCatalogue>(
       `${catalogueUrl(connectionId, catalogueKey)}`
       + `/sources/${encodeURIComponent(sourceKey)}/analyze`,
+      { method: "POST" }, t),
+
+  /** Read one stored file and propose a decoder built for it alone: its
+   *  descriptions clustered into shapes, a pattern induced per shape and
+   *  validated over every row, each captured group measured, and the groups
+   *  the file's own text settles named.
+   *
+   *  Returns the proposal rather than the company, because it **saves
+   *  nothing** — `saveSourceDecoding` with the reviewed artifact is what
+   *  stores it. So this must not go through the caller that replaces
+   *  catalogue state from a response: there is no new catalogue state, and a
+   *  proposal that quietly changed the screen would be one nobody had
+   *  confirmed. */
+  proposeSourceDecoder: (t: string, connectionId: string, catalogueKey: string,
+                         sourceKey: string) =>
+    req<DecoderProposalResponse>(
+      `${catalogueUrl(connectionId, catalogueKey)}`
+      + `/sources/${encodeURIComponent(sourceKey)}/propose-decoder`,
       { method: "POST" }, t),
 
   /** Stop building from one file. Superseded, not deleted, and the built

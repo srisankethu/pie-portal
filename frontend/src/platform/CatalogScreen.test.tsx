@@ -25,8 +25,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CatalogScreen } from "./CatalogScreen";
 import { papi } from "./api";
-import type { CatalogueUnion, CompanyCatalogue, CompanyCatalogueEntry,
-              CompanyCatalogues, CompanySource, SourceDecoding,
+import type { BindingSuggestion, CatalogueUnion, CompanyCatalogue,
+              CompanyCatalogueEntry, CompanyCatalogues, CompanySource,
+              DecoderArtifact, DecoderProposalResponse, SourceDecoding,
               PlatformSession } from "./types";
 
 const SESSION: PlatformSession = {
@@ -199,6 +200,73 @@ function narrowViewport() {
     addEventListener: () => {}, removeEventListener: () => {},
     addListener: () => {}, removeListener: () => {}, dispatchEvent: () => false,
   }));
+}
+
+/** A frozen decoder as a proposal returns it: two shapes, one binding the
+ *  file's own text settled and three groups nobody has named. */
+function artifact(over: Partial<DecoderArtifact> = {}): DecoderArtifact {
+  return {
+    schema_version: 1,
+    decimal: "either",
+    decoder_id: "6aaeccc849df9b16",
+    segments: [
+      {
+        id: "s1-sc-drill",
+        pattern: "^SC DRILL (?P<num1>\\d+)mm/(?P<num2>[.\\d]+)/ (?P<num3>\\d+)xD$",
+        fields: [{ group: "num3", slot: "depth_ratio_xd", type: "integer" }],
+        examples: ["SC DRILL 3mm/.1181/ 5xD"],
+        counterexamples: ["GP SC End Mill 4FL"],
+      },
+    ],
+    ...over,
+  };
+}
+
+/** One group of the review, with the evidence a reviewer reads it against. */
+function suggestion(over: Partial<BindingSuggestion> = {}): BindingSuggestion {
+  const group = over.group ?? "num1";
+  return {
+    segment: "s1-sc-drill",
+    group,
+    slot: null,
+    type: null,
+    source: "none",
+    candidates: ["cutting_dia_mm", "shank_dia_mm", "loc_mm"],
+    reason: "AMBIGUOUS_UNIT",
+    detail: "",
+    evidence: {
+      segment: "s1-sc-drill", group, kind: "number",
+      rows_matched: 1239, occurrences: 1239, distinct: 312,
+      samples: ["5", "8", "6"], left: "", right: "mm",
+      all_integer: true, all_numeric: true,
+    },
+    ...over,
+  };
+}
+
+function proposal(over: Partial<DecoderProposalResponse> = {}): DecoderProposalResponse {
+  const decoder = artifact();
+  return {
+    proposal: {
+      decoder, decoder_id: decoder.decoder_id,
+      rows_read: 6717, claimed: 4342, unclaimed: 2375,
+      unclaimed_samples: ["CNMG 120408-49 - TN2000"],
+      coverage: { "s1-sc-drill": 1239 }, overlaps: [], reason: null,
+    },
+    review: {
+      decoder_id: decoder.decoder_id,
+      segments: [],
+      suggestions: [
+        suggestion(),
+        suggestion({ group: "num3", slot: "depth_ratio_xd", type: "integer",
+                     source: "surface", reason: "FROM_UNIT",
+                     candidates: ["depth_ratio_xd"] }),
+      ],
+      from_surface: 1, from_model: 0, unnamed: 1,
+      refused: {}, provider: "mock", model: "mock-1", reason: null,
+    },
+    ...over,
+  };
 }
 
 const BUILT: Partial<CompanyCatalogueEntry> = {
@@ -515,7 +583,7 @@ describe("the decoded catalogue screen", () => {
     await waitFor(() => expect(save).toHaveBeenCalledWith(
       "t", "conn-a", "kennametal", "item-master.csv",
       { record_id: "MM#", description: "Material Description",
-        grade: "Grade", rule_set: "zcnc" }));
+        grade: "Grade", rule_set: "zcnc", decoder: null }));
   });
 
   it("says plainly when no rule set reads a file, and saves it without one", async () => {
@@ -552,7 +620,173 @@ describe("the decoded catalogue screen", () => {
     await waitFor(() => expect(save).toHaveBeenCalledWith(
       "t", "conn-a", "kennametal", "item-master.csv",
       { record_id: "MM#", description: "Material Description",
-        grade: "Grade", rule_set: null }));
+        grade: "Grade", rule_set: null, decoder: null }));
+  });
+
+  it("proposes a decoder from the file itself, and saves nothing until asked",
+     async () => {
+    // The half of discovery that needs no shipped grammar. Proposing must not
+    // change what the file currently decodes through: a proposal nobody has
+    // confirmed is not a config, and a screen that took it on would have
+    // silently made it one.
+    vi.spyOn(papi, "companyCatalogues")
+      .mockResolvedValue(view([company({ sources: [source()] })]));
+    const propose = vi.spyOn(papi, "proposeSourceDecoder")
+      .mockResolvedValue(proposal());
+    const save = vi.spyOn(papi, "saveSourceDecoding").mockResolvedValue(
+      company({ sources: [source()] }));
+    render(<CatalogScreen session={SESSION} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Decoding" }));
+    fireEvent.click(screen.getByRole("button",
+                                     { name: "A decoder built from this file" }));
+    // Nothing is spent until somebody asks: inference reads the whole file.
+    expect(propose).not.toHaveBeenCalled();
+    // And there is nothing to save yet, because there is no decoder.
+    expect(screen.getByRole("button", { name: "Save decoding config" }))
+      .toHaveProperty("disabled", true);
+
+    fireEvent.click(screen.getByRole("button", { name: "Propose a decoder" }));
+    await waitFor(() => expect(propose).toHaveBeenCalledWith(
+      "t", "conn-a", "kennametal", "item-master.csv"));
+    expect(save).not.toHaveBeenCalled();
+
+    // Counts, never a score — the same rule the rule-set evidence follows.
+    expect(await screen.findByText(/4342 of 6717 rows fall into 1 shape/))
+      .toBeTruthy();
+    expect(screen.getByText(/2375 match none and would be kept unread/))
+      .toBeTruthy();
+    expect(screen.getByText(/1 are named by the file's own text/)).toBeTruthy();
+    expect(screen.getByText(/1 are open/)).toBeTruthy();
+    // The rows no shape matched, named rather than counted: a file this does
+    // not understand is the finding.
+    expect(screen.getByText(/CNMG 120408-49 - TN2000/)).toBeTruthy();
+  });
+
+  it("saves a reviewed decoder as bindings over the proposed artifact",
+     async () => {
+    // The patterns come from a proposal this deployment produced and can
+    // verify; only the answers come from the screen. So the artifact goes back
+    // untouched and the review travels beside it.
+    vi.spyOn(papi, "companyCatalogues")
+      .mockResolvedValue(view([company({ sources: [source()] })]));
+    vi.spyOn(papi, "proposeSourceDecoder").mockResolvedValue(proposal());
+    const save = vi.spyOn(papi, "saveSourceDecoding").mockResolvedValue(
+      company({ sources: [source()] }));
+    render(<CatalogScreen session={SESSION} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Decoding" }));
+    fireEvent.click(screen.getByRole("button",
+                                     { name: "A decoder built from this file" }));
+    fireEvent.click(screen.getByRole("button", { name: "Propose a decoder" }));
+    await screen.findByText(/4342 of 6717 rows fall into 1 shape/);
+
+    fireEvent.click(screen.getByRole("button", { name: "Save decoding config" }));
+    await waitFor(() => expect(save).toHaveBeenCalledWith(
+      "t", "conn-a", "kennametal", "item-master.csv",
+      expect.objectContaining({
+        record_id: "MM#", description: "Material Description",
+        // The two are alternatives: choosing a decoder says the rule set no
+        // longer decodes this file, and a config naming both is refused.
+        rule_set: null,
+        decoder: expect.objectContaining({ decoder_id: "6aaeccc849df9b16" }),
+        decimal: "either",
+        // Only the group the file's own text named. The unnamed one
+        // contributes nothing rather than a null binding — a group the decoder
+        // does not read is a different thing from one it reads as nothing.
+        bindings: [{ segment: "s1-sc-drill", group: "num3",
+                     slot: "depth_ratio_xd", type: "integer" }],
+      })));
+  });
+
+  it("says so when a file has no shape to propose a decoder from", async () => {
+    // A real answer about the file, reported as one — never an empty decoder
+    // that would freeze and decode nothing.
+    vi.spyOn(papi, "companyCatalogues")
+      .mockResolvedValue(view([company({ sources: [source()] })]));
+    vi.spyOn(papi, "proposeSourceDecoder").mockResolvedValue(proposal({
+      proposal: {
+        decoder: null, decoder_id: null, rows_read: 20, claimed: 0,
+        unclaimed: 20, unclaimed_samples: [], coverage: {}, overlaps: [],
+        reason: "No shape in this file repeats 5 times.",
+      },
+      review: null,
+    }));
+    render(<CatalogScreen session={SESSION} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Decoding" }));
+    fireEvent.click(screen.getByRole("button",
+                                     { name: "A decoder built from this file" }));
+    fireEvent.click(screen.getByRole("button", { name: "Propose a decoder" }));
+
+    expect(await screen.findByText(/No shape in this file repeats 5 times/))
+      .toBeTruthy();
+    // And it cannot be saved, because there is nothing to save.
+    expect(screen.getByRole("button", { name: "Save decoding config" }))
+      .toHaveProperty("disabled", true);
+  });
+
+  it("says when the model could not be reached, rather than looking thin",
+     async () => {
+    // The floor is the file's own text, and the screen has to say that is what
+    // it is showing — a review that is quietly short reads like a file with
+    // little in it.
+    vi.spyOn(papi, "companyCatalogues")
+      .mockResolvedValue(view([company({ sources: [source()] })]));
+    const base = proposal();
+    vi.spyOn(papi, "proposeSourceDecoder").mockResolvedValue({
+      ...base,
+      review: { ...base.review!, reason: "PROVIDER_FAILED", provider: "mock" },
+    });
+    render(<CatalogScreen session={SESSION} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Decoding" }));
+    fireEvent.click(screen.getByRole("button",
+                                     { name: "A decoder built from this file" }));
+    fireEvent.click(screen.getByRole("button", { name: "Propose a decoder" }));
+
+    expect(await screen.findByText(/The model could not be reached/)).toBeTruthy();
+  });
+
+  it("shows a file decoded by its own decoder as ready, and names it", async () => {
+    // Which of the two paths read a row is the first thing anybody asks when a
+    // decoded value looks wrong, so READY alone is not enough.
+    vi.spyOn(papi, "companyCatalogues")
+      .mockResolvedValue(view([company({
+      ...BUILT,
+      sources: [source({
+        decoding: decoding({ rule_set: null, rule_set_resolved: false,
+                             path: "decoder", decoder_id: "6aaeccc849df9b16",
+                             decoder: artifact() }),
+      })],
+    })]));
+    render(<CatalogScreen session={SESSION} />);
+
+    // Two chips read READY here — the catalogue's and this file's — so the
+    // assertion is that the file is one of them rather than that only one
+    // exists. Which of the two paths made it ready is the next two lines.
+    expect((await screen.findAllByText("READY")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Decoding" }));
+    // It opens on the path the file actually uses, not on the rule set.
+    expect(screen.getByRole("button", { name: "A decoder built from this file" }))
+      .toHaveProperty("ariaPressed", "true");
+    expect(screen.getByText(/Saved: 6aaeccc849df9b16, 1 shape/)).toBeTruthy();
+  });
+
+  it("says NO DECODER when a saved config names neither path", async () => {
+    // Three states rather than a boolean, because the fixes differ: NOT SAVED
+    // is a proposal nobody confirmed, NO DECODER is a config that is saved and
+    // still cannot run.
+    vi.spyOn(papi, "companyCatalogues")
+      .mockResolvedValue(view([company({
+      sources: [source({
+        decoding: decoding({ rule_set: null, rule_set_resolved: false,
+                             path: null }),
+      })],
+    })]));
+    render(<CatalogScreen session={SESSION} />);
+
+    expect(await screen.findByText("NO DECODER")).toBeTruthy();
   });
 
   it("re-analyses a stored file rather than making somebody upload it again", async () => {

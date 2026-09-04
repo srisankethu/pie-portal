@@ -138,6 +138,17 @@ const SYSTEMS = [
  * The eyebrow is unchanged on purpose. `prerender.test.tsx` pins that string,
  * so moving it is a deliberate act rather than a copy edit.
  *
+ * The decision card is labelled as an illustration *on the card*, and that is
+ * not decoration. It carried "Quote Q-1147 · line 3", a policy hash, a
+ * thresholds version and a revision number — all invented, none marked, and
+ * drawn in the same engineering-sheet vocabulary the site uses to mean "this
+ * came from a real record". The only visible tell that it was not real was an
+ * accident: the region swap changed the money and not the customer, so an
+ * Indian visitor saw an Ohio machine shop paying rupees. A page that hides its
+ * Proof section rather than name one customer it does not have cannot invent a
+ * quote number in its hero; the marker, and the test that pins it, are what
+ * make the rest of this page's honesty claim worth anything.
+ *
  * The decision card's figures are illustrative but formula-consistent:
  * floor = cost / (1 − margin floor). They live in `worked-example.ts`, in both
  * currencies, and its test re-derives every one of them — so editing the card
@@ -358,22 +369,39 @@ export function Landing({ onEnter, onDemo }: {
                  from the same values the card renders, so the two cannot say
                  different things. */
               aria-label={
-                "An illustrative PIE decision card, drawn like an engineering sheet. "
+                "An illustration of a PIE decision card, drawn like an engineering "
+                + "sheet. Not a real quote and not a customer's figures. "
                 + `A customer asked for ${line.units} units at ${unitPrice(price, line.asked)}, `
                 + `below the margin floor of ${unitPrice(price, line.floor)} that this `
                 + `organization's policy sets for the item; it costs ${unitPrice(price, line.cost)} `
                 + `and the recommended price is ${unitPrice(price, line.recommended)}. `
-                + "The line routes for a manager's approval, and a title block names the "
-                + "policy version that computed it."
+                + "The line routes for a manager's approval, and a title block says "
+                + "what computes it in the product."
               }
             >
               <span className="lp-corner tl" aria-hidden="true" />
               <span className="lp-corner tr" aria-hidden="true" />
               <span className="lp-corner bl" aria-hidden="true" />
               <span className="lp-corner br" aria-hidden="true" />
+              {/* The second chip was “Quote Q-1147 · line 3”, and the title
+                  block below it carried a policy hash, a thresholds version
+                  and a revision. Every one of them was invented, and together
+                  they did not read as an illustration — they read as a
+                  screenshot of a record, in the exact provenance vocabulary
+                  this site uses everywhere else to mean “this is real”.
+                  Borrowing that vocabulary to dress a drawing is the one
+                  forgery that costs the rest of the page its credit, and it
+                  was the most prominent element on the site.
+
+                  So the identifiers are gone rather than made vaguer — a
+                  plausible-looking id is the problem, not its digits — and the
+                  chip that held one now says what the card is. `proof.ts`
+                  hides an entire section rather than name one customer it
+                  cannot; the hero does not get an exemption from that rule for
+                  being the hero. */}
               <div className="lp-card-top">
                 <span className="lp-chip alert">Below floor</span>
-                <span className="lp-chip kind">Quote Q-1147 · line 3</span>
+                <span className="lp-chip kind">Illustration · not a real quote</span>
               </div>
               {/* Not a heading. The card is one `role="img"` with a full
                   aria-label, so nothing inside it is exposed to a screen
@@ -383,7 +411,7 @@ export function Landing({ onEnter, onDemo }: {
                   find and that no reader benefits from. Styled identically. */}
               <p className="lp-card-title">This line is priced under your own floor</p>
               <p className="lp-card-body">
-                <b>A machine shop in Ohio</b> asked for {line.units} units at{" "}
+                <b>{price.customer}</b> asked for {line.units} units at{" "}
                 {unitPrice(price, line.asked)} — below the floor your margin
                 policy sets for this item. It routes for a manager's sign-off:
                 the platform holds it, not the salesperson.
@@ -403,11 +431,18 @@ export function Landing({ onEnter, onDemo }: {
                 </div>
               </div>
               <div className="lp-actions"><span>Request approval</span><span>Reprice to floor</span></div>
+              {/* The title block stays, because what it says about the
+                  product is true and is the argument: a number here is
+                  computed by a policy you set and stamped with the version of
+                  it that judged the row. What it may not do is print a
+                  *particular* policy's hash and revision for a quote that does
+                  not exist. It names the mechanism now instead of forging an
+                  instance of it. */}
               <div className="lp-tblock lp-num">
-                <div><span className="k">Computed by</span>policy ci_4f2a</div>
-                <div><span className="k">Thresholds</span>v18</div>
-                <div><span className="k">Rev</span>18</div>
-                <div><span className="k">Sheet</span>1 / 1</div>
+                <div><span className="k">Computed by</span>your margin policy</div>
+                <div><span className="k">Stamped with</span>its version</div>
+                <div><span className="k">AI's part</span>none</div>
+                <div><span className="k">Sheet</span>illustration</div>
               </div>
             </div>
           </div>

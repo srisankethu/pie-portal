@@ -44,6 +44,15 @@ export interface ErpPageData {
   /** The connector key in `backend/app/ingestion/erp/`, and the file
    *  `erp.test.ts` reads to check this page. */
   connector: string;
+  /** Whether this system gives PIE a purchase cost at all — the connector
+   *  declares a `bills` read. False on Sage 100, whose AP history records GL
+   *  distributions rather than item lines, and a book with no cost has no
+   *  margin, no floor and no drift: the page has to sell what it can actually
+   *  do rather than the headline. `erp.test.ts` holds this against the
+   *  connector's declaration and refuses a floor claim on a page without one,
+   *  because the flag exists to stop that sentence being written, not to
+   *  record that somebody remembered. */
+  costed: boolean;
   /** The system's full name, as its own vendor writes it. */
   name: string;
   /** What people actually call it in a sentence. */
@@ -74,6 +83,7 @@ export const ERP_PAGES: ErpPageData[] = [
   {
     slug: "prophet-21",
     connector: "prophet21",
+    costed: true,
     name: "Epicor Prophet 21",
     short: "Prophet 21",
     title: "PIE for Epicor Prophet 21 · margin control on the book you already run",
@@ -155,6 +165,7 @@ export const ERP_PAGES: ErpPageData[] = [
   {
     slug: "netsuite",
     connector: "netsuite",
+    costed: true,
     name: "Oracle NetSuite",
     short: "NetSuite",
     title: "PIE for Oracle NetSuite · margin control on the book you already run",
@@ -240,6 +251,7 @@ export const ERP_PAGES: ErpPageData[] = [
   {
     slug: "acumatica",
     connector: "acumatica",
+    costed: true,
     name: "Acumatica",
     short: "Acumatica",
     title: "PIE for Acumatica · margin control on the book you already run",
@@ -301,10 +313,11 @@ export const ERP_PAGES: ErpPageData[] = [
       {
         title: "Margin drift, with stock in the picture",
         body:
-          "Of these three systems, Acumatica is the one that gives PIE quantity on hand "
-          + "and available as well as line-level history, so what a line returns on the cash "
-          + "it ties up is computable rather than absent — and every figure carries the "
-          + "policy version that judged it.",
+          "Acumatica is the connector that gives PIE quantity on hand and available "
+          + "outright, alongside line-level history, so what a line returns on the cash it "
+          + "ties up is computable rather than absent — and every figure carries the policy "
+          + "version that judged it. Business Central reports stock only where its API "
+          + "version does; the rest report none at all.",
       },
       {
         title: "Decline, and who actually pays late",
@@ -317,15 +330,304 @@ export const ERP_PAGES: ErpPageData[] = [
     evidence: "{{ACUMATICA_DISTRIBUTOR_EVIDENCE}}",
   },
   {
+    slug: "dynamics-365-business-central",
+    connector: "dynamics365",
+    costed: true,
+    name: "Microsoft Dynamics 365 Business Central",
+    short: "Dynamics 365 BC",
+    title:
+      "PIE for Microsoft Dynamics 365 Business Central · margin control on the book you already run",
+    description:
+      "PIE reads your Dynamics 365 BC company over the standard API v2.0 — customers, "
+      + "vendors, items, sales and purchase invoices with their lines, and orders — checks "
+      + "every new quote line against your own margin floor, and can create the agreed "
+      + "quote back in Business Central as a sales quote. Nothing else is ever written.",
+    connects:
+      "An Entra ID app registration on the client-credentials grant: an administrator "
+      + "registers one app, consents to the Business Central API permission and creates "
+      + "one client secret. No browser round-trip on a sync and no certificate to renew. "
+      + "The form asks for the directory (tenant) id, the application id and secret, and "
+      + "the environment — leave it blank for production — and then lists the companies "
+      + "that grant can actually see, so the company is picked by name instead of by "
+      + "pasting a GUID. A document's lines ride on the same request as its header "
+      + "($expand), and the date window is filtered on Microsoft's side rather than here.",
+    reads: [
+      { stage: "contacts", label: "Customers", source: "customers" },
+      { stage: "vendors", label: "Vendors", source: "vendors" },
+      { stage: "items", label: "The item master", source: "items" },
+      { stage: "invoices", label: "Sales invoices, with their lines", source: "salesInvoices · salesInvoiceLines" },
+      { stage: "bills", label: "Purchase invoices, with their lines", source: "purchaseInvoices · purchaseInvoiceLines" },
+      { stage: "sales_orders", label: "Sales orders", source: "salesOrders" },
+      { stage: "purchase_orders", label: "Purchase orders", source: "purchaseOrders" },
+    ],
+    writes:
+      "A quote built in PIE can be created in Business Central as a sales quote — the "
+      + "header, then one call per line, because salesQuoteLines is a child entity set and "
+      + "Business Central publishes no single call that carries both. That is the only "
+      + "thing PIE ever creates in Business Central. Business Central puts no uniqueness "
+      + "on externalDocumentNumber, so a second press would simply make a second quote: "
+      + "PIE reads the reference back before it sends rather than relying on the repeat to "
+      + "fail. It refuses rather than guessing — no reference to find it by afterwards, no "
+      + "Business Central customer, no priced lines, a line naming an item that does not "
+      + "already exist there, or a line with no price or quantity, and nothing is sent. "
+      + "Business Central would fill an omitted price from the item card, which is a "
+      + "number nobody here chose.",
+    setup:
+      "Two places, and a grant in one of them without the other looks like a broken "
+      + "connection rather than a missing permission. On the app registration: the "
+      + "Dynamics 365 Business Central application permission — API.ReadWrite.All, with "
+      + "admin consent. It is the only application permission Microsoft publishes for this "
+      + "API and there is no read-only variant, so the grant is wider than what PIE does "
+      + "with it: everything above is a read, and the one write is the sales quote. Inside "
+      + "each company: the permission sets on the app's own user (Microsoft Entra "
+      + "Applications → the app → Permission sets), starting with D365 BASIC — without it "
+      + "the token is valid and every company answers 401 — then read access to the "
+      + "entities above.",
+    gaps: [
+      "“Dynamics 365” names a family, and this reads one member of it: Business "
+      + "Central, the ERP that NAV became. Finance & Operations is a different product "
+      + "with a different API and PIE does not read it.",
+      "Customer payments are not read from Business Central. Payment timing, the "
+      + "collections worklist and days-to-pay have nothing to read on this book, and they "
+      + "say so rather than estimate around it.",
+      "Stock on hand is read only where your API version reports it on the item. Where it "
+      + "does not, PIE stores no stock snapshot at all rather than a zero, and the stock "
+      + "and GMROI screens stay empty and say why.",
+      "Draft, in-review and cancelled sales documents are skipped deliberately: a "
+      + "cancelled order must never count as demand a customer stopped placing.",
+      "Quotes already in Business Central are not imported — no ERP's are — so a win rate "
+      + "has no denominator until you start quoting here.",
+      "Credit memos are not read from Business Central in this version, so a returned or "
+      + "credited line still counts as sold until you say otherwise.",
+      "Vendor payments are not read from any ERP, so what has actually been paid out is "
+      + "outside what PIE can see on this book.",
+      "Salespeople are not imported, so every decision routes to management until "
+      + "accounts are assigned inside PIE.",
+    ],
+    fit: [
+      {
+        title: "Every quote line, against your own floor",
+        body:
+          "Cost comes off the purchase-invoice lines and the item card's own unit cost, "
+          + "both of which Business Central already holds. PIE checks each new line "
+          + "against the policy you set, routes a breach for sign-off — the platform holds "
+          + "it, not the salesperson — and, where the grant allows it, creates the agreed "
+          + "quote back in Business Central rather than making somebody retype it.",
+      },
+      {
+        title: "Margin drift, per customer and item",
+        body:
+          "The lines come back with their headers, so PIE has the line-level history to "
+          + "compute a margin per customer-item and compare it across windows. Every "
+          + "figure is stamped with the version of the policy that judged it and carries "
+          + "the operands it was computed from, so a number on the screen opens into the "
+          + "rows behind it.",
+      },
+      {
+        title: "The accounts that went quiet",
+        body:
+          "Decline is measured from the invoice history the first pull brings in, so it "
+          + "works on a Business Central book from the first sync — no quotes to record "
+          + "first and nothing to configure. What is not read on this book, payments, is "
+          + "stated on the screen that would have used it rather than approximated.",
+      },
+    ],
+    evidence: "{{DYNAMICS365_DISTRIBUTOR_EVIDENCE}}",
+  },
+  {
+    slug: "sage-x3",
+    connector: "sagex3",
+    costed: true,
+    name: "Sage X3",
+    short: "Sage X3",
+    title: "PIE for Sage X3 · margin control on the book you already run",
+    description:
+      "PIE reads your Sage X3 folder over its SData service — customers, suppliers, the "
+      + "item master, sales and purchase invoices with their lines, and orders — then "
+      + "checks every new quote line against your own margin floor before it goes out. "
+      + "Read-only: nothing is ever created in Sage X3.",
+    connects:
+      "A sign-in as a dedicated integration user against your Syracuse server's SData "
+      + "service, scoped to one X3 folder. The form asks for the Syracuse URL, that "
+      + "user's credentials and the folder (endpoint) whose books you want. Listings page "
+      + "200 records at a time and are cheap; a document's lines cost one $details call "
+      + "each, so a re-sync reads only what X3's own update stamp says has changed. The "
+      + "connection is checked when you save it, so a wrong folder or password fails there "
+      + "rather than on the first nightly sync.",
+    reads: [
+      { stage: "contacts", label: "Customers", source: "BPCUSTOMER" },
+      { stage: "vendors", label: "Suppliers", source: "BPSUPPLIER" },
+      { stage: "items", label: "The item master", source: "ITMMASTER" },
+      { stage: "invoices", label: "Sales invoices, with their lines", source: "SINVOICE" },
+      { stage: "bills", label: "Purchase invoices, with their lines", source: "PINVOICE" },
+      { stage: "sales_orders", label: "Sales orders", source: "SORDER" },
+      { stage: "purchase_orders", label: "Purchase orders", source: "PORDER" },
+    ],
+    writes: null,
+    setup:
+      "The rights are granted on the integration user's role in Syracuse: SData "
+      + "web-service access on the user itself — without it the sign-in succeeds and every "
+      + "entity answers 401, which reads like a wrong password — and read access to each "
+      + "table above in the connected folder. And because a Syracuse server usually sits "
+      + "on your own network, it has to be reachable on a public hostname: PIE refuses a "
+      + "source address that resolves inside a private range, when you save it and again "
+      + "on every fetch.",
+    gaps: [
+      "X3 nests a document's lines under a block whose name varies by representation, so "
+      + "PIE finds that block rather than assuming it — the first list of rows that name "
+      + "an item. A representation that exposes no such block yields a document with no "
+      + "lines, and every one of those is named on the sync report rather than averaged "
+      + "into a total nobody could trace.",
+      "Customer payments are not read from Sage X3. Payment timing, the collections "
+      + "worklist and days-to-pay have nothing to read on an X3 book, and they say so "
+      + "rather than estimate around it.",
+      "Stock levels are not read from Sage X3 in this version, so the stock and GMROI "
+      + "screens stay empty on an X3 book.",
+      "Credit notes are not read from Sage X3 in this version, so a returned or credited "
+      + "line still counts as sold until you say otherwise.",
+      "Quotes are not imported from any ERP, X3 included, so a win rate has no "
+      + "denominator until you start quoting here.",
+      "Vendor payments are not read from any ERP, so what has actually been paid out is "
+      + "outside what PIE can see on this book.",
+      "Salespeople are not imported, so every decision routes to management until "
+      + "accounts are assigned inside PIE.",
+    ],
+    fit: [
+      {
+        title: "Every quote line, against your own floor",
+        body:
+          "Your sales and purchase invoice lines are what a floor is computed from: what "
+          + "you sold, to whom, and what it cost you. PIE checks each new line against the "
+          + "policy you set and routes a breach for sign-off — the platform holds it, not "
+          + "the salesperson, and the sign-off is on record. Nothing is written back: the "
+          + "agreed quote is entered in X3 by whoever enters them today.",
+      },
+      {
+        title: "Margin drift, per customer and item",
+        body:
+          "Computed from the line-level history X3 already holds and compared across "
+          + "windows, with every figure stamped with the version of the policy that judged "
+          + "it. The arithmetic is deterministic and the operands come with it, so any "
+          + "number on the screen opens into the rows it came from.",
+      },
+      {
+        title: "The accounts that went quiet",
+        body:
+          "Decline is read from the invoice history the first pull brings in, so it works "
+          + "on an X3 book from the first sync — no quotes to record first, no payments "
+          + "needed, nothing to configure.",
+      },
+    ],
+    evidence: "{{SAGEX3_DISTRIBUTOR_EVIDENCE}}",
+  },
+  {
+    // The one page here whose honest answer is that the platform's headline
+    // capability does not work on this book. Sage 100's AP invoice history
+    // records GL distributions rather than item lines, so there is no
+    // per-item cost anywhere in it — and a margin floor with no cost is not a
+    // weaker floor, it is no floor. `costed: false` is what says so, and
+    // `erp.test.ts` holds it against the connector's own declaration in both
+    // directions: this page cannot claim a floor while the connector reads no
+    // bills, and it cannot keep denying one if a later version reads them.
+    slug: "sage-100",
+    connector: "sage100",
+    costed: false,
+    name: "Sage 100",
+    short: "Sage 100",
+    title: "PIE for Sage 100 · price discipline on the book you already run",
+    description:
+      "PIE reads your Sage 100 company over its SData feed — customers, vendors, the item "
+      + "master, invoice history with its lines, and open orders. Sage 100 records AP "
+      + "history as GL distributions rather than item lines, so purchase cost is not read "
+      + "and margin is reported unknown rather than estimated: what this book gives you is "
+      + "price history, demand and decline, not a margin floor.",
+    connects:
+      "A sign-in as a Sage 100 user with SData access, against the server your "
+      + "eBusiness/SData provider runs on, scoped to one three-character company code. The "
+      + "feed is Atom XML and PIE parses it with the standard library, by local name, so a "
+      + "provider namespace revision does not break the read. The connection is checked "
+      + "when you save it, so a wrong company code or password fails there rather than on "
+      + "the first nightly sync.",
+    reads: [
+      { stage: "contacts", label: "Customers", source: "AR_Customer" },
+      { stage: "vendors", label: "Vendors", source: "AP_Vendor" },
+      { stage: "items", label: "The item master", source: "CI_Item" },
+      { stage: "invoices", label: "Invoice history, with its lines", source: "AR_InvoiceHistoryHeader · AR_InvoiceHistoryDetail" },
+      { stage: "sales_orders", label: "Sales orders", source: "SO_SalesOrderHeader" },
+      { stage: "purchase_orders", label: "Purchase orders", source: "PO_PurchaseOrderHeader" },
+    ],
+    writes: null,
+    setup:
+      "Granted on the Sage 100 user's role, at Library Master → Main → Role Maintenance: "
+      + "SData access — without it the credential is accepted and no resource is served — "
+      + "and inquiry rights on each module above. Both invoice-history resources are "
+      + "needed rather than one: headers alone import totals with nothing under them, "
+      + "which is a book with revenue and no lines. And because a Sage 100 SData provider "
+      + "usually sits on your own network, it has to be reachable on a public hostname: "
+      + "PIE refuses a source address that resolves inside a private range, when you save "
+      + "it and again on every fetch.",
+    gaps: [
+      "Purchase cost is not read, and this is the gap that decides what the platform can "
+      + "do for you here. Sage 100's AP invoice history records GL distributions, not item "
+      + "lines, so there is no per-item cost to read anywhere in the book. Margin, the "
+      + "margin floor, margin drift and everything derived from them are reported unknown "
+      + "on a Sage 100 book — not estimated from a list price, not defaulted to zero, and "
+      + "never quietly passed as within policy.",
+      "Customer payments are not read from Sage 100, so payment timing, the collections "
+      + "worklist and days-to-pay have nothing to read on this book.",
+      "Stock levels are not read from Sage 100 in this version, so the stock and GMROI "
+      + "screens stay empty on this book.",
+      "Credit memos are not read from Sage 100 in this version, so a returned or credited "
+      + "line still counts as sold until you say otherwise.",
+      "Quotes are not imported from any ERP, Sage 100 included, so a win rate has no "
+      + "denominator until you start quoting here.",
+      "Vendor payments are not read from any ERP, so what has actually been paid out is "
+      + "outside what PIE can see on this book.",
+      "Salespeople are not imported, so every decision routes to management until "
+      + "accounts are assigned inside PIE.",
+    ],
+    fit: [
+      {
+        title: "What this customer has actually paid",
+        body:
+          "The price references on a quote line — what this customer last paid for the "
+          + "item, what they pay at this quantity, what comparable customers pay — are "
+          + "arithmetic over invoice lines and need no cost at all, so they are on the "
+          + "screen on a Sage 100 book. The two references that are derived from cost are "
+          + "absent rather than approximated, and the line says which.",
+      },
+      {
+        title: "The accounts that went quiet",
+        body:
+          "Decline is measured from the invoice history the first pull brings in: a "
+          + "customer's recent revenue against a comparable earlier window, with an "
+          + "activity floor and a minimum history so a quiet fortnight is not an alarm. It "
+          + "needs no cost and no payments, so it works on this book from the first sync.",
+      },
+      {
+        title: "Unknown, said out loud",
+        body:
+          "Every screen that would have needed cost reports UNKNOWN and names what is "
+          + "missing. That is the product working, not failing: a platform that answered "
+          + "“within policy” because it found no cost would be worth less than "
+          + "nothing on a book like this one. If your item-level purchase cost lives "
+          + "somewhere Sage 100 does not — a second system, or an AP process that could "
+          + "record item lines — that is the conversation worth having before you connect.",
+      },
+    ],
+    evidence: "{{SAGE100_DISTRIBUTOR_EVIDENCE}}",
+  },
+  {
     // The one page on this site whose subject is not a connector in
     // `ingestion/erp/`. Zoho Books is the book this platform was built
     // against and the source `state/` is derived from, so its integration is
     // not a connector at all — it is `ingestion/zoho_client.py`, and it is
-    // deeper than any of the three above. `erp.test.ts` therefore reads a
+    // deeper than any of the connectors above. `erp.test.ts` therefore reads a
     // different file for this page and matches a different declaration; see
     // the note on `stage` below.
     slug: "zoho-books",
     connector: "zoho",
+    costed: true,
     name: "Zoho Books",
     short: "Zoho Books",
     title: "PIE for Zoho Books · margin control on the book you already run",

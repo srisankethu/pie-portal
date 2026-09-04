@@ -26,6 +26,7 @@ import { money } from "../../money";
 import { InlineLink, LoadingState, MetricCard } from "../kit";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
+import { vizPath } from "../route";
 import { Seg } from "./Seg";
 import { useInsight } from "./useInsight";
 
@@ -46,8 +47,8 @@ function value(t: Row): string {
   return "—";
 }
 
-function Tile({ tile, onNavigate }: {
-  tile: Row; onNavigate: (r: string) => void;
+function Tile({ tile }: {
+  tile: Row;
 }) {
   const both = tile.amount != null && tile.amount_out != null
     && (Number(tile.amount) || Number(tile.amount_out));
@@ -82,7 +83,7 @@ function Tile({ tile, onNavigate }: {
               Nothing outstanding.
             </Typography>
           ) : tile.route ? (
-            <InlineLink onClick={() => onNavigate(String(tile.route))}>
+            <InlineLink to={vizPath(String(tile.route))}>
               Work through these →
             </InlineLink>
           ) : null}
@@ -144,9 +145,7 @@ function MovedRange({
   );
 }
 
-export function DailyScreen({
-  session, onNavigate,
-}: { session: PlatformSession; onNavigate: (route: string) => void }) {
+export function DailyScreen({ session }: { session: PlatformSession }) {
   // The window the "What moved" band reports over. Empty means the default:
   // since the previous sync. Deliberately *not* page-wide — see MovedRange.
   const [frm, setFrm] = useState("");
@@ -186,7 +185,7 @@ export function DailyScreen({
         severity={fresh.stale ? "warning" : "info"}
         sx={{ mb: 2 }}
         action={
-          <InlineLink onClick={() => onNavigate("data")}>Sync</InlineLink>
+          <InlineLink to={vizPath("data")}>Sync</InlineLink>
         }
       >
         <AlertTitle sx={{ mb: 0 }}>
@@ -232,7 +231,7 @@ export function DailyScreen({
               }}
             >
               {rows(band.tiles).map((t, j) => (
-                <Tile key={j} tile={t} onNavigate={onNavigate} />
+                <Tile key={j} tile={t} />
               ))}
             </Box>
           </Box>

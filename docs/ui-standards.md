@@ -105,6 +105,27 @@ validates on blur next to one that validates on submit teaches nothing.
 
 `Drawer`, `AppBar`, `Breadcrumbs`, `Tabs`. Consistent throughout.
 
+**Anything that goes somewhere is a link, and its destination comes from
+`route.ts`.** A `<button onClick={() => navigate(…)}>` looks identical on screen
+and works on a left click, so this is only visible in what the browser can no
+longer do: no ctrl-click, no middle-click, no "open in a new tab", no
+destination on hover, and announced to a screen reader as a button. Two screens
+side by side is the ordinary way this desk is used, and a button cannot open
+one.
+
+So: `component={RouterLink}` with `to`, or `InlineLink to=` for a name inside a
+sentence or a chart. `onClick` stays for the presses that do not leave the
+screen — Close, reset, "Show everything". The path is `vizPath()`, `pathFor()`
+or `PATH` from `route.ts`, never a string written out at the call site.
+
+Grid rows are the exception, and only the rows: AG Grid draws them, so
+`onRowClick` stays a handler. Where a row has one identifying column, make that
+cell the link and leave the row click as the shortcut.
+
+`route.ts` opens by describing what this cost — "**nothing was a link**" — and
+that migration only reached the nav bar. `kit.contract.test.ts` now holds the
+rule for `InlineLink`; the rest is being converted as screens are touched.
+
 ## 10. Reusable components
 
 A pattern that appears more than once becomes a component. Composition over

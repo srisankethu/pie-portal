@@ -27,6 +27,7 @@ import { DataGrid, numeric } from "../DataGrid";
 import { EntityName } from "../EntityName";
 import { papi } from "../api";
 import type { EntityOrigin, PlatformSession } from "../types";
+import { vizPath } from "../route";
 import { Figure, Panel, ValueAxis, stateOf } from "./Panel";
 import { pct, useInsight, pp } from "./useInsight";
 import { compactMoney, thinLabels, useMeasure } from "./useMeasure";
@@ -367,9 +368,7 @@ export function LandscapeScreen({
 }
 
 // ── Composition (revenue mix · order flow) as small multiples ───────────────
-export function CompositionScreen({
-  session, onNavigate,
-}: { session: PlatformSession; onNavigate: (r: string) => void }) {
+export function CompositionScreen({ session }: { session: PlatformSession }) {
   const [dimension, setDimension] = useState("customer");
   const [measure, setMeasure] = useState("revenue");
   const [months, setMonths] = useState(12);
@@ -476,7 +475,7 @@ export function CompositionScreen({
                     <InlineLink
                       bold
                       disabled={!openable}
-                      onClick={() => onNavigate(`customer/${String(s.key)}`)}
+                      to={vizPath(`customer/${String(s.key)}`)}
                     >
                       {String(s.label)}
                     </InlineLink>

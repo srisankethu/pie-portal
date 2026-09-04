@@ -18,6 +18,8 @@
 // a bar's colour is an *encoding* with a legend, not a status.
 
 import type { ReactNode } from "react";
+import { Link as RouterLink } from "react-router-dom";
+import type { SxProps, Theme } from "@mui/material/styles";
 
 import { formatDateTime } from "../when";
 import type { HumanAction, HumanActionEntry } from "./types";
@@ -200,21 +202,79 @@ export function VarianceIndicator({
 /** A name inside a sentence or a chart that opens the thing it names.
  *
  *  Replaces the `.link-btn` buttons in `viz.css`. They were `<button>`s dressed
- *  as links: correct semantics for something that navigates within a SPA, but
- *  every one of them had to re-declare its own underline, colour and focus
- *  ring, and the disabled state was a second class (`.multiple-name:disabled`)
- *  that only one of the five had. `Link component="button"` keeps the button
- *  semantics and brings the rest from the theme. */
-export function InlineLink({
-  children, onClick, disabled = false, bold = false, sx,
-}: {
+ *  as links, and every one of them had to re-declare its own underline, colour
+ *  and focus ring, with the disabled state a second class
+ *  (`.multiple-name:disabled`) that only one of the five had. This brings the
+ *  rest from the theme.
+ *
+ *  **`to` for somewhere, `onClick` for something.** The original said a button
+ *  was "correct semantics for something that navigates within a SPA". That was
+ *  true of the SPA it was written for and stopped being true when `route.ts`
+ *  landed: this application has real URLs now, and a destination reachable only
+ *  by a click handler is a destination the browser does not know about. No
+ *  ctrl-click, no middle-click, no "open in a new tab", no destination on
+ *  hover, and announced to a screen reader as a button. That is the whole of
+ *  what `route.ts` says the router migration was for — "**nothing was a
+ *  link**" — and the nav bar got it while every name inside a screen did not.
+ *
+ *  So a call site that goes somewhere passes `to` and renders an `<a href>`;
+ *  one that does something here — Close, reset, Show everything — passes
+ *  `onClick` and stays a `<button>`, which is what it should have been all
+ *  along. The union below makes "neither" a type error rather than a dead
+ *  control that looks alive.
+ *
+ *  `disabled` still wins over `to`: a name that cannot be opened must not be a
+ *  link, because an anchor has no disabled state and the browser would follow
+ *  it. */
+type InlineLinkProps = {
   children: ReactNode;
-  onClick: () => void;
   disabled?: boolean;
   /** For a name that heads its own row rather than sitting mid-sentence. */
   bold?: boolean;
   sx?: object;
-}) {
+} & (
+  /** Where this goes: a path from `route.ts` — `vizPath()` or `pathFor()` —
+   *  never a string written out here. `onClick` alongside it is for what else
+   *  the press does (closing the panel it sits in); the navigation is the
+   *  anchor's, not the handler's. */
+  | { to: string; onClick?: () => void }
+  /** Or what it does, when it does not leave the screen. */
+  | { to?: undefined; onClick: () => void }
+);
+
+export function InlineLink({
+  children, to, onClick, disabled = false, bold = false, sx,
+}: InlineLinkProps) {
+  const style: SxProps<Theme> = {
+    font: "inherit",
+    textAlign: "left",
+    minWidth: 0,
+    // A `<button>` is `vertical-align: middle` by default, which lifts the
+    // name off the baseline of the amount sitting next to it. The anchor
+    // branch keeps it so the two read identically in a row of figures.
+    verticalAlign: "baseline",
+    fontWeight: bold ? 600 : undefined,
+    // A disabled name is still worth reading — it is a customer who cannot
+    // be opened, not an absent one.
+    color: disabled ? "text.secondary" : undefined,
+    cursor: disabled ? "default" : "pointer",
+    ...sx,
+  };
+
+  if (to !== undefined && !disabled) {
+    return (
+      <Link
+        component={RouterLink}
+        to={to}
+        variant="body2"
+        underline="always"
+        onClick={onClick}
+        sx={style}
+      >
+        {children}
+      </Link>
+    );
+  }
   return (
     <Link
       component="button"
@@ -223,20 +283,7 @@ export function InlineLink({
       underline={disabled ? "none" : "always"}
       disabled={disabled}
       onClick={onClick}
-      sx={{
-        font: "inherit",
-        textAlign: "left",
-        minWidth: 0,
-        // A `<button>` is `vertical-align: middle` by default, which lifts the
-        // name off the baseline of the amount sitting next to it.
-        verticalAlign: "baseline",
-        fontWeight: bold ? 600 : undefined,
-        // A disabled name is still worth reading — it is a customer who cannot
-        // be opened, not an absent one.
-        color: disabled ? "text.secondary" : undefined,
-        cursor: disabled ? "default" : "pointer",
-        ...sx,
-      }}
+      sx={style}
     >
       {children}
     </Link>

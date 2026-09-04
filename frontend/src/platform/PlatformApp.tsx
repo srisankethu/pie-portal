@@ -1218,7 +1218,7 @@ export default function PlatformApp() {
             {/* ── the visualization layer ── */}
             <Route path={PATH.weather} element={<WeatherScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.opportunities} element={<OpportunityScreen session={session} onNavigate={goViz} />} />
-            <Route path={PATH.lostRevenue} element={<LostRevenueScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.lostRevenue} element={<LostRevenueScreen session={session} />} />
             {/* Two answers to one question, stacked rather than split across two
                 nav items: the journey chart is month by month, the migration
                 matrix is period against period and names who moved. `journey`
@@ -1229,13 +1229,13 @@ export default function PlatformApp() {
               element={
                 <div className="screen-stack">
                   <JourneyScreen session={session} onNavigate={goViz} />
-                  <MigrationMatrix session={session} months={3} onNavigate={goViz} />
+                  <MigrationMatrix session={session} months={3} />
                 </div>
               }
             />
             <Route path={PATH.simulate} element={<SimulatorScreen session={session} />} />
             <Route path={PATH.landscape} element={<LandscapeScreen session={session} onNavigate={goViz} />} />
-            <Route path={PATH.composition} element={<CompositionScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.composition} element={<CompositionScreen session={session} />} />
             <Route path={PATH.cadence} element={<CadenceScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.payments} element={<PaymentsScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.payables} element={<PayablesScreen session={session} onNavigate={goViz} />} />
@@ -1245,9 +1245,9 @@ export default function PlatformApp() {
             <Route path={PATH.stock} element={<StockScreen session={session} />} />
             <Route path={PATH.gmroi} element={<GmroiScreen session={session} />} />
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
-            <Route path={PATH.bonds} element={<BondsScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.bonds} element={<BondsScreen session={session} />} />
             <Route path={PATH.mix} element={<MixScreen session={session} onNavigate={goViz} />} />
-            <Route path={PATH.dependency} element={<DependencyScreen session={session} onNavigate={goViz} />} />
+            <Route path={PATH.dependency} element={<DependencyScreen session={session} />} />
             <Route path={PATH.targets} element={<TargetWallScreen session={session} />} />
             <Route path={PATH.catalogue} element={<CatalogueScreen session={session} />} />
             <Route path={PATH.quoteOutcomes} element={<QuoteOutcomesScreen session={session} />} />
@@ -1496,7 +1496,7 @@ function HomeScreen({
           to the panel above it would trade one blank screen for another. */}
       {mayReadDaily && (
         <Suspense fallback={<LoadingState rows={2} label="Reading this morning…" />}>
-          <DailyScreen session={session} onNavigate={onNavigate} />
+          <DailyScreen session={session} />
         </Suspense>
       )}
 
@@ -2290,7 +2290,7 @@ function CustomerScreen({
         </div>
         <div className="screen-stack">
           <JourneyScreen session={session} onNavigate={onNavigate} />
-          <MigrationMatrix session={session} months={3} onNavigate={onNavigate} />
+          <MigrationMatrix session={session} months={3} />
         </div>
       </div>
     );

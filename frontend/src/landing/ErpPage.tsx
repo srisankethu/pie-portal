@@ -1,11 +1,11 @@
 import { filled } from "./content";
 import { demoCta } from "./cta";
 import { FooterBlurb, TrustBand } from "./shared";
-import type { ErpPageData } from "./erp";
+import { ERP_PAGES, type ErpPageData } from "./erp";
 import "./landing.css";
 
 /**
- * One ERP's landing page — the same page for all three, from `erp.ts`.
+ * One ERP's landing page — the same page for every system, from `erp.ts`.
  *
  * These are static documents. `scripts/prerender.mjs` renders this component
  * into `dist/erp/{slug}.html` **without** the module script tag, so a
@@ -92,16 +92,42 @@ export function ErpPage({ page }: { page: ErpPageData }) {
           <div className="lp-wrap">
             <div className="lp-hero-copy">
               <p className="lp-eyebrow">For distributors running {page.name}</p>
-              <h1>
-                Stop quoting away your <em>margin</em> on {page.short}.
-              </h1>
-              <p className="lp-sub">
-                PIE connects to the {page.name} book you already run, reads the
-                trading history in it, and checks every new quote line against{" "}
-                <b>your own margin floor</b> before it goes out — then reports
-                the margin that held. Your ERP keeps the records; PIE decides
-                nothing you did not set a policy for.
-              </p>
+              {/* Two headlines, and which one a page gets is not a tone
+                  choice. A margin floor is arithmetic on purchase cost, and a
+                  book that carries no item-level cost cannot have one — so on
+                  a system where the connector reads no bills, the headline
+                  claim of this whole site is false, and the page has to lead
+                  with what it can actually do. See `costed` in `erp.ts`. */}
+              {page.costed ? (
+                <>
+                  <h1>
+                    Stop quoting away your <em>margin</em> on {page.short}.
+                  </h1>
+                  <p className="lp-sub">
+                    PIE connects to the {page.name} book you already run, reads
+                    the trading history in it, and checks every new quote line
+                    against <b>your own margin floor</b> before it goes out —
+                    then reports the margin that held. Your ERP keeps the
+                    records; PIE decides nothing you did not set a policy for.
+                  </p>
+                </>
+              ) : (
+                <>
+                  <h1>
+                    Know what your {page.short} book <em>can</em> tell you
+                    before you quote.
+                  </h1>
+                  <p className="lp-sub">
+                    PIE connects to the {page.name} book you already run and
+                    reads the trading history in it: what each customer paid
+                    for each item, what they pay at this quantity, and which
+                    accounts have gone quiet. What {page.short} does not hold
+                    is <b>item-level purchase cost</b> — so on this book PIE
+                    reports margin as unknown rather than estimating one, and
+                    says so on every screen that would have used it.
+                  </p>
+                </>
+              )}
               <div className="lp-ctas">
                 <a className="lp-btn solid" {...heroDemo.props}>{heroDemo.label}</a>
                 {/* Only where a scheduling link exists: without one the
@@ -236,7 +262,11 @@ export function ErpPage({ page }: { page: ErpPageData }) {
 
         <div className="lp-final">
           <div className="lp-wrap">
-            <h2>Your {page.short} book already knows where the margin went.</h2>
+            <h2>
+            {page.costed
+              ? `Your ${page.short} book already knows where the margin went.`
+              : `Your ${page.short} book already knows what your customers pay.`}
+          </h2>
             <p>
               Thirty minutes, your own numbers on the screen, and an honest
               answer about what PIE can and cannot see in {page.name}.
@@ -253,10 +283,20 @@ export function ErpPage({ page }: { page: ErpPageData }) {
         <footer className="lp-footer">
           <div className="lp-wrap">
             <FooterBlurb />
+            {/* The other systems, derived rather than listed. The written-out
+                version was three links on a site that had four pages — Zoho
+                Books had been added and this list had not, so the only page
+                that could reach it was the landing page's strip, and every
+                sub-page told a reader those three were all there was. A list
+                of siblings is exactly the kind that goes stale silently: it
+                is still valid markup and still renders, it is simply no
+                longer true. */}
             <div>
-              <a href="/erp/prophet-21">Prophet 21</a>{" · "}
-              <a href="/erp/netsuite">NetSuite</a>{" · "}
-              <a href="/erp/acumatica">Acumatica</a>{" · "}
+              {ERP_PAGES.filter((other) => other.slug !== page.slug).map((other) => (
+                <span key={other.slug}>
+                  <a href={`/erp/${other.slug}`}>{other.short}</a>{" · "}
+                </span>
+              ))}
               <a href="/">Everything else</a>
             </div>
           </div>

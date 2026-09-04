@@ -147,12 +147,15 @@ not exist is the claim a diligence process takes apart.
 | `{{PROPHET21_DISTRIBUTOR_EVIDENCE}}` | What distributors running Prophet 21 actually say about margin on their own quote desk |
 | `{{NETSUITE_DISTRIBUTOR_EVIDENCE}}` | The same, for NetSuite |
 | `{{ACUMATICA_DISTRIBUTOR_EVIDENCE}}` | The same, for Acumatica |
-| `{{ZOHO_DISTRIBUTOR_EVIDENCE}}` | The same, for Zoho Books — the one of the four where we run the book ourselves, so this is the panel most likely to be fillable first, and still not with our own words |
+| `{{DYNAMICS365_DISTRIBUTOR_EVIDENCE}}` | The same, for Dynamics 365 Business Central |
+| `{{SAGEX3_DISTRIBUTOR_EVIDENCE}}` | The same, for Sage X3 |
+| `{{SAGE100_DISTRIBUTOR_EVIDENCE}}` | The same, for Sage 100 — and the one to be most careful with, because that page's honest answer is that this book carries no item-level cost. A quote about margin recovery from a Sage 100 distributor would contradict the page it sits on |
+| `{{ZOHO_DISTRIBUTOR_EVIDENCE}}` | The same, for Zoho Books — the one where we run the book ourselves, so this is the panel most likely to be fillable first, and still not with our own words |
 
 This is the one field on those pages with no source in the code. Everything
 else there — how PIE connects, what it reads, what it writes, what it cannot
 see — is read from the connector module and pinned by `src/landing/erp.test.ts`
-against that module's own source. These three are research, and until the
+against that module's own source. These are research, and until the
 research exists the panel should carry a token or be deleted.
 
 ---

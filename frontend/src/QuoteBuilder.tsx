@@ -65,16 +65,29 @@ import type { PlatformSession } from "./platform/types";
 import { formatTime } from "./when";
 import { useQuoteIntelligence } from "./useQuoteIntelligence";
 
-const FILTERS: [string, string][] = [
-  ["ALL", "All"],
-  ["NEEDS", "Needs attention"],
-  ["PROC", "Potential procurement"],
-  ["BOOKS", "Missing Zoho item"],
-  ["MANUAL", "Manual review"],
-  ["UNRES", "Unresolved"],
-  ["SUBST", "Substituted"],
-  ["EXC", "Commercial exceptions"],
-];
+/** The filter row, named against whichever system this quote's books are in.
+ *
+ *  A function rather than a constant because one of the eight names the ERP:
+ *  the chip counting lines the ledger does not hold said "Missing Zoho item"
+ *  to every customer, including the ones running Business Central or Prophet
+ *  21. The name is the server's — see `Quote.systemShort` — and "books" where
+ *  nothing is connected, which claims no system rather than the wrong one.
+ *
+ *  The *short* name, matching the chip on the line itself. Eight chips share
+ *  one row, and "Not in Dynamics 365 Business Central" wraps it onto two; the
+ *  send button below carries the system's full name, so nothing is lost. */
+function filtersFor(systemShort: string): [string, string][] {
+  return [
+    ["ALL", "All"],
+    ["NEEDS", "Needs attention"],
+    ["PROC", "Potential procurement"],
+    ["BOOKS", `Not in ${systemShort}`],
+    ["MANUAL", "Manual review"],
+    ["UNRES", "Unresolved"],
+    ["SUBST", "Substituted"],
+    ["EXC", "Commercial exceptions"],
+  ];
+}
 
 
 /** What this screen answers — the sentence the Quotes door used to carry on a
@@ -436,7 +449,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       // unconditional. Against a real ledger it can, and announcing a creation
       // that did not happen is the one thing this screen must not do — the line
       // is left reading CREATE FAILED, and the reason is said out loud.
-      flash(q.createItemError || "Item created in Zoho Books");
+      flash(q.createItemError || `Item created in ${q.systemLabel}`);
     });
 
   const doDiscount = (pct: number) =>
@@ -446,7 +459,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       flash(`${q.applied} line(s) discounted ${pct}%`);
     });
 
-  /** Create the Zoho estimate, or say — durably — why not.
+  /** Create the document in the customer's books, or say — durably — why not.
    *
    *  The refusal used to be a three-second grey snackbar and a filter change.
    *  Press the button, watch the grid re-filter, and by the time you have
@@ -485,6 +498,8 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   // mutation enforces with a 403, applied here so the refusal is never the
   // first thing somebody sees.
   const readOnly = !quote.canEdit;
+  // What to call the ledger, in its own words — see `Quote.systemLabel`.
+  const filters = filtersFor(quote.systemShort);
   const ownerName = quote.owner?.name || "its owner";
 
   return (
@@ -610,7 +625,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           clone. The header strip is not this — it identifies the quote — so
           only this one moves. */}
       <FilterPanel>
-        {FILTERS.map(([key, label]) => (
+        {filters.map(([key, label]) => (
           <FilterChip
             key={key}
             label={label}
@@ -712,6 +727,23 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         </Alert>
       )}
 
+      {/* The stand-in, said out loud. `ZOHO_QUOTE_SERVICE` defaults to
+          `mock`, which is right — a fresh clone must never write to a real
+          ledger — and silent, which is not: the stand-in derives in-books,
+          stock and list price from a hash of the code, so a line reading
+          "NOT IN BOOKS" under this organization's real system name is
+          telling somebody something about nothing. §1 asks for the absence
+          to be stated rather than to read as a pass. */}
+      {hasLines && !quote.booksLive && quote.system && (
+        <Alert severity="warning" sx={{ mb: 2 }}>
+          <AlertTitle>These lines were not checked against {quote.systemLabel}</AlertTitle>
+          The platform is running against its offline stand-in, so stock, list
+          price and “in the books” on every line below are stand-in figures
+          rather than the ones {quote.systemLabel} holds. Set
+          <code> ZOHO_QUOTE_SERVICE=live </code> to read the real ledger.
+        </Alert>
+      )}
+
       {/* The lines are in and nobody has said whose they are. Said here,
           beside the grid, because this is the point at which it starts to
           matter: pricing reads the customer's history, the books to send into
@@ -789,6 +821,8 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
             lines={visible}
             mgmt={mgmt}
             readOnly={readOnly}
+            systemLabel={quote.systemLabel}
+            systemShort={quote.systemShort}
             intel={ci.byLineId}
             selectedIds={selection}
             onSelectionChange={setSelectedIds}

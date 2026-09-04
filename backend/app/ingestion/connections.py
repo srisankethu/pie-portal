@@ -409,6 +409,19 @@ def system_label_for(connector: str) -> str:
     return (CONNECTORS.get(connector) or {}).get("label") or connector
 
 
+def system_short_for(connector: str) -> str:
+    """The same name, short enough for a button in a grid cell.
+
+    "Zoho" rather than "Zoho Books", "BC" rather than "Dynamics 365 Business
+    Central". A quote grid has a 60-odd-pixel column for "create this item in
+    the ledger", and the full label does not fit in it — which is how that
+    button came to say the word "Zoho" to every customer, whatever they run.
+    """
+    from ..domain.origin import CONNECTORS
+    meta = CONNECTORS.get(connector) or {}
+    return meta.get("short") or meta.get("label") or connector
+
+
 def quote_writer_ready(connector: str) -> bool:
     """Whether a quote built here can actually be sent to this connector today.
 

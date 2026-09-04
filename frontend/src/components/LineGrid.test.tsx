@@ -130,6 +130,11 @@ function props(mgmt: boolean, intel: Record<string, LineIntelligence> = {},
                lines: Line[] = [lineWithEconomics()]) {
   return {
     lines, mgmt, intel,
+    // The connected system's own words. Named here rather than defaulted in
+    // the component: the whole point of the props is that the grid never
+    // decides what to call somebody's ERP.
+    systemLabel: "Zoho Books",
+    systemShort: "Zoho",
     selectedIds: [] as string[],
     onSelectionChange: NOOP,
     onOpen: NOOP,
@@ -337,5 +342,47 @@ describe("the empty state", () => {
   it("explains itself instead of rendering a bare grid", () => {
     render(<LineGrid {...props(false, {}, [])} />);
     expect(screen.getByText(/paste an RFQ/i)).toBeInTheDocument();
+  });
+});
+
+// ── the ledger has a name, and it is not always Zoho ────────────────────────
+//
+// The grid printed the word "Zoho" at every customer: the chip on a line the
+// ledger does not hold said "no Zoho item" and the button that creates one
+// said "+ Zoho". A reader running Business Central was being pointed at a
+// system they do not have. The names are props now — the server's words for
+// whichever system the quote's books are in (`Quote.systemShort`) — and what
+// is pinned here is that the grid *reads them* rather than deciding for
+// itself. Both assertions matter: the right name present, and the wrong one
+// absent. Only the second one fails when somebody hardcodes it again.
+describe("naming the system the books are in", () => {
+  function notInBooks(): Line {
+    const line = lineWithEconomics();
+    return {
+      ...line,
+      inBooks: false,
+      status: { kind: "operational", label: "NOT IN BOOKS" },
+      flags: { ...line.flags, attention: true, missingBooks: true },
+    };
+  }
+
+  it("names the connected system on a line the ledger does not hold", async () => {
+    render(<LineGrid {...props(false, {}, [notInBooks()])}
+                     systemLabel="Dynamics 365 Business Central"
+                     systemShort="D365 BC" />);
+    await screen.findByText("Line total");
+    expect(screen.getByText("not in D365 BC")).toBeInTheDocument();
+    expect(screen.queryByText(/zoho/i)).toBeNull();
+  });
+
+  it("names it on the create-item control too, in full where there is room", () => {
+    pretendViewportIs(412);
+    render(<LineGrid {...props(false, {}, [notInBooks()])}
+                     systemLabel="Epicor Prophet 21"
+                     systemShort="P21" />);
+    // The card has the width for the full name; the grid cell does not, which
+    // is why the two differ and why both are props.
+    expect(screen.getByText("+ Create in Epicor Prophet 21")).toBeInTheDocument();
+    expect(screen.queryByText(/zoho/i)).toBeNull();
   });
 });

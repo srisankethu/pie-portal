@@ -845,8 +845,14 @@ NO PRICE · NOT IN BOOKS · BOOKS OFFLINE · UNRESOLVED · AMBIGUOUS · PIE OFFL
 
 **Path.**
 1. Filter chips with server counts: All · Needs attention · Potential
-   procurement · Missing Zoho item · Manual review · Unresolved · Substituted ·
-   Commercial exceptions. Search (`/` focuses). Managers additionally get a
+   procurement · **Not in _<system>_** · Manual review · Unresolved ·
+   Substituted · Commercial exceptions. Every chip, control and message that
+   names the ledger reads the quote's own `system` / `systemLabel` /
+   `systemShort` / `documentTerm` — the server's words for whichever system
+   this quote's company keeps its books in ("Not in Zoho", "Not in D365 BC",
+   and "Not in books" where nothing is connected). It is never a literal:
+   telling a Business Central user to look in Zoho names a system they do
+   not have. Search (`/` focuses). Managers additionally get a
    **Below margin floor** chip and warning — the count is *omitted from a
    salesperson's response server-side*, not zeroed.
 2. A proposed line shows CONFIRM READING, the customer's verbatim words in
@@ -969,8 +975,12 @@ within-policy · cancelled.
 
 ### 7.8 Send the estimate
 
-**Trigger.** "Create Zoho estimate" (label adapts per connector; disabled
-while busy, lineless, gate-blocked, or already sent unchanged).
+**Trigger.** "Create _<system> <document>_" — "Create Zoho Books estimate",
+"Create Dynamics 365 Business Central sales quote" — from the quote's own
+naming fields, never a literal. Disabled while busy, lineless, gate-blocked,
+read-only for this reader, or already sent unchanged. **Every** answer this
+endpoint gives carries the naming, refusals included: a screen saying what it
+failed to create still has to name it.
 **Path.** The server works through, in order:
 1. **Technical blockers** — every CONFIRM READING / UNRESOLVED / AMBIGUOUS /
    INCOMPATIBLE / PIE OFFLINE line refuses the send, naming the lines; the

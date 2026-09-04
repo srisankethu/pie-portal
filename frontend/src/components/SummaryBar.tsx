@@ -37,6 +37,16 @@ export function SummaryBar({
 }) {
   const hasLines = quote.lines.length > 0;
   const sent = quote.estimate !== null && quote.estimate !== undefined;
+  // What the send actually creates, in the words of the system it creates it
+  // in — "Zoho Books estimate", "Dynamics 365 Business Central sales quote".
+  // This button said "Create Zoho estimate" to every customer, which names a
+  // record type most of them do not have. See `Quote.systemLabel`.
+  //
+  // The bare document term where no system is connected: `systemLabel` is
+  // "your books" there, and "Create your books quote" is not a sentence.
+  const document = quote.system
+    ? `${quote.systemLabel} ${quote.documentTerm}`
+    : quote.documentTerm;
 
   return (
     <Paper
@@ -139,11 +149,11 @@ export function SummaryBar({
             : gateBlockedReason ?? (!hasLines
             ? "Add lines before creating the estimate"
             : sent && quote.estimate!.current
-              ? `This quote is already Zoho estimate ${quote.estimate!.number}. `
+              ? `This quote is already ${document} ${quote.estimate!.number}. `
                 + "Nothing has changed since, so sending again returns the same one."
               : sent
-                ? "The quote has changed since it was sent — this creates a new estimate"
-                : "Create a Zoho estimate from the current quote")
+                ? `The quote has changed since it was sent — this creates a new ${quote.documentTerm}`
+                : `Send this quote into ${quote.systemLabel}`)
         }
         onClick={onCreateEstimate}
         disabled={busy || readOnly || !hasLines || !!gateBlockedReason
@@ -159,7 +169,7 @@ export function SummaryBar({
                 ? "Already sent"
                 : sent
                   ? "Send the amended quote"
-                  : "Create Zoho estimate"}
+                  : `Create ${document}`}
       </Button>
     </Paper>
   );

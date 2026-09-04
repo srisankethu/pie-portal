@@ -14,9 +14,17 @@
  * product actually applies: floor = cost / (1 − margin floor). Written out
  * twice in prose, they drifted the moment somebody edited one of them.
  * `worked-example.test.ts` re-derives every figure here and fails if it does
- * not hold. The line is illustrative — it is not any customer's, and the page
- * says so — but an illustrative figure that is arithmetically wrong is a page
- * arguing with the product it describes.
+ * not hold. The line is illustrative — it is not any customer's — but an
+ * illustrative figure that is arithmetically wrong is a page arguing with the
+ * product it describes.
+ *
+ * This file used to say "and the page says so", and the page did not. The word
+ * "illustrative" appeared in the card's `aria-label` and in a comment; a
+ * sighted reader got a quote number, a customer, a policy hash and a revision,
+ * drawn as a record and captioned nowhere. That is the same defect the rest of
+ * this site spends `{{PLACEHOLDER}}` tokens avoiding — `proof.ts` hides a whole
+ * section rather than invent one customer, while the hero above it invented
+ * one — so the marker is now visible on the card and pinned by a test.
  *
  * Nothing here is a computed *commercial* number: no price on a real quote is
  * decided by this file, and the platform's own numbers still come from
@@ -62,6 +70,16 @@ export interface WorkedLine {
 
 export interface RegionExample {
   region: Region;
+  /** Who the line is for, in the card's own words.
+   *
+   *  Here rather than in the JSX because that is where it was, and the money
+   *  was here: the region swap changed the currency and left the customer
+   *  alone, so a visitor on an Indian clock read “a machine shop in Ohio”
+   *  paying ₹412 a unit. Nobody wrote that sentence — it was assembled out of
+   *  two halves that no longer agreed, which is the only way a page whose
+   *  every figure has a test on it still manages to say something false. One
+   *  record now holds both, so they cannot come apart. */
+  customer: string;
   /** ISO 4217, for `Intl.NumberFormat`. */
   currency: "USD" | "INR";
   /** The grouping a reader of this line expects: 4,00,000 in India is a real
@@ -76,6 +94,7 @@ export interface RegionExample {
 const EXAMPLES: Record<Region, RegionExample> = {
   INTL: {
     region: "INTL",
+    customer: "A machine shop in Ohio",
     currency: "USD",
     locale: "en-US",
     unitDecimals: 2,
@@ -88,6 +107,7 @@ const EXAMPLES: Record<Region, RegionExample> = {
   },
   IN: {
     region: "IN",
+    customer: "A machine shop in Pune",
     currency: "INR",
     locale: "en-IN",
     unitDecimals: 0,

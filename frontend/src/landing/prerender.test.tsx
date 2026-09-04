@@ -17,6 +17,7 @@ import { Landing } from "./Landing";
 import connectionsSource from "../../../backend/app/ingestion/connections.py?raw";
 
 import { ERP_PAGES } from "./erp";
+import { exampleFor } from "./worked-example";
 import { PAGES, landingTokenCss, renderLandingMarkup } from "./prerender";
 
 /** Rendered once and read by every block below — the render is the fixture. */
@@ -257,6 +258,50 @@ describe("what a plan costs", () => {
       expect(html, `/${page.slug} carries a form it cannot submit`)
         .not.toContain("<form");
     }
+  });
+});
+
+describe("the worked card is marked as a drawing, not a record", () => {
+  // The page's whole argument is that its numbers come from records and carry
+  // the policy that judged them. The hero card was a drawing of that, dressed
+  // in the same vocabulary: an invented quote number, an invented policy hash,
+  // a revision, and no caption anywhere a sighted reader would find one — the
+  // word "illustrative" lived in the `aria-label` and a comment. The one
+  // visible tell was an accident (an Ohio machine shop paying rupees, because
+  // the region swap moved the money and not the customer).
+  //
+  // Both halves are pinned here: the marker has to be *in the document*, and
+  // the fabricated identifiers may not come back. This is the same rule
+  // `proof.ts` already keeps by hiding a section rather than naming a customer
+  // it does not have — the hero is not exempt from it for being the hero.
+  it("says on the card that it is an illustration", () => {
+    expect(markup).toContain("Illustration · not a real quote");
+    expect(markup).toContain("illustration");
+  });
+
+  it("prints no invented quote id, policy hash or revision", () => {
+    // Specific shapes, so the assertion names what it is refusing rather than
+    // banning the words "quote" and "policy" from a page about quoting.
+    expect(markup, "an invented quote number is back").not.toMatch(/\bQ-\d{3,}\b/);
+    expect(markup, "an invented policy hash is back").not.toMatch(/\b(ci|th)_[0-9a-f]{4,}\b/);
+    expect(markup, "an invented revision is back").not.toMatch(/>Rev<\/span>\s*\d/);
+  });
+
+  it("takes the customer and the currency from one record", () => {
+    // The defect was structural, not a typo: the descriptor was hardcoded in
+    // the JSX while the money came from the region example, so nothing could
+    // keep them together. They are one object now, and this fails if a future
+    // edit pulls them apart again.
+    for (const region of ["INTL", "IN"] as const) {
+      const example = exampleFor(region);
+      expect(example.customer.length).toBeGreaterThan(0);
+    }
+    expect(exampleFor("IN").customer).not.toBe(exampleFor("INTL").customer);
+    // The static document is the dollar one — the rupee card only exists on a
+    // browser whose clock says India — so the descriptor it renders has to be
+    // the dollar region's.
+    expect(markup).toContain(exampleFor("INTL").customer);
+    expect(markup).not.toContain(exampleFor("IN").customer);
   });
 });
 

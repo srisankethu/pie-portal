@@ -106,12 +106,13 @@ async function quoteFlow(page, dir) {
     await start.click();
     await settle(page);
   }
-  // More than one connected book puts a company chooser in front of the draft.
-  const useCompany = page.getByRole("button", { name: /^(use|continue|start)/i }).first();
+  // The draft opens with no customer on it — deliberate, and the reason the
+  // Commercial column reads "—" until one is chosen. The picker is a dialog
+  // behind its own button, so it has to be opened before it can be searched.
   const customer = page.getByRole("combobox", { name: "Customer" });
-  if ((await customer.count()) === 0 && (await useCompany.count())) {
-    await useCompany.click().catch(() => {});
-    await settle(page);
+  if ((await customer.count()) === 0) {
+    await page.getByRole("button", { name: /choose customer/i }).first().click();
+    await settle(page, 1200);
   }
   await customer.waitFor({ timeout: 25_000 });
   await customer.fill(CUSTOMER.split(" ")[0]);

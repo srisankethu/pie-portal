@@ -679,13 +679,20 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           onChange={(e) => setSearch(e.target.value)}
           sx={{ width: { xs: "100%", sm: 220 }, "& .MuiInputBase-root": TOUCH }}
         />
+        {/* Both of these named something other than what they do. "Select
+            visible" reads as column visibility, which is what that phrase means
+            in every other grid; it selects the lines passing the current
+            filter, and saying how many makes the filter's effect visible before
+            the press rather than after. "Clear" sat immediately right of the
+            search box and cleared the *selection* — the one thing a reader
+            beside a search field will not assume it means. */}
         <Button variant="outlined" size="small" sx={TOUCH}
                 onClick={selectVisible} disabled={!visible.length}>
-          Select visible
+          Select all {visible.length} shown
         </Button>
         <Button variant="outlined" size="small" sx={TOUCH}
                 onClick={clearSelection} disabled={!selectedCount}>
-          Clear
+          Clear selection
         </Button>
       </FilterPanel>
 

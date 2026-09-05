@@ -159,17 +159,30 @@ export function SummaryBar({
         disabled={busy || readOnly || !hasLines || !!gateBlockedReason
                   || (sent && quote.estimate!.current)}
       >
+        {/* "Send", not "Create".
+          *
+          * This button said `Create ${document}` — "Create Zoho Books estimate"
+          * — about 700px below a "New quote" button that genuinely creates a
+          * quote. Two near-homographs on one screen for opposite actions, and
+          * the destructive one wore the gentler verb: this writes a document
+          * into the customer's books and cannot be taken back from here. The
+          * tooltip beside it has said "Send this quote into Zoho Books" the
+          * whole time, so the label was the half that was wrong.
+          *
+          * One verb through the whole flow, including the amended case, and
+          * the disabled states keep the same name rather than renaming the
+          * control after its own precondition — "Add lines to enable" told a
+          * reader what was missing at the cost of the button's identity, and
+          * the reason is on the tooltip either way. */}
         {busy
-          ? "Creating…"
+          ? "Sending…"
           : gateBlockedReason
             ? "Awaiting approval"
-            : !hasLines
-              ? "Add lines to enable"
-              : sent && quote.estimate!.current
-                ? "Already sent"
-                : sent
-                  ? "Send the amended quote"
-                  : `Create ${document}`}
+            : sent && quote.estimate!.current
+              ? "Already sent"
+              : sent
+                ? `Send amendment to ${quote.systemLabel}`
+                : `Send to ${quote.systemLabel}`}
       </Button>
     </Paper>
   );

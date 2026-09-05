@@ -35,15 +35,6 @@ const HEALTH_TONE: Record<string, Tone> = {
   unknown: "neutral",
 };
 
-/** The theme token that tints a panel for a health state. Border and ground
- *  only — the word is carried by the chip beside it, never by the hue (§6). */
-const HEALTH_EDGE: Record<string, string> = {
-  healthy: "var(--color-accent-400)",
-  degraded: "var(--warn)",
-  unhealthy: "var(--danger-fg)",
-  unknown: "var(--color-neutral-300)",
-};
-
 const HEALTH_GROUND: Record<string, string> = {
   healthy: "var(--color-accent-100)",
   degraded: "var(--caution-bg)",
@@ -213,10 +204,19 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
                     <Grid size={{ xs: 12, md: 6 }} key={name}>
                       <Paper
                         variant="outlined"
+                        /* A tint and a chip, and no third cue. This carried a
+                           3px left accent border as well — Impeccable's
+                           detector flags that as the commonest tell of a
+                           generated interface, and on these panels it was
+                           right: the chip already carries the word and the
+                           ground already carries the state, so the stripe was
+                           a third rendering of one fact. PIE does use a left
+                           border for state elsewhere (`.qi-approval`,
+                           `.conn-warn`), where it is the only cue and earns
+                           its keep; here it was not. */
                         sx={{
                           p: 1.5,
                           background: HEALTH_GROUND[comp.status] ?? HEALTH_GROUND.unknown,
-                          borderLeft: `3px solid ${HEALTH_EDGE[comp.status] ?? HEALTH_EDGE.unknown}`,
                         }}
                       >
                         <Box sx={{ display: "flex", justifyContent: "space-between",

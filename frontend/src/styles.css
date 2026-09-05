@@ -203,7 +203,12 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
   color: var(--color-neutral-600); margin-bottom: 14px;
 }
 .factchip { display: inline-flex; gap: 6px; align-items: baseline; border: 1px solid var(--color-divider); padding: 3px 8px; font-size: 12px; }
-.factchip .k { color: var(--color-neutral-600); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10.5px; }
+/* neutral-700, not 600. At 10.5px this is small text and needs 4.5:1;
+   `--color-neutral-600` (#7a7a7d) measures 3.93:1 on a panel and 700 (#5d5d60)
+   measures 6.03:1. Measured in the running app across six screens — every
+   contrast failure the sweep found was this one rule, twelve times, because it
+   labels every fact on every decision card. */
+.factchip .k { color: var(--color-neutral-700); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10.5px; }
 .factchip .v { font-variant-numeric: tabular-nums; font-weight: 600; }
 .dcard-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 

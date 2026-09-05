@@ -49,7 +49,16 @@ export const tokens = {
 
   neutral: {
     100: "#f5f5f8", 200: "#e7e7ea", 300: "#d4d4d7", 400: "#b7b7ba",
-    500: "#98989b", 600: "#7a7a7d", 700: "#5d5d60", 800: "#424244",
+    /* 600 darkened from #7a7a7d on 2026-09. It is a ramp step by name and the
+     * product's secondary ink by use — 77 declarations across the two
+     * stylesheets, every one of them `color:` or `fill:`, none a background or
+     * a border — so it was safe to move and wrong to leave: at #7a7a7d it
+     * measured 3.82:1 on the page, 3.93 on a panel and 3.53 on a surface,
+     * against the 4.5:1 small text needs, and it labels captions, units, axis
+     * text and every "as of" line in the product.
+     * #666669 clears it on all three grounds (5.12 / 5.26 / 4.72). #6a6a6d was
+     * the smaller step and fails on a surface at 4.44. */
+    500: "#98989b", 600: "#666669", 700: "#5d5d60", 800: "#424244",
     900: "#2b2b2d",
   },
   accents: {
@@ -185,7 +194,16 @@ export const theme = createTheme({
     success: { main: "#3f7d58" },
     text: {
       primary: tokens.text,
-      secondary: fade(62),
+      /* 66%, not 62%. Measured in the running app: at 62 this composites to
+       * 4.49:1 on the page ground and 4.36:1 on a panel — under the 4.5:1 that
+       * small text needs, on both, by a margin too small to see and large
+       * enough to fail. It is the secondary text of the whole product, so it
+       * was the single largest remaining contrast defect: every caption, every
+       * "as of" date, every explanatory line under a heading.
+       * 66 gives 5.09 / 4.92 and is still visibly secondary; 70 was available
+       * and reads as ordinary body text, which would lose the distinction the
+       * token exists to make. */
+      secondary: fade(66),
       disabled: fade(38),
     },
     divider: fade(16),
@@ -306,6 +324,12 @@ export const theme = createTheme({
         root: {
           fontFamily: tokens.fontHeading, fontWeight: 600, fontSize: 12.5,
           textTransform: "none", paddingInline: 12,
+          /* MUI's own unselected ink here is `rgba(0, 0, 0, 0.54)`, which
+           * measures 4.47:1 on the page ground — under 4.5 by a margin nobody
+           * would see and a checker will not pass. These are the period
+           * switches ("2w / 4w / 8w / 13w"), so an unselected one is exactly
+           * the thing somebody is trying to read before choosing it. */
+          color: tokens.neutral[800],
           "&.Mui-selected": {
             background: tokens.accents[100],
             color: tokens.accents[800],

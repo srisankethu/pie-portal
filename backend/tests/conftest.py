@@ -94,15 +94,16 @@ elif _WORKER:
     # one file, which is the failure this exists to prevent.
     os.environ["DATABASE_URL"] = f"sqlite:///{_worker_db}"
 
-#: Whether the engine is actually present. The orchestration entry point is the
-#: thing ``pie_service`` loads, so its absence is exactly what "no engine"
-#: means — a stale directory left by an interrupted fetch is not an engine.
-PIE_AVAILABLE = (Path(os.environ["PIE_PARSER_ROOT"]) / "tools" / "resolve_rfq.py").exists()
-
-_SKIP_REASON = (
-    "pie-parser is not checked out, so there is no engine to resolve against. "
-    "Fetch it with ./scripts/setup_pie_parser.sh, or set PIE_PARSER_ROOT."
-)
+#: Whether the engine is present, and the sentence said when it is not. Both
+#: live in ``piesupport`` and are imported from there — see the note on their
+#: definition. Re-exported here because this file is where pytest reads them
+#: and because `from conftest import PIE_AVAILABLE` was the import that could
+#: not be trusted to find the right module.
+#:
+#: Imported after the environment block above, deliberately: ``piesupport``
+#: reads ``PIE_PARSER_ROOT`` at import time and that block is what guarantees
+#: it is set.
+from piesupport import PIE_AVAILABLE, _SKIP_REASON  # noqa: E402
 
 
 def pytest_configure(config: pytest.Config) -> None:

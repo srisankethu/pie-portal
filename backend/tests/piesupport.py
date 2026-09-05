@@ -27,6 +27,31 @@ import shutil
 from pathlib import Path
 from typing import Optional
 
+#: Whether the engine is actually present. The orchestration entry point is the
+#: thing ``pie_service`` loads, so its absence is exactly what "no engine"
+#: means — a stale directory left by an interrupted fetch is not an engine.
+#:
+#: Defined HERE rather than in ``tests/conftest.py``, which imports it from
+#: here. Both ``tests/`` and ``tests/incentive_engine/`` hold a conftest.py and
+#: neither is a package, so pytest puts both directories on ``sys.path`` and
+#: the top-level module name ``conftest`` resolves to whichever went in first.
+#: ``from conftest import PIE_AVAILABLE`` therefore read
+#: tests/incentive_engine/conftest.py under a whole-suite ``pytest tests`` run
+#: and raised ImportError while collecting — for every test in the suite, which
+#: is the always-red check CLAUDE.md §6 has the incident about. ``piesupport``
+#: is one file with one name, so importing from it cannot land somewhere else.
+#:
+#: Making tests/incentive_engine/ a package instead would not do:
+#: ``incentive_engine`` is pie-parser's own top-level module — ``commercial/
+#: floor.py`` imports ``incentive_engine.floor`` — and a test package of that
+#: name would shadow the real one.
+PIE_AVAILABLE = (Path(os.environ["PIE_PARSER_ROOT"]) / "tools" / "resolve_rfq.py").exists()
+
+_SKIP_REASON = (
+    "pie-parser is not checked out, so there is no engine to resolve against. "
+    "Fetch it with ./scripts/setup_pie_parser.sh, or set PIE_PARSER_ROOT."
+)
+
 _built: Optional[Path] = None
 _union_index: Optional[Path] = None
 
@@ -92,8 +117,6 @@ def _require_engine() -> None:
     both skips it here and runs it there, so this insists on the marker rather
     than standing in for it.
     """
-    from conftest import PIE_AVAILABLE, _SKIP_REASON
-
     if PIE_AVAILABLE:
         return
     raise RuntimeError(

@@ -643,6 +643,12 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           a duplicate scan named this strip and the header strip above it as one
           clone. The header strip is not this — it identifies the quote — so
           only this one moves. */}
+      {/* Nothing to narrow yet. On an empty quote this rendered eight chips all
+          reading 0, a search box over nothing, and two disabled buttons —
+          above an empty state whose whole message is "paste an RFQ". Controls
+          for a list that does not exist are the loudest thing on the screen at
+          the one moment there is exactly one thing to do. */}
+      {hasLines && (
       <FilterPanel>
         {filters.map(([key, label]) => (
           <FilterChip
@@ -679,15 +685,23 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           onChange={(e) => setSearch(e.target.value)}
           sx={{ width: { xs: "100%", sm: 220 }, "& .MuiInputBase-root": TOUCH }}
         />
+        {/* Both of these named something other than what they do. "Select
+            visible" reads as column visibility, which is what that phrase means
+            in every other grid; it selects the lines passing the current
+            filter, and saying how many makes the filter's effect visible before
+            the press rather than after. "Clear" sat immediately right of the
+            search box and cleared the *selection* — the one thing a reader
+            beside a search field will not assume it means. */}
         <Button variant="outlined" size="small" sx={TOUCH}
                 onClick={selectVisible} disabled={!visible.length}>
-          Select visible
+          Select all {visible.length} shown
         </Button>
         <Button variant="outlined" size="small" sx={TOUCH}
                 onClick={clearSelection} disabled={!selectedCount}>
-          Clear
+          Clear selection
         </Button>
       </FilterPanel>
+      )}
 
       {/* An `Alert`, not a hand-coloured banner: the severity carries an icon
           and a role as well as a hue, which is the standard everywhere else in

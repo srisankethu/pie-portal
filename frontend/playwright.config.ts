@@ -12,6 +12,16 @@ import { defineConfig, devices } from "@playwright/test";
  */
 export default defineConfig({
   testDir: "./e2e",
+  // `.shots/` is a capture harness, not a suite: it drives the app to put
+  // rendered pixels on disk so a UI change can be judged against what the
+  // screen actually looks like. It asserts almost nothing, so including it in
+  // `npm run e2e` would add minutes to the run and a green result that means
+  // nothing.
+  //
+  // This ignore also applies to an explicitly named path, so the harness is
+  // run through its own config rather than a flag:
+  //   npx playwright test -c playwright.shots.config.ts
+  testIgnore: "**/.shots/**",
   // One worker, no parallelism: both specs drive the same backend and the same
   // seeded database, and a second worker would be racing it.
   workers: 1,

@@ -26,12 +26,39 @@ export const tokens = {
   bg: "#f2f2f3",
   surface: "#e9e9ea",
   text: "#1d1f20",
-  accent: "#5980a6",
+  /* Darkened from #5980a6 on 2026-09 because it did not pass, and the failure
+   * was on the product's most important control rather than somewhere quiet.
+   * Measured in the running app: #5980a6 against the page ground is **3.71:1**,
+   * and the six failing strings were all this one colour at 12.5–14px/600 —
+   * "Create quote" among them, which is the button that sends a quotation into
+   * a customer's books.
+   *
+   * The number that matters is small text, which needs 4.5:1 (WCAG 1.4.3); the
+   * 3:1 large-text allowance does not apply to any of the six. #4a6e90 is the
+   * smallest step down the same hue that clears it in both directions — 4.78:1
+   * as ink on the ground, 5.35:1 as ground under white ink — so a chip reads
+   * whether the accent is behind the text or in it. Darker candidates were
+   * available and rejected: this is a recogniser for the brand, not a
+   * contrast exercise, and #416180 (5.78:1) is visibly navy.
+   *
+   * Anything added to the `accents` ramp below should be checked the same way
+   * rather than eyeballed: 500 and 600 are lighter than this and are not safe
+   * for small text on the ground. */
+  accent: "#4a6e90",
   accent2: "#728fab",
 
   neutral: {
     100: "#f5f5f8", 200: "#e7e7ea", 300: "#d4d4d7", 400: "#b7b7ba",
-    500: "#98989b", 600: "#7a7a7d", 700: "#5d5d60", 800: "#424244",
+    /* 600 darkened from #7a7a7d on 2026-09. It is a ramp step by name and the
+     * product's secondary ink by use — 77 declarations across the two
+     * stylesheets, every one of them `color:` or `fill:`, none a background or
+     * a border — so it was safe to move and wrong to leave: at #7a7a7d it
+     * measured 3.82:1 on the page, 3.93 on a panel and 3.53 on a surface,
+     * against the 4.5:1 small text needs, and it labels captions, units, axis
+     * text and every "as of" line in the product.
+     * #666669 clears it on all three grounds (5.12 / 5.26 / 4.72). #6a6a6d was
+     * the smaller step and fails on a surface at 4.44. */
+    500: "#98989b", 600: "#666669", 700: "#5d5d60", 800: "#424244",
     900: "#2b2b2d",
   },
   accents: {
@@ -40,7 +67,13 @@ export const tokens = {
     900: "#1d2d3d",
   },
 
-  warn: "#b7791f",
+  /* Darkened from #b7791f for the same reason and by the same measurement:
+   * 3.35:1 on the panel ground, against 4.5:1 for the small text it is used
+   * on ("Choose customer" is the one that showed up). #946014 is 4.90:1 on a
+   * panel and 4.76:1 on the page. It is still amber; `.warn` is a word plus a
+   * left border in every place it renders, so the hue was never carrying the
+   * meaning alone — it just could not be read. */
+  warn: "#946014",
   dangerBg: "#f6e6e3",
   dangerFg: "#b0473d",
   cautionBg: "#f7ecd6",
@@ -161,7 +194,16 @@ export const theme = createTheme({
     success: { main: "#3f7d58" },
     text: {
       primary: tokens.text,
-      secondary: fade(62),
+      /* 66%, not 62%. Measured in the running app: at 62 this composites to
+       * 4.49:1 on the page ground and 4.36:1 on a panel — under the 4.5:1 that
+       * small text needs, on both, by a margin too small to see and large
+       * enough to fail. It is the secondary text of the whole product, so it
+       * was the single largest remaining contrast defect: every caption, every
+       * "as of" date, every explanatory line under a heading.
+       * 66 gives 5.09 / 4.92 and is still visibly secondary; 70 was available
+       * and reads as ordinary body text, which would lose the distinction the
+       * token exists to make. */
+      secondary: fade(66),
       disabled: fade(38),
     },
     divider: fade(16),
@@ -213,6 +255,36 @@ export const theme = createTheme({
   spacing: (n: number) => `${n * 6.8}px`,
 
   components: {
+    /* The keyboard focus ring, put where it actually wins.
+     *
+     * `styles.css` has declared `:focus-visible { outline: 2px solid }` for a
+     * long time and it has never rendered on a single control. MUI's own
+     * `MuiButtonBase-root { outline: 0 }` is emitted into the document after
+     * the stylesheet at equal specificity, so source order decides and MUI
+     * takes it. The tell is that `outline-offset: 2px` survives on every
+     * button: the rule matched, and only the outline was overridden.
+     *
+     * Measured before this fix: 8 of 45 tab stops on the Quote Builder showed
+     * a ring, and all 8 were AG Grid header cells — the only focusable things
+     * on the screen MUI does not own. Every button fell back to MUI's pulsing
+     * ripple, which is an animation rather than an indicator and is not
+     * guarded by `prefers-reduced-motion`.
+     *
+     * Declaring it against `.Mui-focusVisible` puts it inside MUI's cascade
+     * instead of fighting it, and covers Button, IconButton, ListItemButton,
+     * ToggleButton and clickable Chip at once. `:focus-visible` rather than
+     * `:focus` throughout, so a mouse press does not draw it. */
+    MuiButtonBase: {
+      styleOverrides: {
+        root: {
+          "&.Mui-focusVisible": {
+            outline: `2px solid ${tokens.accent}`,
+            outlineOffset: 2,
+          },
+        },
+      },
+    },
+
     MuiCssBaseline: {
       styleOverrides: {
         ":root": CSS_VARS,
@@ -252,6 +324,12 @@ export const theme = createTheme({
         root: {
           fontFamily: tokens.fontHeading, fontWeight: 600, fontSize: 12.5,
           textTransform: "none", paddingInline: 12,
+          /* MUI's own unselected ink here is `rgba(0, 0, 0, 0.54)`, which
+           * measures 4.47:1 on the page ground — under 4.5 by a margin nobody
+           * would see and a checker will not pass. These are the period
+           * switches ("2w / 4w / 8w / 13w"), so an unselected one is exactly
+           * the thing somebody is trying to read before choosing it. */
+          color: tokens.neutral[800],
           "&.Mui-selected": {
             background: tokens.accents[100],
             color: tokens.accents[800],
@@ -274,7 +352,23 @@ export const theme = createTheme({
 
     MuiOutlinedInput: {
       styleOverrides: {
-        root: { background: tokens.surface, borderRadius: tokens.radius.md, fontSize: 14 },
+        /* 14px on a desk, 16px on a phone, and the 16 is not a taste decision.
+         * iOS Safari zooms the viewport when a text field under 16px takes
+         * focus, and it does not zoom back out — so on the one screen this
+         * product is used standing up, tapping the rate field threw the layout
+         * off and left the salesperson pinching to find the grid again. Every
+         * field in the app was 14px, this one included.
+         *
+         * Scoped to the phone rather than raised everywhere: 14px is the right
+         * density at a desk, and this is a mobile-browser behaviour, not a
+         * legibility one. Below `sm`, which is where the drawer is temporary
+         * and the grid has already become cards. */
+        root: {
+          background: tokens.surface,
+          borderRadius: tokens.radius.md,
+          fontSize: 16,
+          "@media (min-width:600px)": { fontSize: 14 },
+        },
         notchedOutline: { borderColor: fade(16) },
         input: { paddingBlock: 7 },
       },

@@ -177,12 +177,25 @@ export interface QuoteGate {
   can_submit: boolean;
   blocked_reason: string | null;
   outcome: string;
+  /** The live approval requests on this quote.
+   *
+   *  `requested_by`, `requested_at` and `decided_by` were served by
+   *  `approvals.to_dict` all along — the same serializer the approvals screen
+   *  reads — and this interface simply did not declare them, so the browser
+   *  threw them away. The cost fell on the one state a salesperson is most
+   *  exposed in: having asked for an approval, the drawer could say only
+   *  "waiting on a manager", never who or since when. `requested_by` is a
+   *  resolved name rather than an id, so nothing here needs looking up. */
   requests: {
     approval_request_id: string;
     subject_line_id: string | null;
     status: string;
     required_authority: string;
     decision_note: string | null;
+    requested_by: string | null;
+    requested_at: string | null;
+    decided_by: string | null;
+    decided_at: string | null;
   }[];
   policy: { require_approval_for_quotes: boolean };
 }

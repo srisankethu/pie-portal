@@ -5,6 +5,7 @@ import { useState } from "react";
 import type { Line, LineIntelligence, QuoteException } from "../types";
 import { Labelled, Tip } from "../Tip";
 import { money } from "../money";
+import { since } from "../when";
 
 /**
  * Deterministic commercial intelligence for one quote line.
@@ -64,7 +65,14 @@ export function QuoteIntelligence({
   onOverride: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
   onRequestApproval: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
   /** The live approval on this line, if one has been raised. */
-  approvalStatus: { status: string; required_authority: string; decision_note: string | null } | null;
+  approvalStatus: {
+    status: string;
+    required_authority: string;
+    decision_note: string | null;
+    requested_by?: string | null;
+    requested_at?: string | null;
+    decided_by?: string | null;
+  } | null;
   onDrilldown: (customerId: string, productId: string) => void;
 }) {
   const [reasonCode, setReasonCode] = useState(OVERRIDE_REASONS[0][0]);
@@ -82,7 +90,7 @@ export function QuoteIntelligence({
   if (loading && !intel) {
     return (
       <div className="qi">
-        <div className="qi-head">Commercial intelligence</div>
+        <div className="qi-head">Computed from this customer's history</div>
         <div className="qi-skel">Reading this customer's history…</div>
       </div>
     );
@@ -91,7 +99,7 @@ export function QuoteIntelligence({
   if (error) {
     return (
       <div className="qi">
-        <div className="qi-head">Commercial intelligence</div>
+        <div className="qi-head">Computed from this customer's history</div>
         <div className="qi-error">Could not load commercial context: {error}</div>
       </div>
     );
@@ -126,12 +134,22 @@ export function QuoteIntelligence({
   return (
     <div className="qi">
       <div className="qi-head">
+        {/* Two panels in this drawer used to open with near-identical headings
+            — "Commercial intelligence" and "Commercial decision support" — and
+            each carried a badge reading "High confidence" derived from a
+            different field (`data_quality.data_sufficiency` here,
+            `confidence.evidence_sufficiency` there). Two readings, the same
+            three words, free to disagree, with nothing on screen saying which
+            was which or what either was about.
+            They are genuinely different panels: this one is computed, that one
+            is read by a model. So each now names what it is and what its
+            confidence is *in*. */}
         <Labelled tip="Computed by the same engine behind the account analysis, from this customer's own invoice and bill lines. Nothing on this panel is generated or estimated by a model, which is why a figure here can be quoted back to a customer.">
-          Commercial intelligence
+          Computed from this customer's history
         </Labelled>
         <span className={`qi-conf ${confidence}`}>
-          {confidence} confidence
-          <Tip text="How much trading history stands behind these figures. Low confidence does not mean the numbers are wrong — it means there are few of them, so the comparisons are thin." />
+          History: {confidence.toLowerCase()}
+          <Tip text="How much trading history stands behind these figures — not whether they are right. Thin history means there are few past orders to compare against, so the bands are wide." />
         </span>
       </div>
 
@@ -151,12 +169,33 @@ export function QuoteIntelligence({
 
       {approvalStatus && (
         <div className={`qi-approval qi-ap-${approvalStatus.status.toLowerCase()}`}>
+          {/* Who, and since when.
+            *
+            * This said "Waiting on a manager to approve this price." and
+            * nothing else — no name, no elapsed time, no way to tell a
+            * request raised two minutes ago from one raised on Friday. It is
+            * the state a salesperson is most exposed in, and it was the
+            * thinnest sentence on the screen. Every field below was already
+            * in the response; the client's own type dropped them. */}
           {approvalStatus.status === "PENDING" && (
-            <>Waiting on {approvalStatus.required_authority === "OWNER" ? "an owner" : "a manager"} to approve this price.</>
+            <>
+              Waiting on {approvalStatus.required_authority === "OWNER" ? "an owner" : "a manager"} to
+              approve this price.
+              {approvalStatus.requested_at && (
+                <> Asked {since(approvalStatus.requested_at)}
+                  {approvalStatus.requested_by ? ` by ${approvalStatus.requested_by}` : ""}.</>
+              )}
+            </>
           )}
-          {approvalStatus.status === "APPROVED" && <>Approved at this price.</>}
-          {approvalStatus.status === "REJECTED" && <>Rejected. This price cannot be sent.</>}
-          {approvalStatus.status === "CHANGES_REQUESTED" && <>A different price was asked for.</>}
+          {approvalStatus.status === "APPROVED" && (
+            <>Approved at this price{approvalStatus.decided_by ? ` by ${approvalStatus.decided_by}` : ""}.</>
+          )}
+          {approvalStatus.status === "REJECTED" && (
+            <>Rejected{approvalStatus.decided_by ? ` by ${approvalStatus.decided_by}` : ""}. This price cannot be sent.</>
+          )}
+          {approvalStatus.status === "CHANGES_REQUESTED" && (
+            <>A different price was asked for{approvalStatus.decided_by ? ` by ${approvalStatus.decided_by}` : ""}.</>
+          )}
           {approvalStatus.decision_note && (
             <div className="qi-approval-note">“{approvalStatus.decision_note}”</div>
           )}
@@ -169,7 +208,7 @@ export function QuoteIntelligence({
           <div className="qi-section-h">
             What to check
             {intel.requires_approval && (
-              <span className="qi-approval">
+              <span className="qi-approval-badge">
                 Approval needed
                 <Tip text="This line crosses a policy boundary, so the quote cannot be sent until someone with the authority answers. An approval covers the price it was granted at — re-pricing lower means asking again." />
               </span>

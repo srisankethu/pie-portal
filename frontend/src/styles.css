@@ -19,6 +19,15 @@ h1, h2, h3, h4, h5, h6 {
 h1 { font-size: 34px; }
 h2 { font-size: 26px; }
 h3 { font-size: 21px; }
+/* h4 and h5 were the two rungs this block skipped, and the theme has always
+   had values for them — `theme.ts` sets h4:18 and h5:15, but only for MUI's
+   `Typography`. A bare `<h4>` in JSX never sees that, so all 25 of them fell
+   through to whatever local rule happened to catch them: 18px, 17px, 16px,
+   15px, or the browser's own default where nothing did. One rung of the
+   hierarchy, five sizes, depending on which screen you were looking at.
+   These two lines restate the theme's numbers so both paths agree. */
+h4 { font-size: 18px; }
+h5 { font-size: 15px; }
 h6 { font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase; }
 a { color: var(--color-accent); text-underline-offset: 3px; }
 .text-muted { color: color-mix(in srgb, var(--color-text) 55%, transparent); }
@@ -194,7 +203,12 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
   color: var(--color-neutral-600); margin-bottom: 14px;
 }
 .factchip { display: inline-flex; gap: 6px; align-items: baseline; border: 1px solid var(--color-divider); padding: 3px 8px; font-size: 12px; }
-.factchip .k { color: var(--color-neutral-600); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10.5px; }
+/* neutral-700, not 600. At 10.5px this is small text and needs 4.5:1;
+   `--color-neutral-600` (#7a7a7d) measures 3.93:1 on a panel and 700 (#5d5d60)
+   measures 6.03:1. Measured in the running app across six screens — every
+   contrast failure the sweep found was this one rule, twelve times, because it
+   labels every fact on every decision card. */
+.factchip .k { color: var(--color-neutral-700); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10.5px; }
 .factchip .v { font-variant-numeric: tabular-nums; font-weight: 600; }
 .dcard-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
@@ -586,7 +600,14 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
   color: var(--color-neutral-600); margin-bottom: 6px;
   display: flex; align-items: center; gap: 8px;
 }
-.qi-approval {
+/* The inline "Approval needed" badge, in a section heading. Named
+   `.qi-approval` until 2026-09, which is also the name of the block panel 160
+   lines below — same file, same stylesheet, later rule wins. So the strongest
+   commercial signal the product has rendered as a grey-bordered block with
+   `margin: 10px 0`, in a heading, instead of this danger pill. Renamed rather
+   than reordered: they are two different components and the collision would
+   come back. */
+.qi-approval-badge {
   background: var(--danger-bg); color: var(--danger-fg); border-radius: 2px;
   padding: 1px 6px; letter-spacing: .04em;
 }
@@ -1019,15 +1040,17 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 .sy-badge.idle { color: var(--color-neutral-600); }
 .sy-last { font-size: 11.5px; color: var(--color-neutral-600); display: inline-flex; align-items: center; }
 
-/* Activity, not progress: it says the job is alive, never how far along. */
-.sy-spin {
-  width: 11px; height: 11px; border-radius: 50%;
-  border: 2px solid currentColor; border-right-color: transparent;
-  animation: sy-rot .8s linear infinite;
-}
-@keyframes sy-rot { to { transform: rotate(360deg); } }
+/* `.sy-spin` and its `@keyframes sy-rot` lived here. MUI's CircularProgress
+   now, per ui-standards §7 — one spinner in the product, themed once.
+   
+   The reduced-motion guard moves with it, and widens: it used to slow this
+   one hand-rolled spinner, and MUI's own carries no such guard, so every
+   other CircularProgress in the product span at full speed regardless of the
+   setting. Slowed rather than stopped — a spinner that does not move says the
+   job has died, which is a different and wrong claim. */
 @media (prefers-reduced-motion: reduce) {
-  .sy-spin { animation-duration: 3s; }
+  .MuiCircularProgress-root { animation-duration: 3s !important; }
+  .MuiCircularProgress-circleIndeterminate { animation-duration: 4.5s !important; }
 }
 
 .sy-line {

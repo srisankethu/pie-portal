@@ -49,9 +49,28 @@ def test_no_live_secret_is_committed():
     bare 41+ hex run. Neither has any business in source.
     """
     import re
+    import subprocess
     from pathlib import Path
 
     ROOT = Path(__file__).resolve().parents[3]
+
+    # Over what git tracks, not what happens to be on disk. The leak this
+    # guards is a secret that *rides into a commit*; a tool installed under a
+    # gitignored directory ships fixtures that are neither committed nor ours
+    # to rotate, and flagging them only teaches people to scroll past this.
+    # `git ls-files` reads the index as well as HEAD, so a pasted secret is
+    # still caught at `git add` — one step before it can become a commit.
+    listing = subprocess.run(
+        ["git", "-C", str(ROOT), "ls-files", "-z"], capture_output=True
+    )
+    # An empty scan is not a clean scan: if git cannot answer, this check has
+    # no evidence and must say so rather than report the good news by default.
+    assert listing.returncode == 0, (
+        "git ls-files failed, so nothing was scanned: "
+        + listing.stderr.decode(errors="ignore")[:200]
+    )
+    tracked = [ROOT / name for name in listing.stdout.decode().split("\0") if name]
+    assert tracked, "git ls-files returned no files — this check scanned nothing."
     PATTERNS = {
         "zoho refresh token": re.compile(r"\b1000\.[0-9a-f]{32}\.[0-9a-f]{32}\b"),
         # 41+, not 40+: a git commit SHA is exactly 40 hex and this repo pins
@@ -62,16 +81,18 @@ def test_no_live_secret_is_committed():
     }
     SKIP_DIRS = {".git", "node_modules", "dist", "__pycache__", ".venv", "data"}
     # Lock files are full of long hex digests, and a digest is not a secret.
+    # The suffix covers poetry.lock and yarn.lock; the `-lock.json` test below
+    # covers package-lock.json, skills-lock.json and whatever the next tool
+    # writes, so this stays a rule rather than a list somebody has to extend.
     SKIP_SUFFIX = {".lock", ".png", ".jpg", ".svg", ".ico", ".db", ".log"}
-    SKIP_NAMES = {"package-lock.json", "poetry.lock", "yarn.lock"}
 
     offenders: list[str] = []
-    for path in ROOT.rglob("*"):
+    for path in tracked:
         if not path.is_file():
             continue
         if any(part in SKIP_DIRS for part in path.parts):
             continue
-        if path.suffix in SKIP_SUFFIX or path.name in SKIP_NAMES:
+        if path.suffix in SKIP_SUFFIX or path.name.endswith("-lock.json"):
             continue
         try:
             text = path.read_text(encoding="utf-8", errors="ignore")

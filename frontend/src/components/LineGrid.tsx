@@ -601,17 +601,49 @@ export function LineGrid({
         );
       },
     },
-    numeric<Row>("avail", "Avail.", (n) => String(n), {
-      ...fixed(84), filter: false, context: { minGridWidth: 1420 },
+    /* Stock: what is on hand, and the shortfall against this line's quantity.
+     *
+     * One column where there were two. `Avail.` asked for a 1420px grid and
+     * `Short.` for 1520px, and the grid tops out at **1137px** — the content
+     * column is capped at 1180 and stops growing, so both were measured absent
+     * at 1280, 1440, 1680 and 1920. Two columns nobody has ever seen.
+     *
+     * Restoring them as a pair does not fit either: the other columns' minimum
+     * widths come to ~908px, which leaves 229px, and the two of them want 168
+     * of it on top of `Line total`. But they are two facts about one thing —
+     * shortage is `qty - avail` — so they belong in one cell, and one cell
+     * fits. The shortfall is a chip rather than red-and-bold text, because a
+     * shortage is a state and §6 wants a word for it, not a hue. */
+    {
+      field: "avail", headerName: "Stock", ...fixed(96), filter: false,
+      type: "numericColumn", sortable: true,
+      context: { minGridWidth: 1120 },
+      headerTooltip: "Free stock for the supply product, and how far it falls "
+        + "short of this line's quantity. “?” means the book holds no stock "
+        + "figure for it — which is not the same as none.",
       valueGetter: (p) => (p.data?.supplyCode && !p.data.availUnknown ? p.data.avail : null),
-      valueFormatter: (p) =>
-        p.data?.supplyCode ? (p.data.availUnknown ? "?" : String(p.value ?? 0)) : "—",
-    }),
-    numeric<Row>("shortage", "Short.", (n) => String(n), {
-      ...fixed(84), filter: false, context: { minGridWidth: 1520 },
-      cellClassRules: { "qb-thin": (p) => Number(p.value) > 0 },
-      valueFormatter: (p) => (Number(p.value) > 0 ? String(p.value) : "—"),
-    }),
+      cellRenderer: (p: { data?: Row }) => {
+        const d = p.data;
+        if (!d?.supplyCode) return "—";
+        if (d.availUnknown) {
+          return <StatusChip label="?" tone="neutral" dense
+                             tip="No stock figure on record for this product." />;
+        }
+        const short = Number(d.shortage ?? 0);
+        return (
+          <Stack direction="row" spacing={0.5}
+                 sx={{ alignItems: "center", justifyContent: "flex-end" }}>
+            <span>{String(d.avail ?? 0)}</span>
+            {short > 0 && (
+              <StatusChip
+                label={`short ${short}`} tone="bad" dense
+                tip="Free stock does not cover this line. It can still be quoted — this is what has to be bought or promised on a lead time."
+              />
+            )}
+          </Stack>
+        );
+      },
+    },
     {
       field: "quoted", headerName: "Quoted ₹", ...fixed(124),
       type: "numericColumn",
@@ -650,8 +682,44 @@ export function LineGrid({
         );
       },
     },
+    /* What the platform would price this line at, for whoever is looking.
+     *
+     * Served to both roles on purpose (`store.py`: "decision support, safe for
+     * both roles") and rendered for neither until now — `Line.recommended` had
+     * no consumer anywhere in the frontend. The cost of that fell on the
+     * salesperson, who has no floor, no cost and no margin by design and was
+     * therefore pricing against nothing but this customer's own history.
+     *
+     * A column rather than only the drawer, because the question it answers is
+     * "which of these forty lines am I under on?", and that is a scan down a
+     * column, not forty drawer visits. Guidance, not a rule: it sits beside the
+     * editable rate without constraining it. */
+    numeric<Row>("recommended", "Recommended", money, {
+      /* 104px, and the narrowest of the money columns on purpose: it is the
+       * one that has to survive a 1280 laptop, where the grid is 1005px and
+       * the columns that were already there account for 904 of it — measured
+       * in the browser, not estimated from the source. */
+      ...fixed(100), filter: false, context: { minGridWidth: 900 },
+      headerTooltip: "What this line would be priced at from this customer's "
+        + "history and the organisation's policy. It is guidance — the rate "
+        + "that goes out is the one you set.",
+    }),
+
+    /* The extension — rate × quantity, the number the customer actually pays
+     * on this line. It asked for a 1180px grid against a measured ceiling of
+     * 1137, so it has never rendered: the desk could see the rate it typed and
+     * not what that rate came to. 980 is the same threshold `Qty` carries,
+     * which is right — they are the two halves of the same arithmetic.
+     *
+     * 1120 rather than `Qty`'s 980, though, because the budget is real: at a
+     * 1280 viewport the grid is 1005px and there is room for `Recommended` or
+     * for this, not both. Recommended wins that tie — it changes what the desk
+     * types, where the extension only restates it — and this appears from 1440
+     * up, where there is room for both. 1240 rather than 1160 because the
+     * budget was measured, not guessed: at 1440 the grid is 1165px and the
+     * other nine columns already come to 1104. */
     numeric<Row>("lineTotal", "Line total", money, {
-      ...fixed(120), filter: false, context: { minGridWidth: 1180 },
+      ...fixed(116), filter: false, context: { minGridWidth: 1240 },
     }),
     ...(mgmt
       ? [numeric<Row>("margin", "Margin", (n) => `${(n * 100).toFixed(1)}%`, {

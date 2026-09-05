@@ -89,9 +89,23 @@ function watchApi(page: Page): ApiWatch {
 
 async function signIn(page: Page, email: string): Promise<void> {
   await page.goto("/");
-  await page.fill('input[name="email"]', email);
+  // `/` is the marketing landing page, not the sign-in card: pre-auth is a
+  // `door` state rather than a route (`PlatformApp`), and the door opens on
+  // `landing`. This used to fill a form on a page that has no inputs on it at
+  // all, and waited out the timeout doing it.
+  const email_field = page.locator('input[name="email"]');
+  if ((await email_field.count()) === 0) {
+    await page.getByRole("button", { name: /^sign in$/i })
+      .or(page.getByRole("link", { name: /^sign in$/i }))
+      .first()
+      .click();
+    await email_field.waitFor({ timeout: 20_000 });
+  }
+  await email_field.fill(email);
   await page.fill('input[name="password"]', PASSWORD);
-  await page.getByRole("button", { name: /sign in/i }).click();
+  // `.last()`, because the landing page's own nav still carries a "Sign in"
+  // link behind the card.
+  await page.getByRole("button", { name: /sign in/i }).last().click();
   // The sign-in card is gone once the session is real.
   await expect(page.locator('input[name="password"]')).toHaveCount(0, {
     timeout: 20_000,
@@ -101,9 +115,26 @@ async function signIn(page: Page, email: string): Promise<void> {
 async function buildAQuote(page: Page): Promise<void> {
   await page.goto("/#/quotes");
 
-  // The screen opens by asking who the quote is for — pricing reads that
-  // customer's own history, so there is no quote to build without one.
+  // `/quotes` is the workspace — the list of drafts — not a draft. Start one:
+  // on an empty desk the only control is the empty state's own button, and
+  // once a draft exists it is "New quote".
+  const start = page
+    .getByRole("button", { name: /start the first quote|new quote/i })
+    .first();
+  await start.waitFor({ timeout: 20_000 });
+  await start.click();
+
+  // A draft opens with no customer on it, deliberately — the enquiry is what
+  // arrived, and who it is from is answered when the desk knows. Pricing reads
+  // that customer's own history, so the assessment stays quiet until it is
+  // chosen, and this suite is about what the assessment sends.
+  //
+  // The picker is a dialog behind its own button. This used to wait for the
+  // combobox straight after `goto`, which is two steps before it exists.
   const customer = page.getByRole("combobox", { name: "Customer" });
+  if ((await customer.count()) === 0) {
+    await page.getByRole("button", { name: /choose customer/i }).first().click();
+  }
   await customer.waitFor({ timeout: 20_000 });
   await customer.fill(CUSTOMER.split(" ")[0]);
   await page.getByRole("option", { name: new RegExp(CUSTOMER, "i") }).first().click();

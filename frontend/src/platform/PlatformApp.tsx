@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
-import { EmptyState, ErrorState, FilterChip, HumanLog, LoadingState, SectionHeader, StatusChip } from "./kit";
+import { EmptyState, ErrorState, FilterChip, HumanLog, LoadingState, SectionHeader, StatusChip, TOUCH } from "./kit";
 import { formatDate } from "../when";
 import {
   clearPlatformSession,
@@ -32,8 +32,9 @@ import Skeleton from "@mui/material/Skeleton";
 import { useSnackbar } from "notistack";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
+import Card from "@mui/material/Card";
 import Typography from "@mui/material/Typography";
-import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link as RouterLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   LEGACY_ACCOUNTS, PATH, PATTERN, pathFor, screenAt, vizPath, type Screen,
 } from "./route";
@@ -1400,6 +1401,23 @@ function DetailRoute({
   );
 }
 
+/** One label-and-value on a narrow customer card.
+ *
+ *  Four of these wrap into whatever width the phone gives them. A `<dl>` would
+ *  be more correct semantically and wraps far worse — these are chips of fact,
+ *  not a definition list somebody reads through. */
+function Fact({ label, value }: { label: string; value: string }) {
+  return (
+    <Box sx={{ minWidth: 0 }}>
+      <Typography variant="overline" color="text.secondary"
+                  sx={{ display: "block", lineHeight: 1.2 }}>
+        {label}
+      </Typography>
+      <Typography variant="body2" sx={{ lineHeight: 1.3 }}>{value}</Typography>
+    </Box>
+  );
+}
+
 function CustomerRoute({
   session, details, onOpen, onNavigate,
 }: {
@@ -1860,15 +1878,11 @@ function TracePanel({ decisionId, token }: { decisionId: string; token: string }
       </Button>
 
       {open && error && (
-        <div className="dp-empty" style={{ padding: 12, textAlign: "left" }}>
-          The chain could not be loaded: {error}
-        </div>
+        <Alert severity="error" sx={{ mt: 1 }}>The chain could not be loaded: {error}</Alert>
       )}
-      {open && !trace && !error && <div className="dp-loading">Following the chain…</div>}
+      {open && !trace && !error && <LoadingState rows={1} height={44} />}
       {open && trace?.unavailable && (
-        <div className="dp-empty" style={{ padding: 12, textAlign: "left" }}>
-          {trace.unavailable}
-        </div>
+        <Alert severity="info" sx={{ mt: 1 }}>{trace.unavailable}</Alert>
       )}
 
       {open && trace?.states.map((level) => (
@@ -1955,7 +1969,7 @@ function DetailScreen({
   onAct: (kind: string) => void;
   onOpenAccount: (cid: string) => void;
 }) {
-  if (loading && !d) return <div className="dp-loading">Loading decision…</div>;
+  if (loading && !d) return <LoadingState rows={2} />;
   if (!d) {
     return (
       <EmptyState
@@ -2028,9 +2042,10 @@ function DetailScreen({
           <>
           <div className="facts-mark">Facts · what the data shows</div>
           {d.facts.length === 0 ? (
-            <div className="dp-empty" style={{ padding: 16, textAlign: "left" }}>
-              No numeric facts are exposed at your permission level for this decision.
-            </div>
+            <EmptyState
+              title="No facts to show"
+              reason="No numeric facts are exposed at your permission level for this decision."
+            />
           ) : (
             <Bp style={{ padding: "8px 14px" }}>
               <table className="facttable">
@@ -2262,13 +2277,14 @@ function CustomerScreen({
             <LoadingState rows={2} />
           </>
         ) : rows.length === 0 ? (
-          <div className="dp-empty">
-            {needle
+          <EmptyState
+            title={needle ? "No match" : "Nothing here yet"}
+            reason={needle
               ? `No ${status === "all" ? "" : status + " "}customer matches “${q}”.`
               : status === "inactive"
                 ? "No customer is marked inactive."
                 : "No customers are assigned to you yet."}
-          </div>
+          />
         ) : (
           <>
             <div className="dp-count">
@@ -2282,6 +2298,59 @@ function CustomerScreen({
               pageSize={25}
               rows={rows}
               onRowClick={(a) => setCustomerId(a.customer_id)}
+              /* On a phone this grid used to reduce to a column of names.
+                 Every other column declares a `minGridWidth` above the ~350px
+                 a 390px viewport gives it, so last order, twelve-month value
+                 and "needs you" all dropped — and this is the screen a
+                 salesperson opens standing in somebody's factory. The card
+                 carries the four facts the row is read for, which is what
+                 `renderNarrow` is for; `LineGrid`'s `LineCard` is the model. */
+              renderNarrow={(a) => (
+                <Card
+                  variant="outlined"
+                  role="listitem"
+                  key={a.customer_id}
+                  sx={{ p: 1.5 }}
+                >
+                  <Box
+                    component="button"
+                    type="button"
+                    onClick={() => setCustomerId(a.customer_id)}
+                    sx={{
+                      ...TOUCH,
+                      width: "100%", textAlign: "left", background: "none",
+                      border: 0, p: 0, cursor: "pointer", color: "inherit", font: "inherit",
+                    }}
+                  >
+                    <EntityName
+                      name={a.name}
+                      origin={a.origin}
+                      show={Boolean(a.sources_differ)}
+                      sub={(a.status || "").toUpperCase() !== "ACTIVE"
+                        ? <span className="acct-flag">inactive</span>
+                        : undefined}
+                    />
+                  </Box>
+                  <Stack direction="row" useFlexGap
+                         sx={{ flexWrap: "wrap", gap: 1.5, mt: 1 }}>
+                    <Fact label="Last order"
+                          value={a.last_order ? formatDate(String(a.last_order)) : "never ordered"} />
+                    <Fact label="Value (12m)" value={money(a.revenue_12m)} />
+                    <Fact label="Orders (12m)" value={String(a.orders_12m)} />
+                    <Fact label="Covered by" value={a.assigned_to || "unassigned"} />
+                  </Stack>
+                  {Number(a.open_decisions) > 0 && (
+                    <Box sx={{ mt: 1 }}>
+                      <StatusChip
+                        label={`${a.open_decisions} needs you`}
+                        tone="warn"
+                        dense
+                        tip="Open decisions flagged on this account."
+                      />
+                    </Box>
+                  )}
+                </Card>
+              )}
               columns={[
                 {
                   field: "name", headerName: "Customer", flex: 1, minWidth: 240,
@@ -2362,11 +2431,37 @@ function CustomerScreen({
       <Button variant="text" size="small" onClick={() => setCustomerId(null)} style={{ marginBottom: 10 }}>
         ← All accounts
       </Button>
-      <div className="dp-head">
-        <h1 style={{ marginBottom: 2 }}>{name}</h1>
-        <EntitySource origin={account?.origin} show={Boolean(account?.sources_differ)} />
-        <p>Trading facts and what we read from them.</p>
-      </div>
+      <Stack direction="row" sx={{ alignItems: "flex-start", justifyContent: "space-between", gap: 2 }}>
+        <div className="dp-head">
+          <h1 style={{ marginBottom: 2 }}>{name}</h1>
+          <EntitySource origin={account?.origin} show={Boolean(account?.sources_differ)} />
+          <p>Trading facts and what we read from them.</p>
+        </div>
+        {/* The thing this screen prepares somebody to do.
+          *
+          * Reading an account and then quoting it used to mean leaving for
+          * Quotes, starting a draft, and finding the same customer again in a
+          * dialog — five presses and the name typed twice, to do the one thing
+          * the page you were on is background for.
+          *
+          * A link, not a button (§9): it goes somewhere, so it opens in a new
+          * tab like anything else, and the customer travels in the query rather
+          * than in component state so the destination is the whole instruction.
+          * The workspace does the creating — it already owns the company
+          * chooser for an organization with more than one set of books, and a
+          * second copy of that here is how two screens start disagreeing about
+          * which book a quote belongs to. */}
+        <Button
+          component={RouterLink}
+          to={`${PATH.quotes}?customer=${encodeURIComponent(customerId)}`
+              + `&name=${encodeURIComponent(name)}`}
+          variant="outlined"
+          size="small"
+          sx={{ ...TOUCH, flexShrink: 0 }}
+        >
+          Start a quote
+        </Button>
+      </Stack>
       {/* How this account has behaved over time. Every role gets this: the
           server omits the margin field for a salesperson rather than blanking
           it, so revenue and order cadence still land. It leads because
@@ -2389,10 +2484,10 @@ function CustomerScreen({
 
       <div className="section-h" style={{ marginTop: 20 }}>Open decisions</div>
       {decs.length === 0 ? (
-        <div className="dp-empty">
-          Nothing is flagged on this account right now. That is a fact about the data, not a
-          judgement about the relationship.
-        </div>
+        <EmptyState
+          title="Nothing flagged"
+          reason="Nothing is flagged on this account right now. That is a fact about the data, not a judgement about the relationship."
+        />
       ) : (
       <>
       <div className="dp-count">

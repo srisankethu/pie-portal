@@ -390,7 +390,31 @@ export function FilterChip({
       color={selected ? (tone ?? "primary") : "default"}
       variant={selected ? "filled" : "outlined"}
       onClick={onClick}
-      sx={{ ...TOUCH, borderRadius: 999, px: 0.5 }}
+      /* `alert` used to be a red digit and nothing else, which is §6's own
+       * counter-example: a reader who loses the hue loses the fact that these
+       * lines stop the quote going out. The ring restates it as a shape, so
+       * the chip is distinguishable in greyscale and under forced colours. */
+      sx={{
+        ...TOUCH,
+        borderRadius: 999,
+        px: 0.5,
+        ...(alert && !selected && {
+          borderColor: "var(--danger-fg)",
+          borderWidth: 2,
+        }),
+        /* Chip renders a ButtonBase only when `clickable`, and MUI infers that
+         * from `onClick` — but it ships no ripple root here, so before this
+         * the *only* thing keyboard focus changed was the background, by
+         * 1.56:1 against WCAG 1.4.11's 3:1 floor for a non-text indicator.
+         * Measured: every one of these was effectively unfocusable to look at.
+         * The theme's `.Mui-focusVisible` ring covers ButtonBase generally;
+         * this restates it so a Chip is right whether or not MUI decides to
+         * give it one. */
+        "&.Mui-focusVisible": {
+          outline: "2px solid var(--color-accent)",
+          outlineOffset: 2,
+        },
+      }}
     />
   );
 }

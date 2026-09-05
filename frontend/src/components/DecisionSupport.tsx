@@ -160,9 +160,17 @@ export function DecisionSupport({ customer, line, token }: {
 
   return (
     <div className="qs">
+      {/* Named for what it is, against the computed panel above it. That one
+          is arithmetic over this customer's own invoice lines; this one is a
+          model's reading of the same facts, and the product's whole position
+          is that the two are different kinds of thing. The badge says what its
+          confidence is *in* — the evidence under the reading — because the
+          panel above carries a differently-derived one in the same words. */}
       <div className="qs-head">
-        Commercial decision support
-        {confLabel && <span className={`qs-conf ${confLabel}`}>{confLabel} confidence</span>}
+        What the model read
+        {confLabel && (
+          <span className={`qs-conf ${confLabel}`}>Evidence: {confLabel.toLowerCase()}</span>
+        )}
       </div>
 
       {loading && <div className="qs-skel">Reading this customer's history…</div>}

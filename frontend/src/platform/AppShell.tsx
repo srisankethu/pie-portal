@@ -65,6 +65,7 @@ import ManageSearchOutlined from "@mui/icons-material/ManageSearchOutlined";
 import FingerprintOutlined from "@mui/icons-material/FingerprintOutlined";
 import MonitorHeartOutlined from "@mui/icons-material/MonitorHeartOutlined";
 import PsychologyOutlined from "@mui/icons-material/PsychologyOutlined";
+import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
 import ScoreboardOutlined from "@mui/icons-material/ScoreboardOutlined";
 import PendingActionsOutlined from "@mui/icons-material/PendingActionsOutlined";
 import CurrencyExchangeOutlined from "@mui/icons-material/CurrencyExchangeOutlined";
@@ -74,13 +75,12 @@ import TuneOutlined from "@mui/icons-material/TuneOutlined";
 import InsightsOutlined from "@mui/icons-material/InsightsOutlined";
 import SellOutlined from "@mui/icons-material/SellOutlined";
 import HistoryOutlined from "@mui/icons-material/HistoryOutlined";
-import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
 
 import { Link as RouterLink } from "react-router-dom";
 
 import AccountMenu from "./AccountMenu";
 import type { OrganizationMembershipView } from "./types";
-import { pathFor, type Screen } from "./route";
+import { pathFor, WIDE_SCREENS, type Screen } from "./route";
 
 export const DRAWER_WIDTH = 232;
 
@@ -254,6 +254,7 @@ export default function AppShell({
 }) {
   const theme = useTheme();
   const wide = useMediaQuery(theme.breakpoints.up("md"));
+  const wideLayout = WIDE_SCREENS.has(current);
   const [open, setOpen] = useState(false);
   const [collapsedGroups, setCollapsedGroups] =
     useState<Set<NavGroup>>(loadCollapsedGroups);
@@ -467,7 +468,21 @@ export default function AppShell({
         }}
       >
         <Toolbar variant="dense" sx={{ minHeight: 52 }} />
-        <Box sx={{ flex: 1, width: "100%", maxWidth: 1180, mx: "auto", p: { xs: 2, md: 3 } }}>
+        {/* 1180 is a reading measure and stays the default. A table-first
+            screen gets 1560 instead — see `WIDE_SCREENS` in route.ts for why
+            the Quote Builder is one, and what the cap was costing it. Still a
+            cap rather than full bleed: a grid that runs to the edge of a
+            27-inch monitor is no easier to read across than one that does
+            not. */}
+        <Box
+          sx={{
+            flex: 1,
+            width: "100%",
+            maxWidth: wideLayout ? 1560 : 1180,
+            mx: "auto",
+            p: { xs: 2, md: 3 },
+          }}
+        >
           {children}
         </Box>
       </Box>

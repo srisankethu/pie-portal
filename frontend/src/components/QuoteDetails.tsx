@@ -16,11 +16,15 @@
  * the server's words and the field keeps what was typed so it can be fixed.
  */
 import Box from "@mui/material/Box";
+import Collapse from "@mui/material/Collapse";
+import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
 import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { useEffect, useState } from "react";
+
+import { TOUCH } from "../platform/kit";
 
 import type { Quote, QuoteFieldDefinition } from "../types";
 
@@ -63,19 +67,62 @@ export function QuoteDetails({ quote, definitions, readOnly, onSave }: {
     }
   };
 
+  /* Filled last, and it used to sit first.
+   *
+   * These are the details the *document* needs — reference, validity, terms —
+   * not the work. Fully expanded above the grid they took 203px of a 900px
+   * screen, and the first quote line began at 765px: 85% of the viewport was
+   * chrome about the quote and 15% was the quote. So it opens only when it is
+   * the thing to do — something required is still empty — and is a summary row
+   * otherwise, which is the state a finished quote is in.
+   *
+   * Not hidden: the header states what is filled and what is missing without
+   * being opened, and the count is the same one the send gate refuses on. */
+  const [open, setOpen] = useState(missing.size > 0);
+  const filled = definitions.filter((d) => {
+    const v = quote.fields[d.key];
+    return v !== undefined && v !== null && String(v) !== "";
+  }).length;
+
   return (
-    <Paper variant="outlined" sx={{ p: 1.5, mb: 2 }}>
-      <Typography variant="overline" color="text.secondary"
-                  sx={{ display: "block", lineHeight: 1.3, mb: 1 }}>
-        Quote details
-        {missing.size > 0 && (
-          <Box component="span" sx={{ color: "warning.main", ml: 1 }}>
-            · {missing.size} required
-          </Box>
+    <Paper variant="outlined" sx={{ px: 1.5, py: open ? 1.5 : 0.75, mb: 2 }}>
+      <Box
+        component="button"
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        aria-expanded={open}
+        sx={{
+          ...TOUCH,
+          width: "100%", display: "flex", alignItems: "center", gap: 1,
+          background: "none", border: 0, p: 0, cursor: "pointer",
+          textAlign: "left", color: "inherit", font: "inherit",
+        }}
+      >
+        <ExpandMoreOutlined
+          fontSize="small"
+          sx={{
+            color: "text.secondary",
+            transform: open ? "none" : "rotate(-90deg)",
+            transition: "transform .15s",
+            "@media (prefers-reduced-motion: reduce)": { transition: "none" },
+          }}
+        />
+        <Typography variant="overline" color="text.secondary" sx={{ lineHeight: 1.3 }}>
+          Quote details
+        </Typography>
+        {missing.size > 0 ? (
+          <Typography variant="caption" sx={{ color: "warning.main" }}>
+            {missing.size} required before sending
+          </Typography>
+        ) : (
+          <Typography variant="caption" color="text.secondary">
+            {filled} of {definitions.length} filled
+          </Typography>
         )}
-      </Typography>
+      </Box>
+      <Collapse in={open} unmountOnExit>
       <Box sx={{
-        display: "grid", gap: 1.5,
+        display: "grid", gap: 1.5, mt: 1.5,
         gridTemplateColumns: { xs: "1fr", sm: "repeat(2, 1fr)", md: "repeat(3, 1fr)" },
       }}>
         {definitions.map((d) => {
@@ -120,6 +167,7 @@ export function QuoteDetails({ quote, definitions, readOnly, onSave }: {
           );
         })}
       </Box>
+      </Collapse>
     </Paper>
   );
 }

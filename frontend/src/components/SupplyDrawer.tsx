@@ -132,11 +132,45 @@ export function SupplyDrawer({
               )}
             </div>
           )}
-          {!mgmt && line.quoted !== null && (
+          {/* The desk's pricing context.
+            *
+            * `recommended` is served to a salesperson deliberately — `store.py`
+            * marks it "decision support, safe for both roles", and CLAUDE.md §1
+            * accepts it as a residual: cost is recoverable from it by algebra,
+            * and coarsening it would blunt the one screen this role uses to
+            * decide. The frontend has been dropping it on the floor, so the
+            * desk has been pricing by guess-and-check against an endpoint that
+            * caps a product at four distinct prices per request.
+            *
+            * Shown beside the current rate rather than instead of it: the
+            * comparison is the point. No cost, no margin, no floor — those are
+            * absent from this role's response and stay absent. */}
+          {!mgmt && (line.quoted !== null || line.recommended !== null) && (
             <div className="drawer-pricing-card">
-              <div className="drawer-pricing-header">Current line rate</div>
-              <div className="drawer-pricing-value">{money(line.quoted)}</div>
-              <div className="drawer-pricing-footnote">Adjust the rate inline in the grid when you need to update this line.</div>
+              <div className="drawer-pricing-header">Pricing</div>
+              <div className="drawer-pricing-grid">
+                <div>
+                  <div className="drawer-pricing-label">Current line rate</div>
+                  <div className="drawer-pricing-value">{money(line.quoted)}</div>
+                </div>
+                {line.recommended !== null && (
+                  <div>
+                    <div className="drawer-pricing-label">Recommended</div>
+                    <div className="drawer-pricing-value">{money(line.recommended)}</div>
+                  </div>
+                )}
+              </div>
+              {line.recommended !== null && line.quoted !== null && (
+                <div className="drawer-pricing-footnote">
+                  {line.quoted === line.recommended
+                    ? "This line is at the recommended rate."
+                    : `Your rate is ${money(Math.abs(line.quoted - line.recommended))} `
+                      + `${line.quoted > line.recommended ? "above" : "below"} the recommendation.`}
+                </div>
+              )}
+              <div className="drawer-pricing-footnote">
+                Set the rate on the line; the recommendation is guidance, not a limit.
+              </div>
             </div>
           )}
           <CostBasisPanel

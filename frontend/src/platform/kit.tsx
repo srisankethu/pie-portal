@@ -18,7 +18,7 @@
 // a bar's colour is an *encoding* with a legend, not a status.
 
 import { Children } from "react";
-import type { ReactNode } from "react";
+import type { ElementType, ReactNode } from "react";
 import { Link as RouterLink } from "react-router-dom";
 import type { SxProps, Theme } from "@mui/material/styles";
 
@@ -44,6 +44,7 @@ import RemoveIcon from "@mui/icons-material/Remove";
 import CloseIcon from "@mui/icons-material/Close";
 
 import { money } from "../money";
+import { tokens } from "../theme";
 import { Tip } from "../Tip";
 
 // ── typography ───────────────────────────────────────────────────────────────
@@ -129,13 +130,36 @@ export function SectionHeader({
  *  by hand — three of them in `ui.tsx` alone, plus `.facts-mark` in styles.css.
  *  This is that rung, and it is deliberately not a `SectionHeader` level: those
  *  emit real headings, and a mark is a label, not a document outline entry. */
-export function PanelMark({ children, sx }: { children: ReactNode; sx?: SxProps<Theme> }) {
+export function PanelMark({
+  children, mark, sx,
+}: {
+  children: ReactNode;
+  /** The square before the label, and its tint. This is the vocabulary that
+   *  separates "a model wrote this" (accent) from "this is arithmetic" (ink) —
+   *  it was `.facts-mark::before` and an inline square in `ui.tsx`, which is
+   *  §10's threshold of two. */
+  mark?: "accent" | "ink";
+  sx?: SxProps<Theme>;
+}) {
   return (
     <Typography
       variant="overline"
-      color="text.secondary"
-      sx={{ display: "block", lineHeight: 1.4, ...sx }}
+      color={mark === "ink" ? "text.primary" : "text.secondary"}
+      sx={{
+        display: "flex", alignItems: "center", gap: 0.75,
+        lineHeight: 1.4, ...sx,
+      }}
     >
+      {mark && (
+        <Box
+          component="span"
+          aria-hidden
+          sx={{
+            width: tokens.mark, height: tokens.mark, flexShrink: 0,
+            bgcolor: mark === "ink" ? "text.primary" : tokens.accents[700],
+          }}
+        />
+      )}
       {children}
     </Typography>
   );
@@ -148,12 +172,21 @@ export function PanelMark({ children, sx }: { children: ReactNode; sx?: SxProps<
  *  was only ever declared under three ancestors, so most of its 33 call sites
  *  rendered at body size in body ink; a component cannot be scoped out that way.
  */
-export function Meta({ children, sx }: { children: ReactNode; sx?: SxProps<Theme> }) {
+export function Meta({
+  children, inline = false, sx,
+}: {
+  children: ReactNode;
+  /** Beside the value rather than under it — a size after a filename, "of 500
+   *  rows" after a count. Three call sites were overriding `display` by hand. */
+  inline?: boolean;
+  sx?: SxProps<Theme>;
+}) {
   return (
     <Typography
       variant="caption"
       color="text.secondary"
-      sx={{ display: "block", lineHeight: 1.45, ...sx }}
+      component={inline ? "span" : "div"}
+      sx={{ display: inline ? "inline" : "block", lineHeight: 1.45, ...sx }}
     >
       {children}
     </Typography>
@@ -660,7 +693,7 @@ export function Unavailable({
  *  see", and the difference is what stops somebody being told everything is
  *  fine at exactly the moment the system knows nothing. */
 export function ErrorState({
-  title = "This did not load", error, onRetry, onClose, busy = false,
+  title = "This did not load", error, onRetry, onClose, busy = false, sx,
 }: {
   title?: ReactNode; error?: ReactNode; onRetry?: () => void;
   /** Dismissible, for one refused request standing beside controls that still
@@ -669,10 +702,12 @@ export function ErrorState({
    *  `ProblemAlert` for exactly this. */
   onClose?: () => void;
   busy?: boolean;
+  sx?: SxProps<Theme>;
 }) {
   return (
     <Alert
       severity="error"
+      sx={sx}
       // Both go in `action`: MUI renders `action` *instead of* the close
       // button, so passing `onClose` alongside one would silently drop the X.
       action={(onRetry || onClose) ? (
@@ -762,7 +797,8 @@ export function MetricCard({
  *  second; this is that answer.
  */
 export function Section({
-  title, sub, tip, badge, actions, children, dense = false,
+  title, sub, tip, badge, actions, children,
+  dense = false, level = "section", surface, className, sx,
 }: {
   title: ReactNode;
   sub?: ReactNode;
@@ -772,14 +808,34 @@ export function Section({
   children: ReactNode;
   /** Tighter padding, for a section inside another surface. */
   dense?: boolean;
+  /** Which heading rung. Six screens could not use this component when it was
+   *  fixed at "section": their panels sit *inside* a section and use the widget
+   *  rung, and promoting them would have rendered each panel's name at the same
+   *  size as the heading containing it — bigger than its parent in the one
+   *  hierarchy §4 describes, and a document-outline entry per panel. */
+  level?: "section" | "widget";
+  /** The surface to draw. Defaults to `Paper`; pass `ui.Bp` for the four corner
+   *  marks the decision screens use. It is a prop rather than an import because
+   *  `ui.tsx` imports this file, so the dependency can only run one way — and a
+   *  screen where one panel silently lost its corner marks is exactly the
+   *  inconsistency this component exists to prevent. */
+  surface?: ElementType;
+  className?: string;
+  sx?: SxProps<Theme>;
 }) {
+  const Surface = surface ?? Paper;
   return (
-    <Paper component="section" variant="outlined" sx={{ p: dense ? 2 : 3 }}>
+    <Surface
+      component="section"
+      variant="outlined"
+      className={className}
+      sx={{ p: dense ? 2 : 3, ...sx }}
+    >
       <SectionHeader
-        level="section" title={title} sub={sub} tip={tip} badge={badge} actions={actions}
+        level={level} title={title} sub={sub} tip={tip} badge={badge} actions={actions}
       />
       {children}
-    </Paper>
+    </Surface>
   );
 }
 
@@ -817,25 +873,62 @@ export function TileGrid({
  *  stylesheet was fixed; a component means the next one inherits the fix.
  */
 export function FactTable({
-  rows, caption,
+  rows, caption, columns, label, prose = false,
 }: {
-  /** `[label, value]`, or `[label, value, note]` for a muted third line. */
-  rows: ReadonlyArray<readonly [ReactNode, ReactNode, ReactNode?]>;
+  /** `[label, value]`, or `[label, value, note]` for a muted third line. With
+   *  `columns`, a row is however many cells that header names. */
+  rows: ReadonlyArray<ReadonlyArray<ReactNode>>;
   caption?: ReactNode;
+  /** Column headings, for a fact panel that is genuinely three columns wide —
+   *  "Category / Example / Why it has to go". Without it the first cell is a
+   *  row header and the rest are values. */
+  columns?: ReadonlyArray<ReactNode>;
+  /** The accessible name, where the visible mark sits outside the table — the
+   *  panel headings on these screens are qualified by company and catalogue,
+   *  and a screen reader listing four tables called "facts" is no listing. */
+  label?: string;
+  /** Values are sentences, not figures. `.facttable .fv` is a figure treatment
+   *  — right-aligned, bold, nowrap, tabular — and two screens needed an escape
+   *  from it badly enough to write one each. */
+  prose?: boolean;
 }) {
   return (
-    <Box component="table" className="facttable">
+    <Box
+      component="table"
+      className="facttable"
+      aria-label={label}
+      /* Top, not the browser's middle: a row whose value runs to three lines
+         otherwise centres against a one-line label, and the erasure receipt's
+         attestation lists are exactly that shape. */
+      sx={{ "& td, & th": { verticalAlign: "top" } }}
+    >
       {caption && <Box component="caption" sx={{ captionSide: "top", textAlign: "left", pb: 1 }}>
         <Meta>{caption}</Meta>
       </Box>}
+      {columns && (
+        <thead>
+          <tr>{columns.map((c, i) => <th key={i} scope="col">{c}</th>)}</tr>
+        </thead>
+      )}
       <tbody>
-        {rows.map(([label, value, note], i) => (
+        {rows.map((cells, i) => (
           <tr key={i}>
-            <Box component="th" scope="row" sx={{ fontWeight: 400 }}>
-              {label}
-              {note ? <Meta>{note}</Meta> : null}
-            </Box>
-            <td className="fv">{value}</td>
+            {cells.map((cell, j) =>
+              j === 0 ? (
+                <Box component="th" scope="row" key={j} sx={{ fontWeight: 400 }}>
+                  {cell}
+                </Box>
+              ) : (
+                <td
+                  key={j}
+                  className={prose ? undefined : "fv"}
+                  /* The third cell of a two-column row is the muted note the
+                     old signature took as `rows[i][2]`; it is rendered under
+                     the label, not as a cell, so the shape stays two-wide. */
+                >
+                  {cell}
+                </td>
+              ))}
           </tr>
         ))}
       </tbody>

@@ -14,7 +14,7 @@ agents, which is corroboration rather than one model's opinion.
 | | |
 |---|---|
 | `DONE` | already landed in #225 |
-| `DO` | unambiguous — implemented |
+| `DO` | unambiguous — **all 36 landed**, in f1d3c47 and 22e5eed |
 | `DEFER` | correct but blocked, usually by §7's size floor or by an incomplete migration |
 | `PRODUCT` | a genuine fork; different answers give a different product, so a human picks |
 | `NONE` | informational, no action implied |
@@ -228,7 +228,7 @@ Different answers give a materially different product.
 
 ---
 
-## Implemented — `DO` (36)
+## Implemented — `DO` (36, all landed)
 
 Unambiguous: a defect, or a standard already written down.
 
@@ -665,3 +665,75 @@ Recorded so the absence stays deliberate.
 > The impact figure moved from a bespoke 30px to the ramp's `h2` (26px), because §4 says a screen needing a size the ramp does not have means the ramp is wrong. If 30px is genuinely wanted for the hero number on a decision, the change belongs in `theme.ts` once, not in this component.
 
 **NONE** — resolved by using the ramp
+
+
+---
+
+## What the second round found
+
+The nine agents that migrated the call sites were told to report rather than
+work around, the same as the first round. They found 42 more things, and the
+useful part is what several of them found *independently*.
+
+**Six clusters could not use `Section` as I first shipped it.** It hardcoded
+`level="section"` and a plain `Paper`. Their panels sit *inside* a section and
+use the widget rung, so converting would have rendered each panel's name at the
+same size as the heading containing it — bigger than its parent in the one
+hierarchy §4 describes — and added a document-outline entry per panel. Several
+also draw `ui.Bp`, which is `Paper` plus this app's four corner marks, so the
+kit's plain `Paper` would have made one panel on a screen look like a different
+kind of surface. Fixed: `Section` takes `level`, `surface`, `className` and `sx`.
+`surface` is a prop rather than an import because `ui.tsx` imports `kit.tsx`,
+so that dependency can only run one way.
+
+**Three needed `Meta` inline** — a size after a filename, "of 500 rows" after a
+count — and were each overriding `display` by hand. Fixed: an `inline` prop.
+
+**`FactTable` was too narrow in four ways**, found across three clusters: no
+column headings (so a genuine three-column panel stayed hand-written), no
+accessible name where the visible mark sits outside the table (a screen reader
+listing four tables called "facts" is no listing), no escape from `.facttable
+.fv`'s figure treatment for value cells holding prose, and cells centring
+vertically so a three-line value floated against a one-line label. All four fixed.
+
+`ErrorState` gained `sx`, and `PanelMark` gained the mark square, so the
+mark-row is one component rather than two.
+
+### Still open after this round
+
+- **S11 is half-delivered.** The 44px floor reaches a bare `Select` and a
+  `ListItemButton`, but *not* a `TextField select`: MUI passes its own
+  `OutlinedInput` to `Select` as `input`, and `Select` clones that rather than
+  rendering the styled component the override attaches to. Verified by
+  rendering, not by reading. Every `TextField select` still needs the local
+  spread. Putting the floor on `MuiInputBase` instead would also raise every
+  plain text field, which is a design decision rather than a fix.
+- **`.dcard-impact span` should be `.dcard-impact > span`.** Written for the
+  basis sentence, it matches any descendant span, so the card's figure needs a
+  doubled-selector guard in `ui.tsx`. With the child combinator that guard goes.
+- **The VIEW trail entry cannot fire on a middle-click or a deep link**, now
+  that "Open" is a real anchor — only a real click runs `onOpened`. Recording it
+  on the detail route would cover both, but it changes *when* a VIEW fires.
+  A product call, flagged rather than taken.
+- **Neither rename field has a test**, and `IdentityScreen` has no test file at
+  all. The Enter/Escape pair is exactly what regresses invisibly.
+- **`RunLogPanel`'s `failedOutright` error has no retry** — the same defect as
+  P7, in a different panel. P7 named only the skipped-rows one and the agent
+  kept to its scope, which was right, and leaves this open.
+- **`RunLogPanel` and `TrustScreen` copy is now stale in the reader's favour.**
+  Both were worded around a limitation the backend fixes in this same change:
+  the log filter can now tell a clean run from a logless one, and the trust
+  endpoints now serve a total, so "showing 50 of N" is finally sayable.
+
+### The stylesheet sweep, and why it is smaller than it looks
+
+An automated scan found **106 never-matchable rules**. It is not safe to act on.
+It flags `.MuiCircularProgress-root` and `.ag-row-selected`, which MUI and AG
+Grid emit at runtime and which appear in no source file — one of them is the
+reduced-motion guard. It also flags every class composed at runtime, like
+``className={`qi-approval qi-ap-${status.toLowerCase()}`}``.
+
+So the sweep deleted only the **48 blocks verified by hand**, where every
+remaining mention in the tree is prose inside a comment. The other 58 stay. A
+dead rule that is checked in costs a reader a moment; a live rule that is
+deleted costs a screen.

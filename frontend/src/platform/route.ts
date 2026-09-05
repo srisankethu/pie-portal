@@ -157,6 +157,27 @@ export const PATTERN = {
   quote: "/quotes/:id",
 } as const;
 
+/** Screens whose content is a wide table rather than something to read.
+ *
+ * The shell caps content at 1180px, which is a reading measure and right for
+ * almost everything here — a paragraph 1600px wide is worse, not better.
+ * The Quote Builder is not that: its content is a grid whose columns are set
+ * by what a quote line has to say, and the cap was silently deciding which of
+ * them a salesperson never sees.
+ *
+ * Measured before this existed: the grid stopped growing at **1137px** at
+ * every viewport from 1280 to 1920, while its columns needed **1246px** — so
+ * `Line total`, `Avail.` and `Short.` had thresholds above the ceiling and had
+ * never rendered on any screen, and `Recommended` had nowhere to go.
+ *
+ * Stated here rather than as a prop, because "is this screen a table" is a
+ * fact about the route, and this file is where route facts live. Both the
+ * workspace and an open draft are `quotes` — `/quotes/:id` resolves to the
+ * same screen, in PARAMETERISED below — so naming the screen once covers the
+ * builder too.
+ */
+export const WIDE_SCREENS: ReadonlySet<Screen> = new Set<Screen>(["quotes"]);
+
 /** The path that used to serve the account picker. Redirected rather than
  *  quietly aliased, so a link somebody saved lands on the current URL instead
  *  of showing the right screen under a name the product no longer uses. */

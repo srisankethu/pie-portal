@@ -169,7 +169,7 @@ export function QuoteIntelligence({
           <div className="qi-section-h">
             What to check
             {intel.requires_approval && (
-              <span className="qi-approval">
+              <span className="qi-approval-badge">
                 Approval needed
                 <Tip text="This line crosses a policy boundary, so the quote cannot be sent until someone with the authority answers. An approval covers the price it was granted at — re-pricing lower means asking again." />
               </span>

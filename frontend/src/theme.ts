@@ -26,7 +26,25 @@ export const tokens = {
   bg: "#f2f2f3",
   surface: "#e9e9ea",
   text: "#1d1f20",
-  accent: "#5980a6",
+  /* Darkened from #5980a6 on 2026-09 because it did not pass, and the failure
+   * was on the product's most important control rather than somewhere quiet.
+   * Measured in the running app: #5980a6 against the page ground is **3.71:1**,
+   * and the six failing strings were all this one colour at 12.5–14px/600 —
+   * "Create quote" among them, which is the button that sends a quotation into
+   * a customer's books.
+   *
+   * The number that matters is small text, which needs 4.5:1 (WCAG 1.4.3); the
+   * 3:1 large-text allowance does not apply to any of the six. #4a6e90 is the
+   * smallest step down the same hue that clears it in both directions — 4.78:1
+   * as ink on the ground, 5.35:1 as ground under white ink — so a chip reads
+   * whether the accent is behind the text or in it. Darker candidates were
+   * available and rejected: this is a recogniser for the brand, not a
+   * contrast exercise, and #416180 (5.78:1) is visibly navy.
+   *
+   * Anything added to the `accents` ramp below should be checked the same way
+   * rather than eyeballed: 500 and 600 are lighter than this and are not safe
+   * for small text on the ground. */
+  accent: "#4a6e90",
   accent2: "#728fab",
 
   neutral: {
@@ -40,7 +58,13 @@ export const tokens = {
     900: "#1d2d3d",
   },
 
-  warn: "#b7791f",
+  /* Darkened from #b7791f for the same reason and by the same measurement:
+   * 3.35:1 on the panel ground, against 4.5:1 for the small text it is used
+   * on ("Choose customer" is the one that showed up). #946014 is 4.90:1 on a
+   * panel and 4.76:1 on the page. It is still amber; `.warn` is a word plus a
+   * left border in every place it renders, so the hue was never carrying the
+   * meaning alone — it just could not be read. */
+  warn: "#946014",
   dangerBg: "#f6e6e3",
   dangerFg: "#b0473d",
   cautionBg: "#f7ecd6",
@@ -213,6 +237,36 @@ export const theme = createTheme({
   spacing: (n: number) => `${n * 6.8}px`,
 
   components: {
+    /* The keyboard focus ring, put where it actually wins.
+     *
+     * `styles.css` has declared `:focus-visible { outline: 2px solid }` for a
+     * long time and it has never rendered on a single control. MUI's own
+     * `MuiButtonBase-root { outline: 0 }` is emitted into the document after
+     * the stylesheet at equal specificity, so source order decides and MUI
+     * takes it. The tell is that `outline-offset: 2px` survives on every
+     * button: the rule matched, and only the outline was overridden.
+     *
+     * Measured before this fix: 8 of 45 tab stops on the Quote Builder showed
+     * a ring, and all 8 were AG Grid header cells — the only focusable things
+     * on the screen MUI does not own. Every button fell back to MUI's pulsing
+     * ripple, which is an animation rather than an indicator and is not
+     * guarded by `prefers-reduced-motion`.
+     *
+     * Declaring it against `.Mui-focusVisible` puts it inside MUI's cascade
+     * instead of fighting it, and covers Button, IconButton, ListItemButton,
+     * ToggleButton and clickable Chip at once. `:focus-visible` rather than
+     * `:focus` throughout, so a mouse press does not draw it. */
+    MuiButtonBase: {
+      styleOverrides: {
+        root: {
+          "&.Mui-focusVisible": {
+            outline: `2px solid ${tokens.accent}`,
+            outlineOffset: 2,
+          },
+        },
+      },
+    },
+
     MuiCssBaseline: {
       styleOverrides: {
         ":root": CSS_VARS,
@@ -274,7 +328,23 @@ export const theme = createTheme({
 
     MuiOutlinedInput: {
       styleOverrides: {
-        root: { background: tokens.surface, borderRadius: tokens.radius.md, fontSize: 14 },
+        /* 14px on a desk, 16px on a phone, and the 16 is not a taste decision.
+         * iOS Safari zooms the viewport when a text field under 16px takes
+         * focus, and it does not zoom back out — so on the one screen this
+         * product is used standing up, tapping the rate field threw the layout
+         * off and left the salesperson pinching to find the grid again. Every
+         * field in the app was 14px, this one included.
+         *
+         * Scoped to the phone rather than raised everywhere: 14px is the right
+         * density at a desk, and this is a mobile-browser behaviour, not a
+         * legibility one. Below `sm`, which is where the drawer is temporary
+         * and the grid has already become cards. */
+        root: {
+          background: tokens.surface,
+          borderRadius: tokens.radius.md,
+          fontSize: 16,
+          "@media (min-width:600px)": { fontSize: 14 },
+        },
         notchedOutline: { borderColor: fade(16) },
         input: { paddingBlock: 7 },
       },

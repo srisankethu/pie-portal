@@ -19,13 +19,20 @@ import "./landing.css";
  *
  * Two consequences to keep in mind when editing:
  *
- *   - **Nothing here may need JavaScript.** No `useState`, no menu that opens,
- *     no handler. Every link is an `href` that works with the bundle absent,
- *     and in-page links to the main page are absolute (`/#talk`) because a
- *     bare `#talk` on this document is a fragment that goes nowhere. The
- *     enquiry form is one of those links rather than a copy of the form: these
- *     pages ship no JavaScript, so a form here would render and refuse to
- *     send.
+ *   - **Nothing here may need JavaScript.** No `useState`, no handler, nothing
+ *     whose behaviour is React's. Every link is an `href` that works with the
+ *     bundle absent, and in-page links to the main page are absolute (`/#talk`)
+ *     because a bare `#talk` on this document is a fragment that goes nowhere.
+ *     The enquiry form is one of those links rather than a copy of the form:
+ *     these pages ship no JavaScript, so a form here would render and refuse
+ *     to send.
+ *
+ *     This line used to read "no menu that opens", and that was a *conclusion*
+ *     rather than the rule — one drawn from the landing page's menu, which is
+ *     React's. The rule is that nothing may need a script; the browser's own
+ *     interactive elements are not a script. So the nav is a `<details>`, and
+ *     any other UA-driven control is fair game on the same terms. What is
+ *     ruled out is a handler, not an affordance.
  *   - **Only `landing.css` may style it.** The built stylesheet contains what
  *     the *client* graph imports; a new stylesheet imported only from here
  *     would compile during the prerender and never be emitted, and the page
@@ -61,12 +68,28 @@ export function ErpPage({ page }: { page: ErpPageData }) {
         <nav className="lp-nav">
           <div className="lp-wrap lp-nav-inner">
             <a className="lp-logo" href="/">PIE<span>.</span></a>
-            {/* No menu button: a sub-page carries no JavaScript, and a burger
-                that cannot open is worse than four links that wrap. Which is
-                exactly why the row is `lp-nav-static` — the ordinary
-                `.lp-nav-links` is display:none below 640px until a JS toggle
-                adds `.open`, so without this modifier a phone got the logo and
-                nothing else. */}
+            {/* The menu is a `<details>`, and that is the whole point: a
+                disclosure opens without JavaScript, so a page that ships none
+                can still have the same collapsed bar the landing page has.
+
+                It used to be a flat row carrying `lp-nav-static`, written that
+                way because "a burger that cannot open is worse than four links
+                that wrap" — the ordinary `.lp-nav-links` is display:none below
+                640px until a JS toggle adds `.open`, so without a modifier a
+                phone got the logo and nothing else. The premise was wrong: a
+                burger *can* open with no script behind it. What the flat row
+                cost, measured in Chromium at 320–430px, was a sticky bar
+                **131px tall** against the landing page's 71px — a fifth of a
+                phone screen, on every one of these pages — whose links were
+                **17px** high, where the landing page's own mobile menu was
+                already giving each one 44+ and `e2e/.shots/a11y.mjs` holds the
+                signed-in app to the same number. Both panels are one rule, so
+                both are 44 now; `e2e/.shots/public-a11y.mjs` measures it.
+
+                Above 640px the summary is hidden and the panel is forced
+                visible, so the bar is the row it always was. If a browser ever
+                refused that override the page degrades to a menu button that
+                opens — not to a broken nav. */}
             {/* These are cross-document links, which is why they are worth a
                 note: the landing page's section ids are this file's
                 dependency, and nothing here fails when one of them is renamed.
@@ -75,13 +98,18 @@ export function ErpPage({ page }: { page: ErpPageData }) {
                 with the plans section — and a sub-page whose nav scrolls to
                 the top of the front page is a dead link that looks like a
                 working one. */}
-            <div className="lp-nav-links lp-nav-static">
-              <a href="/#outcomes">Outcomes</a>
-              <a href="/#how">How it works</a>
-              <a href="/#worth">What it&rsquo;s worth</a>
-              <a className="lp-nav-signin" href="/#signin">Sign in</a>
-              <a className="lp-btn solid lp-nav-cta" href="/#talk">Book a demo</a>
-            </div>
+            <details className="lp-nav-menu">
+              <summary className="lp-nav-toggle" aria-label="Menu">
+                <span className="lp-burger" aria-hidden="true" />
+              </summary>
+              <div className="lp-nav-links">
+                <a href="/#outcomes">Outcomes</a>
+                <a href="/#how">How it works</a>
+                <a href="/#worth">What it&rsquo;s worth</a>
+                <a className="lp-nav-signin" href="/#signin">Sign in</a>
+                <a className="lp-btn solid lp-nav-cta" href="/#talk">Book a demo</a>
+              </div>
+            </details>
           </div>
         </nav>
 
@@ -291,10 +319,18 @@ export function ErpPage({ page }: { page: ErpPageData }) {
                 of siblings is exactly the kind that goes stale silently: it
                 is still valid markup and still renders, it is simply no
                 longer true. */}
-            <div>
+            {/* Tappable, because on a phone this row *is* the navigation
+                between the individual ERP pages — the bar above only goes back
+                to the front page. As a run of bare links separated by a middot
+                each one was 17px high and a few pixels from its neighbour;
+                below 640px they are 44px-high items in a wrapped row and the
+                separators, which were doing the spacing, step aside for the
+                gap that now does it. */}
+            <div className="lp-footer-erp">
               {ERP_PAGES.filter((other) => other.slug !== page.slug).map((other) => (
                 <span key={other.slug}>
-                  <a href={`/erp/${other.slug}`}>{other.short}</a>{" · "}
+                  <a href={`/erp/${other.slug}`}>{other.short}</a>
+                  <span className="lp-sep" aria-hidden="true"> · </span>
                 </span>
               ))}
               <a href="/">Everything else</a>

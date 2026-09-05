@@ -113,6 +113,14 @@
 }
 @media (max-width: 640px) {
   .pie-landing .lp-nav-signin { border-left: 0; padding-left: 24px; }
+  /* The wordmark is a link home, and on a phone it is one of the two things in
+     the bar that get tapped rather than read. 26px of cap height is what the
+     type gives it; the rest is taken as height it does not have to draw, and
+     the bar is already 44px tall because of the menu button beside it, so this
+     costs the layout nothing. */
+  .pie-landing .lp-logo {
+    display: inline-flex; align-items: center; min-height: 44px;
+  }
 }
 /* The nav's Sign-in button, wherever it sits — compact, not the page's
    full-size CTA. Keyed on `.lp-nav` because the button is a direct child of the
@@ -120,14 +128,26 @@
 .pie-landing .lp-nav .lp-btn { padding: 8px 18px; font-size: 14px; }
 
 /* The menu button: hidden until the bar is too narrow for the links (below),
-   then a three-line mark on the right that folds into an X when the menu opens. */
+   then a three-line mark on the right that folds into an X when the menu opens.
+
+   Two elements wear this class and neither is negotiable: a `<button>` on the
+   landing page, which has React behind it, and a `<summary>` on the ERP pages,
+   which have nothing behind them and get their open/closed state from the
+   `<details>` the summary belongs to. The marker rules are for the second —
+   a UA disclosure triangle beside a burger is two affordances for one action.
+
+   44px, not the 38 it was: this is the only control in the bar on a phone, and
+   `e2e/.shots/a11y.mjs` is the standard the app behind the sign-in is held to. */
 .pie-landing .lp-nav-toggle {
   display: none; margin-left: auto;
-  width: 42px; height: 38px; padding: 0; cursor: pointer;
+  width: 44px; height: 44px; padding: 0; cursor: pointer;
   background: transparent; border: 1px solid var(--color-accent-300);
   border-radius: var(--radius-md);
   align-items: center; justify-content: center;
+  list-style: none;
 }
+.pie-landing summary.lp-nav-toggle::-webkit-details-marker { display: none; }
+.pie-landing summary.lp-nav-toggle::marker { content: ""; }
 .pie-landing .lp-nav-toggle:focus-visible {
   outline: 2px solid var(--color-accent); outline-offset: 2px;
 }
@@ -141,10 +161,40 @@
 .pie-landing .lp-burger { position: relative; }
 .pie-landing .lp-burger::before { position: absolute; top: -6px; left: 0; }
 .pie-landing .lp-burger::after { position: absolute; top: 6px; left: 0; }
-/* Open: the middle bar vanishes, the outer two cross into an X. */
-.pie-landing .lp-burger.open { background: transparent; }
-.pie-landing .lp-burger.open::before { top: 0; transform: rotate(45deg); }
-.pie-landing .lp-burger.open::after { top: 0; transform: rotate(-45deg); }
+/* Open: the middle bar vanishes, the outer two cross into an X. Two spellings
+   of one state — `.open` is the class React sets on the landing page, `[open]`
+   is the attribute the browser sets on the ERP pages' `<details>` — and they
+   have to stay in one rule so the mark cannot fold one way on one page. */
+.pie-landing .lp-burger.open,
+.pie-landing .lp-nav-menu[open] .lp-burger { background: transparent; }
+.pie-landing .lp-burger.open::before,
+.pie-landing .lp-nav-menu[open] .lp-burger::before { top: 0; transform: rotate(45deg); }
+.pie-landing .lp-burger.open::after,
+.pie-landing .lp-nav-menu[open] .lp-burger::after { top: 0; transform: rotate(-45deg); }
+
+/* ── the script-free menu (ERP pages) ──
+   A `<details>` wrapping the same `.lp-nav-links` panel the landing page uses.
+   Above the phone breakpoint the summary is hidden and the panel is drawn as
+   the ordinary row, which means a *closed* `<details>` has to lay its content
+   out — and that takes both lines below, for two generations of browser.
+
+   `display: flex` is the one that has always worked: author `display` on a
+   closed disclosure's content gives it a box. It is no longer sufficient on
+   its own. Chromium 131 and up put the content behind a `::details-content`
+   pseudo carrying `content-visibility: hidden`, and a skipped subtree still
+   honours `display` while sizing as though it were empty — measured here at
+   1000px, the panel came back **0px wide and 321px tall**, five links stacked
+   in a column of no width, which is a worse bar than the one this menu was
+   written to replace. `content-visibility: visible` on the pseudo is what
+   actually un-skips it: 469×18, one row.
+
+   Neither line is redundant. A browser without `::details-content` drops that
+   rule as unknown and is served by the first; a browser with it needs the
+   second. And if some third browser honoured neither, the bar degrades to a
+   menu button that opens — not to a nav that has vanished. */
+.pie-landing .lp-nav-menu { margin-left: auto; }
+.pie-landing .lp-nav-menu > .lp-nav-links { display: flex; }
+.pie-landing .lp-nav-menu::details-content { content-visibility: visible; }
 
 /* Mobile nav. A phone bar cannot hold a logo, four links and a button, so the
    links and Sign in collapse behind the menu button and drop down as a panel
@@ -164,26 +214,35 @@
     box-shadow: var(--shadow-md);
   }
   .pie-landing .lp-nav-links.open { display: flex; }
-  .pie-landing .lp-nav-links a { padding: 12px 24px; font-size: 15px; }
+  /* `min-height` as well as the padding: 12px above and below a 15px line is
+     42px, two short of the 44 `e2e/.shots/a11y.mjs` asks for, and the exact
+     height depends on which face has loaded — a target should not be a
+     function of whether the webfont arrived. */
+  .pie-landing .lp-nav-links a {
+    padding: 12px 24px; font-size: 15px;
+    display: flex; align-items: center; min-height: 44px;
+  }
   .pie-landing .lp-nav-links .lp-nav-cta {
     margin: 10px 24px 4px; padding: 11px 18px; text-align: center;
   }
 
-  /* The static variant, for a document that ships no bundle: there is no menu
-     button because nothing could open one, so the links stay in the bar and
-     wrap onto a second line. Without this an ERP page on a phone was a logo
-     and nothing else — the collapse above hides the links until JavaScript
-     adds `.open`, and on those pages JavaScript never arrives. */
-  .pie-landing .lp-nav-links.lp-nav-static {
-    display: flex; position: static;
-    flex-direction: row; flex-wrap: wrap; align-items: center;
-    gap: 8px 16px; margin-left: auto; padding: 0;
-    background: none; border-bottom: 0; box-shadow: none;
-  }
-  .pie-landing .lp-nav-links.lp-nav-static a { padding: 0; font-size: 14px; }
-  .pie-landing .lp-nav-links.lp-nav-static .lp-nav-cta {
-    margin: 0; padding: 8px 14px;
-  }
+  /* The script-free menu, closed. `.lp-nav-static` used to live here: a flat
+     wrapped row, because the page it serves ships no bundle and a burger was
+     assumed to need one. It does not — `<details>` is the burger — and the row
+     it replaced cost a 131px sticky bar with 17px links on every phone.
+
+     Both selectors have to name `.lp-nav-menu`, and that is specificity rather
+     than style. `.lp-nav-links`'s own `display: none` a few lines up is
+     (0,2,0); the forced-open rule outside this query is (0,3,0) and would beat
+     it, so a menu written without the wrapper class here would be stuck open on
+     a phone. Matching the specificity puts source order back in charge.
+
+     The panel is positioned against `.lp-nav`, the sticky ancestor, and not
+     against the `<details>` — which is why nothing here gives the details a
+     `position`: it would pin the panel under the button instead of under the
+     bar. */
+  .pie-landing .lp-nav-menu > .lp-nav-links { display: none; }
+  .pie-landing .lp-nav-menu[open] > .lp-nav-links { display: flex; }
 }
 /* The bar itself has to be allowed to wrap for the row above to land on a
    second line rather than squeeze the logo. */
@@ -413,6 +472,17 @@
   text-decoration: underline; text-underline-offset: 3px;
 }
 .pie-landing a.lp-sys:hover { background: var(--color-accent-100); border-color: var(--color-accent-800); }
+/* Three of these plates are the front page's only route to an individual ERP
+   page, and at 29px they were the smallest link on the phone that has to be
+   tapped rather than read. The plate keeps its own size — it is a drawing
+   element and the four non-links have to match it — so the height is taken as
+   padding, which grows the target without redrawing the row. */
+@media (max-width: 640px) {
+  .pie-landing .lp-sys {
+    display: inline-flex; align-items: center;
+    min-height: 44px; padding: 4px 11px;
+  }
+}
 .pie-landing a.lp-sys:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 /* Its own band, at every width. Seven chips already fill the column, so the
    note wrapped anyway — but as a flex item it landed wherever the last chip
@@ -488,12 +558,27 @@
 
 .pie-landing .lp-two { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
 @media (max-width: 720px) { .pie-landing .lp-two { grid-template-columns: 1fr; } }
+/* A grid item's default `min-width: auto` is its content's min-content width,
+   so one unbreakable word sets the floor for the whole column and the column
+   pushes the page wider than the screen. /erp/zoho-books did exactly that: the
+   scope list it has to print in full — `ZohoBooks.customerpayments.READ` and
+   twelve more — held the panel at 293px inside the 254px a 320px phone has,
+   and the whole document scrolled sideways by 6px. Every ERP page is exposed
+   to this and only one page's vocabulary was long enough to show it, which is
+   why the fix is on the grid rather than in that page's copy: a connector
+   named next year will have identifiers of its own. */
+.pie-landing .lp-two > * { min-width: 0; }
 .pie-landing .lp-panel {
   border: 1px solid var(--color-neutral-300); background: var(--color-neutral-100);
   border-radius: var(--radius-sm); padding: 26px;
 }
 .pie-landing .lp-panel h3 { font-size: 20px; margin: 0 0 10px; }
-.pie-landing .lp-panel p { font-size: 14.5px; color: var(--color-neutral-700); margin: 0; }
+/* `anywhere` and not `break-word`: only `anywhere` also shrinks the min-content
+   width the rule above is trying to release, and a break that never happens is
+   the whole defect. It breaks a token that has nowhere else to go and nothing
+   that does — ordinary prose is untouched. */
+.pie-landing .lp-panel p { font-size: 14.5px; color: var(--color-neutral-700); margin: 0;
+  overflow-wrap: anywhere; }
 .pie-landing .lp-panel p b { color: var(--color-text); font-weight: 600; }
 .pie-landing .lp-tag {
   color: var(--danger-fg); font-weight: 700; font-size: 12px;
@@ -643,8 +728,17 @@
   font-size: 15px;
 }
 .pie-landing .lp-reads li b { font-weight: 600; }
+/* `margin-left: auto` and not `justify-content` alone. The row is
+   space-between, which does nothing for a flex line holding one item: on a
+   phone "The item master, discontinued lines included" wraps and pushes
+   `items` onto a line of its own, where space-between left-aligned it under
+   the label while every unwrapped row's source sat at the right edge. One row
+   in fourteen reading as a different kind of row is how a list stops being
+   scannable. An auto margin absorbs the free space on whichever line the span
+   lands on, so it is at the right edge either way. */
 .pie-landing .lp-reads li span {
   font-size: 12.5px; color: var(--color-neutral-700);
+  margin-left: auto; overflow-wrap: anywhere;
 }
 .pie-landing .lp-reads-note { margin-top: 22px; }
 
@@ -865,3 +959,22 @@
    by dozens of screens behind the sign-in and is their own audit's problem,
    not something to change from here. */
 .pie-landing .lp-footer a { color: var(--color-accent-700); }
+
+/* The row of other ERP pages. On a desktop it is a run of links separated by a
+   middot and it stays exactly that. On a phone it is the only way to get from
+   one individual ERP page to another — the bar above goes back to the front
+   page and nowhere else — and as bare links each one was a 17px-high target
+   a few pixels from its neighbour. Here they are 44px items in a wrapped row,
+   and the middots stand down because the gap is doing their job; they are
+   `aria-hidden` either way, so nothing is read out that stops being drawn. */
+@media (max-width: 640px) {
+  .pie-landing .lp-footer-erp {
+    display: flex; flex-wrap: wrap; align-items: center;
+    gap: 4px 18px; margin-top: 4px;
+  }
+  .pie-landing .lp-footer-erp > span { display: contents; }
+  .pie-landing .lp-footer-erp .lp-sep { display: none; }
+  .pie-landing .lp-footer-erp a {
+    display: inline-flex; align-items: center; min-height: 44px;
+  }
+}

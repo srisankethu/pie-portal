@@ -277,10 +277,26 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 
 /* detail split */
 .dp-split { display: grid; grid-template-columns: 1.15fr 0.85fr; gap: 22px; align-items: start; }
+/* Secondary metadata under a value. Declared bare because 33 call sites write
+   `className="fsrc"` and only three ancestors (.facttable, .sync-opts, .cx-add)
+   ever gave it a rule — everywhere else it rendered at body size in body ink,
+   which is the opposite of what the class name asks for. The three scoped rules
+   below still override this for their own contexts. */
+.fsrc { display: block; font-size: 12px; line-height: 1.5; color: var(--color-neutral-500); }
 .facttable { width: 100%; border-collapse: collapse; font-size: 13px; }
 .facttable td { padding: 7px 4px; border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent); }
 .facttable .fv { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
 .facttable .fsrc { font-size: 11px; color: var(--color-neutral-500); }
+/* A row header is a label, not a value: left-aligned and in muted ink like the
+   `td` beside it, rather than the browser's centred bold. `.facttable` styled
+   `td` and nothing else, so every `<th scope="row">` fell through to the UA
+   sheet and sat centred, unpadded and without the rule under it. */
+.facttable th {
+  padding: 7px 4px; text-align: left; font-weight: 400;
+  color: var(--color-neutral-700);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-text) 8%, transparent);
+}
+.facttable thead th { font-weight: 600; color: var(--color-text); }
 .evi { font-size: 12.5px; color: var(--color-neutral-700); padding: 5px 0; border-bottom: 1px dotted var(--color-divider); display: flex; justify-content: space-between; gap: 12px; }
 .section-h { font-family: var(--font-heading); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-neutral-600); margin: 22px 0 8px; }
 .action-panel { margin-top: 14px; display: flex; flex-direction: column; gap: 8px; }

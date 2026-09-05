@@ -29,6 +29,15 @@
 //    won or lost; a draft may not be marked won. `allowed_next` decides, and
 //    the caller passes it because only the caller was told it.
 //
+// **What cannot be undone is said as a callout, not inside a sentence.**
+// `caution` is optional and separate from `summary` for two reasons: an `Alert`
+// is a block element and `summary` renders inside a `<p>`, so it cannot simply
+// be appended; and the finality of a recorded outcome is the one line here a
+// reader must not skim, which is exactly what a clause at the end of a run-on
+// sentence invites. The worklist passes it. `QuoteOutcomes.tsx` still carries
+// the same sentence in its own prose and should move to this prop when that
+// file is next touched.
+//
 // **The refusal is rendered verbatim, and the dialog stays open holding what
 // was typed.** Three of the server's answers here are useless paraphrased: a
 // LOST with no reason comes back 422 naming every reason a person may choose,
@@ -104,7 +113,14 @@ export const DEFAULT_LOSS_CHOICES: LossChoice[] =
     meaning: LOSS_REASON_MEANING[code],
   }));
 
-const STATUS_WORD: Record<QuoteOutcomeStatus, string> = {
+/** The lifecycle in the words a person reads, rather than the enum.
+ *
+ *  Exported for the same reason `LOSS_REASON_LABELS` is: the Quote Builder's
+ *  outcome bar shows the *current* state and this dialog offers the *next* one,
+ *  and a screen that says "LOST" beside a dialog that says "Lost" is one
+ *  vocabulary rendered twice. Keyed by the union, so a new status fails to
+ *  compile here until it has a word. */
+export const STATUS_WORD: Record<QuoteOutcomeStatus, string> = {
   DRAFT: "Draft", SENT: "Sent", WON: "Won", LOST: "Lost",
 };
 
@@ -113,9 +129,13 @@ const STATUS_WORD: Record<QuoteOutcomeStatus, string> = {
  *  themselves — a person is here to say whether it won. */
 const DECIDING: QuoteOutcomeStatus[] = ["WON", "LOST"];
 
+/** One dialog is open at a time, so one id is enough to point the dialog at
+ *  its own title. */
+const TITLE_ID = "record-outcome-title";
+
 export function RecordOutcomeDialog({
-  open, title, summary, allow = DECIDING, choices = DEFAULT_LOSS_CHOICES,
-  onClose, onRecord,
+  open, title, summary, caution, allow = DECIDING,
+  choices = DEFAULT_LOSS_CHOICES, onClose, onRecord,
 }: {
   open: boolean;
   /** What this dialog is about, named so the reader can tell it is the row
@@ -125,6 +145,10 @@ export function RecordOutcomeDialog({
    *  for, what was on it, how long ago. Optional: the caller knows what it has,
    *  and an ERP quote and a platform quote do not carry the same things. */
   summary?: ReactNode;
+  /** What recording this cannot be taken back — rendered as its own callout
+   *  above the fields rather than as the last clause of `summary`. Optional:
+   *  a caller with nothing irreversible to say should say nothing. */
+  caution?: ReactNode;
   /** Which moves the server will accept. Filtered to the deciding pair here,
    *  so a caller may pass `allowed_next` through unedited. */
   allow?: QuoteOutcomeStatus[];
@@ -179,10 +203,18 @@ export function RecordOutcomeDialog({
   }
 
   return (
-    <Dialog open={open} onClose={busy ? undefined : onClose} fullWidth maxWidth="sm">
-      <DialogTitle>{title}</DialogTitle>
+    <Dialog
+      open={open} onClose={busy ? undefined : onClose}
+      fullWidth maxWidth="sm"
+      // MUI does not wire the title to the dialog on its own, so without this
+      // a screen reader announces "dialog" and the row somebody clicked is the
+      // one thing they cannot hear.
+      aria-labelledby={TITLE_ID}
+    >
+      <DialogTitle id={TITLE_ID}>{title}</DialogTitle>
       <DialogContent>
         {summary && <DialogContentText sx={{ mb: 2 }}>{summary}</DialogContentText>}
+        {caution && <Alert severity="info" sx={{ mb: 2 }}>{caution}</Alert>}
         <Stack spacing={2}>
           <TextField
             select fullWidth label="Outcome" value={status}
@@ -221,11 +253,16 @@ export function RecordOutcomeDialog({
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={busy}>Cancel</Button>
+        {/* MUI's own spinner rather than a label that changes to "Recording…":
+            §7 asks for its loading components, and a label that swaps is a
+            button whose accessible name moves while it is being pressed.
+            `loadingPosition="start"` keeps the word readable beside it. */}
         <Button
           variant="contained" onClick={save}
-          disabled={busy || (status === "LOST" && !reason)}
+          loading={busy} loadingPosition="start"
+          disabled={status === "LOST" && !reason}
         >
-          {busy ? "Recording…" : "Record"}
+          Record
         </Button>
       </DialogActions>
     </Dialog>

@@ -80,6 +80,7 @@
 // default CLAUDE.md §1 forbids.
 
 import { useCallback, useEffect, useState } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
@@ -92,19 +93,35 @@ import DialogTitle from "@mui/material/DialogTitle";
 import LinearProgress from "@mui/material/LinearProgress";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
 
 import { papi } from "./api";
 import { CatalogSources, fileSize, megabytes } from "./CatalogSources";
-import { EmptyState, ErrorState, LoadingState, PercentageValue, StatusChip } from "./kit";
+import { EmptyState, ErrorState, LoadingState, PercentageValue, SectionHeader,
+         StatusChip, type Tone } from "./kit";
 import type { BindingChoice, CatalogueUnion, CompanyCatalogue,
               CompanyCatalogueEntry, CompanyCatalogues as View, DecoderArtifact,
               DecoderProposalResponse, PlatformSession } from "./types";
 import { CatalogLearning } from "./CatalogLearning";
+import { tokens } from "../theme";
 import { Bp, Labelled, Tip } from "./ui";
 import { formatDateTime, since } from "../when";
 
-type Tone = "good" | "warn" | "bad" | "neutral";
+// `Tone` is imported rather than declared: this file had its own copy, one
+// member short of `kit`'s, which is the small end of the duplication CLAUDE.md
+// §2 is about — two vocabularies for one question.
+
 type RuleSet = { id: string; path: string };
+
+/** Monospace, for a hash somebody compares character by character.
+ *
+ *  Four places here wrote `fontFamily: "var(--font-mono, monospace)"`, and
+ *  `theme.ts` does not publish `--font-mono` — `CSS_VARS` emits `--font-heading`
+ *  and `--font-body` and stops there — so every one of them fell through to the
+ *  browser's bare `monospace` and none of them used the token the theme
+ *  actually holds. Read from `tokens.fontMono` instead, in one place, per
+ *  ui-standards §11: a literal in a component is a value that will not follow. */
+const MONO: CSSProperties = { fontFamily: tokens.fontMono };
 
 /** The one state word for a catalogue, from the facts the server sends.
  *
@@ -146,6 +163,99 @@ function keyOf(c: CompanyCatalogueEntry): string {
   return `${c.connection_id}/${c.catalogue_key}`;
 }
 
+/** The line a company or a catalogue is headed by: name, state, controls.
+ *
+ *  Written once because it was written twice — the same flex row, the same
+ *  hardcoded `gap: 8` and `marginBottom: 8`, differing only in its children.
+ *  That is ui-standards §10, and the spacing is now the theme's.
+ *
+ *  `level` is the part that earns the component. This screen has three rungs of
+ *  structure — the page, a company, a manufacturer's catalogue inside it — and
+ *  had one rung of type: both names were a bare `<b>`, so a reader scanning for
+ *  "which company is this stamp under" had only the panel border to go on, on
+ *  the one screen whose stated invariant is that a company's provenance must
+ *  never be read against another's name. Company and catalogue now sit two
+ *  rungs apart on the theme's own ramp (§4).
+ *
+ *  The catalogue's name stays a `<b>` element. Its section is delimited by the
+ *  rule above it rather than by an outline level of its own, and the surrounding
+ *  markup — the chip beside it, the controls after it — is what the assertions
+ *  in `CatalogScreen.test.tsx` read off that element. */
+function HeadingRow({ name, level, chip, meta, actions }: {
+  name: string;
+  level: "company" | "catalogue";
+  chip: ReactNode;
+  /** Secondary metadata, between the state word and the controls. */
+  meta?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <Stack
+      direction="row" spacing={1} useFlexGap
+      sx={{ alignItems: "center", flexWrap: "wrap", mb: 1 }}
+    >
+      {level === "company"
+        ? <Typography variant="h3" component="h2">{name}</Typography>
+        : <Typography variant="h4" component="b">{name}</Typography>}
+      {chip}
+      {meta}
+      <Box sx={{ flex: 1 }} />
+      {actions}
+    </Stack>
+  );
+}
+
+/** One labelled half of the fact area under a catalogue.
+ *
+ *  These were two — later three — unlabelled tables sitting side by side, each
+ *  with its explanation trailing underneath in a `<p>`. Labelled above and
+ *  explained in the same breath, a reader knows which table they are in before
+ *  they read a row of it, and the page loses a line rather than gaining one. */
+function Pane({ title, note, children }: {
+  title: string;
+  /** What the numbers in it are, and — where it matters — what they are not. */
+  note?: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <Box>
+      {/* `component="p"`: `subtitle2` maps to an `<h6>` by default, and an h6
+          under a company's `<h2>` would claim four outline levels this screen
+          does not have. The tables carry their own `aria-label`, so the
+          accessible name is not riding on this line. */}
+      <Typography variant="subtitle2" component="p" color="text.secondary"
+                  sx={{ mb: 0.5 }}>
+        {title}
+      </Typography>
+      {children}
+      {note && (
+        <Typography variant="caption" color="text.secondary" component="p"
+                    sx={{ mt: 0.75, mb: 0 }}>
+          {note}
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
+/** One action that failed, attributed to the thing it was tried on.
+ *
+ *  Two call sites — a company's action and a catalogue's — so it is written
+ *  once. Not `kit.ErrorState`, which is this Alert with this title slot and no
+ *  way to dismiss it: what this reports is one refused request beside controls
+ *  that still work, not a screen that did not load, so it has to be closable. */
+function ProblemAlert({ message, onClose }: {
+  message: string;
+  onClose: () => void;
+}) {
+  return (
+    <Alert severity="error" sx={{ mb: 1.5 }} onClose={onClose}>
+      <AlertTitle>That did not work</AlertTitle>
+      {message}
+    </Alert>
+  );
+}
+
 /** Name the manufacturer a catalogue holds. Nothing else is decided here.
  *
  *  Nothing is uploaded, built or said about decoding: every price list
@@ -168,12 +278,12 @@ function AddCatalogueDialog({ busy, onClose, onAdd }: {
           company resolves against all of them at once. How each of its price
           lists is decoded is settled per file, after it is uploaded.
         </DialogContentText>
-        <Stack spacing={2.5} sx={{ mt: 1 }}>
-          <TextField autoFocus fullWidth size="small" label="Name" value={name}
-                     disabled={busy} required
-                     helperText="The manufacturer, as the screen should call it."
-                     onChange={(e) => setName(e.target.value)} />
-        </Stack>
+        {/* One field, so no `Stack` around it: a layout wrapper with a single
+            child is the nesting ui-standards §1 asks to leave out. */}
+        <TextField autoFocus fullWidth size="small" label="Name" value={name}
+                   disabled={busy} required sx={{ mt: 1 }}
+                   helperText="The manufacturer, as the screen should call it."
+                   onChange={(e) => setName(e.target.value)} />
       </DialogContent>
       <DialogActions>
         <Button onClick={onClose} disabled={busy}>Cancel</Button>
@@ -201,9 +311,8 @@ function RenameDialog({ catalogue, busy, onClose, onRename }: {
       <DialogContent>
         <DialogContentText sx={{ mb: 2 }}>
           Only what this screen calls it changes. Its key,{" "}
-          <span style={{ fontFamily: "var(--font-mono, monospace)" }}>
-            {catalogue.catalogue_key}
-          </span>, is its address on disk and in every union row, and stays.
+          <span style={MONO}>{catalogue.catalogue_key}</span>, is its address on
+          disk and in every union row, and stays.
         </DialogContentText>
         <TextField autoFocus fullWidth size="small" label="Name" value={name}
                    disabled={busy} sx={{ mt: 1 }}
@@ -242,9 +351,7 @@ function UnionFacts({ union, total }: { union: CatalogueUnion; total: number }) 
             <td className="fv">
               {union.records} records from {built}{of} catalogue{built === 1 ? "" : "s"}
               {union.version && (
-                <div className="fsrc" style={{ fontFamily: "var(--font-mono, monospace)" }}>
-                  union {union.version}
-                </div>
+                <div className="fsrc" style={MONO}>union {union.version}</div>
               )}
             </td>
           </tr>
@@ -352,25 +459,28 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
 
   return (
     <Box sx={{ borderTop: 1, borderColor: "divider", pt: 1.5, mt: 1.5 }}>
-      <div style={{ display: "flex", gap: 8, alignItems: "center",
-                    flexWrap: "wrap", marginBottom: 8 }}>
-        <b>{nameOf(c)}</b>
-        <StatusChip label={chip.label} tone={chip.tone}
-                    tip={c.exists
-                      ? "This catalogue is built and on disk. It is part of what this company's quote lines resolve against."
-                      : "This catalogue is not built, so nothing of this manufacturer's is in what the company resolves against — its part numbers answer UNKNOWN, not zero coverage, until it is."} />
-        {c.exists && (
-          <span className="st-help">
+      <HeadingRow
+        name={nameOf(c)}
+        level="catalogue"
+        chip={
+          <StatusChip label={chip.label} tone={chip.tone}
+                      tip={c.exists
+                        ? "This catalogue is built and on disk. It is part of what this company's quote lines resolve against."
+                        : "This catalogue is not built, so nothing of this manufacturer's is in what the company resolves against — its part numbers answer UNKNOWN, not zero coverage, until it is."} />
+        }
+        meta={c.exists ? (
+          <Typography variant="caption" color="text.secondary">
             {c.records} decoded records, built {since(c.built_at)}
-          </span>
-        )}
-        <Box sx={{ flex: 1 }} />
-        {canManage && (
+          </Typography>
+        ) : undefined}
+        actions={canManage ? (
           <>
-            {/* Off until every file has a saved config the engine can run.
-                The server refuses such a build by name; a control that cannot
-                succeed is the interface's version of the benign default, and
-                the alert below says which file is waiting. */}
+            {/* Build first, and the only contained button in the row: a screen
+                where every control is filled has no primary action, per
+                ui-standards §5. Off until every file has a saved config the
+                engine can run — the server refuses such a build by name, a
+                control that cannot succeed is the interface's version of the
+                benign default, and the alert below says which file is waiting. */}
             <Button
               variant={c.exists ? "outlined" : "contained"} size="small"
               disabled={busy || c.sources.length === 0 || !c.decoding_ready}
@@ -386,16 +496,11 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
               Remove catalogue
             </Button>
           </>
-        )}
-      </div>
+        ) : undefined}
+      />
       {busy && <LinearProgress sx={{ mb: 1 }} />}
 
-      {problem && (
-        <Alert severity="error" sx={{ mb: 1.5 }} onClose={onCloseProblem}>
-          <AlertTitle>That did not work</AlertTitle>
-          {problem}
-        </Alert>
-      )}
+      {problem && <ProblemAlert message={problem} onClose={onCloseProblem} />}
       {c.stale && (
         <Alert severity="warning" sx={{ mb: 1.5 }}>
           This catalogue was built from a different set of files than the
@@ -438,11 +543,21 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
         />
       </Box>
 
-      <div className="dp-split-2">
+      {/* Two panes, from the theme's own grid and breakpoints rather than the
+          `.dp-split-2` class and its one-off 820px query — ui-standards §11 and
+          §12. */}
+      <Box sx={{
+        display: "grid",
+        gridTemplateColumns: { xs: "1fr", md: "1fr 1fr" },
+        gap: 2, alignItems: "start",
+      }}>
         {/* A fact panel — a label and a value, a fixed handful of rows —
-            which is the case ui-standards §3 keeps as a plain table. */}
-        <div>
-          <table className="facttable">
+            which is the case ui-standards §3 keeps as a plain table. Ten rows
+            at most, and the ten are set by what a build stamps rather than by
+            how big this business is, which is the whole of that test. */}
+        <Pane title="Files and provenance">
+          <table className="facttable"
+                 aria-label={`Files and provenance for ${label} · ${nameOf(c)}`}>
             <tbody>
               <tr>
                 <td>
@@ -502,13 +617,13 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
                         Ruleset checksum
                       </Labelled>
                     </td>
-                    <td className="fv" style={{ fontFamily: "var(--font-mono, monospace)" }}>
+                    <td className="fv" style={MONO}>
                       {c.stamp.ruleset_checksum ?? "differs per file"}
                     </td>
                   </tr>
                   <tr>
                     <td>Run id<div className="fsrc">input bytes + ruleset</div></td>
-                    <td className="fv" style={{ fontFamily: "var(--font-mono, monospace)" }}>
+                    <td className="fv" style={MONO}>
                       {c.stamp.run_id ?? "differs per file"}
                     </td>
                   </tr>
@@ -576,7 +691,7 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
               )}
             </tbody>
           </table>
-        </div>
+        </Pane>
 
         {/* Per-family census and parse rate, straight from the parser's run
             report. The row count is the rule set's declared family vocabulary
@@ -594,7 +709,11 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
             value rows rather than a list anybody sorts. The files themselves
             — a list that does grow with the business — are the grid above. */}
         {c.exists && !report && builtFrom.length > 1 && (
-          <div>
+          <Pane
+            title="Rows by file"
+            note={<>Each file&apos;s own counts, from its own decode — the
+                    parser&apos;s numbers, not added up here.</>}
+          >
             <table className="facttable"
                    aria-label={`Per-file parse counts for ${label} · ${nameOf(c)}`}>
               <tbody>
@@ -614,14 +733,14 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
                 ))}
               </tbody>
             </table>
-            <p className="st-help" style={{ marginTop: 6 }}>
-              Each file&apos;s own counts, from its own decode — the parser&apos;s
-              numbers, not added up here.
-            </p>
-          </div>
+          </Pane>
         )}
         {c.exists && report && (
-          <div>
+          <Pane
+            title="Rows by family"
+            note={<>Rows per family, with the grammar parse rate beside each —
+                    the parser&apos;s own numbers, not recomputed here.</>}
+          >
             <table className="facttable"
                    aria-label={`Per-family parse rates for ${label} · ${nameOf(c)}`}>
               <tbody>
@@ -630,9 +749,9 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
                     <td>{family}</td>
                     <td className="fv">
                       {count}
-                      <span className="fsrc" style={{ marginLeft: 8 }}>
+                      <Box component="span" className="fsrc" sx={{ ml: 1 }}>
                         <PercentageValue value={report.parse_rates[family]} digits={1} />
-                      </span>
+                      </Box>
                     </td>
                   </tr>
                 ))}
@@ -644,13 +763,9 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
                 )}
               </tbody>
             </table>
-            <p className="st-help" style={{ marginTop: 6 }}>
-              Rows per family, with the grammar parse rate beside each —
-              the parser&apos;s own numbers, not recomputed here.
-            </p>
-          </div>
+          </Pane>
         )}
-      </div>
+      </Box>
 
       {renaming && (
         <RenameDialog catalogue={c} busy={busy}
@@ -762,14 +877,10 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
   // address this screen can be opened cold, and a page that renders a bare
   // error box with no title does not say which screen failed.
   const head = (
-    <div className="dp-head">
-      <h1>Decoded catalogue</h1>
-      <p>
-        What each company resolves a part number against — one decoded
-        catalogue per manufacturer it sells, merged — and which build of it
-        answered.
-      </p>
-    </div>
+    <SectionHeader
+      title="Decoded catalogue"
+      sub="What each company resolves a part number against — one decoded catalogue per manufacturer it sells, merged — and which build of it answered."
+    />
   );
 
   if (error) {
@@ -799,47 +910,50 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
       {head}
 
       {view.companies.length === 0 ? (
-        <Bp style={{ padding: "14px" }}>
-          <p className="st-help" style={{ margin: 0 }}>
-            No companies are connected yet. Add one on <b>Data &amp; connection</b>,
-            then its catalogues can be built here.
-          </p>
-        </Bp>
+        // `EmptyState`, not a Paper with a sentence in it: nothing to show and
+        // why is the question kit already answers, and this branch answered it
+        // in its own words next to five that answer it in kit's.
+        <EmptyState
+          title="No company is connected"
+          reason={<>A catalogue belongs to a company&apos;s books, so there is
+                    nothing to build one against yet. Add a connection on{" "}
+                    <b>Data &amp; connection</b>, and its catalogues can be
+                    built here.</>}
+        />
       ) : view.companies.map((c) => {
         const chip = unionChip(c);
         const companyActing = busy === c.connection_id;
         const atCeiling = c.catalogues.length >= view.max_catalogues;
         return (
-          <Bp key={c.connection_id} style={{ padding: "10px 14px 14px", marginBottom: 10 }}>
-            <div style={{ display: "flex", gap: 8, alignItems: "center",
-                          flexWrap: "wrap", marginBottom: 8 }}>
-              <b>{c.label || c.connection_id}</b>
-              <StatusChip label={chip.label} tone={chip.tone}
-                          tip={c.union
-                            ? "The union of every catalogue this company has built. Its quote lines resolve against this — never against another company's."
-                            : "This company has built no catalogue. Its resolutions report UNKNOWN — not zero coverage — until one is built."} />
-              <Box sx={{ flex: 1 }} />
-              {view.can_manage && (
-                <>
-                  {atCeiling && (
-                    <span className="fsrc">at the ceiling of {view.max_catalogues}</span>
-                  )}
-                  <Button size="small" variant="outlined"
-                          disabled={companyActing || atCeiling}
-                          onClick={() => setAdding(c.connection_id)}>
-                    Add a catalogue
-                  </Button>
-                </>
-              )}
-            </div>
+          <Bp key={c.connection_id} sx={{ px: 2, pt: 1.5, pb: 2, mb: 1.5 }}>
+            <HeadingRow
+              name={c.label || c.connection_id}
+              level="company"
+              chip={
+                <StatusChip label={chip.label} tone={chip.tone}
+                            tip={c.union
+                              ? "The union of every catalogue this company has built. Its quote lines resolve against this — never against another company's."
+                              : "This company has built no catalogue. Its resolutions report UNKNOWN — not zero coverage — until one is built."} />
+              }
+              // Said beside the disabled control it explains, not under it.
+              meta={view.can_manage && atCeiling ? (
+                <Typography variant="caption" color="text.secondary">
+                  at the ceiling of {view.max_catalogues}
+                </Typography>
+              ) : undefined}
+              actions={view.can_manage ? (
+                <Button size="small" variant="outlined"
+                        disabled={companyActing || atCeiling}
+                        onClick={() => setAdding(c.connection_id)}>
+                  Add a catalogue
+                </Button>
+              ) : undefined}
+            />
             {companyActing && <LinearProgress sx={{ mb: 1 }} />}
 
             {problem?.id === c.connection_id && (
-              <Alert severity="error" sx={{ mb: 1.5 }}
-                     onClose={() => setProblem(null)}>
-                <AlertTitle>That did not work</AlertTitle>
-                {problem.message}
-              </Alert>
+              <ProblemAlert message={problem.message}
+                            onClose={() => setProblem(null)} />
             )}
             {ruleSets.length === 0 && view.can_manage && (
               // The state the empty dropdown used to render as nothing at all.
@@ -895,7 +1009,12 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
           }} />
       )}
 
-      <p className="st-help" style={{ marginTop: 8 }}>
+      {/* The standing terms of this screen, at the foot rather than repeated in
+          every catalogue: what is read out of a file, what never is, and the
+          two ceilings. `caption` is the ramp's secondary-metadata rung (§4),
+          which is what this is — read once, then relied on. */}
+      <Typography variant="caption" component="p" color="text.secondary"
+                  sx={{ mt: 1, mb: 0, maxWidth: "90ch" }}>
         Nomenclature only — never price, cost or stock: a file&apos;s part
         number, description and grade are read, and every other column is left
         out of the catalogue rather than filtered out of it. CSV or Excel, up to
@@ -903,7 +1022,7 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
         {view.max_catalogues} catalogues a company.
         {!view.can_manage && " Uploading and building are owner actions."}
         <Tip text="A quote resolves against the union of the catalogues of the company it is raised from, and never against another company's — an answer from the wrong item master would carry a real provenance stamp for the wrong product." />
-      </p>
+      </Typography>
 
       <CatalogLearning session={session} />
     </div>

@@ -197,7 +197,9 @@ function RunIssueGrid({ rows, ariaLabel, empty }: {
       columns={RUN_COLUMNS}
       getRowId={(r) => r.sync_run_id}
       pageSize={10}
-      twoLineRows
+      // 58, not `twoLineRows`: that is 50px, and the run id under the company
+      // name was clipped by a few pixels — which no test could see.
+      rowHeight={58}
       // No filter row: the server caps these at ten and five, every column is
       // short, and sorting answers what the panel is opened with.
       filters={false}
@@ -213,7 +215,17 @@ const TENANT_COLUMNS: ColDef<TenantUsageRow>[] = [
   },
   numeric<TenantUsageRow>(
     "signals_generated", "Signals generated", (n) => n.toLocaleString("en-IN"),
-    { width: 200, flex: 0, sort: "desc" }),
+    {
+      width: 200, flex: 0, sort: "desc",
+      // `ag-right-aligned-cell` restated here, and it should not have to be.
+      // `numeric()` sets both `type: "numericColumn"` and `cellClass: "ag-num"`,
+      // and a colDef `cellClass` *replaces* the one the type contributes rather
+      // than adding to it — so the header right-aligns and the value does not.
+      // Every `numeric()` column in the app has that shape; fixing the helper
+      // would change every grid, which does not belong in this change. Reported
+      // separately.
+      cellClass: "ag-num ag-right-aligned-cell",
+    }),
 ];
 
 /* ── the screen ──────────────────────────────────────────────────────────── */
@@ -322,9 +334,13 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
                   rather than a shape whose zeroes read as calm — so this says
                   the same thing rather than reading them as room to spare. */}
               {capacity.bottleneck === null || capacity.safe_capacity_headroom === null ? (
+                // Deliberately not `recommended_action`, which is the panel at
+                // the foot of this same card: putting it here too printed one
+                // sentence twice on one screen.
                 <Alert severity="warning" sx={{ mb: 3 }}>
                   <AlertTitle>Capacity is unknown</AlertTitle>
-                  {capacity.recommended_action}
+                  No component reported a usable figure, so there is no tightest
+                  component to name and no headroom to state.
                 </Alert>
               ) : (
                 <Alert
@@ -373,8 +389,13 @@ export function ObservabilityDashboard({ session }: { session: PlatformSession }
                     )}
                     <Typography variant="caption" color="text.secondary"
                                 sx={{ display: "block", mt: 0.5 }}>
-                      Headroom {stated(comp.safe_capacity_multiplier, (n) => `${n.toFixed(1)}×`)}
-                      {" · "}{comp.basis}
+                      {/* No headroom clause where there is no headroom: the
+                          chip above already says the component was not
+                          measured, and "Headroom Not known ·" reads as a
+                          capitalised fragment dropped into a sentence. */}
+                      {comp.safe_capacity_multiplier === null
+                        ? comp.basis
+                        : `Headroom ${comp.safe_capacity_multiplier.toFixed(1)}× · ${comp.basis}`}
                     </Typography>
                   </Grid>
                 ))}

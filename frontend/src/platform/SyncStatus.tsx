@@ -1,4 +1,5 @@
 import Button from "@mui/material/Button";
+import CircularProgress from "@mui/material/CircularProgress";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { formatDateTime, since } from "../when";
 import { papi } from "./api";
@@ -216,7 +217,20 @@ export function SyncStatusCard({
     <Bp className={`sy sy-${tone}`}>
       <div className="sy-head">
         <span className={`sy-badge ${tone}`}>
-          {active && <span className="sy-spin" aria-hidden="true" />}
+          {/* MUI's own, not a hand-rolled keyframe. ui-standards §7 says no
+              custom loading implementations, and the reason is that a second
+              spinner is a second thing to keep in step with the theme — this
+              one carried its own `@keyframes` and its own reduced-motion guard.
+              Activity, not progress: it says the job is alive, never how far
+              along, which is why it has no value. */}
+          {active && (
+            <CircularProgress
+              size={11}
+              thickness={5}
+              aria-hidden="true"
+              sx={{ color: "inherit", mr: 0.5 }}
+            />
+          )}
           {LABEL[status] ?? status}
         </span>
         <span className="sy-last">

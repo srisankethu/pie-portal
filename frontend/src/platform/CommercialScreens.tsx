@@ -7,7 +7,7 @@ import { pp } from "./viz/useInsight";
 import { DataGrid, numeric, text } from "./DataGrid";
 import { formatDate } from "../when";
 import { papi } from "./api";
-import { ErrorState, LoadingState } from "./kit";
+import { EmptyState, ErrorState, LoadingState } from "./kit";
 import type {
   CustomerItemDetail,
   CustomerItemRow,
@@ -17,6 +17,7 @@ import type {
   PlatformSession } from "./types";
 import { Bp, Labelled, typeLabel } from "./ui";
 import { money, count } from "../money";
+import { pct, signedPct } from "./format";
 
 /**
  * Customer × Item commercial intelligence.
@@ -33,16 +34,6 @@ import { money, count } from "../money";
 
 // ── formatting ──────────────────────────────────────────────────────────────
 
-/** A ratio (0.261) rendered as a percentage. */
-function pct(v: number | null | undefined, digits = 1): string {
-  return v == null ? "—" : `${(v * 100).toFixed(digits)}%`;
-}
-
-function signedPct(v: number | null | undefined): string {
-  if (v == null) return "—";
-  const sign = v > 0 ? "+" : "";
-  return `${sign}${(v * 100).toFixed(1)}%`;
-}
 
 
 function num(v: number | null | undefined): string {
@@ -152,10 +143,10 @@ export function CustomerCommercial({
   const s = data.summary;
   if (s.active_items === 0) {
     return (
-      <div className="dp-empty">
-        No item-level history for this account yet. Once invoices are synced, this
-        is where the items driving its margin appear.
-      </div>
+      <EmptyState
+        title="No item history yet"
+        reason="No item-level history for this account yet. Once invoices are synced, this is where the items driving its margin appear."
+      />
     );
   }
 
@@ -224,11 +215,12 @@ export function CustomerCommercial({
       </div>
 
       {shown.length === 0 ? (
-        <div className="dp-empty">
-          {s.items_without_cost === s.active_items && s.active_items > 0
+        <EmptyState
+          title="Nothing flagged"
+          reason={s.items_without_cost === s.active_items && s.active_items > 0
             ? "Nothing can be flagged without a purchase cost to compare against — see above."
             : "Nothing on this account is flagged. That is a fact about the data, not a judgement about the relationship."}
-        </div>
+        />
       ) : (
         <DataGrid<CustomerItemRow>
           ariaLabel="Items on this account"

@@ -45,6 +45,7 @@ import { DataGrid, type ColDef } from "./DataGrid";
 import {
   ErrorState, LoadingState, MetricCard, SectionHeader, StatusChip, type Tone,
 } from "./kit";
+import { pct } from "./format";
 import type {
   MonetizationCalculation, MonetizationEvaluation, MonetizationHybridRow,
   MonetizationScorecard, MonetizationScorecardRow, MonetizationSegments,
@@ -69,9 +70,6 @@ function cr(value: string | null | undefined): string {
   return parsed == null ? "—" : `₹${(parsed / 1e7).toFixed(2)} Cr`;
 }
 
-function pct(value: number | null | undefined, digits = 1): string {
-  return value == null ? "—" : `${(value * 100).toFixed(digits)}%`;
-}
 
 function roiText(value: number | null | undefined): string {
   return value == null ? "UNKNOWN" : `${value.toFixed(1)}×`;

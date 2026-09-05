@@ -1876,15 +1876,11 @@ function TracePanel({ decisionId, token }: { decisionId: string; token: string }
       </Button>
 
       {open && error && (
-        <div className="dp-empty" style={{ padding: 12, textAlign: "left" }}>
-          The chain could not be loaded: {error}
-        </div>
+        <Alert severity="error" sx={{ mt: 1 }}>The chain could not be loaded: {error}</Alert>
       )}
-      {open && !trace && !error && <div className="dp-loading">Following the chain…</div>}
+      {open && !trace && !error && <LoadingState rows={1} height={44} />}
       {open && trace?.unavailable && (
-        <div className="dp-empty" style={{ padding: 12, textAlign: "left" }}>
-          {trace.unavailable}
-        </div>
+        <Alert severity="info" sx={{ mt: 1 }}>{trace.unavailable}</Alert>
       )}
 
       {open && trace?.states.map((level) => (
@@ -1971,7 +1967,7 @@ function DetailScreen({
   onAct: (kind: string) => void;
   onOpenAccount: (cid: string) => void;
 }) {
-  if (loading && !d) return <div className="dp-loading">Loading decision…</div>;
+  if (loading && !d) return <LoadingState rows={2} />;
   if (!d) {
     return (
       <EmptyState
@@ -2044,9 +2040,10 @@ function DetailScreen({
           <>
           <div className="facts-mark">Facts · what the data shows</div>
           {d.facts.length === 0 ? (
-            <div className="dp-empty" style={{ padding: 16, textAlign: "left" }}>
-              No numeric facts are exposed at your permission level for this decision.
-            </div>
+            <EmptyState
+              title="No facts to show"
+              reason="No numeric facts are exposed at your permission level for this decision."
+            />
           ) : (
             <Bp style={{ padding: "8px 14px" }}>
               <table className="facttable">
@@ -2278,13 +2275,14 @@ function CustomerScreen({
             <LoadingState rows={2} />
           </>
         ) : rows.length === 0 ? (
-          <div className="dp-empty">
-            {needle
+          <EmptyState
+            title={needle ? "No match" : "Nothing here yet"}
+            reason={needle
               ? `No ${status === "all" ? "" : status + " "}customer matches “${q}”.`
               : status === "inactive"
                 ? "No customer is marked inactive."
                 : "No customers are assigned to you yet."}
-          </div>
+          />
         ) : (
           <>
             <div className="dp-count">
@@ -2484,10 +2482,10 @@ function CustomerScreen({
 
       <div className="section-h" style={{ marginTop: 20 }}>Open decisions</div>
       {decs.length === 0 ? (
-        <div className="dp-empty">
-          Nothing is flagged on this account right now. That is a fact about the data, not a
-          judgement about the relationship.
-        </div>
+        <EmptyState
+          title="Nothing flagged"
+          reason="Nothing is flagged on this account right now. That is a fact about the data, not a judgement about the relationship."
+        />
       ) : (
       <>
       <div className="dp-count">

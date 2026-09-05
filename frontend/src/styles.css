@@ -1035,15 +1035,17 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 .sy-badge.idle { color: var(--color-neutral-600); }
 .sy-last { font-size: 11.5px; color: var(--color-neutral-600); display: inline-flex; align-items: center; }
 
-/* Activity, not progress: it says the job is alive, never how far along. */
-.sy-spin {
-  width: 11px; height: 11px; border-radius: 50%;
-  border: 2px solid currentColor; border-right-color: transparent;
-  animation: sy-rot .8s linear infinite;
-}
-@keyframes sy-rot { to { transform: rotate(360deg); } }
+/* `.sy-spin` and its `@keyframes sy-rot` lived here. MUI's CircularProgress
+   now, per ui-standards §7 — one spinner in the product, themed once.
+   
+   The reduced-motion guard moves with it, and widens: it used to slow this
+   one hand-rolled spinner, and MUI's own carries no such guard, so every
+   other CircularProgress in the product span at full speed regardless of the
+   setting. Slowed rather than stopped — a spinner that does not move says the
+   job has died, which is a different and wrong claim. */
 @media (prefers-reduced-motion: reduce) {
-  .sy-spin { animation-duration: 3s; }
+  .MuiCircularProgress-root { animation-duration: 3s !important; }
+  .MuiCircularProgress-circleIndeterminate { animation-duration: 4.5s !important; }
 }
 
 .sy-line {

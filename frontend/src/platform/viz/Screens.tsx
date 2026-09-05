@@ -34,16 +34,9 @@ import {
 } from "./tokens";
 import { type Envelope, useInsight } from "./useInsight";
 import { compactMoney, thinLabels, useMeasure } from "./useMeasure";
+import { pct, signedPct } from "../format";
 
 
-function pct(v: number | null | undefined, digits = 1): string {
-  return v == null ? "—" : `${(v * 100).toFixed(digits)}%`;
-}
-
-function signedPct(v: number | null | undefined, digits = 1): string {
-  if (v == null) return "—";
-  return `${v >= 0 ? "+" : "−"}${(Math.abs(v) * 100).toFixed(digits)}%`;
-}
 
 // ── Commercial Weather ──────────────────────────────────────────────────────
 // Fronts, not a score. Each dimension keeps its own band, its own sentence and

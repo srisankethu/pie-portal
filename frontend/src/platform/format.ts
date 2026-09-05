@@ -237,3 +237,34 @@ export function aiState(status: string): "ok" | "degraded" | "failed" | "withhel
       return "pending";
   }
 }
+
+
+// ── percentages ──────────────────────────────────────────────────────────────
+
+/** A ratio (0.261) as a percentage string. `—` for an absent value, never 0%.
+ *
+ *  There were six of these, in `viz/useInsight`, `CommercialScreens`,
+ *  `AdminScreens`, `CatalogLearning`, `MonetizationScreen` and `viz/Screens`,
+ *  plus `kit.PercentageValue` for the JSX case. Four agreed exactly, which is
+ *  what made a fifth written slightly differently hard to notice — and one had
+ *  been: `CatalogLearning` rounded to whole percent, so the same ratio rendered
+ *  as "26%" there and "26.1%" everywhere else. That difference is deliberate on
+ *  a match score and survives as `digits: 0` at the call site rather than as a
+ *  seventh function.
+ *
+ *  `kit.PercentageValue` stays: it is this, plus tabular figures, for the JSX
+ *  case where the column has to line up on the decimal. */
+export function pct(v: number | null | undefined, digits = 1): string {
+  return v == null ? "—" : `${(v * 100).toFixed(digits)}%`;
+}
+
+/** The same, signed, for a percentage-POINT movement.
+ *
+ *  A true minus (−, U+2212) rather than a hyphen, because these sit in columns
+ *  of figures and a hyphen is narrower than a plus — the two versions this
+ *  replaces disagreed on exactly that, so a signed movement was aligned on one
+ *  screen and ragged on the other. */
+export function signedPct(v: number | null | undefined, digits = 1): string {
+  if (v == null) return "—";
+  return `${v >= 0 ? "+" : "−"}${(Math.abs(v) * 100).toFixed(digits)}%`;
+}

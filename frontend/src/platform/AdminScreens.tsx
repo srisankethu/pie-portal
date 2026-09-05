@@ -40,6 +40,7 @@ import { policyProblems } from "./policySchema";
 import { Bp, Labelled } from "./ui";
 import { QuoteFieldsSection } from "./QuoteFieldsSection";
 import { money, moneySymbol } from "../money";
+import { pct } from "./format";
 
 /**
  * The approval queue and organization settings.
@@ -62,9 +63,6 @@ const KIND_LABEL: Record<string, string> = {
   DECISION_ESCALATION: "Escalated decision" };
 
 
-function pct(n: unknown): string {
-  return typeof n === "number" ? (n * 100).toFixed(1) + "%" : "—";
-}
 
 const when = formatDateTime;
 
@@ -134,7 +132,15 @@ function ApprovalCard({
                 Margin
               </Labelled>
             </dt>
-            <dd className={s.below_cost ? "warn" : ""}>{pct(s.margin)}</dd>
+            {/* `margin` is typed `string | number | null` — the approval
+                subject is serialized loosely — and the local `pct` this file
+                used to carry took `unknown` and answered "—" for anything that
+                was not a number. Kept explicitly at the call site rather than
+                by widening the shared formatter, which would let a string
+                through everywhere else too. */}
+            <dd className={s.below_cost ? "warn" : ""}>
+              {typeof s.margin === "number" ? pct(s.margin) : "—"}
+            </dd>
           </div>
           <div><dt>Line value</dt><dd>{money(s.line_revenue)}</dd></div>
           <div>
@@ -297,17 +303,15 @@ export function ApprovalsScreen({ session }: { session: PlatformSession }) {
       </div>
 
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
-      {loading && <div className="text-muted">Loading…</div>}
+      {loading && <LoadingState rows={3} />}
 
       {!loading && visible.length === 0 && (
-        <Bp className="dp-empty">
-          <h4>Nothing waiting.</h4>
-          <p>
-            {session.role === "SALESPERSON"
-              ? "When a price needs sign-off, ask for it from the quote line and it will appear here."
-              : "Requests appear here the moment someone asks for a price you have to judge."}
-          </p>
-        </Bp>
+        <EmptyState
+          title="Nothing waiting"
+          reason={session.role === "SALESPERSON"
+            ? "When a price needs sign-off, ask for it from the quote line and it will appear here."
+            : "Requests appear here the moment someone asks for a price you have to judge."}
+        />
       )}
 
       <div className="ap-list">

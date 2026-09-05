@@ -3,7 +3,7 @@ import Button from "@mui/material/Button";
 import { useCallback, useEffect, useState } from "react";
 import { since } from "../when";
 import { papi } from "./api";
-import { EmptyState, ErrorState, StatusChip } from "./kit";
+import { EmptyState, ErrorState, LoadingState, StatusChip } from "./kit";
 import type { ConnectorRecord, EntityKind, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion } from "./types";
 import { Bp, Labelled, Tip } from "./ui";
 
@@ -465,12 +465,12 @@ export function IdentityScreen({ token }: { token: string }) {
             </label>
           </div>
 
-          {loading && <div className="text-muted">Loading…</div>}
+          {loading && <LoadingState rows={3} />}
           {!loading && identities.length === 0 && (
-            <Bp className="dp-empty">
-              <h4>No identities yet.</h4>
-              <p>They are created as records arrive — run a sync from Data &amp; connection.</p>
-            </Bp>
+            <EmptyState
+              title="No identities yet"
+              reason="They are created as records arrive — run a sync from Data & connection."
+            />
           )}
 
           <div className="id-list">

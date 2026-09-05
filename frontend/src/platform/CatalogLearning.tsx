@@ -28,9 +28,13 @@ import { EmptyState } from "./kit";
 import type { PhraseAlias, PhraseAliases, PlatformSession, RetrievalReport } from "./types";
 import { Bp, Labelled } from "./ui";
 import { formatDateTime } from "../when";
+import { pct as fmtPct } from "./format";
 
+/** Whole percent here, not one decimal: this is a match score on a learned
+ *  phrase, and "83.4%" claims a precision the scorer does not have. The shared
+ *  formatter with `digits: 0`, rather than a sixth copy of the arithmetic. */
 function pct(v: number | null): string {
-  return v === null ? "—" : `${Math.round(v * 100)}%`;
+  return fmtPct(v, 0);
 }
 
 export function CatalogLearning({ session }: { session: PlatformSession }) {

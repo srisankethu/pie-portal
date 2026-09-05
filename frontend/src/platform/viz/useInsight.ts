@@ -81,11 +81,13 @@ export function useInsight<T = Envelope>(
 
 /** A ratio as a percentage, with an em dash for "not known".
  *
- *  Both screen files had their own; they agreed, which is exactly why a third
- *  one written slightly differently would have been hard to spot. */
-export function pct(v: number | null | undefined, d = 1): string {
-  return v == null ? "—" : `${(v * 100).toFixed(d)}%`;
-}
+ *  Re-exported from `platform/format`, not implemented again. This docstring
+ *  once said "both screen files had their own; they agreed, which is exactly
+ *  why a third one written slightly differently would have been hard to spot"
+ *  — and by 2026-09 there were six, one of which (`CatalogLearning`) had
+ *  indeed drifted to whole percent. The five viz screens that import it from
+ *  here keep working; there is one implementation behind them now. */
+export { pct } from "../format";
 
 /** A percentage-POINT movement, signed. Never a percent change of a percent.
  *

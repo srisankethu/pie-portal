@@ -42,7 +42,7 @@ import dbsupport
 from app.authz import Principal
 from app.domain import models
 from app.domain.enums import Role
-from app.pie_service import Candidate, Resolution
+from app.pie_service import Bands, Candidate, PieService, Resolution
 from app.routers.quote import _confirm_identity
 from app.store import Line, Quote, _identity_candidate
 
@@ -79,36 +79,116 @@ def _mappings(session) -> list:
 
 # ── which resolutions offer a confirmable candidate at all ──────────────────
 
+def _mapped(matches, outcome, semantics, suggestions=()):
+    """One engine payload through the real ``PieService._map``.
+
+    **The gate is asked of the mapper, not of a hand-built ``Resolution``.**
+    Every assertion below used to construct a ``Resolution`` directly and check
+    ``_identity_candidate`` against its shape, and that is exactly how the
+    defect this file exists to prevent went unnoticed for as long as it did: the
+    shape a test can hand-build is `outcome` plus a candidate list, and those
+    two fields do not say whether the candidate came out of ``matches`` (an
+    exact catalogue hit) or ``suggestions`` (a scored equivalence). A test that
+    can only speak in that vocabulary cannot express the distinction the gate
+    turns on, so it agreed with a predicate that was wrong.
+
+    ``lookup_record`` is stubbed to None because provenance is not under test
+    here and reaching for it would make this need the engine.
+    """
+    svc = PieService.__new__(PieService)
+    svc.lookup_record = lambda code: None
+    return svc._map("7781", {"resolution": {"outcome": outcome,
+                                            "input_semantics": semantics,
+                                            "matches": list(matches)},
+                             "suggestions": list(suggestions), "notes": []},
+                    Bands(tech=0.85, compat=0.60))
+
+
+_CANDIDATE_MATCH = {"record_id": "2001174", "description": "CNMG 120408",
+                    "certainty": "CANDIDATE"}
+_SECOND_MATCH = {"record_id": "6739214", "description": "CNMG 120404",
+                 "certainty": "CANDIDATE"}
+_SCORED_SUGGESTION = {
+    "record_id": "prod_000144", "description": "VSM17 MILLING INSERT R=1.2 MH",
+    "combined_score": 0.93, "attributes": {"corner_radius_mm": 1.2},
+    "dimensionally_vacuous": False,
+    "field_breakdown": [{"field": "corner_radius_mm", "status": "exact"}]}
+
+
 def test_only_the_engines_own_single_candidate_proposal_is_confirmable():
     """`_identity_candidate` is the first half of the gate, and is deliberately narrow.
 
-    NEEDS_REVIEW with exactly one match is the cross-namespace proposal: the
-    catalogue holds this exact code, but nobody has confirmed that *this
-    customer's* code means it. Answering that question is a durable fact. Every
-    other shape is not.
+    A single CANDIDATE **match** under NEEDS_REVIEW is the cross-namespace
+    proposal: the catalogue holds this exact code, but nobody has confirmed that
+    *this customer's* code means it. Answering that question is a durable fact.
+    Every other shape is not.
     """
-    proposal = Resolution(
-        input_text="7781", reqCode="7781", reqDesc="", rel="AMBIGUOUS", supplyCode=None,
-        candidates=[Candidate(code="2001174", desc="CNMG 120408", rel="POSSIBLE")],
-        outcome="NEEDS_REVIEW", semantics="IDENTITY")
+    proposal = _mapped([_CANDIDATE_MATCH], "NEEDS_REVIEW", "IDENTITY")
     assert _identity_candidate(proposal) == "2001174"
 
     # A ranked requirement is not an identity question, however good the score.
-    ranked = Resolution(
-        input_text="CNMG 120408 insert", reqCode="CNMG 120408 insert", reqDesc="",
-        rel="TECH", supplyCode="2001174",
-        candidates=[Candidate(code="2001174", desc="A", rel="TECH", score=0.97)],
-        outcome="AUTO_MATCH", semantics="REQUIREMENT")
+    ranked = _mapped([], "AUTO_MATCH", "REQUIREMENT", [_SCORED_SUGGESTION])
     assert _identity_candidate(ranked) is None
 
     # Two candidates is an ambiguity, not a proposal — there is no single answer
     # to confirm.
-    ambiguous = Resolution(
-        input_text="7781", reqCode="7781", reqDesc="", rel="AMBIGUOUS", supplyCode=None,
-        candidates=[Candidate(code="2001174", desc="A", rel="POSSIBLE"),
-                    Candidate(code="6739214", desc="B", rel="POSSIBLE")],
-        outcome="NEEDS_REVIEW", semantics="IDENTITY")
+    ambiguous = _mapped([_CANDIDATE_MATCH, _SECOND_MATCH], "NEEDS_REVIEW", "IDENTITY")
     assert _identity_candidate(ambiguous) is None
+
+
+def test_a_scored_suggestion_is_never_confirmable_however_the_outcome_reads():
+    """The defect this gate was believed to prevent, and did not.
+
+    ``_identity_candidate`` decided with ``outcome == "NEEDS_REVIEW" and
+    len(candidates) == 1``. The engine's outcome is carried through
+    ``_map``'s *suggestion* branch verbatim, so a payload with no match and one
+    scored suggestion arrived at that predicate wearing exactly those two
+    properties and was published as ``identity_proposal.confirmable: true``.
+    ``confirm_proposed_identity`` checks only that the selection equals the
+    proposal, so it would then have been written into ``ConfirmedCodeMapping``
+    as ASSERTED identity — the ``tolerance ∘ tolerance`` licence CLAUDE.md §1
+    says these two conditions hold shut.
+
+    Reproduced against the real ``_map`` before the fix; it returned
+    ``'prod_000144'`` for the first case below. The candidate is a POSSIBLE at
+    0.93 — the engine put it a band away and said so.
+
+    Every NEEDS_REVIEW semantics is swept rather than the one that was found,
+    because the branch that leaks is chosen by semantics: only ``IDENTITY``
+    reaches the branch entitled to propose, and both of the others fall through
+    to the suggestion branch carrying the same outcome.
+    """
+    for semantics in ("REQUIREMENT", "MIXED", "IDENTITY"):
+        leaked = _mapped([], "NEEDS_REVIEW", semantics, [_SCORED_SUGGESTION])
+        assert _identity_candidate(leaked) is None, semantics
+        # The suggestion is still OFFERED — refusing to confirm it is not
+        # refusing to show it. A gate that hid the candidate would have been a
+        # different, worse change.
+        assert [c.code for c in leaked.candidates] == ["prod_000144"], semantics
+
+
+def test_the_proposal_is_set_by_the_mapper_and_by_nothing_else():
+    """A ``Resolution`` built anywhere else proposes nothing, by default.
+
+    The field defaults to ``None`` and exactly one branch of ``_map`` assigns
+    it. That default is half the fix: the thirteen engine stubs in this suite
+    return hand-built ``Resolution`` objects, and under the old predicate any
+    of them shaped like a proposal WAS one. Now a stub has to say so on purpose.
+    """
+    hand_built = Resolution(
+        input_text="7781", reqCode="7781", reqDesc="", rel="AMBIGUOUS",
+        supplyCode=None,
+        candidates=[Candidate(code="2001174", desc="CNMG 120408", rel="POSSIBLE")],
+        outcome="NEEDS_REVIEW", semantics="IDENTITY")
+    assert _identity_candidate(hand_built) is None
+
+    said_so = Resolution(
+        input_text="7781", reqCode="7781", reqDesc="", rel="AMBIGUOUS",
+        supplyCode=None,
+        candidates=[Candidate(code="2001174", desc="CNMG 120408", rel="POSSIBLE")],
+        outcome="NEEDS_REVIEW", semantics="IDENTITY",
+        identity_candidate="2001174")
+    assert _identity_candidate(said_so) == "2001174"
 
 
 # ── what the gate lets through ──────────────────────────────────────────────
@@ -195,12 +275,19 @@ from app.routers import resolve as resolve_router                  # noqa: E402
 
 
 def _proposal(code: str = "2001174") -> Resolution:
-    """The engine's own single-candidate NEEDS_REVIEW — the one confirmable shape."""
+    """The engine's own single-candidate NEEDS_REVIEW — the one confirmable shape.
+
+    ``identity_candidate`` is set explicitly, and that is the whole difference
+    between this stub and one that merely *looks* like a proposal. Only
+    ``PieService._map``'s match branch sets it on a real resolution; a stub that
+    omitted it would be a resolution proposing nothing, which is what every
+    other engine stub in this suite now is.
+    """
     return Resolution(
         input_text="7781", reqCode="7781", reqDesc="", rel="AMBIGUOUS",
         supplyCode=None,
         candidates=[Candidate(code=code, desc="CNMG 120408", rel="POSSIBLE")],
-        outcome="NEEDS_REVIEW", semantics="IDENTITY")
+        outcome="NEEDS_REVIEW", semantics="IDENTITY", identity_candidate=code)
 
 
 @pytest.fixture()

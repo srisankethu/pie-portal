@@ -103,10 +103,17 @@ _APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 #:                    in this codebase. Deciding who is signed in from anything
 #:                    a model produced is the whole of what this package must
 #:                    never do.
-DETERMINISTIC = ("attribution", "commercial", "context", "decoding", "domain",
-                 "enquiry", "identity", "ingestion", "master_health",
-                 "messaging", "monetization", "observability", "retrieval",
-                 "signals", "sso", "state", "trust")
+#: ``attributes/``    decoding a catalogue row into its 44 named fields and
+#:                    persisting them with provenance. Every value it writes
+#:                    is read out of a manufacturer's own code by a frozen
+#:                    decoder, which is what makes an attribute citable; a
+#:                    model asked to fill a missing bore diameter would
+#:                    produce one that is indistinguishable from a decoded
+#:                    one and defensible in exactly the same words.
+DETERMINISTIC = ("attributes", "attribution", "commercial", "context",
+                 "decoding", "domain", "enquiry", "identity", "ingestion",
+                 "master_health", "messaging", "monetization", "observability",
+                 "retrieval", "signals", "sso", "state", "trust")
 
 #: The packages deliberately *outside* ``DETERMINISTIC``, each with the reason
 #: it is out. A package silently omitted from an opt-in list is the same defect

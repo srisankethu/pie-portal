@@ -8,21 +8,26 @@ reach, and what it would take to reach more.
 Three deliberate refusals, each of which was a live option and is written down
 so it is not re-added by someone who assumes it was an oversight:
 
-* **No upload endpoint** — *for this package*, and the dependency half of that
-  still holds everywhere. There is no ``UploadFile`` and no multipart handler
-  anywhere in ``backend/app``, and ``python-multipart`` is still not installed.
-  Adding one is a dependency decision and a new attack surface, and it buys
-  nothing a path argument does not already give a person running a diagnostic.
+* **No upload endpoint — for THIS package.** The three sentences that used to
+  stand here are now false and are kept as the reason rather than deleted:
+  there is an ``UploadFile`` in ``backend/app`` (``routers/enquiries.py``),
+  there is a multipart handler, and ``python-multipart`` is installed. Decision
+  012 reversed all three in the open, because a salesperson receiving a
+  customer's PDF is not a person running a diagnostic, and the second of those
+  needs a door.
 
-  The per-company catalogue (``routers/data_status.py``) does now accept an
-  uploaded item-master export, which is worth stating here rather than leaving
-  this paragraph to read as false. Two things kept it from re-opening what this
-  refusal closed. Its reasoning does not transfer: it rests on a path argument
-  already serving *a person running a diagnostic*, and the person configuring a
-  company's catalogue is an owner in a browser with no shell to supply one
-  from. And it takes the corpus as a **raw request body**, not a multipart
-  form, so ``python-multipart`` remains uninstalled and the dependency this
-  paragraph declines is still declined.
+  **The refusal still holds here, and for the reason it always did.** This
+  package takes *a path*, and a path is what a diagnostic wants: it costs no
+  authorization, no tenant, no storage and no retention question, and it can be
+  pointed at a prospect's export on a laptop. Nothing about an upload route
+  existing elsewhere makes routing this through it better; it would trade a
+  path argument for a session, an organization, a stored blob and an erasure
+  obligation, to answer a question that is a pure function of bytes.
+
+  So: an upload endpoint exists, this package does not use one, and the
+  distinction is between a *diagnostic over a file somebody hands you* and
+  *inbound demand a business has to keep*. The second is
+  ``enquiry/documents.py``.
 
 * **No connector.** ``ingestion/erp/`` is the registry for *live* ERP
   connections, and its own module docstring records that Zoho — the connector
@@ -31,16 +36,8 @@ so it is not re-added by someone who assumes it was an oversight:
   diagnostic nobody runs on a prospect's data.
 
 * **No database.** Nothing here reads or writes a session. The report is a pure
-  function of (export bytes, profile, pack, catalogue) and says so: two runs
-  over the same file produce the same report.
-
-  This is why ``--company`` and ``--pack`` are two arguments rather than one.
-  Catalogues and packs are per connected company now, and which pack a company
-  decodes through is stored against that company — so resolving one from the
-  other would need exactly the session this paragraph declines. The pair is
-  named by the caller and the report prints both; nothing here stops somebody
-  pairing a company with the wrong pack, and the portal is where that pairing
-  belongs.
+  function of (export bytes, profile, catalogue) and says so: two runs over the
+  same file produce the same report.
 
 The offline shape is not a compromise, and the value-weighted number is the
 proof. Coverage weighted by stock value at *selling* price cannot be computed

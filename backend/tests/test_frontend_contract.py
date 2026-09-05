@@ -293,3 +293,31 @@ def test_a_salespersons_payload_matches_the_same_interface_without_economics(
     assert_matches(body, "Quote", types)
     assert "marginFloor" not in body
     assert body["lines"] and all("economics" not in ln for ln in body["lines"])
+
+
+# ── constants the browser matches on ─────────────────────────────────────────
+
+def test_the_browser_and_the_server_agree_what_an_own_book_candidate_is_called():
+    """`rel.ts:OWN_BOOK_LABEL` must equal `sellable_catalog.SELLABLE_LABEL`.
+
+    The Supply Drawer marks a candidate that came from this organization's own
+    item master by comparing its `brand` against a string. A rename on either
+    side would not break a type, would not empty a screen and would not fail a
+    test — every book candidate would simply stop being marked, and a book item
+    and a catalogue item for the same physical product would go back to reading
+    as two unrelated options in one list.
+
+    That is a silent loss of a distinction somebody picks a product with, which
+    is why it is pinned here rather than trusted. This file exists for exactly
+    this class: "rename a field in a router and every check in the gate stays
+    green".
+    """
+    from app.sellable_catalog import SELLABLE_LABEL
+
+    rel_ts = (Path(__file__).resolve().parents[2] / "frontend" / "src" / "rel.ts")
+    source = rel_ts.read_text(encoding="utf-8")
+    match = re.search(r'export const OWN_BOOK_LABEL\s*=\s*"([^"]+)"', source)
+    assert match, "rel.ts no longer declares OWN_BOOK_LABEL"
+    assert match.group(1) == SELLABLE_LABEL, (
+        f"the browser looks for brand == {match.group(1)!r} and the server "
+        f"sends {SELLABLE_LABEL!r}; every own-book candidate would go unmarked")

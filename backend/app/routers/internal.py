@@ -137,6 +137,71 @@ def ai_readiness(
     return estimate(session, principal.organization_id)
 
 
+@router.get("/attribute-coverage")
+def attribute_coverage_report(
+    principal: Principal = Depends(require_owner),
+    session: Session = Depends(get_session),
+) -> dict:
+    """How much of this organization's catalogue carries technical attributes.
+
+    Decision 002 makes Phase 1 succeed or fail on **published attribute
+    coverage** rather than on accuracy, and ``attributes/coverage.py`` has
+    computed that since the store landed — with nothing surfacing it. The
+    number the phase gate turns on was reachable only from a SQL prompt, by
+    whoever had one. This is the published half; it maps the report and
+    computes nothing (CLAUDE.md §3).
+
+    **It measures and does not judge.** No band, no verdict, no colour and no
+    "healthy" flag — read the per-key census before the headline, because
+    ``products_with_any_attribute`` is a measure of decode *reach* and the
+    per-key fill rates are the only place richness is visible. A number lower
+    than somebody hoped is the answer, and the fix is more decoded product
+    rather than a friendlier denominator (§1: do not weaken a rule to make
+    output appear).
+
+    **An undefined ratio is ``null``, never ``0``.** An organization with no
+    products has no coverage rate, and 0% would read as a measured failure of
+    a catalogue that does not exist. Likewise ``by_source_kind`` lists the
+    kinds that hold live rows and does not fill a zero in for an absent one:
+    "this source wrote nothing" and "nobody asked this source" are different
+    facts, only the second is silence, and the one report that can tell them
+    apart is ``decorate``'s — not this one.
+
+    Owner-only, which is the narrower of the two gates this surface offers —
+    but read that as a statement about this *endpoint* rather than about the
+    numbers, because they are not secret and this route is not what keeps them.
+    The identical five (``products_total``, ``products_with_any_attribute``,
+    ``coverage_rate``, ``live_values``, ``by_source_kind``) are written into
+    ``SyncRun.notes["attributes"]`` by the decoration phase and served to every
+    signed-in user by ``GET /api/v1/data/status``, salespeople included. That is
+    fine — none of it is a price, a cost or a margin, the table has no such
+    column and the pack decodes no such field — but a docstring claiming this
+    gate withholds something it does not is the kind of false comfort §1 keeps
+    finding. What owner-only buys here is that the *phase-gate question* has one
+    deliberate place to be asked, not that the answer is confidential.
+    """
+    from ..attributes import attribute_coverage
+
+    report = attribute_coverage(session, principal.organization_id)
+    return {
+        "organization_id": report.organization_id,
+        "products_total": report.products_total,
+        "products_with_any_attribute": report.products_with_any_attribute,
+        "coverage_rate": report.coverage_rate,
+        "live_values": report.live_values,
+        "attributes_per_decorated_product": report.attributes_per_decorated_product,
+        "by_key": [
+            {"attribute_key": k.attribute_key, "products": k.products,
+             "values": k.values, "fill_rate": k.fill_rate}
+            for k in report.by_key
+        ],
+        "by_source_kind": [
+            {"source_kind": kind, "values": values}
+            for kind, values in report.by_source_kind
+        ],
+    }
+
+
 @router.get("/zoho/check")
 def zoho_check(
     principal: Principal = Depends(require_manager_or_owner),

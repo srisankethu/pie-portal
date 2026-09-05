@@ -133,6 +133,16 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # wallet cannot be reconstructed — and the source URLs on these rows are
     # the only record of where those figures came from.
     ("tender_results", models.TenderResult),
+    # The decoded technical facts about the products this tenant sells — the
+    # corner radius, the grade, the flute count, each with where it was read
+    # from. EXPORTED, and not a close call in either direction: there is no
+    # credential and no administration in it, and it is derived from the
+    # tenant's own item master. It is also the one table here whose absence
+    # would be *invisible* in an export: a departing customer would get their
+    # catalogue back as names, with everything that made those names
+    # searchable, comparable or quotable silently missing, and nothing in the
+    # file would say so.
+    ("product_attribute_values", models.ProductAttributeValue),
     ("commercial_policies", models.CommercialPolicy),
     # What each of this tenant's threshold stamps stood for. EXPORTED rather
     # than EXCLUDED, and it is not a close call: these are the tenant's own
@@ -280,6 +290,14 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # report the tenant ran before a correction.
     ("inbound_lines", models.InboundLine),
     ("inbound_line_dispositions", models.InboundLineDisposition),
+    # What the customer SENT, beside what they wrote. Exported for the lines'
+    # own reason — it is this tenant's record of what was asked of them — and
+    # the row is exported in full EXCEPT its bytes, which `_rows` describes
+    # rather than serialises. So the export says which documents exist, what
+    # each is, how large, and its checksum; the content itself is served one at
+    # a time from its endpoint. An export that carried them would be hundreds of
+    # megabytes of base64 in a file this module expects to travel by email.
+    ("rfq_documents", models.RfqDocument),
 )
 
 #: Never exported, and each one has a reason a customer can read. Keyed by
@@ -456,6 +474,9 @@ DESTROYED: tuple[dict[str, str], ...] = (
     {"table": "model_payloads", "column": "payload_ciphertext",
      "holds": "the exact text of every payload sent to an AI provider about "
               "this organization"},
+    {"table": "rfq_documents", "column": "content_ciphertext",
+     "holds": "every document a customer sent this organization — the PDFs, "
+              "spreadsheets and photographs an enquiry arrived as, in full"},
 )
 
 #: What key destruction does not reach: columns held in plaintext, each with
@@ -519,6 +540,22 @@ def _rows(session: Session, model, organization_id: str) -> list[dict[str, Any]]
                 value = value.isoformat()
             elif hasattr(value, "isoformat"):
                 value = value.isoformat()
+            elif isinstance(value, (bytes, bytearray, memoryview)):
+                # A blob is DESCRIBED, never serialised. Without this branch it
+                # falls through to ``str(value)`` below and the export carries
+                # `"b'gAAAAA...'"` — a Python repr of megabytes of ciphertext,
+                # useless to the reader and large enough to make the export
+                # undeliverable by the email this file travels by. It is also
+                # not the tenant's copy of anything: the plaintext is served one
+                # document at a time from its own endpoint, under the
+                # authorization that endpoint applies.
+                #
+                # Written as a branch rather than as a per-model opt-out because
+                # the defect is general — every bytes column has it, and
+                # `rfq_documents.content_ciphertext` is only the first.
+                value = {"bytes": len(value),
+                         "omitted": "binary content, not serialised into this "
+                                    "export; see the document endpoints"}
             elif isinstance(value, (int, float, str, bool, type(None), dict, list)):
                 pass
             else:

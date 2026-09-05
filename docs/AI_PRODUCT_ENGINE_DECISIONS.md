@@ -41,7 +41,7 @@ before their premises.
 ---
 
 ## 002 — Attribute decoration is Phase 1, and its exit criterion is coverage
-**Status:** PROPOSED · **Phase:** 1 · **Report §:** 6, 19, 39
+**Status:** ACCEPTED — 2026-08-30, on entering Phase 1 · **Phase:** 1 · **Report §:** 6, 19, 39
 
 **Decision.** Persist per-product attributes with full provenance in
 `product_attribute_values` before building retrieval, rules, ranking or
@@ -57,10 +57,40 @@ The same document defers substitution *"on the evidence, not on effort"*.
 `equivalence/catalog.py:ZohoCatalogSource` already reads five attribute fields
 that do not exist on a real row — the socket is built and empty.
 
+### Ratified on entering the phase, per 029
+
+029 leaves 002–015 PROPOSED and says each phase's first act is to bring its own
+decisions to ACCEPTED before code. This is that act, recorded late rather than
+skipped: the store landed first and the status line still read PROPOSED, which
+is exactly the drift 029 exists to prevent.
+
+**One measurement, corrected.** The report estimated that the decoder dropped
+"eleven" decoded slots. It drops **41 of 44** — `corner_radius_mm` on 14.5% of
+the catalogue, `chipbreaker` on 22.8%, `flute_count` on 9.2%. `master_health`
+kept three, in memory, for one report, behind a single line. The gap between
+what the engine knows and what the platform stores was four times wider than
+the report claimed.
+
+**The exit criterion is a measurement and stays one.** Nothing built for this
+phase may put a band, a target or a status chip beside the coverage number.
+Decision 002 says Phase 1 succeeds or fails on published coverage rather than on
+accuracy, and a number with a green chip beside it has stopped being published
+coverage and become a verdict. The Phase 1 work already refused one version of
+this failure store-side: `product_subfamily` is emitted on every routed row, so
+storing it would have taken coverage to ~100% on day one with an office chair
+counted as a decorated product.
+
+**What the phase still does not have.** The `SOURCE_FILE` path — a distributor
+PIM or price-list export (decision 025) — is designed for and unbuilt, because
+the file has not arrived. Everything landed so far reaches only what the engine
+can decode from a name, which is the ~21% ceiling this decision names. Phase 1
+is not complete until the import path exists and coverage is published against
+a real export.
+
 ---
 
 ## 003 — Candidate generation moves into PostgreSQL
-**Status:** PROPOSED · **Phase:** 2 · **Report §:** 22, 34
+**Status:** ACCEPTED IN PART — first slice DONE 2026-08-31 (see 031); the lexical ladder stays PROPOSED · **Phase:** 2 · **Report §:** 22, 34
 
 **Decision.** Retrieval becomes staged and database-resident: exact →
 normalized part number → lexical (`tsvector` + `pg_trgm`) → structured
@@ -74,6 +104,57 @@ set and stops being the retrieval index.
 pool costs **10.2 KB resident per record**, so 100k SKUs is **≈1 GB per worker
 process**, multiplied by worker count. `docs/hosting-free-tier.md` already
 flags the 13 MB copy per worker at today's size.
+
+### Accepted in part, and the part matters
+
+**What is accepted now: the sellable master becomes a candidate pool, read from
+the database.** What is *not* accepted yet is the staged lexical retrieval —
+`tsvector`, `pg_trgm`, the exact → normalized → lexical → structured ladder.
+That half is a scale answer, its evidence is the 555 ms at 100,755 records
+above, and decision 023 puts today's reachable catalogue at ~16k across two
+masters. Building a retrieval ladder against a number six times larger than the
+one that exists is the speculative generality this programme keeps refusing;
+the measurement that would justify it is a recall gap on the evaluation set,
+and that set does not exist yet either.
+
+**Why the first slice is worth doing on its own, independent of scale.** The
+portal ranks a customer's requirement against `products.jsonl` — the
+manufacturer catalogue — and **not against what the business sells**.
+`_build_sources` builds a `ZohoCatalogSource` only when a `--zoho-fixture` path
+is passed, and the portal passes `zoho_fixture=None`, so the Zoho master
+reaches the ranking only through `products.pie_record_id`, which is set on
+**~9%** of items. The other ~91% of the sellable book cannot be offered by the
+engine at all, however well it matches, because it is not in the pool.
+
+That is not a performance problem and no amount of PostgreSQL fixes it. It is a
+*pool composition* problem, and Phase 1 is what made it solvable: a Zoho item
+with decoded attributes can now be a first-class candidate on its own evidence
+rather than only when it happens to link to a catalogue record.
+
+**The seam already exists and needs no parser change.** `CatalogSource` is an
+ABC in `equivalence/catalog.py` with one abstract method, `load() -> List[
+CanonicalRecord]`. The portal implements it, reading `products` joined to
+`product_attribute_values` for one organization. pie-parser stays offline —
+CLAUDE.md §1 — because the subclass lives here and no database driver is ever
+imported there. It is the DIP property that file's §4 states outright: the
+engine depends on the shape of a source, never on a particular one.
+
+**Three constraints this slice must hold, recorded before the code.**
+
+* **Per organization, never a process singleton.** `PieService._sources` is
+  built once and shared; a pool of one tenant's products cannot be. A source
+  cached across organizations is a cross-tenant read with extra steps.
+* **A Zoho item is sellable by definition** — it is what the business sells —
+  which is the whole point, and it must still pass through the sellable-
+  namespace restriction rather than around it.
+* **Non-transitivity is untouched and must stay so.** A larger pool is still
+  scored with the request as every comparison's left operand. Nothing here may
+  compare one candidate to another.
+
+**What would move the rest of 003 from PROPOSED to ACCEPTED:** a measured recall
+gap on a real evaluation set, or a catalogue that has actually grown past the
+point where the linear scan hurts. Neither exists today, and the report's own
+§39 says to measure recall before considering vectors.
 
 ---
 
@@ -218,7 +299,7 @@ is not covered by this decision.
 ---
 
 ## 012 — Revisit the no-upload decision explicitly
-**Status:** PROPOSED · **Phase:** 3 · **Report §:** 11, 24, 33
+**Status:** ACCEPTED — implemented 2026-08-31 (see 032) · **Phase:** 3 · **Report §:** 11, 24, 33
 
 **Decision.** File upload is added for customer RFQ documents, with type
 sniffing, size limits, archive-bomb defence, no inline rendering, a licence
@@ -1066,3 +1147,426 @@ decision that can surprise a phase already underway. Containment: §31's rule
 stands — cross-package contracts are frozen before any workstream implements
 against them — and each phase's first act is to bring its own decisions to
 ACCEPTED before code, not after.
+
+---
+
+## 030 — What the sellable pool costs, measured, and what is still open
+**Status:** ACCEPTED — 2026-08-30 · **Phase:** 2 · **Report §:** 22, 34
+
+**Decision.** Decision 003's first slice ships with its costs written down beside
+its gain, in numbers `scripts/measure_sellable_pool.py` reproduces, and with the
+three things it does *not* fix named rather than left to be discovered.
+
+**The gain.** Pool membership goes from **611/6,717 (9.1%)** — a catalogue link —
+to **6,570/6,717 (97.8%)** — a link *or* decoded attributes. That 97.8% is a
+**ceiling**: every item name in the harness's seeded master is a catalogue-format
+designation and decodes at 97.6%, where `DECODED_NAME` reaches about **21%** of
+the live master. Read the gain as an upper bound; the harness prints that caveat
+beside its own coverage line.
+
+**The costs, measured over three runs.**
+
+| | catalogue only | with the pool |
+|---|---|---|
+| `resolve`, median | 27–32 ms | 48–55 ms |
+| `resolve`, p95 | 142–286 ms | 422–459 ms |
+
+`build_pool` is 154–164 ms median and `pool_version` 11–12 ms, which is the whole
+argument for the cache: a hit skips ~93% of the build. **The tail is where this
+hurts** — an RFQ is many lines, not one — and it is the number that grows as
+Phase 1 coverage grows, so it is the one to re-measure when it does.
+
+**Three things this slice does not fix, stated because each was found by
+measuring rather than by reasoning.**
+
+1. **One product is shown twice, on 15 of 62 lines.** `query._dedup` keys on
+   `description_norm`, which a book record does not carry, so a catalogue entry
+   and the book entry for the same physical product both appear, at the same
+   score, spending two of six slots on one answer. Neither entry is wrong, so
+   this is a cost and not a safety failure. Fixing it needs an exact key both
+   pools can compute, which is the identity problem and not a display one.
+   Deferred, and counted on every run as finding (d).
+
+2. **The abstention guards, not the pool, are what keep this safe.** On the
+   harness's probe set the requirement path resolved to a supply on **zero**
+   lines in *both* arms. So "no resolution lost, no supply changed" is a
+   property of an engine that was already abstaining — evidence that the slice
+   changed nothing, not evidence it is safe to auto-select from. 70 of the 93
+   newly surfaced candidates (75%) are `unverified` and capped at POSSIBLE.
+   Weaken `_is_discriminating` or the vacuity refusal and this measurement stops
+   applying.
+
+3. **Whether a new candidate is one this business would have offered is not
+   measured and no score answers it.** `owner_would_have_offered` is null on
+   every row of the harness's JSON. A person filling that column in is the
+   measurement that decides whether the slice is good, and it has not happened.
+
+**What was fixed rather than deferred, because it was a safety defect.** A drill
+was returned rank 0, score 1.0, `unverified=False` — presented as verified — for
+`"endmill 11.1mm 4 flute"`. `product_family` is `distance.HARD_GATE_FIELDS`'s
+strongest gate and pool records carried none, because `attributes.ROUTE_FIELDS`
+refuses to store a route as a fact. The fix is `Product.decoded_family`
+(migration `i1fam`), stamped by `decorate_products` from the same decode:
+a column on the product, not an attribute, so the refusal stands and the gate
+still fires. Finding (a) now counts it — **6,570/6,570** — and reads 0 on a pool
+built before that migration, which is the check that the column was populated at
+all.
+
+**Two false comforts were removed from this work in the same pass, and they are
+recorded because the pattern is the point.** The harness reported shadow
+duplicates as a confident `0/62` while its own printed output showed the
+identical-description pairs three times over — the shape-matching route needed
+three decoded fields and these records had fewer. And finding (a) was a fixed
+paragraph asserting `product_family` was always absent, still printing two lines
+under the count that refuted it. Both are `absence of evidence is not a pass`
+arriving inside the instrument rather than the product. A finding that cannot be
+wrong is not a finding: (a) is now derived from its own number, and the shadow
+count reports both routes and says which one is the weaker, louder claim.
+
+---
+
+## 031 — The book reaches the engine, and the identity gate that had to be fixed first
+**Status:** ACCEPTED — 2026-08-31 · **Phase:** 2 · **Report §:** 22, 34
+
+**Decision.** Decision 003's first slice is complete: `sellable_pool_for` is
+obtained once per request and passed to every path that resolves a line. The
+pool is threaded, never rebuilt at the callee, and `store.py` still receives a
+built pool rather than a session.
+
+| Path | Where the pool is obtained |
+|---|---|
+| `POST /api/v1/resolve` | `routers.resolve.resolve_line` → `resolution.resolve(pool=…)` |
+| `POST /api/v1/resolve/confirm` | `routers.resolve.confirm` → `pie_service.resolve(…, pool)` |
+| `POST /api/v1/quotes/{id}/intake` | `routers.quote.intake` → `store.add_rfq(pool=…)` → `build_lines` |
+
+`confirm` is the one that carries weight. It re-resolves rather than trusting a
+proposal echoed back by the caller, so resolving against a *different* pool
+would check the caller's selection against an answer they were never shown.
+
+### The defect this had to wait for
+
+**A scored equivalence suggestion could be confirmed as asserted identity.**
+CLAUDE.md §1 said two conditions held that line. The first did not.
+`store._identity_candidate` re-derived the question downstream, from `outcome ==
+"NEEDS_REVIEW" and len(candidates) == 1`. Those two fields cannot answer it:
+`PieService._map` carries the engine's outcome through its *suggestion* branch
+verbatim, so a payload with no match and one scored suggestion arrives wearing
+exactly that shape.
+
+Reproduced against the real `_map` before the fix — a `POSSIBLE` at 0.93 came
+back as `identity_proposal.confirmable: true`. `confirm_proposed_identity` checks
+only that the selection equals the proposal and adds no check that the record is
+even a catalogue record, so it would have been written into
+`ConfirmedCodeMapping`. That is the `tolerance ∘ tolerance` licence the whole
+non-transitivity argument rests on: the engine derives a requirement from an
+asserted record, so the next "same as their 7781 but 12 mm" composes two bands
+into a wrong part with a defensible explanation attached.
+
+**It is a pre-existing defect, not one the pool created** — the leaking candidate
+could already be a catalogue suggestion. But the pool takes the reachable master
+from ~9% to ~98% and makes book records eligible, so shipping the wiring first
+would have widened a live hole. Hence the order.
+
+**The fix.** The `matches`-or-`suggestions` distinction exists only inside
+`_map`'s branch structure and in none of its output fields, so `_map` now sets
+`Resolution.identity_candidate` in the single branch entitled to, and
+`_identity_candidate` reads it. Everything else defaults to `None` — including
+every hand-built `Resolution` in the test suite, which is why several stubs now
+have to say `identity_candidate=` on purpose.
+
+**Rejected: a second gate inside `confirm_proposed_identity`** that verifies the
+record is in the authoritative index. It is real defence in depth, and it fails
+closed when the engine is absent — which would make the gate depend on submodule
+availability and force ~25 tests engine-backed, into the CI job that only runs
+when a credential is present. The source-level fix already guarantees the
+property: branch (1b)'s candidates come from `matches`, which are catalogue
+records by construction.
+
+### Two things that were fixed because they were in code this change owns
+
+- **A `None` pool was never cached**, so an organization with nothing decorated
+  paid a full product-table scan on every request, forever — and that is *every*
+  organization until decoration coverage exists. `_EmptyBook` is now stored
+  under the same version rule a pool is, so the emptiness expires when the book
+  moves.
+- **`pool_version` ran twice on every cache miss** — 11-12 ms of a 154-164 ms
+  build spent learning something the caller had just computed. `build_pool` now
+  accepts it. The read-before-rows ordering is preserved: a version from the
+  caller was taken even earlier, so the pool is stamped older than its content,
+  which is the safe direction.
+
+### What proves the wiring, and what does not
+
+The existing suite **cannot** distinguish a correct wiring from an inert one.
+No test seeds `product_attribute_values` in an organization that also resolves,
+so `sellable_pool_for` returns `None` at all three sites for every existing test
+— a green suite after this change is evidence the wiring is inert. Worse, all
+thirteen engine stubs were `lambda *a, **k: <fixed Resolution>` and recorded
+nothing, so none could tell a pool that was passed from one built and dropped.
+
+`tests/test_the_pool_reaches_every_resolving_path.py` is the answer, and it is
+deliberately **engine-free**: it asserts object identity between what
+`sellable_pool_for` returned and what `pie_service.resolve` received, with a
+recording stub. A real pool would need `CanonicalRecord` from pie-parser, and an
+engine-backed test runs in neither `make verify` without the submodule nor a
+credential-less CI job — which are exactly the places a wiring regression has to
+be caught. **Five mutants were run against it** — each of the three sites
+dropping the pool, the store dropping it between `add_rfq` and `build_lines`,
+and the intake passing another organization's — and each is caught by the
+assertion that names it.
+
+### Still open, unchanged from 030
+
+The double-listing (15 of 62 lines), the abstention guards rather than the pool
+carrying safety, and nobody having yet judged whether a new candidate is one this
+business would have offered. Wiring the pool does not touch any of the three.
+
+**And one this change adds.** `frontend/src/components/SupplyDrawer.tsx` renders
+a candidate's `brand` only inside a `{c.grade && …}` guard, so a book candidate
+whose grade did not decode shows nothing distinguishing it from a catalogue one.
+`SELLABLE_LABEL = "book"` exists precisely to be that word. It matters more now
+that the pool is live, and more again because of the double-listing: two entries
+for one product, neither marked, read as two unrelated products. Not fixed here
+— this change is backend wiring and the fix is a UI pass under
+`docs/ui-standards.md`.
+
+---
+
+## 032 — RFQ documents: received and retained, never read and never rendered
+**Status:** ACCEPTED — 2026-08-31 · **Phase:** 3 · **Report §:** 11, 24, 33
+
+**Decision.** Decision 012 is implemented. `POST /api/v1/enquiries/documents`
+accepts a customer's RFQ document; `enquiry/documents.py` checks, encrypts and
+retains it; a download serves it as an attachment and never as a page. The
+reversal of `master_health/__init__.py`'s recorded "no upload endpoint" is
+stated there, in `docs/concepts/01`, and in the architecture doc — all three
+carried the claim and all three were false the moment this shipped.
+
+**Scope, stated because half of decision 012 is deliberately not here.** This
+receives and retains. It does **not** read: no PDF is parsed, no spreadsheet
+opened, no requirement extracted. Extraction is a later slice and the boundary
+keeps this module's surface at "bytes in, bytes out, checked on the way".
+
+### The four questions that decided the shape
+
+**Where the bytes go: Postgres, encrypted under the tenant DEK.** Only the `db`
+service has a volume (`compose.yaml:116-123`); `api` and `worker` have none and
+Railway's filesystem is ephemeral, so local disk is not durable on either
+supported topology. Between Postgres and an object store, erasure decides it and
+decides it structurally: `trust/erasure.erase` destroys the data key and writes a
+signed receipt and **deletes no rows**, because key destruction is "the only form
+of deletion that also reaches the backups". A DEK-encrypted blob inherits that
+for one entry in `DESTROYED`. A bucket is reached by none of the four gates this
+table passes (export completeness, the erasure manifest, the RLS census,
+migration drift), and `erase` would have to grow a network call whose failure
+mode is a receipt that overstates what it destroyed — which `erasure.py` calls
+worse than no receipt at all.
+
+Cost, measured rather than estimated: ciphertext is **1.333×** the plaintext
+through the new bytes path on `TenantCipher`, against **1.778×** had the bytes
+gone through the existing text path (base64, then Fernet's own base64).
+`BACKUP_RETAIN_DAYS` defaults to 14, so the ceiling of 25 MB is about 470 MB of
+retained backup at worst per document. Nothing in this repo measures database
+size; every backup check is a floor, never a ceiling. That is an open gap and it
+is not closed here.
+
+**Type sniffing, not a dependency.** A leading-byte table for the six formats an
+RFQ actually arrives in, plus a ZIP refinement read from the central directory.
+`python-magic` needs libmagic on the image and `filetype` is another supply-chain
+edge; neither buys anything for a list this short. **The client's declared type
+is evidence, never the decision** — a file named `.pdf` that begins `PK` is the
+interesting case, is stored as what it is, and publishes
+`type_matches_declaration: false`. A stream nothing recognises is UNKNOWN and
+refused; it does not fall back to what the upload claimed, which is the one input
+an attacker fully controls.
+
+**The size ceiling is checked twice and the first check is the one that
+matters.** `content-length` is refused before the body is read, then the body is
+read under a hard cap and refused again. Neither alone is enough: the first is
+fast and is a claim by the sender, the second is honest and expensive. This is
+`routers/enquiries.py`'s export ceiling applied to an input — the one that
+previously "fired only once the process had done exactly the work the ceiling
+exists to prevent".
+
+**Archive-bomb defence is real, and its limit is stated.** A ZIP's central
+directory is metadata, so declared sizes are read without decompressing anything:
+a 58 KB archive declaring 60 MB is refused unopened. **What that does not catch
+is a bomb that lies in its own directory** — a header saying 1 KB whose member
+expands to a gigabyte — and the only thing that catches that is a bounded read at
+extraction. Nothing here extracts anything, so nothing is exposed to it today;
+the day something does, the bounded read is that code's obligation. Written down
+rather than left for whoever writes it to discover.
+
+### The defence that could not live where it usually lives
+
+`deploy/Caddyfile:62-70` sets `X-Content-Type-Options: nosniff` and a CSP — on
+the **self-hosted topology only**. The free-tier topology is Vercel to Railway
+with no Caddy; `frontend/api/proxy.ts:113-141` corrects exactly two headers
+(`location`, and `content-encoding`/`content-length`) and adds no security ones,
+`vercel.json` has no headers block, and `app/main.py` sets none. A document
+download there would carry neither.
+
+So the response carries its own: `application/octet-stream` (never the sniffed
+type, however confidently sniffed), `Content-Disposition: attachment` with the
+filename reduced to a conservative character set, and `nosniff`. **A defence
+present on one of two supported topologies is not a defence.**
+
+### One defect this introduced and one it revealed
+
+**Introduced, then fixed:** appending the routes to the end of `enquiries.py` put
+`GET /documents` after `GET /{inbound_line_id}`, and FastAPI matches in
+definition order — so the listing was matched as an enquiry line whose id is the
+string "documents" and returned a 404 body a client reads as "you have no
+documents". A wrong answer that looks like a right one. The routes are now
+registered above the parameterised one and
+`test_the_listing_route_is_not_shadowed_by_the_line_route` pins it separately
+from the tests that merely use the listing, because those would go on passing.
+
+**Revealed:** `erasure._rows` had no `bytes` branch, so any blob column fell
+through to `str(value)` and would have put `"b'gAAAAA...'"` — a Python repr of
+megabytes of ciphertext — into a JSON export. A latent defect in a shared
+function that no table had yet triggered. It now describes a blob (`{"bytes": n,
+"omitted": …}`) rather than serialising it, so the export says which documents
+exist, what each is, how large and its checksum, and the content is served one at
+a time from its own endpoint under that endpoint's authorization.
+
+### The asymmetry with `inbound_lines`, and the half of 012 it blocks
+
+`inbound_lines.raw_text` is **plaintext by decision** and sits in
+`SURVIVES_PLAINTEXT`: "the corpus an RFQ parser is measured against has to be the
+bytes the customer sent. So destroying the key does not unread them; only row
+deletion removes this text." Documents are encrypted. The asymmetry is
+deliberate — a document is megabytes carrying letterheads, drawings and an end
+customer's name, and decision 012 asks for erasure reach specifically.
+
+**But 012 asks for erasure reach into "stored files *and extracted
+requirements*", and only the first is delivered.** A requirement extracted from a
+document becomes an `InboundLine`, and that table is plaintext on purpose. The
+second half cannot be met without reversing the corpus decision, which is not a
+call to make in passing. Recorded as an open conflict rather than quietly
+counted as done.
+
+### Verification
+
+Seven mutants were run against the tests and each is caught: serving the sniffed
+type, dropping `nosniff`, not sanitising the filename, storing plaintext,
+removing the archive ratio check, falling back to the declared type, and dropping
+the organization filter on read. The encryption is proved by reading the raw
+column back and asserting the customer's bytes are not in it, not by trusting the
+call that wrote it.
+
+### Open
+
+* No database-size measurement anywhere, and every backup check is a floor. A
+  document store makes that gap matter; it did not before.
+* `MAX_BYTES` is a module constant, not config. The number that suits a VM with
+  a volume is not the number that suits a free-tier Postgres.
+* No frontend. A salesperson cannot reach this yet — the drop zone is a UI pass
+  under `docs/ui-standards.md`, and it lands with the `SupplyDrawer` brand-marker
+  fix that decision 031 left open.
+* Decision 025's PIM import shares this receiving layer and is still blocked on
+  the product owner's sample export.
+
+---
+
+## 033 — The UI half: a document can be attached, and a candidate says where it came from
+**Status:** ACCEPTED — 2026-08-31 · **Phase:** 3 · **Report §:** 11, 24
+
+**Decision.** The two open UI items from 031 and 032 are closed. A salesperson
+can attach the document an RFQ arrived as, and the Supply Drawer says which
+candidates came from this organization's own book.
+
+### The attachment
+
+`IntakeModal` already listed **"A PDF they sent"** as a channel — the desk stated
+the route and then retyped the contents, because there was nowhere to put the
+PDF. It now collects a `File` and hands it up on submit; `QuoteBuilder` uploads
+it and names the id on the intake.
+
+**Two calls, in that order, and the order is the design.** The upload has its own
+refusals and statuses (413 for a size or archive ceiling, 415 for a type), so
+folding the bytes into the intake body would make that route multipart to gain
+nothing. Uploading *second* would be worse in the way that matters: the lines
+would already be on the quote and the desk would be told the attachment failed
+with nothing left to retry. This way a refusal stops before anything is added,
+with the server's own sentence, and the text is still in the dialog.
+
+The file is held in component state and uploaded only on submit — an upload on
+selection would store a document every time somebody opened the picker and
+changed their mind, and there is no undo for a stored document. It can be
+*withdrawn*, which is a row saying somebody withdrew it, not a row that never
+existed.
+
+**The link is `source_ref`, extended and not replaced.** It already carries
+`quote:<id>`, the handle that marks a row as part of the worked subset and keeps
+a coverage report from dividing by enquiries somebody chose to work. A document
+link that overwrote it would buy a join and lose the property the field was added
+for, so the value is `quote:<id> doc:<id>` — two space-separated handles in a
+field documented as "a message id, a file name, a portal request id".
+
+**Ownership is checked before the id is written down.** A caller can put any
+string in `rfq_document_id`; an unchecked one would file the enquiry against
+another tenant's document — a cross-tenant reference stored permanently in a
+corpus row, which is worse than a failed lookup because nothing later questions
+it. A foreign id finds nothing and the handle is omitted rather than refused: the
+quote is the work and the corpus is a by-product, the same trade `_capture_enquiry`
+already makes about a bad channel.
+
+**And the message says only what is true.** The "attached" note appears only when
+the server actually kept the enquiry row, because that row is where the link
+lives. A document attached with no channel stated is stored and reachable, but
+nothing joins it to that RFQ — saying otherwise would promise a link somebody
+would later fail to find.
+
+### The candidate source (031's open item)
+
+`SupplyDrawer` rendered `c.brand` **inside** `{c.grade && …}`, so a candidate
+whose grade did not decode showed nothing about where it came from. Harmless
+while every candidate was a catalogue record with a manufacturer's name;
+load-bearing the moment this organization's own book joined the pool, because a
+book item and a catalogue item for the same physical product can appear in one
+list — `query._dedup` keys on a description a book record does not carry, so it
+cannot collapse them — and unmarked they read as two unrelated options.
+
+Grade and source are separate facts and render separately now. A book candidate
+also carries an **"in our book"** chip beside its relationship, and an unverified
+one carries **"unverified fit"** — status as a `Chip`, per `ui-standards.md` §6,
+rather than left to prose a reader scanning six candidates skips. Not a chip per
+brand: every catalogue candidate has a manufacturer label and a chip on all of
+them would be decoration that stops meaning anything.
+
+**The label is pinned across the two halves.** The browser decides "is this ours"
+by comparing `brand` against a literal. A rename on either side would break no
+type, empty no screen and fail no test — every book candidate would simply stop
+being marked. `test_frontend_contract.py` now asserts `rel.ts:OWN_BOOK_LABEL`
+equals `sellable_catalog.SELLABLE_LABEL`; mutated, it fails.
+
+### Two general defects found on the way
+
+**`authInit` hardcoded `Content-Type: application/json`.** `FormData` carries a
+multipart boundary only the browser knows, and it puts that boundary in the
+header it sets for itself — so declaring JSON does not merely mislabel the
+request, it makes the body unparseable and the server answers 400 with nothing
+pointing at that line. Now set only when the body is not a `FormData`. A general
+correctness fix: any future caller passing a form would have hit it.
+
+**`req` passed a non-string `detail` straight to `new Error`.** The document
+endpoints answer `{reason, detail}` so a client can branch on the kind without
+matching prose — which would have reached somebody's screen as
+`"[object Object]"`, the one message that tells them nothing at all.
+
+### And one the standards contradicted themselves about
+
+`ui-standards.md` §13 said "a chart carries a text summary and a table fallback —
+`ChartContainer` does this". §10 of the same file records `ChartContainer` as one
+of two components "that were never written", and explains at length why naming a
+component nobody can import is worse than naming none. §13 now names
+`viz/Panel.tsx`'s `Panel` + `Figure`, which is what actually does it. A standard
+that contradicts itself on an easy claim does not get read on the hard ones.
+
+### Still open
+
+Nothing reads the document. A BOQ attached as a spreadsheet is stored, linked and
+downloadable, and its contents still have to be pasted — the helper text says so
+in terms rather than implying the lines came from the file. Extraction is the
+next slice and it is where the bounded-read obligation from 032 lands.

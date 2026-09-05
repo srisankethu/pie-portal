@@ -1101,6 +1101,32 @@ class Product(Base):
     #: and neither may be filled in from the item's name.
     source_item_type: Mapped[Optional[str]] = mapped_column(String(128))
     source_item_category: Mapped[Optional[str]] = mapped_column(String(128))
+
+    #: The product family the parser ROUTED this item's name to — a
+    #: classification, not a measurement, and stored here rather than in
+    #: ``product_attribute_values`` for two reasons that point the same way.
+    #:
+    #: It is not a fact about the product. The engine emits it on every routed
+    #: row, including rows it understood nothing else about: "OFFICE CHAIR"
+    #: routes to a terminal catch-all. Counted as an attribute it would take
+    #: Phase 1's coverage to ~100% on day one with a bracket reported as a
+    #: decorated product, which is why ``attributes.ROUTE_FIELDS`` refuses it
+    #: and must keep refusing it.
+    #:
+    #: But a candidate record without it is worse than useless — it is
+    #: dangerous. ``product_family`` is the strongest hard gate the equivalence
+    #: engine has, so a pool record missing it matches ACROSS families: a real
+    #: 11.1 mm drill was returned rank 0, scored 1.0 and marked verified, for
+    #: the request "endmill 11.1mm 4 flute". A wrong part, top of the list,
+    #: labelled as checked. That is the failure the whole programme is built
+    #: against, and it arrived through a gate that could not fire rather than
+    #: through a rule that was wrong.
+    #:
+    #: So the route lives with the item, beside the ERP's own
+    #: ``source_item_type``, which is the same shape of thing: one
+    #: classification per product. NULL means the router placed it nowhere, and
+    #: a record with NULL here must be gated out rather than compared freely.
+    decoded_family: Mapped[Optional[str]] = mapped_column(String(64))
     active: Mapped[bool] = mapped_column(Boolean, default=True)
 
     #: The decoded manufacturer catalogue record this item **is** — pie-parser's
@@ -1137,6 +1163,110 @@ class Product(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  onupdate=_now)
+
+
+class ProductAttributeValue(Base):
+    """One decoded or imported fact about one product, with where it came from.
+
+    The core of Phase 1 (decision 002). The catalogue this platform sells from
+    carries almost no technical fact — 9.4% of the master is identity-linked and
+    21.6% is decodable from a name — and every later phase (retrieval, the
+    compatibility rules, ranking, learning) is built over attributes that do not
+    exist yet. This table is where they start existing.
+
+    **A row per (product, attribute), not a column per attribute.** A
+    category-specific schema becomes 200 sparse columns the moment a second
+    category arrives, and a turning insert and a drill share almost none of
+    their fields. `products` deliberately gains no attribute columns.
+
+    **Org-scoped, and that is decided rather than defaulted** (decision 026).
+    The attribute source is a distributor PIM export licensed to the
+    organization that obtained it, so sharing rows across tenants would
+    redistribute another party's licensed data. It also lets two organizations
+    legitimately hold different values for one product when their sources
+    disagree — the same property `_rel_from_score` already grants equivalence
+    bands. The cost is accepted: two orgs selling the same insert each store and
+    decode their own rows.
+
+    **Superseded, never mutated.** A value is written once and replaced by
+    writing a new row and marking the old one superseded, because the whole
+    point of the table is that a later reader can ask what was believed, on what
+    evidence, at the time a quote went out. `superseded_at` NULL is the live
+    row; `uq_product_attribute_live` enforces one live row per
+    (org, product, attribute, source).
+
+    **Every row says where it came from and how sure.** `source_kind` is the
+    class of evidence — a name decoded by the parser is not the same claim as a
+    line read out of a manufacturer's data file, and neither is a human typing
+    it. `confidence` is the extractor's, and it is NOT a score to rank on: it
+    says how well the value was *read*, never how well the product fits.
+    """
+
+    __tablename__ = "product_attribute_values"
+    __table_args__ = (
+        # One live row per source per attribute. The source is in the key on
+        # purpose: a decoded value and an imported one are two claims about the
+        # same field, and collapsing them would silently drop whichever arrived
+        # second. Which one wins is a read-time policy question, not a storage
+        # one.
+        Index("uq_product_attribute_live", "organization_id", "product_id",
+              "attribute_key", "source_kind",
+              unique=True, postgresql_where=text("superseded_at IS NULL"),
+              sqlite_where=text("superseded_at IS NULL")),
+        Index("ix_pav_org_attr", "organization_id", "attribute_key"),
+        Index("ix_pav_org_product", "organization_id", "product_id"),
+    )
+
+    attribute_value_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                    default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    product_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    #: The engine's own field name — `corner_radius_mm`, `flute_count`,
+    #: `iso_shape`. Deliberately not remapped on the way in: the decoder's
+    #: vocabulary is the one the pack, the equivalence layer and the resolver
+    #: already share, and a translation table here would be a second vocabulary
+    #: to keep in step. An ontology mapping these onto category attributes is
+    #: Phase 4's, and it reads this column rather than replacing it.
+    attribute_key: Mapped[str] = mapped_column(String(64))
+
+    #: The value as three columns rather than one, because a query that filters
+    #: `corner_radius_mm BETWEEN 0.4 AND 0.8` cannot do it over text and a
+    #: retrieval layer that casts on every row cannot use an index. `value_num`
+    #: is set when the value is numeric, `value_text` always. `original_value`
+    #: is what the source actually said, kept verbatim so a normalisation that
+    #: turns out to be wrong can be redone without re-reading the source.
+    value_num: Mapped[Optional[float]] = mapped_column(Float)
+    value_text: Mapped[Optional[str]] = mapped_column(String(255))
+    original_value: Mapped[Optional[str]] = mapped_column(String(255))
+    unit: Mapped[Optional[str]] = mapped_column(String(16))
+
+    #: Where the claim comes from, as a class rather than a free string.
+    #: DECODED_NAME — the parser read it out of the item's own description.
+    #: CATALOGUE_LINK — inherited from the manufacturer catalogue record this
+    #: item is linked to (`products.pie_record_id`), which is a stronger claim
+    #: because a catalogue row is the maker's own data.
+    #: SOURCE_FILE — read from an imported PIM or price-list export.
+    #: HUMAN — somebody typed it, which outranks everything and is the only
+    #: kind that may contradict a decode without evidence.
+    source_kind: Mapped[str] = mapped_column(String(32))
+    #: Which file, catalogue record or person. Free text by design — it is
+    #: evidence for a human reading a row, not something to join on.
+    source_ref: Mapped[Optional[str]] = mapped_column(String(255))
+
+    #: How well the value was READ, never how well the product fits. A caller
+    #: that ranks on this is confusing extraction quality with technical
+    #: suitability, which is the confusion decision 008 exists to prevent.
+    confidence: Mapped[Optional[float]] = mapped_column(Float)
+
+    #: The catalogue that produced a decode, so a row written under a superseded
+    #: pack is identifiable rather than merely old — the reason
+    #: `thresholds_version` is stamped on every computed row.
+    decoder_version: Mapped[Optional[str]] = mapped_column(String(128))
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    #: NULL is live. A superseded row is never deleted and never edited.
+    superseded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class VendorTarget(Base):
@@ -5011,6 +5141,91 @@ class InboundLineDisposition(Base):
     #: Set when a later decision replaced this one. The row stays, and every
     #: current-state read filters ``IS NULL``.
     superseded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True))
+
+
+class RfqDocument(Base):
+    """One document a customer sent, exactly as it arrived — encrypted at rest.
+
+    **Canonical, not derived.** A PDF a customer emailed exists in no ERP, so a
+    complete re-sync rebuilds nothing here. That is the same property that put
+    ``InboundLine`` in ``enquiry/`` rather than ``state/``, and this table is its
+    companion: the line is what the customer *wrote*, this is what they *sent*.
+    A line extracted from a document names it in ``InboundLine.source_ref``,
+    which is already documented as "a message id, a file name, a portal request
+    id" — no new column, the existing provenance field used as designed.
+
+    **The bytes are ciphertext under the tenant DEK, and that is what makes
+    erasure honest.** ``trust.erasure.erase`` destroys the data key and writes a
+    receipt; it deletes no rows, because key destruction "is the only form of
+    deletion that also reaches the backups". A document stored as plaintext
+    bytes here would sit outside that promise while appearing inside it — and a
+    signed receipt that overstates what it destroyed is, in that module's own
+    words, worse than no receipt. So ``content_ciphertext`` is registered in
+    ``erasure.DESTROYED`` and erasure needs no new code path at all.
+
+    This is also the argument against an object store, and it is structural
+    rather than a preference: a bucket is reached by none of the four gates this
+    table passes through (export completeness, the erasure manifest, the RLS
+    census, migration drift), and ``erase`` would have to grow a network call
+    whose failure mode is a receipt that lies.
+
+    **Never rendered.** ``content_type_sniffed`` is what the bytes actually are,
+    recorded as evidence and deliberately NOT used as the response
+    ``Content-Type``: the download serves ``application/octet-stream`` with
+    ``Content-Disposition: attachment`` and ``X-Content-Type-Options: nosniff``,
+    set by the application rather than by the reverse proxy. The proxy is not
+    available to rely on — ``deploy/Caddyfile`` sets those headers and the
+    free-tier topology (Vercel to Railway) has no Caddy at all, and
+    ``frontend/api/proxy.ts`` corrects exactly two headers and adds no security
+    ones. A defence that holds on one of two supported topologies is not a
+    defence.
+    """
+
+    __tablename__ = "rfq_documents"
+
+    rfq_document_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                 default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+
+    #: The name the sender's file had. Verbatim, for ``InboundLine.raw_text``'s
+    #: reason — it is evidence about what arrived, and it is also the one field
+    #: here an attacker controls, so every reader treats it as hostile: it is
+    #: never used to build a path, never echoed into a header unquoted, and
+    #: never trusted to say what the bytes are.
+    filename: Mapped[str] = mapped_column(String(255))
+    #: What the uploader's client SAID it was, kept only to be compared with
+    #: what it turned out to be. A mismatch is evidence, not an error.
+    content_type_declared: Mapped[str] = mapped_column(String(128), default="")
+    #: What the leading bytes actually are, decided here and not by the client.
+    content_type_sniffed: Mapped[str] = mapped_column(String(128), default="")
+
+    #: Plaintext length, in bytes, recorded before encryption. The stored
+    #: ciphertext is about 1.33x this; a reader wanting to know what the customer
+    #: sent wants this number, and a reader sizing the database wants the other.
+    byte_size: Mapped[int] = mapped_column(Integer)
+    #: SHA-256 of the PLAINTEXT bytes. Two purposes and neither is security:
+    #: recognising a redelivery of the same document, and proving after a
+    #: restore that what came back is what went in.
+    content_sha256: Mapped[str] = mapped_column(String(64), index=True)
+
+    #: The document itself, Fernet ciphertext under this organization's data
+    #: key. Registered in ``trust.erasure.DESTROYED``.
+    content_ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
+
+    #: Who uploaded it, and under what terms it may be held. The licence note is
+    #: free text on purpose: it is a sentence a person wrote about a document
+    #: somebody else owns, and a controlled vocabulary would invite a default.
+    uploaded_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    licence_note: Mapped[str] = mapped_column(Text, default="")
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now)
+    #: NULL is live. Withdrawn rather than deleted, the supersede convention
+    #: ``enquiry/`` borrows from ``state/`` — a document somebody withdrew is a
+    #: fact about the enquiry, and a DELETE would make the corpus disagree with
+    #: itself about what arrived.
+    withdrawn_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True))
 
 

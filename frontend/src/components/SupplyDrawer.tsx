@@ -7,7 +7,7 @@ import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import type { Line, LineIntelligence } from "../types";
-import { relTone } from "../rel";
+import { isFromOwnBook, relTone, sourceLabel } from "../rel";
 import { StatusChip } from "../platform/kit";
 import { DecisionSupport } from "./DecisionSupport";
 import { QuoteIntelligence } from "./QuoteIntelligence";
@@ -204,6 +204,20 @@ export function SupplyDrawer({
                       same tone table. Two spellings of one term is how a line
                       reads AMBIGUOUS in amber on the grid and in grey here. */}
                   <StatusChip label={c.rel} tone={relTone(c.rel)} dense />
+                  {/* Only for a candidate out of this organization's own book.
+                      Not a chip per brand: every catalogue candidate carries a
+                      manufacturer label, and a chip on all of them would be a
+                      row of decoration that stops meaning anything. This one
+                      marks the distinction a person acts on — "we already sell
+                      this" against "the maker's catalogue lists it". */}
+                  {isFromOwnBook(c.brand) && (
+                    <StatusChip
+                      label="in our book"
+                      tone="info"
+                      dense
+                      tip="From this organization's own item master rather than the manufacturer catalogue — something the business already sells."
+                    />
+                  )}
                   {/* A retrieved record sits beside ranked ones and must not
                       read as one: "nearest description" is a statement about
                       text, and the chip says so where the score would be. */}
@@ -223,6 +237,14 @@ export function SupplyDrawer({
                     <StatusChip
                       label="nearest by description" tone="neutral" dense
                       tip="Found because its catalogue description reads like this line, then compared by the engine. Not ranked, not a match — an option to consider."
+                    />
+                  )}
+                  {c.unverified && (
+                    <StatusChip
+                      label="unverified fit"
+                      tone="warn"
+                      dense
+                      tip="The engine could not compare every dimension the request named, so the match score is not a measure of fit. Capped at POSSIBLE and never auto-selected."
                     />
                   )}
                   {c.score !== null && (
@@ -247,10 +269,21 @@ export function SupplyDrawer({
                   )}
                 </div>
                 <div style={{ fontSize: 12.5, marginTop: 4 }}>{c.desc}</div>
-                {(c.grade || c.catalogue) && (
+                {/* Grade, source and catalogue are separate facts and are
+                    guarded separately. They were one line with the source
+                    inside the grade's guard — so a candidate whose grade did
+                    not decode showed nothing about where it came from. That
+                    became load-bearing the moment this organization's own book
+                    joined the candidate pool: a book item and a catalogue item
+                    for the same product can both appear in one list, and
+                    unmarked they read as two unrelated products. `sourceLabel`
+                    is what turns the server's internal "book" into words a
+                    salesperson can read. */}
+                {(c.grade || c.brand || c.catalogue) && (
                   <div className="text-muted" style={{ fontSize: 11.5 }}>
                     {c.grade ? `grade ${c.grade}` : ""}
-                    {c.brand ? ` · ${c.brand}` : ""}
+                    {c.grade && c.brand ? " · " : ""}
+                    {c.brand ? sourceLabel(c.brand) : ""}
                     {/* Which of the company's catalogues — which manufacturer's
                         — this record is from. A company resolves against every
                         catalogue it has built at once, so a part number's

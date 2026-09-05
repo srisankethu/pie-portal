@@ -49,6 +49,14 @@ NOT_A_POLICY_STAMP: dict[str, str] = {
         "which prompt template was sent to a model. Prompts are not "
         "deterministic policy and ai/ may never compute a number (§1); there is "
         "no threshold behind this at all.",
+    "product_attribute_values.decoder_version":
+        "the ruleset checksum of the pack that decoded the value — the same "
+        "kind of stamp as products.pie_catalog_version, and for the same "
+        "reason: it says which catalogue read the name, not which policy "
+        "judged it. No threshold goes into an attribute at all. A decoded "
+        "0.8 mm corner radius is a reading of the world; whether 0.8 is close "
+        "enough to 0.4 is policy, it lives in the equivalence bands, and it is "
+        "applied at read time by a layer that has not been built yet.",
     "threshold_versions.version":
         "the registry's own primary key — the stamp being dereferenced, not a "
         "stamp on a computed row. Marking it would make the recorder try to "

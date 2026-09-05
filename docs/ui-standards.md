@@ -195,8 +195,13 @@ content genuinely requires one (a chart measuring its own container does).
 Keyboard navigation, visible focus, ARIA labels where the markup does not
 already carry the meaning, sufficient contrast, and descriptive tooltips.
 
-A chart carries a text summary and a table fallback — `ChartContainer` does
-this so no chart has to remember to.
+A chart carries a text summary and a table fallback. **`viz/Panel.tsx`'s
+`Panel` + `Figure` is what does that**, not `ChartContainer` — this sentence
+named `ChartContainer` in the present tense while §10, in this same file,
+recorded it as one of two components "that were never written" and explained
+at length why naming a component nobody can import is worse than naming none.
+A standard that contradicts itself on an easy claim does not get read on the
+hard ones, so the two halves now agree.
 
 ## 14. Code quality
 

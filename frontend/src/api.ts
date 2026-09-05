@@ -9,8 +9,8 @@
  * on one request is how a screen ends up displaying one person's name while
  * deciding what to show from another's role.
  */
-import type { EstimateResult, Quote, QuoteDraftSummary, QuoteFieldDefinition, QuoteOwner }
-  from "./types";
+import type { EstimateResult, Quote, QuoteDraftSummary, QuoteFieldDefinition, QuoteOwner,
+  RfqDocument } from "./types";
 import { authInit } from "./authFetch";
 
 /** The key the builder used to keep one draft under in `localStorage`.
@@ -59,13 +59,24 @@ async function req<T>(path: string, opts: RequestInit = {}, token?: string): Pro
     let detail = res.statusText;
     try {
       const body = (await res.json()).detail;
-      // A structured refusal rather than a sentence: the 422 that names the
-      // companies to choose from. Recognised by shape, so an ordinary string
-      // detail still becomes an ordinary Error below.
+      // A refusal may answer with a shape rather than a sentence, and there
+      // are now two of those. Test the typed one first: the 422 that names
+      // the companies to choose from is recognised by shape and thrown as
+      // `CompanyRequired`, so a caller can offer the choice instead of
+      // printing it.
       if (body && typeof body === "object" && Array.isArray(body.companies)) {
         throw new CompanyRequired(String(body.message ?? detail), body.companies);
       }
-      detail = body || detail;
+      // Everything else is a message to show. The document endpoints send
+      // `{reason, detail}` so a client can branch on the kind without
+      // matching prose, so read the sentence out of it rather than assigning
+      // the object: passed straight to `new Error`, an object becomes the
+      // string "[object Object]" on somebody's screen, which is the one
+      // message that tells them nothing at all.
+      if (typeof body === "string") detail = body || detail;
+      else if (body && typeof body === "object" && typeof body.detail === "string") {
+        detail = body.detail;
+      }
     } catch (e) {
       if (e instanceof CompanyRequired) throw e;
       /* an unparseable body leaves the status text */
@@ -134,14 +145,38 @@ export const api = {
       method: "PUT", body: JSON.stringify({ user_id: userId }),
     }, t),
 
+  /** Store the document an RFQ arrived as, and return what was stored.
+   *
+   *  Its own call rather than a field on `intake`, because the upload has its
+   *  own refusals and its own statuses — 413 for a size or archive ceiling, 415
+   *  for a type — and folding the bytes into the intake body would make that
+   *  route multipart to gain nothing and would lose the document every time an
+   *  unrelated intake failure rolled it back. */
+  uploadRfqDocument: (t: string, file: File, licenceNote = "") => {
+    const form = new FormData();
+    form.append("file", file);
+    form.append("licence_note", licenceNote);
+    return req<RfqDocument>("/api/v1/enquiries/documents",
+                            { method: "POST", body: form }, t);
+  },
+
   /** `channel` is what turns the pasted words into a corpus row. Sent only when
    *  the person said how the enquiry arrived — omitted, the server captures
    *  nothing, because `InboundChannel` has no "unknown" member to file it
    *  under. */
-  intake: (t: string, id: string, text: string, channel?: string) =>
+  intake: (t: string, id: string, text: string, channel?: string,
+           rfqDocumentId?: string) =>
     req<Quote>(`/api/v1/quotes/${id}/intake`, {
       method: "POST",
-      body: JSON.stringify(channel ? { text, channel } : { text }),
+      body: JSON.stringify({
+        text,
+        ...(channel ? { channel } : {}),
+        // Named only when there is one. The server treats an unknown id as no
+        // id — the quote is the work and the corpus link is a by-product — so
+        // sending an empty string would be asking it to log a warning about a
+        // document nobody attached.
+        ...(rfqDocumentId ? { rfq_document_id: rfqDocumentId } : {}),
+      }),
     }, t),
 
   /** One line at a time, deliberately — see store.confirm_reading. */

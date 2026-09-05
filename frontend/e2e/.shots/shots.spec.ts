@@ -42,10 +42,16 @@ async function signIn(page: Page, email: string): Promise<void> {
 
 /** Let the screen settle without asserting on any particular content: these
  *  screens legitimately differ by role, and a wait that demands a grid would
- *  fail on the ones that have none. */
+ *  fail on the ones that have none.
+ *
+ *  Deliberately NOT `networkidle`. This app keeps work in flight after paint —
+ *  react-query refetches and the lazy route chunks — so "no request for 500ms"
+ *  is a state several screens never reach, and waiting for it burned the whole
+ *  run against a timeout per screen and produced nothing. `domcontentloaded`
+ *  plus a fixed beat is what a person actually waits for. */
 async function settle(page: Page): Promise<void> {
-  await page.waitForLoadState("networkidle", { timeout: 20_000 }).catch(() => {});
-  await page.waitForTimeout(1200);
+  await page.waitForLoadState("domcontentloaded", { timeout: 15_000 }).catch(() => {});
+  await page.waitForTimeout(2500);
 }
 
 async function shoot(page: Page, dir: string, name: string): Promise<void> {

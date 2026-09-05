@@ -16,7 +16,11 @@ export default defineConfig({
   // rendered pixels on disk so a UI change can be judged against what the
   // screen actually looks like. It asserts almost nothing, so including it in
   // `npm run e2e` would add minutes to the run and a green result that means
-  // nothing. Run it explicitly: `npx playwright test e2e/.shots`.
+  // nothing.
+  //
+  // This ignore also applies to an explicitly named path, so the harness is
+  // run through its own config rather than a flag:
+  //   npx playwright test -c playwright.shots.config.ts
   testIgnore: "**/.shots/**",
   // One worker, no parallelism: both specs drive the same backend and the same
   // seeded database, and a second worker would be racing it.

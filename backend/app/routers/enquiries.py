@@ -38,13 +38,15 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import (APIRouter, Depends, File, Form, HTTPException, Response,
+                     UploadFile, status)
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from sqlalchemy import func, select
 
 from .. import clock, enquiry
+from ..enquiry import documents
 from ..authz import Principal, current_principal, require_manager_or_owner
 from ..db import get_session
 from ..domain import enums, models
@@ -170,6 +172,175 @@ def capture_line(body: CaptureRequest,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from None
     session.commit()
     return _line_to_dict(row)
+
+
+# ── documents: what the customer SENT ───────────────────────────────────────
+#
+# **Registered above `/{inbound_line_id}`, and that is load-bearing.** FastAPI
+# matches routes in definition order, so a literal path declared after a
+# path-parameter route at the same level is unreachable: appended to the end of
+# this file, `GET /documents` was matched as an enquiry line whose id is the
+# string "documents", and the listing endpoint returned a 404 body that a
+# client would read as "you have no documents". Caught by
+# `test_only_a_manager_or_owner_may_withdraw`, which asked for the listing and
+# got a shape with no `count` in it.
+#
+#
+# Decision 012, Phase 3. These four routes are the first multipart handler in
+# this codebase, and `app/master_health/__init__.py:11` records the absence they
+# reverse. The reversal is deliberate and its cost is a new dependency
+# (`python-multipart`, which FastAPI requires for `UploadFile`) plus the surface
+# these routes defend: `enquiry/documents.py` holds every refusal and this file
+# holds only the HTTP mapping, per §3's rule that a router is thin.
+
+
+def _refusal(e: documents.DocumentRefused) -> HTTPException:
+    """A refusal as its own status, never a bare 400 or a 500.
+
+    413 for the two ceilings and 415 for the three "this is not a document we
+    take" cases, because a caller that cannot tell "too big" from "wrong kind"
+    retries the same file. The reason code travels beside the sentence so a
+    client can branch without matching prose.
+    """
+    over = e.reason in ("TOO_LARGE", "ARCHIVE_TOO_LARGE")
+    return HTTPException(
+        status.HTTP_413_REQUEST_ENTITY_TOO_LARGE if over
+        else status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+        {"reason": e.reason, "detail": e.detail})
+
+
+@router.post("/documents", status_code=status.HTTP_201_CREATED)
+async def upload_document(
+        file: UploadFile = File(...),
+        licence_note: str = Form(""),
+        principal: Principal = Depends(current_principal),
+        session: Session = Depends(get_session)) -> dict:
+    """Store one document a customer sent. Every role — whoever received it.
+
+    **The size ceiling is checked twice, and the first check is the one that
+    matters.** `content-length` is refused before the body is read, so an
+    oversized upload costs a header rather than 25 MB of memory — the same
+    correction `/export` needed, where the ceiling "fired only once the process
+    had done exactly the work the ceiling exists to prevent". But a length
+    header is a claim by the sender, so the body is read under a hard cap as
+    well and refused again if it exceeds it. Neither check alone is enough:
+    the first is fast and lies, the second is honest and expensive.
+
+    The response never contains the bytes.
+    """
+    declared_length = 0
+    try:
+        declared_length = int(file.size or 0)
+    except (TypeError, ValueError):
+        declared_length = 0
+    if declared_length > documents.MAX_BYTES:
+        raise _refusal(documents.DocumentRefused(
+            "TOO_LARGE",
+            f"{declared_length:,} bytes is past this endpoint's ceiling of "
+            f"{documents.MAX_BYTES:,}."))
+
+    # Read one byte past the ceiling and no further. A sender whose header
+    # understated the body is refused here having cost the ceiling, not the
+    # file — and `read(n)` is what makes that bound real rather than advisory.
+    content = await file.read(documents.MAX_BYTES + 1)
+    try:
+        row = documents.store(
+            session, principal.organization_id,
+            filename=file.filename or "",
+            content=content,
+            declared_type=file.content_type or "",
+            uploaded_by_user_id=principal.user_id,
+            licence_note=licence_note)
+    except documents.DocumentRefused as e:
+        raise _refusal(e) from e
+    session.commit()
+    return documents.summary(row)
+
+
+@router.get("/documents")
+def list_documents(principal: Principal = Depends(current_principal),
+                   session: Session = Depends(get_session)) -> dict:
+    """Every live document, metadata only. Never the bytes."""
+    rows = documents.listing(session, principal.organization_id)
+    return {"count": len(rows), "documents": [documents.summary(r) for r in rows]}
+
+
+@router.get("/documents/{rfq_document_id}/content")
+def download_document(rfq_document_id: str,
+                      principal: Principal = Depends(current_principal),
+                      session: Session = Depends(get_session)) -> Response:
+    """The document itself — as a download, never as a page.
+
+    **Three headers, all set here rather than at the reverse proxy.**
+    `deploy/Caddyfile` sets `X-Content-Type-Options` and a CSP, and the
+    free-tier topology has no Caddy at all — `frontend/api/proxy.ts` corrects
+    two headers and adds no security ones, and `vercel.json` has no headers
+    block. A defence that holds on one of two supported topologies is not a
+    defence, so the response carries its own:
+
+    * `application/octet-stream`, never the sniffed type. The sniffed type is
+      recorded as evidence and deliberately not echoed: serving a customer's
+      PDF as `application/pdf` invites the browser to render it, and an
+      attacker-supplied file rendered on this origin is the vector this route
+      exists not to open.
+    * `Content-Disposition: attachment`, with the filename quoted and stripped
+      of anything that could break out of the header. The filename is the one
+      field on this row that an attacker fully controls.
+    * `X-Content-Type-Options: nosniff`, so a browser does not overrule the
+      first bullet by looking at the bytes.
+
+    404 for another organization's document, for a withdrawn one, and for one
+    that never existed — three states a caller must not be able to tell apart.
+    """
+    found = documents.read(session, principal.organization_id, rfq_document_id)
+    if found is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such document.")
+    row, content = found
+    # Built once and handed to the Response that is actually returned. Setting
+    # them on the injected `response` as well would be dead: FastAPI sends the
+    # returned object, so a header written to the other one is a header nobody
+    # ever receives — and a security header that silently does not ship is
+    # worse than one that was never claimed.
+    return Response(content=content, media_type="application/octet-stream",
+                    headers=_download_headers(row.filename))
+
+
+def _download_headers(filename: str) -> dict:
+    """`Content-Disposition` built from a filename treated as hostile.
+
+    RFC 6266's `filename*` is deliberately NOT used. It would let the original
+    name through faithfully, and faithfulness is not what is wanted from a
+    string somebody else chose: what is wanted is a name that cannot carry a
+    quote, a newline, a semicolon or a path separator into a response header.
+    So the name is reduced to a conservative set and anything else becomes an
+    underscore, and a name that reduces to nothing gets a neutral default
+    rather than an empty `filename=""` for a browser to interpret.
+    """
+    safe = "".join(c if (c.isalnum() or c in "._- ") else "_"
+                   for c in (filename or ""))[:120].strip() or "document"
+    return {
+        "Content-Disposition": f'attachment; filename="{safe}"',
+        "X-Content-Type-Options": "nosniff",
+    }
+
+
+@router.post("/documents/{rfq_document_id}/withdraw")
+def withdraw_document(rfq_document_id: str,
+                      principal: Principal = Depends(require_manager_or_owner),
+                      session: Session = Depends(get_session)) -> dict:
+    """Withdraw a document. Manager or owner — it changes what the record says.
+
+    Never a delete. The row stays and stops being live, which is this package's
+    supersede convention: what arrived is a fact about the enquiry, and erasure
+    is the operation that destroys content — by destroying the key, which
+    reaches the backups as well.
+    """
+    row = documents.withdraw(session, principal.organization_id, rfq_document_id)
+    if row is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such document.")
+    session.commit()
+    return {"rfq_document_id": row.rfq_document_id,
+            "withdrawn_at": clock.iso(row.withdrawn_at)}
 
 
 @router.get("/{inbound_line_id}")

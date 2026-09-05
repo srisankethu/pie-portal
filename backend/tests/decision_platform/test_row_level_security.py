@@ -415,6 +415,25 @@ EXPECTED_POLICIED = {
     # it makes mandatory. Small, but it is the shape of a competitor's quote
     # form, and it is written by an owner, so it takes the ordinary policy.
     "quote_field_definitions",
+    # h1attr — the decoded technical facts about a product. Every row here is
+    # evidence a later compatibility rule gates on, so a cross-tenant read is
+    # not only somebody else's data but somebody else's *licensed* data:
+    # decision 026 scopes this table per organization precisely because the
+    # attribute source is a distributor export licensed to the organization
+    # that obtained it, and serving those rows to another tenant would
+    # redistribute it. Listed here in the same commit that creates the table,
+    # which is the standing rule the Phase 0 report leaves behind — a new table
+    # outside this list is isolated by Python alone.
+    "product_attribute_values",
+    # j1doc
+    # Every document a customer sent this organization, and the single most
+    # damaging row in this schema to serve to the wrong tenant: a competitor's
+    # customer's drawings, their end customer, their volumes, their letterhead.
+    # The bytes are ciphertext under the tenant DEK, so a cross-tenant read
+    # would return something unreadable — but "they got it and could not open
+    # it" is not the promise, and a policy is what makes the query return
+    # nothing at all. Listed in the same commit that creates the table.
+    "rfq_documents",
 }
 
 #: Tenant-scoped and deliberately uncovered — and after `d3rls` there is only

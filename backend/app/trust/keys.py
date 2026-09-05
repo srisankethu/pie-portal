@@ -227,6 +227,30 @@ class TenantCipher:
                 "Stored ciphertext did not decrypt under this organization's "
                 "data key.") from e
 
+    # ── bytes ────────────────────────────────────────────────────────────────
+    # The two above are the whole of this class's history: every value under the
+    # DEK so far has been text — a display name, a prompt payload. A customer's
+    # RFQ document is not, and the difference is not cosmetic. Routing bytes
+    # through the text path means base64 first, and Fernet then base64s that
+    # again: measured on this repo's own `cryptography`, a 5 MB file stores at
+    # 8,888,972 bytes that way against 6,666,764 through the pair below — 1.778x
+    # against 1.333x. On a store whose backups keep fourteen days by default
+    # (`BACKUP_RETAIN_DAYS`), a third of the volume is not a rounding error.
+    #
+    # Fernet is bytes-native, so this is the *simpler* path as well as the
+    # smaller one; the text pair are the ones doing extra work.
+
+    def encrypt_bytes(self, plaintext: bytes) -> bytes:
+        return self._fernet.encrypt(plaintext)
+
+    def decrypt_bytes(self, ciphertext: bytes) -> bytes:
+        try:
+            return self._fernet.decrypt(ciphertext)
+        except InvalidToken as e:
+            raise KeyUnavailable(
+                "Stored ciphertext did not decrypt under this organization's "
+                "data key.") from e
+
 
 def cipher_for(session: Session, organization_id: str) -> TenantCipher:
     """Open this organization's data key once, for a batch of values.

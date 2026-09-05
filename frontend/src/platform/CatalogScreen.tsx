@@ -96,8 +96,9 @@ import TextField from "@mui/material/TextField";
 import { papi } from "./api";
 import { CatalogSources, fileSize, megabytes } from "./CatalogSources";
 import { EmptyState, ErrorState, LoadingState, PercentageValue, StatusChip } from "./kit";
-import type { CatalogueUnion, CompanyCatalogue, CompanyCatalogueEntry,
-              CompanyCatalogues as View, PlatformSession } from "./types";
+import type { BindingChoice, CatalogueUnion, CompanyCatalogue,
+              CompanyCatalogueEntry, CompanyCatalogues as View, DecoderArtifact,
+              DecoderProposalResponse, PlatformSession } from "./types";
 import { CatalogLearning } from "./CatalogLearning";
 import { Bp, Labelled, Tip } from "./ui";
 import { formatDateTime, since } from "../when";
@@ -293,8 +294,17 @@ interface CatalogueActions {
   saveDecoding: (sourceKey: string,
                  config: { record_id: string; description: string;
                            grade?: string | null;
-                           rule_set?: string | null }) => void;
+                           rule_set?: string | null;
+                           decoder?: DecoderArtifact | null;
+                           bindings?: BindingChoice[] | null;
+                           decimal?: string | null }) => void;
   analyze: (sourceKey: string) => void;
+  /** Read one file and propose a decoder for it. Not wrapped in `run`: it
+   *  returns a proposal rather than a catalogue, and it saves nothing, so
+   *  there is no new catalogue state for the screen to take on — and a
+   *  proposal that replaced what is on screen would be one nobody had
+   *  confirmed. The dialog holds it and its own loading state. */
+  propose: (sourceKey: string) => Promise<DecoderProposalResponse>;
   removeSource: (sourceKey: string) => void;
   rename: (name: string) => void;
   remove: () => void;
@@ -423,7 +433,8 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
           catalogue={c} label={label} ruleSets={ruleSets}
           canManage={canManage} busy={busy}
           onUpload={on.upload} onSaveDecoding={on.saveDecoding}
-          onAnalyze={on.analyze} onRemove={on.removeSource}
+          onAnalyze={on.analyze} onPropose={on.propose}
+          onRemove={on.removeSource}
         />
       </Box>
 
@@ -738,6 +749,8 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
         run(id, () => papi.saveSourceDecoding(t, cid, key, sourceKey, config)),
       analyze: (sourceKey) =>
         run(id, () => papi.analyzeSource(t, cid, key, sourceKey)),
+      propose: (sourceKey) =>
+        papi.proposeSourceDecoder(t, cid, key, sourceKey),
       removeSource: (sourceKey) =>
         run(id, () => papi.removeCompanySource(t, cid, key, sourceKey)),
       rename: (name) => run(id, () => papi.renameCompanyCatalogue(t, cid, key, name)),

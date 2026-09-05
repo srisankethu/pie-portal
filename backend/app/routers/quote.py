@@ -49,6 +49,8 @@ from ..schemas import (
     SetPriceRequest,
 )
 from ..pie_service import Bands
+from ..enquiry import documents
+from ..sellable_catalog import sellable_pool_for
 from ..store import Line, Quote, store
 from ..ingestion.errors import SourceWriteRefused, SourceWriteUnknown
 from ..zoho import (
@@ -429,7 +431,12 @@ def intake(quote_id: str, body: IntakeRequest,
                           _customer_scope(session, principal, q.customer_ref),
                           _bands(session, principal),
                           _mapping_store(session, principal),
-                          rows=[ln.to_row() for ln in read.lines] or None)
+                          rows=[ln.to_row() for ln in read.lines] or None,
+                          # Once per intake, not once per line. Every line of
+                          # this RFQ then resolves against one book, so a sync
+                          # landing mid-intake cannot make one quote resolve two
+                          # ways — the same reason the source snapshots itself.
+                          pool=_sellable_pool(session, principal))
     if read.provider_called:
         # ``provider_called``, not ``used_ai``. The gate used to be success, so
         # the three paths where the enquiry was sent and the answer was
@@ -532,15 +539,47 @@ def _capture_enquiry(session: Session, principal: Principal,
             raw_text=body.text,
             channel=body.channel,
             customer_ref=_quote_customer_ref(session, principal, quote_id),
-            # Which quote this arrived on: the handle that marks this row as
-            # part of the worked subset, and the join back to what was made of
-            # the text.
-            source_ref=f"quote:{quote_id}")
+            # Which quote this arrived on, and — when the desk attached one —
+            # which document it arrived as. Appended rather than substituted:
+            # the quote handle is what marks this row as part of the worked
+            # subset, and replacing it would make the subset unidentifiable to
+            # buy a link that fits beside it. `source_ref` is free text and is
+            # documented as "a message id, a file name, a portal request id",
+            # so two space-separated handles is the field used as designed.
+            source_ref=_intake_source_ref(session, principal, quote_id, body))
     except enquiry.CaptureRefusal:
         log.warning("enquiry not captured for quote %s: channel %r is not in "
                     "the closed set", quote_id, body.channel)
         return False
     return True
+
+
+def _intake_source_ref(session: Session, principal: Principal, quote_id: str,
+                       body: IntakeRequest) -> str:
+    """`quote:<id>`, plus `doc:<id>` when a document was attached and is ours.
+
+    **Ownership is checked before the id is written down.** A caller can put any
+    string in `rfq_document_id`, and an unchecked one would file this enquiry
+    against another tenant's document — a cross-tenant reference stored
+    permanently in a corpus row, which is worse than a failed lookup because
+    nothing later would question it. `documents.read` filters on the
+    organization, so a foreign id simply finds nothing and the handle is
+    omitted.
+
+    Omitted rather than refused: the quote is the work and the corpus is a
+    by-product, which is the same trade `_capture_enquiry` makes about a bad
+    channel. An intake must not fail because a document reference was wrong.
+    """
+    ref = f"quote:{quote_id}"
+    document_id = (body.rfq_document_id or "").strip()
+    if not document_id:
+        return ref
+    if documents.read(session, principal.organization_id, document_id) is None:
+        log.warning("intake for quote %s named document %r, which this "
+                    "organization does not have; the enquiry is captured "
+                    "without it", quote_id, document_id)
+        return ref
+    return f"{ref} doc:{document_id}"
 
 
 def _quote_customer_ref(session: Session, principal: Principal,
@@ -558,13 +597,26 @@ def _quote_customer_ref(session: Session, principal: Principal,
         return ""
 
 
-# The three org-scoped facts an engine call needs — the bands, the confirmed
-# mappings and the customer's identity scope. Implemented in ``app/resolution``
-# because the public resolution API needs exactly the same setup; these three
-# lines are the adapter from this router's ``Principal`` to it, kept so the call
-# sites below read as they always have.
+# The four org-scoped facts an engine call needs — the bands, the confirmed
+# mappings, the customer's identity scope and this organization's own sellable
+# book. The first three are implemented in ``app/resolution`` because the public
+# resolution API needs exactly the same setup; these lines are the adapter from
+# this router's ``Principal`` to them, kept so the call sites below read as they
+# always have.
+#
+# The fourth is *not* re-exported through ``app/resolution``, and the asymmetry
+# is deliberate rather than an oversight. The other three are per-request
+# lookups; ``sellable_pool_for`` is a cache over a 154-164 ms build, shared
+# across requests and keyed on the book's own version. An alias in
+# ``resolution`` would be a second name for one piece of state, which is the
+# wrapper CLAUDE.md §2 calls abstraction redundancy — so both routers reach the
+# one function directly.
 def _mapping_store(session: Session, principal: Principal) -> Optional[Any]:
     return resolution.mapping_store_for(session, principal.organization_id)
+
+
+def _sellable_pool(session: Session, principal: Principal) -> Optional[Any]:
+    return sellable_pool_for(session, principal.organization_id)
 
 
 def _bands(session: Session, principal: Principal) -> Optional[Bands]:

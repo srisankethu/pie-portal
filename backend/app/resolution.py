@@ -528,6 +528,7 @@ def resolve(session: Session, principal: Principal, *, text: str,
             customer_scope: Optional[str] = None,
             bands: Optional[Bands] = None,
             mapping_store: Any = None,
+            pool: Any = None,
             customer_ref: str = "",
             connection_id: Optional[str] = None,
             quantity: Optional[Decimal] = None,
@@ -539,6 +540,20 @@ def resolve(session: Session, principal: Principal, *, text: str,
     the name the caller typed, which is what the commercial half is priced
     against. They are separate arguments because they are separate facts — a
     customer can be nameable and unlinked, which is the normal early state.
+
+    ``pool`` is this organization's own sellable book as candidate records
+    (``sellable_catalog.sellable_pool_for``). **Passed in rather than built
+    here, though a Session is right there**, for the reason ``mapping_store``
+    is: ``routers.resolve.confirm`` re-resolves the same line through
+    ``pie_service.resolve`` directly to recompute the engine's own proposal, and
+    two answers about one line have to be answers to the same question. A pool
+    obtained once per request and handed to both calls is that guarantee stated
+    in the signature; a pool built inside each callee would be the same object
+    today, by cache, and one refactor away from not being.
+
+    ``None`` means the manufacturer catalogue alone, which is what an
+    organization with nothing decorated resolves against and is exactly the
+    behaviour that shipped before this argument existed.
     """
     text = (text or "").strip()
 
@@ -551,7 +566,7 @@ def resolve(session: Session, principal: Principal, *, text: str,
         return _catalogue_unavailable(text, company)
 
     res = pie_service.resolve(text, customer_scope, bands, mapping_store,
-                              connection_id=company)
+                              connection_id=company, pool=pool)
 
     if res.pie_offline:
         return _document(

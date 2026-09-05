@@ -1,4 +1,5 @@
-import type { AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, PhraseAliases, RetrievalReport, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteFieldSpec, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { MonetizationCalculation, MonetizationScorecard, MonetizationSegments } from "./types";
+import type { BindingChoice, DecoderArtifact, DecoderProposalResponse, AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, PhraseAliases, RetrievalReport, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteFieldSpec, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -801,7 +802,10 @@ export const papi = {
                        sourceKey: string,
                        config: { record_id: string; description: string;
                                  grade?: string | null;
-                                 rule_set?: string | null }) =>
+                                 rule_set?: string | null;
+                                 decoder?: DecoderArtifact | null;
+                                 bindings?: BindingChoice[] | null;
+                                 decimal?: string | null }) =>
     req<CompanyCatalogue>(
       `${catalogueUrl(connectionId, catalogueKey)}`
       + `/sources/${encodeURIComponent(sourceKey)}/decoding`,
@@ -816,6 +820,24 @@ export const papi = {
     req<CompanyCatalogue>(
       `${catalogueUrl(connectionId, catalogueKey)}`
       + `/sources/${encodeURIComponent(sourceKey)}/analyze`,
+      { method: "POST" }, t),
+
+  /** Read one stored file and propose a decoder built for it alone: its
+   *  descriptions clustered into shapes, a pattern induced per shape and
+   *  validated over every row, each captured group measured, and the groups
+   *  the file's own text settles named.
+   *
+   *  Returns the proposal rather than the company, because it **saves
+   *  nothing** — `saveSourceDecoding` with the reviewed artifact is what
+   *  stores it. So this must not go through the caller that replaces
+   *  catalogue state from a response: there is no new catalogue state, and a
+   *  proposal that quietly changed the screen would be one nobody had
+   *  confirmed. */
+  proposeSourceDecoder: (t: string, connectionId: string, catalogueKey: string,
+                         sourceKey: string) =>
+    req<DecoderProposalResponse>(
+      `${catalogueUrl(connectionId, catalogueKey)}`
+      + `/sources/${encodeURIComponent(sourceKey)}/propose-decoder`,
       { method: "POST" }, t),
 
   /** Stop building from one file. Superseded, not deleted, and the built
@@ -1190,6 +1212,34 @@ export const papi = {
     req<ErasureState>("/api/v1/trust/erasure", {
       method: "POST",
       body: JSON.stringify({ confirm_organization_id: confirmOrganizationId, reason }),
+    }, t),
+
+  // ── the monetization console (PIE's own pricing, not this tenant's) ───────
+  //
+  // Every one of these is refused for a tenant. `monetizationAccess` is the
+  // only one a tenant may call, and it answers `{operator:false}` with a 200 —
+  // so the shell asks a question instead of probing a 403 and filling error
+  // monitoring with refusals that are not failures.
+
+  monetizationAccess: (t: string) =>
+    req<{ operator: boolean }>("/api/v1/monetization/access", {}, t),
+
+  monetizationSegments: (t: string) =>
+    req<MonetizationSegments>("/api/v1/monetization/segments", {}, t),
+
+  monetizationScorecard: (t: string) =>
+    req<MonetizationScorecard>("/api/v1/monetization/scorecard", {}, t),
+
+  /** One customer, every pricing model, in one round trip. Deliberately one
+   *  call rather than a fetch per panel: six panels fetched separately would
+   *  show six answers computed from six slightly different states. */
+  monetizationCalculate: (
+    t: string,
+    body: { profile: Record<string, unknown>; impact: Record<string, number> },
+  ) =>
+    req<MonetizationCalculation>("/api/v1/monetization/calculate", {
+      method: "POST",
+      body: JSON.stringify(body),
     }, t),
 };
 

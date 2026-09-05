@@ -516,3 +516,25 @@ export interface QuoteIntelligence {
   outcome: QuoteOutcome | null;
   thresholds_version: string;
 }
+
+/** A document a customer sent, as `enquiry/documents.summary` publishes it.
+ *
+ *  **Never the bytes.** The content is served by its own endpoint, as an
+ *  attachment, and the server's projection names its fields one by one so a
+ *  new column cannot join a response by being added to the table. This
+ *  interface is the browser's half of that promise. */
+export interface RfqDocument {
+  rfq_document_id: string;
+  filename: string;
+  /** What the bytes ARE, decided by the server from their leading bytes —
+   *  never what the upload claimed they were. */
+  content_type: string;
+  content_type_declared: string;
+  /** `null` when the upload declared nothing: unknown, not agreement. */
+  type_matches_declaration: boolean | null;
+  byte_size: number;
+  content_sha256: string;
+  licence_note: string;
+  uploaded_by_user_id: string | null;
+  created_at: string | null;
+}

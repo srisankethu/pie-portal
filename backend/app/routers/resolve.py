@@ -45,6 +45,7 @@ from ..api_keys import ApiCaller, RATE_WINDOW_SECONDS, current_caller
 from ..db import get_session
 from ..identity import service as identity_service
 from ..pie_service import pie_service
+from ..sellable_catalog import sellable_pool_for
 from ..store import _identity_candidate
 
 log = logging.getLogger("pie_portal.resolve")
@@ -171,6 +172,7 @@ def resolve_line(body: ResolveRequest, response: Response,
                                                          body.customer_ref),
             bands=resolution.bands_for(session, org),
             mapping_store=resolution.mapping_store_for(session, org),
+            pool=sellable_pool_for(session, org),
             customer_ref=body.customer_ref,
             connection_id=body.company_id,
             quantity=body.quantity,
@@ -231,9 +233,19 @@ def confirm(body: ConfirmRequest, response: Response,
         raise HTTPException(
             status.HTTP_422_UNPROCESSABLE_ENTITY,
             {"message": str(e), "companies": e.companies}) from e
+    # Both halves of "what could the engine see" have to match the `/resolve`
+    # call the caller is answering, and for the same reason: this recomputes
+    # the engine's own proposal to check the selection against it, so resolving
+    # against a different catalogue OR a different pool would be checking the
+    # answer to a different question. `company` is the catalogue the caller
+    # named; `sellable_pool_for` is cached on the organization and its book
+    # version, so the two calls get the same pool unless the book genuinely
+    # moved between them, which is the one case where they SHOULD differ and
+    # the confirmation should fail.
     res = pie_service.resolve(
         body.text, scope, resolution.bands_for(session, org),
-        resolution.mapping_store_for(session, org), connection_id=company)
+        resolution.mapping_store_for(session, org),
+        connection_id=company, pool=sellable_pool_for(session, org))
 
     row = identity_service.confirm_proposed_identity(
         session, org,

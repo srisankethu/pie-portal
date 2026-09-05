@@ -48,7 +48,13 @@ log = logging.getLogger("pie_portal.pie")
 #: * a fingerprint of the confirmed mappings the engine could read — confirming
 #:   "this customer's X means MM# Y" changes the answer for that customer
 #:   immediately, and a cache that outlived the confirmation would keep telling
-#:   them it had not been recorded.
+#:   them it had not been recorded;
+#: * a fingerprint of the organization's own candidate pool. This cache is
+#:   process-wide and read by every tenant, so this is the entry that keeps one
+#:   organization's answer — computed against that organization's products —
+#:   from being served to another. It also moves when a sync decorates the
+#:   book, which is what stops a pool that has grown from being answered out of
+#:   the pool it replaced.
 #:
 #: Not in the key, deliberately: the equivalence *bands*. They are commercial
 #: policy applied by ``_map`` after the engine has run, so two organizations
@@ -213,6 +219,24 @@ class Resolution:
     #: retrieval did not run — an exact identity, an ambiguity, no index — so
     #: absence reads as "not searched" and never as "nothing near".
     retrieval: Optional[Dict[str, Any]] = None
+    #: The record the engine proposed as this line's IDENTITY — "this customer's
+    #: code is probably MM# X, confirm it" — or None, which is the normal case.
+    #:
+    #: **Set by exactly one branch of :meth:`PieService._map`, and that is the
+    #: whole point.** It used to be reconstructed downstream from ``outcome ==
+    #: "NEEDS_REVIEW" and len(candidates) == 1``, and those two fields do not
+    #: carry the distinction the boundary needs: a candidate can be an exact
+    #: catalogue hit the engine declined to assert (branch 1b, read out of
+    #: ``matches``) or a scored equivalence suggestion (branch 3, read out of
+    #: ``suggestions``), and both can arrive carrying that outcome and that
+    #: count. Only ``_map`` knows which, so only ``_map`` may say.
+    #:
+    #: A confirmed mapping is *asserted* identity: afterwards the engine
+    #: resolves that code AUTHORITATIVELY and derives a requirement from the
+    #: record. Letting a scored suggestion become one is how ``tolerance ∘
+    #: tolerance`` gets licensed permanently — see CLAUDE.md §1 and
+    #: ``tests/test_identity_confirmation_gate.py``.
+    identity_candidate: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -223,6 +247,7 @@ class Resolution:
             "outcome": self.outcome, "semantics": self.semantics,
             "notes": self.notes, "pie_offline": self.pie_offline,
             "retrieval": self.retrieval,
+            "identity_candidate": self.identity_candidate,
         }
 
 
@@ -650,32 +675,44 @@ class PieService:
 
     # ── resolution cache ─────────────────────────────────────────────────────
     @staticmethod
-    def _mapping_fingerprint(mapping_store: Any) -> Optional[str]:
-        """A value naming the confirmed mappings the engine will read, or None.
+    def _input_fingerprint(value: Any, what: str) -> Optional[str]:
+        """A value naming one per-organization engine input, or None.
 
-        None means "do not cache this resolution". That is the answer for a
-        store this code cannot fingerprint — a test double, or a future store
+        None means "do not cache this resolution". That is the answer for an
+        input this code cannot fingerprint — a test double, or a future object
         of a different shape — because caching against an unknown input is how
         a confirmed mapping silently stops taking effect. Refusing to cache
         costs a scan; guessing costs the customer a wrong answer with a
         confident explanation attached.
+
+        Two inputs now share this, which is why it is no longer named after the
+        mapping store: the confirmed mappings the engine may read, and the
+        organization's own candidate pool. They fail identically — a wrong
+        answer served confidently from another organization's key — and one of
+        those failures crosses a tenant boundary, so the shape of the rule
+        matters more than the two call sites do.
         """
-        if mapping_store is None:
-            return "none"                    # the packaged empty store
-        fingerprint = getattr(mapping_store, "fingerprint", None)
+        if value is None:
+            return "none"                    # the packaged empty store; no pool
+        fingerprint = getattr(value, "fingerprint", None)
         if not callable(fingerprint):
             return None
         try:
             return str(fingerprint())
-        except Exception:  # noqa: BLE001 — an unfingerprintable store is uncached
-            log.exception("could not fingerprint the mapping store; resolving "
-                          "this line without the cache")
+        except Exception:  # noqa: BLE001 — an unfingerprintable input is uncached
+            log.exception("could not fingerprint the %s; resolving this line "
+                          "without the cache", what)
             return None
 
     def _cache_key(self, text: str, customer_scope: Optional[str],
-                   mapping_store: Any, version: str) -> Optional[str]:
+                   mapping_store: Any, version: str,
+                   pool: Any = None) -> Optional[str]:
         """The key this resolution is stored under, or None if it may not be
         cached at all.
+
+        ``_resolution_cache`` is process-wide and every organization reads it,
+        so everything that could make two callers' answers differ has to be in
+        the key. Two things can, and both are here.
 
         ``version`` is the company's ruleset checksum, and it is what keeps two
         companies apart here — deliberately *instead of* the connection id.
@@ -684,20 +721,32 @@ class PieService:
         answers, and a key carrying the connection would miss a hit that is
         genuinely correct.
 
+        ``pool`` is the organization's own sellable book, searched beside that
+        catalogue, and a key naming only the catalogue would serve one tenant's
+        answer — computed against that tenant's products — to another. It goes
+        in as a *fingerprint* rather than an organization id for the same
+        reason ``version`` does: two organizations are different questions, and
+        so is one organization before and after a sync decorated its book.
+
         **An empty version is never cached.** It means the checksum could not
         be read, and every company whose checksum is unreadable would otherwise
         share one key — the one way this scheme could serve one company's
         answer to another. Refusing to cache costs a scan; guessing costs the
         customer a wrong product with a confident explanation attached, which
-        is the same trade ``_mapping_fingerprint`` makes just below.
+        is the same trade ``_input_fingerprint`` makes just below for both the
+        mapping store and the pool.
         """
         if _resolution_cache.maxsize == 0 or not version:
             return None
-        mappings = self._mapping_fingerprint(mapping_store)
+        mappings = self._input_fingerprint(mapping_store, "mapping store")
         if mappings is None:
             return None
+        candidates = self._input_fingerprint(pool, "candidate pool")
+        if candidates is None:
+            return None
         return cache_module.fingerprint(
-            "pie_resolution", version, text, customer_scope, mappings)
+            "pie_resolution", version, text, customer_scope, mappings,
+            candidates)
 
     @staticmethod
     def _cached_result(key: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -717,7 +766,8 @@ class PieService:
     def resolve(self, text: str, customer_scope: Optional[str] = None,
                 bands: Optional[Bands] = None,
                 mapping_store: Any = None,
-                connection_id: Optional[str] = None) -> Resolution:
+                connection_id: Optional[str] = None,
+                pool: Any = None) -> Resolution:
         """Resolve one RFQ line's text against one company's catalogue.
 
         ``connection_id`` names the company this line is quoted from, and its
@@ -731,6 +781,15 @@ class PieService:
         text; without a mapping the engine still consults the catalogue but
         returns the hit as a candidate to confirm rather than an assertion, so
         naming the customer can only ever add caution, never resolution.
+
+        ``pool`` is this organization's own book as candidate records —
+        ``sellable_catalog.sellable_pool_for``. It is an argument and not
+        something this service looks up, because it is **tenant data** and this
+        object is a process-wide singleton: a pool held on ``self`` would be one
+        organization's products answering another organization's request, which
+        is the worst defect available here. ``None`` resolves against the
+        manufacturer catalogue alone, exactly as this method always has, which
+        is what an organization that has never been decorated must still get.
 
         Any failure inside the engine degrades to a PIE_OFFLINE resolution
         rather than raising, so a single bad line never fails the whole quote —
@@ -764,13 +823,32 @@ class PieService:
                 view.retriever = self._load_retriever(view)
 
             def run(query: str) -> Dict[str, Any]:
-                key = self._cache_key(query, customer_scope, mapping_store, view.version)
+                key = self._cache_key(query, customer_scope, mapping_store,
+                                      view.version, pool)
                 cached = self._cached_result(key)
                 if cached is not None:
                     return cached
                 args = self._make_args(query, customer_scope, mapping_store,
                                        catalog_path=view.path)
-                fresh, _human = mod.run(args, view.sources)
+                # Composed per call and never stored on the view. ``view``
+                # is this *company's catalogue* — a decoded file, cached on
+                # the service and reused across requests; the pool beside it
+                # is one organization's own book, and writing it onto
+                # ``view.sources`` would leave one tenant's products answering
+                # the next caller's request. That is the worst defect
+                # available here, and the composition is local so it cannot
+                # happen.
+                #
+                # Appended to the source *list* rather than handed to the
+                # equivalence engine directly, so it passes through everything
+                # ``run`` does with a source: ``_sellable_namespaces`` sees its
+                # ``pack_id`` and so treats it as sellable, and
+                # ``_NamespaceRestrictedSource`` wraps it like the rest. A Zoho
+                # item is sellable by definition and still goes *through* the
+                # restriction rather than around it.
+                sources = (view.sources if pool is None
+                           else [*view.sources, pool])
+                fresh, _human = mod.run(args, sources)
                 if key is not None:
                     # A copy, so the object handed to ``_map`` below — and to
                     # every Candidate that keeps a reference into it — cannot
@@ -904,7 +982,16 @@ class PieService:
                            attributes=_attributes_of(
                                self._record(view, str(m.get("record_id")))))
                  for m in cands_m],
-                outcome, semantics, notes)
+                outcome, semantics, notes,
+                # THE ONLY PLACE A CONFIRMABLE PROPOSAL IS CREATED. These records
+                # come out of `matches`, so each is an exact catalogue hit the
+                # engine declined to assert across namespaces — the one thing a
+                # person may answer "yes, that is what my code means" to. One
+                # only: two candidates is an ambiguity, and there is no single
+                # answer to confirm. Every other branch leaves this None by
+                # omission, which is why the default matters as much as this line.
+                identity_candidate=(str(cands_m[0].get("record_id"))
+                                    if len(cands_m) == 1 else None))
 
         # (2) Ambiguous / conflicting identity -> AMBIGUOUS (abstain, show options).
         if outcome in ("AMBIGUOUS", "CONFLICT"):
@@ -1091,7 +1178,7 @@ class PieService:
         rows = getattr(mapping_store, "aliases", None)
         if not callable(rows):
             return None
-        fingerprint = self._mapping_fingerprint(mapping_store)
+        fingerprint = self._input_fingerprint(mapping_store, "mapping store")
         key = (fingerprint, str(view.path)) if fingerprint is not None else None
         if key is not None and key in self._vocabularies:
             self._vocabularies.move_to_end(key)
@@ -1137,7 +1224,7 @@ class PieService:
         rows = getattr(mapping_store, "aliases", None)
         if not callable(rows):
             return None
-        key = self._mapping_fingerprint(mapping_store)
+        key = self._input_fingerprint(mapping_store, "mapping store")
         if key is not None and key in self._alias_indexes:
             self._alias_indexes.move_to_end(key)
             return self._alias_indexes[key]

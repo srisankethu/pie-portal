@@ -23,7 +23,14 @@ import pytest
 from app.master_health import analysis, policy as policy_module
 from app.master_health.cli import main
 from app.config import settings
-from app.master_health.geometry import GATED_SLOTS, DecodeOutcome, DecodeRun, decode_names
+from app.master_health.geometry import (
+    GATED_SLOTS,
+    NON_FACT_FIELDS,
+    DecodeOutcome,
+    DecodeRun,
+    _decoded_facts,
+    decode_names,
+)
 from app.master_health.profile import (
     ROLES,
     ProfileError,
@@ -329,6 +336,92 @@ def test_the_published_two_slot_definition_is_carried_but_is_not_the_gate():
     assert report.coverage["published_definition"]["geometry"]["rows"] == 1
 
 
+# ── what the decode keeps, which is not what the gate asks for ───────────────
+
+
+def test_slots_keep_every_decoded_fact_and_no_engine_metadata():
+    """The projection, on one row shaped like the engine's own output.
+
+    A denylist rather than an allowlist is a bet with a direction (see
+    ``_decoded_facts``), and this is where the two halves of it are pinned: an
+    unfamiliar *fact* is kept, and every named piece of engine plumbing is not.
+    ``some_field_a_future_pack_adds`` stands in for the case the bet is about —
+    a field nobody here has heard of, arriving in a pack release, reaching the
+    store without a portal change.
+    """
+    kept = _decoded_facts({
+        # facts, including one this repository has never seen
+        "iso_shape": "C", "edge_length_mm": 12, "corner_radius_mm": 0.8,
+        "flute_count": 4, "coating": "TiAlN",
+        "some_field_a_future_pack_adds": "yes",
+        # a decoded absence stays absent rather than becoming a null attribute
+        "thickness_mm": None,
+        # metadata — every group of NON_FACT_FIELDS represented
+        "record_id": "row-2", "source_file": "item-master-export", "source_row": 2,
+        "description_raw": "CNMG 120408", "description_norm": "CNMG 120408",
+        "run_id": "r", "pack_id": "zcnc", "pack_version": "0.10.0",
+        "ruleset_checksum": "c", "grammar_id": "g", "family_rule_id": "f",
+        "row_confidence": 0.0, "field_meta": {"iso_shape": {"confidence": 0.97}},
+        "flags": [], "validations": [], "text_ambiguous": False,
+        "dual_unit_check": "n_a", "unresolved_tokens": [],
+        "attributes_ext": {"iso.shape_name": "rhombic 80°"},
+        # carried as routed_family; one value under two names is the drift
+        "product_family": "turning_insert",
+    })
+
+    assert kept == {
+        "coating": "TiAlN", "corner_radius_mm": 0.8, "edge_length_mm": 12,
+        "flute_count": 4, "iso_shape": "C", "some_field_a_future_pack_adds": "yes",
+    }
+    assert not set(kept) & NON_FACT_FIELDS
+    assert "thickness_mm" not in kept, "a null is not a decoded absence"
+    # Sorted, because this mapping is a store row per key and a rerun over one
+    # export must produce identical bytes.
+    assert list(kept) == sorted(kept)
+
+
+def test_widening_the_kept_fields_did_not_move_the_gate():
+    """The census is a measurement, and this change was not allowed to move it.
+
+    ``DecodeOutcome.slots`` went from the three gated ISO slots to every fact
+    the pack decoded — 37 of them over the 6,717-row corpus read as an item
+    master. The gate had to stay exactly where it was, and the reason it does is
+    structural rather than lucky: ``fills`` takes the slots it requires as an
+    argument, so the caller names ``GATED_SLOTS`` and the extras cannot vote.
+
+    Asserted over the whole report rather than over ``gated`` alone, because the
+    property that matters is the published number, not the predicate behind it.
+    """
+    rows = [MasterRow(2, "A", "CNMG 120408", "KMT", Decimal("1"), Decimal("1"), "H", "pcs"),
+            MasterRow(3, "B", "SOMETHING ELSE", "KMT", Decimal("1"), Decimal("1"), "H", "pcs")]
+    iso = {"iso_shape": "C", "edge_length_mm": 12, "corner_radius_mm": 0.8}
+    extras = {"chipbreaker": "49", "insert_polarity": "negative", "series": "M760",
+              "thickness_mm": 4.76, "product_subfamily": "iso_full",
+              "cutting_dia_mm": 10.0, "flute_count": 4}
+    # Row 3 fills two of the three and carries every extra: the widening must not
+    # let a row buy its way past a slot it did not fill.
+    narrow = DecodeRun(outcomes={
+        2: DecodeOutcome(2, "turning_insert", dict(iso)),
+        3: DecodeOutcome(3, "turning_insert", {"iso_shape": "S", "edge_length_mm": 12}),
+    }, pack_id="p", pack_version="1")
+    wide = DecodeRun(outcomes={
+        2: DecodeOutcome(2, "turning_insert", {**iso, **extras}),
+        3: DecodeOutcome(3, "turning_insert",
+                         {"iso_shape": "S", "edge_length_mm": 12, **extras}),
+    }, pack_id="p", pack_version="1")
+
+    def report_for(decode: DecodeRun):
+        return analysis.build_report(
+            rows=rows, profile=load_profile("zoho"), decode=decode,
+            policy=policy_module.load_policy(), lookup=lambda _s: None,
+            catalogue_available=True, source_file="f", source_digest="d")
+
+    assert report_for(wide).coverage == report_for(narrow).coverage
+    assert report_for(wide).coverage["geometry_gated"]["rows"] == 1
+    assert report_for(wide).coverage["published_definition"]["geometry"]["rows"] == 2
+    assert wide.outcomes[3].gated is False
+
+
 # ── manufacturer census ──────────────────────────────────────────────────────
 
 def test_a_maker_no_pack_covers_is_reported_with_the_reason_not_a_bare_zero():
@@ -490,6 +583,35 @@ def test_the_real_engine_gates_an_insert_and_refuses_a_screw():
     assert run.available, run.unavailable_reason
     assert run.covered_brands, "the pack must declare the brands it claims"
     assert run.outcomes[2].gated is True
+    assert run.outcomes[3].gated is False
+
+
+@pytest.mark.requires_pie
+def test_a_real_decode_keeps_every_fact_the_pack_found_not_only_the_gated_three():
+    """The measured claim, against the real engine rather than a fixture.
+
+    One line of code stood between this codebase and an attribute store: the
+    engine decodes 37 distinct fact fields over an item master and ``slots``
+    kept three. A single ISO insert carries twelve of them, so the numbers below
+    are a floor and not a coincidence — 4 would still pass a ``> 3`` assertion
+    while most of the decode was being dropped.
+    """
+    rows = [MasterRow(2, "A", "CNMG 120408-49 - TN2000", "KMT",
+                      Decimal("1"), Decimal("1"), "H", "pcs"),
+            MasterRow(3, "B", "M3X11 SCREW", "", Decimal("1"), Decimal("1"), "H", "pcs")]
+    run = decode_names(rows, settings.PIE_PACK)
+    assert run.available, run.unavailable_reason
+
+    insert = run.outcomes[2].slots
+    assert set(GATED_SLOTS) <= set(insert)
+    assert len(insert) >= 10, f"the pack found more than this: {insert}"
+    assert {"iso_tolerance", "iso_clearance_letter", "thickness_mm"} <= set(insert)
+    # Metadata stays out, and the family stays where its own field already is.
+    assert not set(insert) & NON_FACT_FIELDS
+    assert "product_family" not in insert
+    assert run.outcomes[2].routed_family
+    # A screw decodes to almost nothing, and that is the correct answer — the
+    # gate refuses it either way.
     assert run.outcomes[3].gated is False
 
 

@@ -1709,6 +1709,10 @@ shims, are mounted but are not flows and are not listed here.
 | POST | `/api/v1/demo` | public | Sign a stranger into the read-only demo workspace (is_demo session; every unsafe method 403s) |
 | GET | `/api/v1/enquiries` | manager/owner | Whole-tenant corpus export, raw text byte-intact with disposition histories; counted before load, 413 past the 50,000-line ceiling rather than… |
 | POST | `/api/v1/enquiries` | signed-in | Capture one enquiry line verbatim (raw_text a bare str, no normalisation); 201, always appends; 400 CaptureRefusal for empty text or unknown channel |
+| POST | `/api/v1/enquiries/documents` | signed-in | Store one document a customer sent (multipart) — received and retained, never read and never parsed; bytes are ciphertext under the tenant DEK; 201 |
+| GET | `/api/v1/enquiries/documents` | signed-in | Every live document for the tenant, metadata only — never the bytes |
+| GET | `/api/v1/enquiries/documents/{rfq_document_id}/content` | signed-in | The document itself, as an attachment download and never as a page; one uniform 404 for missing or cross-tenant |
+| POST | `/api/v1/enquiries/documents/{rfq_document_id}/withdraw` | manager/owner | Withdraw a document — reads as absent afterwards but is not deleted; it changes what the record says, so not a salesperson's call |
 | GET | `/api/v1/enquiries/channels` | signed-in | The two closed sets — InboundChannel and LineDisposition — published so no client hardcodes a copy |
 | GET | `/api/v1/enquiries/{inbound_line_id}` | signed-in | One line, its live disposition (null = undecided) and the full superseded disposition history |
 | POST | `/api/v1/enquiries/{inbound_line_id}/disposition` | signed-in | Decide or correct a line (supersede-not-mutate); returns written flag so re-runnable callers can tell a write from an idempotent no-op; 400 for… |
@@ -1779,6 +1783,7 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/insight/withholding-crossings` | manager/owner | 194Q threshold crossings; silent until the org's turnover gate is confirmed in Settings |
 | GET | `/api/v1/internal/ai-metrics` | owner | 7-day AI telemetry (calls, cost, latency, degraded/failed rates, failure reasons, health band) — feeds the AI layer panel |
 | GET | `/api/v1/internal/ai-readiness` | owner | Which provider would really run, next-run call count and cost estimate — feeds the AI layer panel |
+| GET | `/api/v1/internal/attribute-coverage` | owner | How much of this organization's catalogue carries decoded technical attributes, by source and field — the measure Phase 1 succeeds or fails on |
 | POST | `/api/v1/internal/decisions/generate` | manager/owner +plan | Turn latest signals into persisted decisions via the AI layer |
 | POST | `/api/v1/internal/demo-seed` | manager/owner | Seed the demo dataset and run the pipeline (dev/demo only) |
 | GET | `/api/v1/internal/detector-outcomes` | owner | Per-detector signal volume vs what humans did with it (dismissal rates) |
@@ -1855,6 +1860,13 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/operator/organizations` | operator key | Every tenant with its licensed plan, currency and start date — vendor billing metadata, nothing from inside the book |
 | POST | `/api/v1/operator/organizations/{organization_id}/plan` | operator key | Put a tenant on a plan through `entitlements.set_plan`, the one function that grants anything |
 | POST | `/api/v1/operator/organizations/{organization_id}/access` | operator key | Open a time-boxed break-glass grant with a justification the customer reads verbatim; under 10 characters is refused |
+| GET | `/api/v1/monetization/access` | signed-in | May this identity open the pricing console? Always 200, never a refusal — a client has to know whether to draw the door without probing for a 403 |
+| GET | `/api/v1/monetization/parameters` | operator key | PIE's own assumption set, its version, and what in it still needs validating |
+| GET | `/api/v1/monetization/segments` | operator key | The reference customer archetypes and impact sets, for seeding the calculator |
+| GET | `/api/v1/monetization/scorecard` | operator key | Every pricing metric, scored and ranked, with its incentive register |
+| POST | `/api/v1/monetization/calculate` | operator key | One customer, every pricing model side by side: the waterfall, three rate ladders, five hybrids, the recommendation and what PIE would charge |
+| GET | `/api/v1/monetization/report` | operator key | The whole analysis in one document — every segment, the scorecard, five years, elasticity and the experiments; large by design |
+| GET | `/api/v1/monetization/observed/{organization_id}` | operator key | What one tenant's own rows say and the profile they ground; the gaps are the point — no connected books produces an UNKNOWN, never a zero |
 | DELETE | `/api/v1/operator/access/{grant_id}` | operator key | Hand the key back before it expires (idempotent) |
 | GET | `/api/v1/operator/organizations/{organization_id}/support` | operator key | The only panel that reads inside a tenant: seat count and last sync. 403 without a live grant, and every read writes an ACCESSED event |
 | GET | `/api/v1/operator/organizations/{organization_id}/access` | operator key | Whether a grant is open now, and the last 50 access events — the record *of* break-glass, so readable without one |

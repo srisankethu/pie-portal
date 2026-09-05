@@ -651,7 +651,7 @@ def execute_sync(session: Session, run: models.SyncRun, *,
     the run as it goes, which is what makes the job observable at all.
 
     ``analysis=False`` stops after the pull. That is for a caller pulling
-    several connections at once: the four phases after the pull are scoped to
+    several connections at once: every phase after the pull is scoped to
     the *organization*, not to the connection, so running them per-connection is
     both wasteful and wrong — see ``execute_analysis``. Such a caller runs them
     once, after every pull has landed. Nothing else should pass it.
@@ -828,6 +828,7 @@ def execute_sync(session: Session, run: models.SyncRun, *,
             analysis_notes = execute_analysis(
                 session, run, org,
                 customer_ids=(report.touched_customer_ids or None),
+                product_ids=(sorted(report.touched_product_ids) or None),
                 timezone=svc.timezone() if svc else None, on_phase=phase)
         else:
             # Handed back so the caller that skipped the analysis can run it
@@ -835,6 +836,7 @@ def execute_sync(session: Session, run: models.SyncRun, *,
             analysis_notes = {
                 "pull_only": True,
                 "touched_customer_ids": sorted(report.touched_customer_ids or []),
+                "touched_product_ids": sorted(report.touched_product_ids or []),
             }
         run.status = "OK"
     except Exception as e:  # noqa: BLE001 — a failed sync must be visible, not silent
@@ -1026,12 +1028,13 @@ def analysis_gaps(notes: dict) -> list[dict]:
 
 def execute_analysis(session: Session, run: models.SyncRun, organization_id: str, *,
                      customer_ids: Optional[list[str]] = None,
+                     product_ids: Optional[list[str]] = None,
                      timezone: Optional[str] = None,
                      on_phase: Optional[Callable[[str], None]] = None) -> dict:
     """Detect, recompute, project, decide — the organization-wide half of a cycle.
 
     Split out of ``execute_sync`` because of what it is scoped to. A pull
-    belongs to one connected Zoho company; every one of these four phases
+    belongs to one connected Zoho company; every one of the phases below
     belongs to the **organization**, and an organization can have several
     connections whose rows land in one read model and are analysed together
     (see ``models.ZohoConnection``). So running this once per connection is
@@ -1044,17 +1047,21 @@ def execute_analysis(session: Session, run: models.SyncRun, organization_id: str
       a business state, and spent real AI calls on decisions about a business
       that was two thirds missing.
     * **It cannot be parallelised.** Three pulls write disjoint rows, because
-      every imported table is keyed on ``connection_id``. These four phases
-      write ``signals``, ``customer_item_metrics``, ``business_states`` and
-      ``decisions``, which are keyed on the organization alone. Run them
-      concurrently and they race each other for the same rows.
+      every imported table is keyed on ``connection_id``. The phases here
+      write ``signals``, ``customer_item_metrics``, ``business_states``,
+      ``decisions`` and ``product_attribute_values``, which are keyed on the
+      organization alone. Run them concurrently and they race each other for
+      the same rows.
 
     Returns the note fragments for the run row rather than writing them onto it,
     so a caller running this once for several pulls decides where they land.
 
-    Best-effort in the middle two phases, deliberately: the pull is the
-    expensive thing that cannot be redone cheaply, and a projection that fails
-    to build must not fail a pull that succeeded.
+    Best-effort in every phase, deliberately: the pull is the expensive thing
+    that cannot be redone cheaply, and a projection that fails to build must not
+    fail a pull that succeeded. Four of them get that from ``_isolated``;
+    the decoration and ``_run_attribution`` carry their own handler instead —
+    the decoration because it commits at every batch boundary, and a ``commit``
+    inside a SAVEPOINT is not one.
     """
     from ..decisions.service import DecisionService
     from ..signals.engine import run_detectors
@@ -1062,6 +1069,29 @@ def execute_analysis(session: Session, run: models.SyncRun, organization_id: str
     org = organization_id
     phase = on_phase or (lambda _name: None)
     notes: dict = {}
+
+    # First, and it is the one phase here that reads none of the others. It is
+    # derived from the item master the pull has just refreshed and from nothing
+    # else: no detector reads an attribute and no phase below writes a product.
+    # Running it here means a detector that fails does not also leave the
+    # attribute store a sync behind the master it describes.
+    phase("Decoding product attributes")
+    # The touched set, the way `customer_ids` is already threaded into this
+    # function — `SyncReport.touched_product_ids` is populated on both write
+    # paths and unioned across parallel pulls by `merge`. Without it every
+    # cycle re-decodes the whole master: measured at ~11s over 6,717 products,
+    # so on a 15,000-item book it is tens of seconds of pack loading and
+    # decoding per sync to rewrite rows that already say the same thing.
+    #
+    # None means everything, which is what a first run and a full re-sync both
+    # want. The stale case this leaves is a pie-parser UPGRADE: rows decoded by
+    # a superseded pack are not re-read by an incremental cycle. They are
+    # identifiable rather than merely old — `decoder_version` is stamped on
+    # every row for exactly that — and re-reading them is a full pass, which is
+    # a decision for whoever ships the upgrade rather than something to do on
+    # every sync.
+    notes["attributes"] = _decorate_product_attributes(
+        session, org, notes, product_ids=product_ids, phase=phase)
 
     phase("Detecting signals")
     with _isolated(session, "Detecting signals", notes):
@@ -1115,6 +1145,96 @@ def execute_analysis(session: Session, run: models.SyncRun, organization_id: str
     # boundary, and this is the boundary.
     session.commit()
     return notes
+
+
+def _decorate_product_attributes(session: Session, org: str, notes: dict, *,
+                                 product_ids: Optional[list[str]],
+                                 phase: Callable[[str], None]) -> dict:
+    """Make Phase 1's attribute store current for this organization.
+
+    Here, in the organization-wide half, rather than in ``execute_sync``, for
+    this function's own two reasons: the store is keyed on the organization
+    alone, so three connected companies pulled in parallel would decorate the
+    same rows three times over and race each other doing it — and the products
+    every one of those pulls wrote have all landed by the time this runs.
+
+    **Its own ``try``/``except`` rather than ``_isolated``.** The batches commit
+    as they go, which is the point of batching them, and a ``commit`` inside a
+    SAVEPOINT ends the transaction that savepoint belongs to. The failure is
+    reported the way ``_isolated`` reports one, so a decoration that stopped
+    running lands on the run's unresolved list rather than only in a notes blob
+    nobody opens.
+
+    Never raises, for ``execute_sync``'s reason: the pull is the expensive thing
+    and it has already landed. A pie-parser that will not load must not turn a
+    sync that imported every invoice into a FAILED row.
+    """
+    from ..attributes import attribute_coverage, decorate_organization
+
+    def batch_committed(done: int, total: int) -> None:
+        # Through `phase`, so a batch boundary is a commit *and* a heartbeat.
+        # A 15,000-item master takes tens of seconds to decorate; a run that
+        # stops reporting for ten minutes is reaped as dead, and a batch that
+        # nobody could read until the end would be the invisible progress the
+        # `phase` docstring above is about.
+        phase(f"Decoding product attributes ({done:,} of {total:,})")
+
+    try:
+        # The organization layer, named rather than defaulted. ``decode_names``
+        # requires a rule set and has none of its own, because decoding one
+        # export through another's grammars reports that rule set's coverage of
+        # this file. What is being decoded here is the organization's *material
+        # master* as the ERP holds it, which is exactly what the org layer in
+        # PIE_PACK is written against — not an uploaded price list, each of
+        # which carries its own decoding config on ``company_corpora``.
+        report = decorate_organization(session, org, product_ids=product_ids,
+                                       on_batch=batch_committed,
+                                       rule_set=settings.PIE_PACK)
+        coverage = attribute_coverage(session, org)
+    except Exception as exc:  # noqa: BLE001 — the pull's own rows matter more
+        log.exception("attribute decoration failed for %s; the store is unchanged "
+                      "from whichever batch last committed", org)
+        # Before anything else: a refused flush leaves the session unusable, and
+        # every statement after this one — including the `finally` that records
+        # how the pull went — would raise PendingRollbackError instead.
+        session.rollback()
+        notes.setdefault("analysis_failures", []).append({
+            "phase": "Decoding product attributes",
+            "error": f"{type(exc).__name__}: {exc}"[:500],
+        })
+        return {"failed": f"{type(exc).__name__}: {exc}"[:500]}
+
+    out: dict = {
+        "products_considered": report.products_considered,
+        "names_decoded": report.names_decoded,
+        "catalogue_records_read": report.catalogue_records_read,
+        "catalogue_links_unresolved": report.catalogue_links_unresolved,
+        "rows_created": report.written.created,
+        "rows_superseded": report.written.superseded,
+        "rows_unchanged": report.written.unchanged,
+        "rows_retracted": report.written.retracted,
+        # The exit criterion decision 002 judges Phase 1 on, on the run that
+        # produced it. No band and no verdict — see `attributes.coverage`.
+        "products_total": coverage.products_total,
+        "products_with_any_attribute": coverage.products_with_any_attribute,
+        "coverage_rate": coverage.coverage_rate,
+        "live_values": coverage.live_values,
+        "by_source_kind": dict(coverage.by_source_kind),
+        # A total rather than the breakdown: `report.refusals` is keyed on a
+        # tuple and this is a JSON column. The per-field list is what
+        # `python -m app.attributes` prints, and a number that climbs here is
+        # the reason to go and run it.
+        "field_extractions_refused": sum(report.refusals.values()),
+    }
+    # The two UNKNOWNs, and only when there is one. A source that could not be
+    # asked wrote nothing and retracted nothing, so its zero above is not a
+    # finding — and a reader who bands it as one has read a deployment fault as
+    # a Phase 1 regression.
+    if report.decoded_name_unavailable:
+        out["decoded_name_unavailable"] = report.decoded_name_unavailable
+    if report.catalogue_unavailable:
+        out["catalogue_unavailable"] = report.catalogue_unavailable
+    return out
 
 
 def _run_attribution(session: Session, org: str) -> dict:
@@ -1508,7 +1628,7 @@ def start_all(session: Session, organization_id: str, *,
     rows. Three companies that took three hours end to end take about as long as
     the slowest one.
 
-    The four phases *after* the pull are not independent and must not be run per
+    The phases *after* the pull are not independent and must not be run per
     connection; ``execute_analysis`` says why at length. They run once here,
     against the union of what every pull touched, on the last run to finish —
     which is also the run the Data screen shows first, so the numbers land where
@@ -1581,8 +1701,10 @@ def start_all(session: Session, organization_id: str, *,
     # An empty union would mean a full rebuild of the organization's history, so
     # it is passed as None only when genuinely nothing was touched.
     touched: set[str] = set()
+    touched_products: set[str] = set()
     for row in rows:
         touched.update((row.notes or {}).get("touched_customer_ids") or [])
+        touched_products.update((row.notes or {}).get("touched_product_ids") or [])
 
     landed = [r for r in rows if r.status in ("OK", "PARTIAL")]
     result = {
@@ -1638,6 +1760,7 @@ def start_all(session: Session, organization_id: str, *,
         notes = execute_analysis(
             session, host, organization_id,
             customer_ids=sorted(touched) or None,
+            product_ids=sorted(touched_products) or None,
             timezone=(getattr(org_row, "timezone", None) or None), on_phase=phase)
         host.status = "OK" if host.error is None else "PARTIAL"
     except Exception as e:  # noqa: BLE001 — the pulls succeeded; say so
@@ -1648,6 +1771,7 @@ def start_all(session: Session, organization_id: str, *,
     finally:
         merged = {k: v for k, v in (host.notes or {}).items() if k != "pull_only"}
         merged.pop("touched_customer_ids", None)
+        merged.pop("touched_product_ids", None)
         host.notes = {**merged, **notes}
         host.phase = None
         host.finished_at = _now()

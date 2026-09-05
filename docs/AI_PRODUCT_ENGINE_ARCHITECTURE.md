@@ -369,12 +369,21 @@ gates on a **full ISO slot fill**: `GATED_SLOTS = ("iso_shape",
 "edge_length_mm", "corner_radius_mm")`. The gate is well-reasoned — an
 ungated family route misroutes badly (an `M3X11` screw routes to
 `turning_insert`), while three-slot fill misroutes at 1 row in 2,057. `DecodeOutcome.slots` is the per-item attribute bag this project needs —
-**except that it is filtered down to the three gated slot names before
-`analysis` ever sees it.** The other eleven the engine decoded (`coating`,
-`material_class`, `thickness_mm`, `flute_count` and the rest) are dropped
-inside `decode_names`. The package imports no SQLAlchemy at all — pinned by a
-test — and writes nothing but stdout, `--out` and `--json`. So the attributes
-are decoded, narrowed elevenfold, printed, and thrown away.
+**except that it was filtered down to the three gated slot names before
+`analysis` ever saw it.** ~~The other eleven the engine decoded~~ — **and the
+count in that sentence was wrong in the platform's favour. It is 41, not
+eleven.** Measured directly over the 6,717-row catalogue rather than estimated:
+the engine emits **44 distinct fact fields**, `chipbreaker` on 22.8% of rows,
+`corner_radius_mm` on 14.5%, `flute_count` on 9.2%, `coating` on 4.8%. The gap
+between what the engine knew and what the platform stored was four times wider
+than this report first said.
+
+**Closed by decision 002's first half**, 2026-08-30. `decode_names` now keeps
+every decoded fact and drops 25 named metadata fields, and `master_health`'s
+published census comes out byte-identical — verified by hashing the JSON report
+before and after over all 6,717 real names, because the gate is deliberate and
+moving it would have been a worse defect than the one being fixed. The package
+still imports no SQLAlchemy: it decodes, and `app/attributes/` persists.
 
 **A human-maintained taxonomy already exists upstream and is discarded at
 ingest.** Live SLS items in Zoho carry custom fields `cf_item_type`
@@ -503,19 +512,31 @@ gate). No `numpy`, no `pandas`, no `pypdf`/`pdfplumber`/`PyMuPDF`/`pdfminer`,
 no `pytesseract`, no image library, no ML framework. `openpyxl` is present
 only because the parser reads XLSX.
 
-There is **no file-upload endpoint** among the 203 endpoints, and **no file
-storage backend** of any kind. `ingested_documents` holds no content.
+There **was** no file-upload endpoint and no file storage backend of any kind;
+`ingested_documents` still holds no content and is unrelated (it is a Zoho fetch
+cursor). **Decision 012 reversed that, explicitly**, and this paragraph is kept
+in the past tense because the reversal was supposed to be argued rather than
+assumed and the argument is the record.
 
-**This absence is a recorded decision, not an oversight,** and any proposal to
-add uploads has to argue against it rather than assume it. `master_health/__init__.py:11`
-states it in terms: *"There is no `UploadFile` and no multipart handler
-anywhere in `backend/app`, and `python-multipart` is not installed. Adding one
-is a dependency decision and a new attack surface, and it buys nothing a path
-argument does not already give a person running a diagnostic."* For a
-diagnostic CLI that reasoning holds. For customer RFQs arriving as PDFs it does
-not — a salesperson cannot pass a path argument — so the decision should be
-revisited explicitly, with the attack surface priced in (§33), not quietly
-reversed.
+`master_health/__init__.py:11` stated the absence in terms: *"There is no
+`UploadFile` and no multipart handler anywhere in `backend/app`, and
+`python-multipart` is not installed. Adding one is a dependency decision and a
+new attack surface, and it buys nothing a path argument does not already give a
+person running a diagnostic."* For a diagnostic CLI that reasoning holds and
+still holds — that package still takes a path. For customer RFQs arriving as
+PDFs it does not, because a salesperson cannot pass a path argument.
+
+What was built, and what it cost: `enquiry/documents.py` receives and retains
+and reads nothing — no PDF is parsed, no spreadsheet opened — and the one place
+it looks inside a container it does so without decompressing. Bytes are Fernet
+ciphertext under the tenant DEK, so `trust/erasure.erase` reaches them by
+destroying the key, which is the only deletion that also reaches the backups.
+The dependency is `python-multipart`. The surface is priced in §33 and in
+decision 032: four refusals with distinct statuses, a size ceiling checked both
+before and during the read, an archive-ratio check on the central directory, and
+a download that serves `application/octet-stream` with `attachment` and
+`nosniff` set **by the application** — because `deploy/Caddyfile` sets those
+headers and the free-tier topology has no Caddy at all.
 
 ## 12. Existing data imports
 
@@ -1550,9 +1571,29 @@ it is nearly free and unblocks measurement:
    decodes, with provenance. Add importers so attributes can also arrive from a
    manufacturer file rather than only from a decoded name. **Exit criterion:
    published attribute coverage per category, not accuracy.**
+   → **Decode half landed** (decision 002, ACCEPTED 2026-08-30):
+   `product_attribute_values` with its RLS policy, `app/attributes/`, and the
+   decoder widened from 3 kept fields to 44. The figure in §6 was wrong in the
+   platform's favour — it said eleven decoded slots were dropped, and it is 41.
+   **Import half still open**, waiting on the export decision 025 names; until
+   it exists this phase reaches only the ~21% a name can carry, and the phase is
+   not complete.
 2. **Phase 2 — retrieval in PostgreSQL.** Exact, normalized, lexical,
    structured filter. Measure recall on the evaluation set before considering
    vectors.
+   → **Split, and the first half is in progress** (decision 003, ACCEPTED IN
+   PART 2026-08-30). The staged lexical ladder is a *scale* answer — its
+   evidence is 555 ms at 100,755 records — and decision 023 puts today's
+   reachable catalogue at ~16k. It stays PROPOSED until a measured recall gap
+   or a catalogue that has actually grown justifies it.
+   What is being built now is a different problem the same section hid: the
+   portal ranks against the manufacturer catalogue and **not against what the
+   business sells**. `_build_sources` makes a `ZohoCatalogSource` only for a
+   `--zoho-fixture` path and the portal passes none, so a Zoho item reaches the
+   ranking only through `pie_record_id` — **~9% of items**. The other ~91% of
+   the sellable book cannot be offered however well it matches. No amount of
+   PostgreSQL fixes that; it is pool composition, and Phase 1's attribute store
+   is what made it solvable.
 3. **Phase 4 before Phase 3.** *Deviation from the brief's numbering, and
    deliberate:* the compatibility rule engine depends only on Phase 1, while
    RFQ document intelligence is the largest and least certain piece. Building

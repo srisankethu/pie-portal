@@ -31,10 +31,16 @@ export const APP_HEADER = "X-PIE-App";
  *  cookie is what authenticates.
  */
 export function authInit(opts: RequestInit = {}, token?: string): RequestInit {
-  const headers: Record<string, string> = {
-    "Content-Type": "application/json",
-    [APP_HEADER]: "1",
-  };
+  const headers: Record<string, string> = { [APP_HEADER]: "1" };
+  // JSON unless the body is a form. `FormData` carries a multipart boundary
+  // that only the browser knows, and it puts that boundary in the
+  // `Content-Type` it sets for itself — so declaring `application/json` here
+  // does not merely mislabel the request, it makes the body unparseable and
+  // the server answers 400 with nothing that points at this line. The header
+  // belongs to whoever knows the boundary, which is never this function.
+  if (!(opts.body instanceof FormData)) {
+    headers["Content-Type"] = "application/json";
+  }
   if (token) headers.Authorization = `Bearer ${token}`;
   return {
     ...opts,

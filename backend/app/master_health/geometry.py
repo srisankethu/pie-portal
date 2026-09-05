@@ -25,6 +25,22 @@ rows). Both are reported, separately and labelled, by :mod:`.analysis` — the
 gated figure is the one this report vouches for, and the published one is
 carried so a reader can line the two censuses up instead of guessing why they
 differ.
+
+The gate is three slots. What this module *keeps* is not, and the two were the
+same line of code until they were separated here. The engine decodes 37 distinct
+fact fields over this corpus read as an item master (44 with a grade column
+supplied), and ``DecodeOutcome.slots`` used to keep three of them — the gate's
+own — so every other decoded fact was dropped before any caller could see it.
+The gate's question ("is this row's geometry trustworthy enough to count?") is
+not the question an attribute store asks ("what did the pack say about this
+row?"), and answering only the first threw away the answer to the second.
+
+Keeping more cannot move the gate, and that is structural rather than lucky:
+:meth:`DecodeOutcome.fills` takes the slots it requires as an argument, so the
+census names ``GATED_SLOTS`` and gets the same answer whatever else rode along.
+``test_widening_the_kept_fields_did_not_move_the_gate`` asserts it rather than
+trusting it, and the census over the 6,717-row corpus was run either side of the
+widening and compared byte for byte.
 """
 from __future__ import annotations
 
@@ -47,13 +63,100 @@ GATED_SLOTS: tuple[str, ...] = ("iso_shape", "edge_length_mm", "corner_radius_mm
 #: comparability with that document; never used as this report's gate.
 PUBLISHED_SLOTS: tuple[str, ...] = ("iso_shape", "edge_length_mm")
 
+#: Everything the engine emits that is **not** a decoded fact about the product.
+#: :data:`DecodeOutcome.slots` keeps every other non-null field, so this set is
+#: the whole of the difference between an ISO-slot triple and an attribute
+#: store. Five groups, each out for its own reason:
+#:
+#: * **Where the row came from** — ``record_id``, ``source_file``,
+#:   ``source_sheet``, ``source_row``. This module supplied all four itself and
+#:   already holds the only one that identifies anything, as ``row_number``.
+#: * **What was read** — ``description_raw``, ``description_norm``. The item
+#:   master's own name column is where that text lives; echoing it back as an
+#:   attribute stores the question beside the answer.
+#: * **Which code and which pack answered** — the run and ruleset stamps and the
+#:   ids of the rules that fired. Run provenance, carried once on
+#:   :class:`DecodeRun` rather than repeated on every row of the master, which is
+#:   where a writer should read it from.
+#: * **How the read went** — ``row_confidence``, ``field_meta``, ``flags``,
+#:   ``validations``, ``text_ambiguous``, ``unresolved_tokens``,
+#:   ``dual_unit_check``. Statements about the *reading*, not about the product.
+#:   ``field_meta`` is per-field provenance, confidence and span — what a store
+#:   row carries in its own columns — and ``ProductAttributeValue``'s docstring
+#:   is explicit that confidence says how well a value was READ and is never a
+#:   score to rank on. A confidence that arrived as an attribute row keyed
+#:   ``row_confidence`` is one join away from being ranked on anyway.
+#: * **Not one fact** — ``attributes_ext``, a namespaced bag of extras
+#:   (``iso.shape_name``, ``kmt.series_brand``) under a key that is not itself a
+#:   fact about anything. Whether to unpack it into rows is a decision for
+#:   whoever writes the store, taken deliberately; it is not this dict's to take
+#:   by flattening.
+#:
+#: ``product_family`` is out for a different reason: :class:`DecodeOutcome`
+#: already carries it as ``routed_family``. One value under two names inside one
+#: object is exactly the drift the capability search in ``CLAUDE.md`` §2 exists
+#: to prevent.
+NON_FACT_FIELDS: frozenset[str] = frozenset({
+    "record_id", "source_file", "source_sheet", "source_row",
+    "description_raw", "description_norm",
+    "run_id", "engine_version", "schema_version", "ruleset_checksum",
+    "pack_id", "pack_version", "org_id", "org_version",
+    "family_rule_id", "grammar_id",
+    "row_confidence", "field_meta", "flags", "validations",
+    "text_ambiguous", "dual_unit_check", "unresolved_tokens",
+    "attributes_ext",
+    "product_family",
+})
+
+
+def _decoded_facts(row: Dict[str, Any]) -> Dict[str, Any]:
+    """Every fact the engine decoded for one row, metadata and nulls removed.
+
+    **A denylist, and the direction of that bet is the point.** An allowlist —
+    the shape ``pie_service.ATTRIBUTE_FIELDS`` uses — looks like the safer
+    choice and is the wrong one here, because the two fail in opposite
+    directions and only one failure is visible. An allowlist nobody updated
+    drops a newly decoded field in silence: no report line, no store row,
+    nothing anywhere saying a fact was thrown away. Decision 002's exit
+    criterion is published coverage per category, so a silent drop holds that
+    number flat while the pack is getting better — the "absence of evidence is
+    not a pass" failure, in the one measurement meant to catch it. A denylist
+    nobody updated lets a new *metadata* field through, where it lands as an
+    attribute named after a stamp and holding a checksum: wrong, but wrong in
+    the output, on the first read, and one entry here to fix.
+
+    Which of the two sets grows differs too. pie-parser's engine holds no
+    manufacturer knowledge — families, notations, grades and dimensions all
+    arrive as pack data (its ``CLAUDE.md`` §3) — so the fact set grows with pack
+    releases and no portal change, while the metadata set moves only when the
+    engine's own record schema does, which is a coordinated change with a
+    version bump attached.
+
+    Not reused from ``pie_service._attributes_of``, although the shape matches
+    almost exactly: that projection is the portal's statement of what a *line on
+    a screen* may show, deliberately fourteen fields and deliberately narrow so
+    that a pack change cannot silently widen a screen. This is measurement and
+    storage, where a pack change widening what is kept is the entire point. Two
+    functions, two opposite bets, and sharing one would settle the wrong one.
+
+    Keys are sorted rather than left in the engine's emission order: this
+    mapping is now an input to something that writes and serialises rows, dict
+    order is byte order once it is serialised, and a rerun over one export must
+    produce identical bytes. Sorting makes that order a property of this
+    function instead of the engine's dict construction, which nothing here
+    controls.
+    """
+    return {k: row[k] for k in sorted(row)
+            if k not in NON_FACT_FIELDS and row[k] is not None}
+
 
 @dataclass(frozen=True)
 class DecodeOutcome:
     """What the engine made of one item name.
 
-    ``slots`` holds only the ISO slots that actually decoded, so a caller
-    cannot mistake a null for a decoded absence.
+    ``slots`` holds every fact that actually decoded — not only the gated three
+    — and drops the nulls, so a caller still cannot mistake a null for a decoded
+    absence. What it leaves out, and why, is :data:`NON_FACT_FIELDS`.
     """
 
     row_number: int
@@ -203,12 +306,10 @@ def decode_names(rows: Sequence[MasterRow],
             number = int(rid[4:])
         except ValueError:
             continue
-        slots = {s: row.get(s) for s in set(GATED_SLOTS) | set(PUBLISHED_SLOTS)
-                 if row.get(s) is not None}
         outcomes[number] = DecodeOutcome(
             row_number=number,
             routed_family=row.get("product_family"),
-            slots=slots,
+            slots=_decoded_facts(row),
         )
     return DecodeRun(
         outcomes=outcomes,

@@ -16,6 +16,7 @@ import { Landing } from "./Landing";
 // rather than restate it.
 import connectionsSource from "../../../backend/app/ingestion/connections.py?raw";
 
+
 import { ERP_PAGES } from "./erp";
 import { EXAMPLE_ITEM, exampleFor } from "./worked-example";
 import { PAGES, landingTokenCss, renderLandingMarkup } from "./prerender";
@@ -258,6 +259,104 @@ describe("what a plan costs", () => {
       expect(html, `/${page.slug} carries a form it cannot submit`)
         .not.toContain("<form");
     }
+  });
+});
+
+describe("the sub-pages' menu, which has no JavaScript behind it", () => {
+  /* These pages ship no bundle — `scripts/prerender.mjs` bakes them without the
+     module script tag — so every interactive thing on them is the browser's or
+     it does not happen. The nav used to take that as "no menu is possible" and
+     laid five links flat in the bar. Measured in Chromium across 320–430px,
+     that bar was **131px tall** against the landing page's 71, and each link
+     was **17px** high; the landing page's own mobile menu gives each one 44+,
+     which is what `e2e/.shots/a11y.mjs` holds the signed-in app to.
+
+     A `<details>` opens with no script at all, so the sub-pages now carry the
+     same collapsed bar the front page does: 77px, one row, and a panel whose
+     links are 44px when it is open. Verified with `javaScriptEnabled: false`.
+
+     Everything below is structure rather than pixels, because jsdom has no
+     layout. What it can hold is that the mechanism is still there. */
+
+  it("gives every ERP page a disclosure the browser can open by itself", () => {
+    for (const { page, html } of documents) {
+      if (page.slug === "") continue;   // the landing page has React for this
+      expect(html, `/${page.slug} has no <details> menu`)
+        .toContain('<details class="lp-nav-menu">');
+      expect(html, `/${page.slug}'s menu has no summary to press`)
+        .toContain('<summary class="lp-nav-toggle"');
+      // The panel has to be *inside* the details, or `[open]` cannot reach it.
+      const menu = html.slice(html.indexOf("<details"), html.indexOf("</details>"));
+      expect(menu, `/${page.slug}'s links are not inside its menu`)
+        .toContain('class="lp-nav-links"');
+    }
+  });
+
+  it("carries no flat nav row for a phone to inherit", () => {
+    // `lp-nav-static` was the modifier that kept the links in the bar because
+    // nothing could open a menu. Its rule is gone from landing.css, so markup
+    // still asking for it would get the landing page's mobile `.lp-nav-links`
+    // — `display: none` until a JS toggle that never arrives — and the phone
+    // would be back to a logo and nothing else, which is the defect the
+    // modifier was written to fix in the first place.
+    for (const { page, html } of documents) {
+      expect(html, `/${page.slug} still asks for the flat nav row`)
+        .not.toContain("lp-nav-static");
+    }
+  });
+
+  it("keeps the row of other ERP pages tappable on a phone", () => {
+    // On a phone this row is the only route from one individual ERP page to
+    // another — the bar goes back to the front page and nowhere else. As bare
+    // links separated by a middot each was a 17px target; the class is what
+    // the 44px rule keys on.
+    for (const { page, html } of documents) {
+      if (page.slug === "") continue;
+      expect(html, `/${page.slug}'s footer links to its siblings unmarked`)
+        .toContain('class="lp-footer-erp"');
+    }
+  });
+
+  /* Two things this block deliberately does *not* assert, because asserting
+     them here would be theatre.
+
+     The rules that carry this fix are `::details-content { content-visibility:
+     visible }` and `.lp-two > * { min-width: 0 }`, and both fail invisibly:
+     delete the first and a closed `<details>` sizes as though empty, so the
+     desktop bar comes back 0px wide with five links stacked in it; delete the
+     second and one long identifier pushes a page sideways. Neither shows in
+     jsdom, which has no layout, and neither shows in the markup, which is
+     unchanged. The obvious move is to read landing.css as text and grep it —
+     that was written, and then removed: it proves a string is present, not
+     that a browser lays the bar out, and it goes red when somebody reformats
+     a rule it is not really about. `?raw` and `?inline` both come back empty
+     under vitest as well, so it could only be done with `node:fs`, and
+     `@types/node` is not a dependency of this frontend.
+
+     `e2e/.shots/public-a11y.mjs` measures both, in Chromium, on the built
+     documents — nav height, sideways scroll and every touch target across four
+     phone widths. That is where a layout claim belongs. What stays here is the
+     structure: the mechanism exists, nothing asks for the row it replaced, and
+     the footer row is marked for the rule that makes it tappable. */
+
+  it("keeps the copy that exposed the sideways scroll", () => {
+    /* /erp/zoho-books prints its scope list in full, and one of those tokens —
+       `ZohoBooks.customerpayments.READ` — is 31 characters with nowhere to
+       break. A grid item's default `min-width: auto` is its content's
+       min-content width, so at 320px that single word held the panel at 293px
+       inside the 254px the phone had: `documentElement.scrollWidth` 326
+       against a 320 viewport, the whole document sliding sideways.
+
+       The fix is on the grid, not in this copy, because the page that showed
+       the defect is not the page that had it — every ERP page prints its own
+       connector's identifiers and only one vocabulary happened to be long
+       enough. But the case is worth keeping: shorten this text and
+       `public-a11y.mjs` still passes while the rule it is checking has nothing
+       left to check. */
+    const zoho = ERP_PAGES.find((p) => p.slug === "zoho-books")!;
+    const longest = Math.max(...zoho.setup.split(/\s+/).map((w) => w.length));
+    expect(longest, "no token here is long enough to exercise the grid fix")
+      .toBeGreaterThan(24);
   });
 });
 

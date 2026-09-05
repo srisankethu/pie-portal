@@ -1452,10 +1452,48 @@ were the only evidence the check worked. The id is now part of `to_dict` and
 still absent from `artifact_dict`, which is what the hash is taken over, so no
 existing id moved.
 
+### The screen (built)
+
+`platform/CatalogSources.tsx`. The Decoding dialog now offers the two paths as
+a `ToggleButtonGroup` — a genuine either/or, matching the rule that a config
+names exactly one, so the form cannot express a config the server would refuse.
+The columns half sits above it and is shared; below, the chosen path's panel.
+
+**Propose a decoder** calls the endpoint and shows what came back: how many of
+the file's rows fall into shapes, how many match none (with examples — a file
+this does not understand is the finding), how many varying parts the file's own
+text named, and how many are open. Counts, never a score, for the same reason
+the rule-set evidence beside it shows counts: one "83% fit" would hide the
+distinction that decides the choice.
+
+**The review is a grid**, through `platform/DataGrid.tsx`. The row count is the
+number of varying parts in one manufacturer's descriptions — 330 on the shipped
+corpus — which is set by the file rather than by the shape of the screen. That
+is `ui-standards.md` §3's test, and this is the case the rule exists for. Every
+group appears, named or not: a review listing only the answered ones is one a
+person can finish without seeing what nobody decided about, and on a real file
+that is 318 of the 330.
+
+Slot and type are editable cells, and the options offered per row are what that
+group's own evidence allows — the candidate slots the unit narrowed to, and the
+types its values would survive. So a wrong answer is a wrong *attribute* rather
+than a decoder that cannot build, and `5.1` cannot be typed as an integer here
+any more than the server would accept it. The patterns are not editable at all.
+
+A file's `Decoding` chip is now `READY` / `NOT SAVED` / **`NO DECODER`** (was
+`NO RULE SET`, which named only one of the two paths), and its tooltip says
+*which* decoder read it — the first thing anybody asks when a decoded value
+looks wrong.
+
+One regression worth recording: moving the rule-set evidence inside the new
+path branch took the **Re-analyse** button away from a file stored before its
+headers were read — which is exactly the file that needs it, and the state the
+dialog's first branch exists to explain. It is outside both guards now, and
+`CatalogScreen.test.tsx` had already pinned it.
+
 ### Still not done
 
-No UI. The API is complete and tested, but nothing on the Decoded catalogue
-screen calls `propose-decoder` yet, so a decoder can be proposed and confirmed
-through the API and not by a person on a screen. That, and a decoder for the
-**grade column**, are what stand between this and the rule-set path being
-removable.
+A decoder for the **grade column**. Six of the rule-set path's 10.1 attributes
+per record come from decoding a grade code, and that is the whole remaining
+distance between the two paths — nothing here reads one. Until that exists the
+rule-set path is not removable, whatever the description coverage says.

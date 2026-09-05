@@ -25,6 +25,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CatalogScreen } from "./CatalogScreen";
 import { papi } from "./api";
+import { setMoneyCurrency } from "../money";
 import type { BindingSuggestion, CatalogueUnion, CompanyCatalogue,
               CompanyCatalogueEntry, CompanyCatalogues, CompanySource,
               DecoderArtifact, DecoderProposalResponse, SourceDecoding,
@@ -77,9 +78,30 @@ function catalogue(over: Partial<CompanyCatalogueEntry> = {}): CompanyCatalogueE
  *  Each FILE now carries a state word of its own (its decoding config, not the
  *  catalogue's build), and one of them is also READY. So an assertion about a
  *  catalogue's state is scoped to the line its name is on rather than to the
- *  page, which is what it always meant. */
-function stateOf(name: string): HTMLElement {
-  return screen.getByText(name, { selector: "b" }).parentElement as HTMLElement;
+ *  page, which is what it always meant.
+ *
+ *  By role rather than by `{ selector: "b" }`: a catalogue's name is a real
+ *  heading now (`kit.SectionHeader level="widget"`) rather than bold text, so
+ *  the eight manufacturers inside a company are reachable by heading navigation
+ *  instead of being invisible to it.
+ *
+ *  Matched on the *start* of the accessible name rather than the whole of it.
+ *  `SectionHeader` puts the state chip inside the heading — that is what its
+ *  `badge` slot is for — and the chip carries a tooltip, which MUI renders as
+ *  an `aria-label`, so the computed name is the manufacturer followed by a
+ *  sentence of explanation. Anchoring at the front is what keeps this from
+ *  matching the confirm dialog's "Stop resolving against Kennametal?", which is
+ *  also a heading. */
+const startsWith = (name: string) => new RegExp(`^${name}`);
+
+function heading(name: string): HTMLElement {
+  return screen.getByRole("heading", { name: startsWith(name) });
+}
+
+/** The same, awaited — for the first assertion of a test, before the fetch has
+ *  landed. `findByRole` rather than `getByRole` is the only difference. */
+function findHeading(name: string): Promise<HTMLElement> {
+  return screen.findByRole("heading", { name: startsWith(name) });
 }
 
 /** The union the server would describe for these catalogues — its built
@@ -334,6 +356,12 @@ function view(companies: CompanyCatalogue[],
 beforeEach(() => {
   vi.restoreAllMocks();
   narrowViewport();
+  // Every record count on this screen goes through `money.count`, which groups
+  // for the organization's currency — "6,717" under `en-IN`, and "6,717" under
+  // `en-US` too, but they part company at six figures. Pinned here rather than
+  // left to `money.ts`'s default, so an assertion written as "6,717" says which
+  // locale it is true of instead of inheriting one.
+  setMoneyCurrency("INR");
 });
 
 describe("the decoded catalogue screen", () => {
@@ -357,7 +385,7 @@ describe("the decoded catalogue screen", () => {
     expect(document.body.textContent ?? "").not.toMatch(/%/);
     // Scoped to the catalogue's own line: the file below it is READY to
     // decode, which says nothing about whether the catalogue was built.
-    expect(within(stateOf("Kennametal")).queryByText("READY")).toBeNull();
+    expect(within(heading("Kennametal")).queryByText("READY")).toBeNull();
   });
 
   it("names what is missing rather than saying only 'not built'", async () => {
@@ -377,8 +405,8 @@ describe("the decoded catalogue screen", () => {
       view([company({ ...BUILT, sources: [source()] })]));
     render(<CatalogScreen session={SESSION} />);
 
-    await screen.findByText(/6717 decoded records/);
-    expect(within(stateOf("Kennametal")).getByText("READY")).toBeTruthy();
+    await screen.findByText(/6,717 decoded records/);
+    expect(within(heading("Kennametal")).getByText("READY")).toBeTruthy();
     // The two facts that say WHICH catalogue answered — not just how many rows.
     expect(screen.getByText("f67131512eb97513")).toBeTruthy();
     expect(screen.getByText("2b5c96f97de49436")).toBeTruthy();
@@ -386,11 +414,11 @@ describe("the decoded catalogue screen", () => {
     // The retrieval index is provenance too: which model found an option.
     // It sits beside the union, so it is stated once at the company.
     expect(screen.getByText("hashed-ngram/1")).toBeTruthy();
-    expect(screen.getByText(/6717 records indexed/)).toBeTruthy();
+    expect(screen.getByText(/6,717 records indexed/)).toBeTruthy();
     // And the union is what the company resolves against — its own count,
     // stated once, with the chip saying the same in a word.
-    expect(screen.getByText("RESOLVES 6717 RECORDS")).toBeTruthy();
-    expect(screen.getByText(/6717 records from 1 catalogue/)).toBeTruthy();
+    expect(screen.getByText("RESOLVES 6,717 RECORDS")).toBeTruthy();
+    expect(screen.getByText(/6,717 records from 1 catalogue/)).toBeTruthy();
   });
 
   it("says when a union has no retrieval index yet, and when it is behind", async () => {
@@ -419,12 +447,12 @@ describe("the decoded catalogue screen", () => {
     ]));
     render(<CatalogScreen session={SESSION} />);
 
-    const built = (await screen.findByText("SLS Engineers")).closest(".bp");
+    const built = (await findHeading("SLS Engineers")).closest(".bp");
     expect(built).toBeTruthy();
-    expect(within(built as HTMLElement).getByText(/6717 decoded records/))
+    expect(within(built as HTMLElement).getByText(/6,717 decoded records/))
       .toBeTruthy();
 
-    const other = (screen.getByText("4U Precision")).closest(".bp");
+    const other = heading("4U Precision").closest(".bp");
     expect(within(other as HTMLElement).getByText("NOT BUILT")).toBeTruthy();
     expect(within(other as HTMLElement).getByText("NOTHING BUILT")).toBeTruthy();
     expect(within(other as HTMLElement).queryByText(/decoded records/)).toBeNull();
@@ -479,7 +507,7 @@ describe("the decoded catalogue screen", () => {
       view([company({ ...BUILT, sources: [source()] })]));
     render(<CatalogScreen session={SESSION} />);
 
-    await screen.findByText(/6717 decoded records/);
+    await screen.findByText(/6,717 decoded records/);
     expect(screen.getByText(/New ZCNC Price/)).toBeTruthy();
   });
 
@@ -505,7 +533,7 @@ describe("the decoded catalogue screen", () => {
       })]));
     render(<CatalogScreen session={SESSION} />);
 
-    await screen.findByText(/6717 decoded records/);
+    await screen.findByText(/6,717 decoded records/);
     expect(screen.getByText("item-master.csv")).toBeTruthy();
     expect(screen.getByText("range.csv")).toBeTruthy();
     expect(screen.getByText("prices.xlsx")).toBeTruthy();
@@ -652,9 +680,9 @@ describe("the decoded catalogue screen", () => {
     expect(save).not.toHaveBeenCalled();
 
     // Counts, never a score — the same rule the rule-set evidence follows.
-    expect(await screen.findByText(/4342 of 6717 rows fall into 1 shape/))
+    expect(await screen.findByText(/4,342 of 6,717 rows fall into 1 shape/))
       .toBeTruthy();
-    expect(screen.getByText(/2375 match none and would be kept unread/))
+    expect(screen.getByText(/2,375 match none and would be kept unread/))
       .toBeTruthy();
     expect(screen.getByText(/1 are named by the file's own text/)).toBeTruthy();
     expect(screen.getByText(/1 are open/)).toBeTruthy();
@@ -679,7 +707,7 @@ describe("the decoded catalogue screen", () => {
     fireEvent.click(screen.getByRole("button",
                                      { name: "A decoder built from this file" }));
     fireEvent.click(screen.getByRole("button", { name: "Propose a decoder" }));
-    await screen.findByText(/4342 of 6717 rows fall into 1 shape/);
+    await screen.findByText(/4,342 of 6,717 rows fall into 1 shape/);
 
     fireEvent.click(screen.getByRole("button", { name: "Save decoding config" }));
     await waitFor(() => expect(save).toHaveBeenCalledWith(
@@ -852,7 +880,7 @@ describe("the decoded catalogue screen", () => {
       })]));
     render(<CatalogScreen session={SESSION} />);
 
-    await screen.findByText(/6717 decoded records/);
+    await screen.findByText(/6,717 decoded records/);
     // Both rule sets, and which file went through which.
     expect(screen.getByText(/zcnc, yg1/)).toBeTruthy();
     expect(screen.getByText(/item-master\.csv → zcnc · range\.csv → yg1/))
@@ -886,7 +914,7 @@ describe("the decoded catalogue screen", () => {
       view([company({ ...BUILT, sources: [source()] })], { can_manage: false }));
     render(<CatalogScreen session={SESSION} />);
 
-    await waitFor(() => expect(screen.getByText(/6717 decoded records/)).toBeTruthy());
+    await waitFor(() => expect(screen.getByText(/6,717 decoded records/)).toBeTruthy());
     // The state is readable — the controls are not. The server refuses the
     // POST as well; this only keeps the screen honest about it.
     expect(screen.queryByRole("button", { name: /Rebuild/ })).toBeNull();
@@ -894,7 +922,40 @@ describe("the decoded catalogue screen", () => {
     expect(screen.queryByRole("button", { name: /Remove/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Add a catalogue/ })).toBeNull();
     expect(screen.queryByRole("button", { name: /Rename/ })).toBeNull();
-    expect(screen.getByText(/6717 decoded records/)).toBeTruthy();
+    expect(screen.getByText(/6,717 decoded records/)).toBeTruthy();
+  });
+
+  it("attributes a refused action to the catalogue it was tried on, and lets it be dismissed", async () => {
+    // Written when this file's local `ProblemAlert` became `kit.ErrorState`
+    // with its `onClose`, because the path had no test at all — and it is the
+    // one place the server's own words reach the screen. Two claims:
+    //
+    // The cause is shown verbatim. The server names the specific thing — a
+    // column the file lacks, a rule set the engine no longer ships — and a
+    // screen that summarised that away would send somebody looking in the
+    // wrong place.
+    //
+    // And it closes. What failed is one request standing beside controls that
+    // still work, not a screen that could not load, which is exactly the
+    // distinction `ErrorState`'s `onClose` marks: a load failure must not be
+    // dismissible, because there is nothing behind it.
+    const cause = "item-master.csv names rule set zcnc, which this engine no "
+      + "longer ships.";
+    vi.spyOn(papi, "companyCatalogues").mockResolvedValue(
+      view([company({ sources: [source()] })]));
+    vi.spyOn(papi, "buildCompanyCatalog").mockRejectedValue(new Error(cause));
+    render(<CatalogScreen session={SESSION} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Build" }));
+
+    expect(await screen.findByText(cause)).toBeTruthy();
+    expect(screen.getByText("That did not work")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "Dismiss" }));
+    await waitFor(() =>
+      expect(screen.queryByText("That did not work")).toBeNull());
+    // The controls it stood beside are still there to try again with.
+    expect(screen.getByRole("button", { name: "Build" })).toBeTruthy();
   });
 });
 
@@ -929,19 +990,19 @@ describe("one catalogue per manufacturer", () => {
     vi.spyOn(papi, "companyCatalogues").mockResolvedValue(view([twoBuilt()]));
     render(<CatalogScreen session={SESSION} />);
 
-    expect(await screen.findByText("Kennametal", { selector: "b" })).toBeTruthy();
-    expect(screen.getByText("YG-1", { selector: "b" })).toBeTruthy();
-    expect(within(stateOf("Kennametal")).getByText("READY")).toBeTruthy();
-    expect(within(stateOf("YG-1")).getByText("READY")).toBeTruthy();
-    expect(screen.getByText(/6717 decoded records/)).toBeTruthy();
-    expect(screen.getByText(/3000 decoded records/)).toBeTruthy();
+    expect(await findHeading("Kennametal")).toBeTruthy();
+    expect(heading("YG-1")).toBeTruthy();
+    expect(within(heading("Kennametal")).getByText("READY")).toBeTruthy();
+    expect(within(heading("YG-1")).getByText("READY")).toBeTruthy();
+    expect(screen.getByText(/6,717 decoded records/)).toBeTruthy();
+    expect(screen.getByText(/3,000 decoded records/)).toBeTruthy();
     // Each catalogue's provenance, under its own heading.
     expect(screen.getByText("f67131512eb97513")).toBeTruthy();
     expect(screen.getByText("aaaa1111bbbb2222")).toBeTruthy();
     expect(screen.getAllByLabelText(/Per-family parse rates/)).toHaveLength(2);
     // The union, once.
-    expect(screen.getByText("RESOLVES 9717 RECORDS")).toBeTruthy();
-    expect(screen.getByText(/9717 records from 2 catalogues/)).toBeTruthy();
+    expect(screen.getByText("RESOLVES 9,717 RECORDS")).toBeTruthy();
+    expect(screen.getByText(/9,717 records from 2 catalogues/)).toBeTruthy();
     expect(screen.getAllByText(/records indexed/)).toHaveLength(1);
   });
 
@@ -983,10 +1044,10 @@ describe("one catalogue per manufacturer", () => {
     expect(create).toHaveBeenCalledWith("t", "conn-a", { name: "YG-1" });
     // The response is the whole company, and it replaces the one on screen:
     // the new catalogue's section appears beside the built one.
-    expect(await screen.findByText("YG-1", { selector: "b" })).toBeTruthy();
-    expect(screen.getByText("Kennametal", { selector: "b" })).toBeTruthy();
-    expect(within(stateOf("YG-1")).getByText("NO EXPORT")).toBeTruthy();
-    expect(within(stateOf("Kennametal")).getByText("READY")).toBeTruthy();
+    expect(await findHeading("YG-1")).toBeTruthy();
+    expect(heading("Kennametal")).toBeTruthy();
+    expect(within(heading("YG-1")).getByText("NO EXPORT")).toBeTruthy();
+    expect(within(heading("Kennametal")).getByText("READY")).toBeTruthy();
   });
 
   it("removes a catalogue only through the confirm dialog, by its key", async () => {

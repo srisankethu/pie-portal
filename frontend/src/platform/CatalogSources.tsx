@@ -46,7 +46,6 @@
 // row of every rebuild.
 
 import { useMemo, useRef, useState } from "react";
-import type { ReactNode } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -66,41 +65,23 @@ import Typography from "@mui/material/Typography";
 
 import type { ColDef } from "./DataGrid";
 import { DataGrid } from "./DataGrid";
-import { EmptyState, StatusChip, TOUCH } from "./kit";
+import { EmptyState, Meta, PanelMark, StatusChip, TOUCH } from "./kit";
 import type { BindingChoice, BindingSuggestion, BuiltFile, CompanyCatalogueEntry,
               CompanySource, DecoderArtifact, DecoderProposalResponse } from "./types";
 import { Tip } from "./ui";
+import { count } from "../money";
 import { formatDateTime } from "../when";
 
-/** The second thing in a cell or a card: what a value is, after the value.
+/** `Meta` beside the value rather than under it — a size after a filename.
  *
- *  Every one of these was `className="fsrc"`, and `styles.css` declares
- *  `.fsrc` **only** inside `.facttable`, `.sync-opts` and `.cx-add` — so the
- *  six of them inside an AG Grid cell and inside the narrow card matched no
- *  rule at all and rendered at body size in body ink. A file's size read as
- *  loudly as its name, and "incl. price, cost" read as loudly as the column
- *  count it qualifies: the hierarchy those spans were reaching for was simply
- *  not being drawn. Theme tokens through `Typography` per ui-standards §11,
- *  and one component per §10 rather than the same span six times.
- *
- *  Local rather than in `kit.tsx` for the reason `SkippedRowsPanel` gives at
- *  the same spot: this is the same fix in a second file, so the shared answer
- *  belongs there — but `kit.tsx` is not this change's to edit, and copying the
- *  broken span forward would be worse than copying the working one. */
-function Meta({ inline = false, children }: {
-  /** Beside the value rather than under it — a size after a filename. */
-  inline?: boolean;
-  children: ReactNode;
-}) {
-  return (
-    <Typography
-      variant="caption" component="span" color="text.secondary"
-      sx={inline ? { ml: 1 } : { display: "block" }}
-    >
-      {children}
-    </Typography>
-  );
-}
+ *  This file used to own a local `Meta` with an `inline` prop, written because
+ *  `className="fsrc"` is declared **only** inside `.facttable`, `.sync-opts`
+ *  and `.cx-add`, so every one of these inside an AG Grid cell or inside the
+ *  narrow card matched no rule at all and rendered at body size in body ink.
+ *  `kit.Meta` is that component now and it is the block form; the inline form
+ *  is this one `sx`, written once so its three call sites cannot drift apart.
+ *  A kit-level `inline` prop would retire it. */
+const INLINE = { display: "inline", ml: 1 } as const;
 
 /** A file's size, in the unit that makes it legible.
  *
@@ -150,9 +131,13 @@ function rowsOf(source: CompanySource, built?: BuiltFile): string {
   if (!ingest || kept === null) return "not read yet";
   const skipped = ingest.rows_skipped_blank_key ?? 0;
   const emitted = built?.rows_emitted;
-  const base = skipped > 0 ? `${kept} (${skipped} skipped)` : `${kept}`;
+  // Grouped: an item master runs to five and six figures, and this is the
+  // column somebody scans to answer "which file is carrying this catalogue?".
+  // The comparisons stay on the numbers, never on the rendered strings.
+  const base = skipped > 0
+    ? `${count(kept)} (${count(skipped)} skipped)` : `${count(kept)}`;
   return emitted !== undefined && emitted !== kept
-    ? `${base} · ${emitted} used` : base;
+    ? `${base} · ${count(emitted)} used` : base;
 }
 
 /** One file's decoding state, in a word.
@@ -234,7 +219,7 @@ function AnalysisEvidence({ source, busy, onAnalyze }: {
              sx={{ alignItems: "center", mb: 1, flexWrap: "wrap", rowGap: 1 }}>
         <Typography variant="subtitle2" component="h3">
           {analysis
-            ? `Each rule set over the first ${analysis.sample_rows} rows of this file`
+            ? `Each rule set over the first ${count(analysis.sample_rows)} rows of this file`
             : "This file has not been analysed"}
         </Typography>
         <Box sx={{ flex: 1 }} />
@@ -271,9 +256,15 @@ function AnalysisEvidence({ source, busy, onAnalyze }: {
                   {c.error ? (
                     <span>could not read this file — {c.error}</span>
                   ) : (
+                    // The `?? 0` stands: this branch is the one where the rule
+                    // set *did* read the file, so a missing figure is a zero it
+                    // counted rather than a figure nobody has. Grouped, because
+                    // a rule set over a 40,000-row master quarantines in the
+                    // tens of thousands.
                     <>
-                      {c.classified ?? 0} classified, {c.quarantined ?? 0} quarantined
-                      <Meta inline>of {c.rows_read ?? 0} rows</Meta>
+                      {count(c.classified ?? 0)} classified,{" "}
+                      {count(c.quarantined ?? 0)} quarantined
+                      <Meta sx={INLINE}>of {count(c.rows_read ?? 0)} rows</Meta>
                     </>
                   )}
                 </td>
@@ -282,11 +273,10 @@ function AnalysisEvidence({ source, busy, onAnalyze }: {
           </tbody>
         </table>
       )}
-      <Typography variant="caption" component="p" color="text.secondary"
-                  sx={{ mt: 1, mb: 0 }}>
+      <Meta sx={{ mt: 1 }}>
         The parser&apos;s own counts, on a sample of this file. Nothing here
         ranks them — which one is right is a reading of these numbers.
-      </Typography>
+      </Meta>
     </Box>
   );
 }
@@ -457,7 +447,10 @@ function BindingReviewGrid({ suggestions, edits, onEdit }: {
     {
       field: "occurrences", headerName: "In rows", width: 110,
       type: "numericColumn",
-      valueFormatter: (p) => `${p.value} / ${p.data?.rowsMatched ?? 0}`,
+      // Formatted, not typed: the sort stays on `occurrences` itself, so
+      // grouping the display cannot make "9" sort above "1,200".
+      valueFormatter: (p) =>
+        `${count(p.value)} / ${count(p.data?.rowsMatched ?? 0)}`,
     },
     {
       field: "slot", headerName: "Reads as", minWidth: 200, flex: 1,
@@ -539,11 +532,11 @@ function DecoderPanel({ source, busy, proposal, proposing, error, edits,
           <Typography variant="subtitle2" component="h3">
             A decoder built from this file
           </Typography>
-          <Typography variant="caption" color="text.secondary">
+          <Meta>
             {saved
               ? `Saved: ${saved.decoder_id}, ${saved.segments.length} shape${saved.segments.length === 1 ? "" : "s"}, reading ${saved.decimal === "either" ? "either decimal separator" : `“${saved.decimal === "dot" ? "." : ","}” as the decimal point`}.`
               : "Nothing shipped reads this file. Inference reads its descriptions, works out the shapes in them, and proposes a decoder for this file alone."}
-          </Typography>
+          </Meta>
         </Box>
         <Button size="small" variant={saved ? "outlined" : "contained"}
                 disabled={busy || proposing} onClick={onPropose}>
@@ -563,9 +556,12 @@ function DecoderPanel({ source, busy, proposal, proposing, error, edits,
       {p?.decoder && review && (
         <>
           <Alert severity="info" sx={{ mb: 1.5 }}>
-            {p.claimed} of {p.rows_read} rows fall into{" "}
+            {/* Rows are grouped and shapes are not: the first is the size of
+                the file, the second is a property of how the manufacturer
+                writes a description. */}
+            {count(p.claimed)} of {count(p.rows_read)} rows fall into{" "}
             {p.decoder.segments.length} shape
-            {p.decoder.segments.length === 1 ? "" : "s"}; {p.unclaimed} match
+            {p.decoder.segments.length === 1 ? "" : "s"}; {count(p.unclaimed)} match
             none and would be kept unread. Of {review.suggestions.length}{" "}
             varying parts, {review.from_surface} are named by the file&apos;s own
             text{review.from_model > 0
@@ -896,7 +892,7 @@ export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
       cellRenderer: (p: { data: CompanySource }) => (
         <span>
           {p.data.filename}
-          <Meta inline>{fileSize(p.data.size_bytes)}</Meta>
+          <Meta sx={INLINE}>{fileSize(p.data.size_bytes)}</Meta>
         </span>
       ),
     },
@@ -948,7 +944,7 @@ export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
             <span>
               {total} column{total === 1 ? "" : "s"}
               {money.length > 0 && (
-                <Meta inline>
+                <Meta sx={INLINE}>
                   incl. {money.slice(0, 2).join(", ")}
                   {money.length > 2 ? " …" : ""}
                 </Meta>
@@ -994,16 +990,14 @@ export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
 
   return (
     <Box>
-      {/* `subtitle2`, the rung `CatalogScreen`'s own `Pane` titles sit on, so
-          this list and the fact panels under it read as peers below the
-          catalogue's name. Not `kit.SectionHeader`: it renders a real `<h3>`
-          at 21px, which would be louder than the `h4` catalogue name above it
-          and would claim an outline level this screen deliberately does not
-          have — see the note on `Pane`. */}
+      {/* `kit.PanelMark`, the rung `CatalogScreen`'s own `Pane` titles sit on
+          now, so this list and the fact panels under it read as peers below the
+          catalogue's name. Not `kit.SectionHeader`: its smallest rung renders a
+          real `<h3>` at 21px, which is the size of the catalogue's own heading
+          immediately above this — and this line is a label on a list, not a
+          fourth level of the document outline. See the note on `Pane`. */}
       <Stack direction="row" spacing={1} sx={{ mb: 1, alignItems: "center", flexWrap: "wrap", rowGap: 1 }}>
-        <Typography variant="subtitle2" component="p" color="text.secondary">
-          Files this catalogue is built from
-        </Typography>
+        <PanelMark>Files this catalogue is built from</PanelMark>
         <Tip text="Every file here is merged into one catalogue. Where the same part number appears in two of them, the newest file's row is used and the overlap is counted — it is never quietly dropped, because two exports disagreeing about one product is something somebody has to know about." />
         <Box sx={{ flex: 1 }} />
         {catalogue.sources.length > 1 && (
@@ -1109,7 +1103,7 @@ export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
 
       {catalogue.ingest && catalogue.ingest.collisions > 0 && (
         <Alert severity="info" sx={{ mt: 1 }}>
-          {catalogue.ingest.collisions} part number
+          {count(catalogue.ingest.collisions)} part number
           {catalogue.ingest.collisions === 1 ? "" : "s"} appeared in more than one
           file at the last build — the newest file&apos;s row was used for each.
           {catalogue.ingest.collision_examples.length > 0 &&

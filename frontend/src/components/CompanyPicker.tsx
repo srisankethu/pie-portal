@@ -34,7 +34,6 @@ import List from "@mui/material/List";
 import ListItemButton from "@mui/material/ListItemButton";
 import ListItemText from "@mui/material/ListItemText";
 
-import { TOUCH } from "../platform/kit";
 import type { QuoteCompany } from "../api";
 
 export function CompanyPicker({
@@ -90,12 +89,14 @@ export function CompanyPicker({
               key={c.connection_id}
               disabled={busy}
               onClick={() => { setTaken(c.connection_id); onPick(c.connection_id); }}
-              // The 44px floor `kit.TOUCH` states. `dense` keeps the padding
-              // tight so three companies still read as one short list; the
-              // minimum keeps the target thumb-sized on the tablet this is
-              // answered on. The two are not in conflict — one sets padding,
-              // the other a floor.
-              sx={{ ...TOUCH, gap: 1 }}
+              // `dense` keeps the padding tight, so three companies still
+              // read as one short list. The 44px thumb floor underneath it is
+              // `theme.ts`'s `MuiListItemButton` default now rather than a
+              // `kit.TOUCH` spread written out here — a floor each call site
+              // has to remember is exactly how it went missing from
+              // `CompanyScope`. The two are not in conflict: one sets the
+              // padding, the other a minimum the padding cannot fall below.
+              sx={{ gap: 1 }}
             >
               <ListItemText
                 primary={c.label || c.connection_id}

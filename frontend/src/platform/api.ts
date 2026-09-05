@@ -1202,13 +1202,16 @@ export const papi = {
    *  outbound checker enforces rather than from a static document. */
   disclosure: (t: string) => req<DisclosureStatement>("/api/v1/trust/disclosure", {}, t),
 
-  /** Every payload logged for this organization. `reveal` decrypts the text;
-   *  left false the list is metadata, which is all the summary needs. */
+  /** The payloads logged for this organization, newest first and capped at
+   *  `limit` — `total` says how many there are, so the screen can state what it
+   *  is showing rather than word around not knowing. `reveal` decrypts the
+   *  text; left false the list is metadata, which is all the summary needs. */
   payloads: (t: string, limit = 50, reveal = false) =>
     req<PayloadsReport>(
       `/api/v1/trust/payloads?limit=${limit}&reveal=${reveal}`, {}, t),
 
-  /** Break-glass grants, uses and revocations. No filter — deliberately. */
+  /** Break-glass grants, uses and revocations. No filter — deliberately.
+   *  Capped at `limit`, with `total` beside it for the same reason. */
   accessLog: (t: string, limit = 200) =>
     req<AccessReport>(`/api/v1/trust/access?limit=${limit}`, {}, t),
 

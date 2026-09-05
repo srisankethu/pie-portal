@@ -983,6 +983,38 @@ def test_a_run_that_kept_no_log_says_why_rather_than_looking_empty(client):
     assert body["note"] and "before its log was stored" in body["note"]
 
 
+def test_a_clean_run_with_a_log_is_not_told_it_kept_none(client):
+    """The note is a claim about the *run*, and it was built from the count
+    left after ``problems_only`` had filtered the view.
+
+    So a run that completed perfectly cleanly, with a full log, was described
+    as having kept no log the moment somebody ticked "Problems only" — the
+    filter had removed every line, and nothing on the server could tell that
+    apart from a run that recorded nothing. A claim about the run made out of a
+    fact about the view.
+    """
+    run_id = _log_a_run(client, levels=("INFO", "INFO"))
+    body = client.get(f"/api/v1/data/sync-runs/{run_id}/log?problems_only=true",
+                      headers=_hdr(client)).json()
+
+    assert body["lines"] == [], "nothing here is at warning level or above"
+    assert body["total"] == 0, "the total still describes what was asked for"
+    assert body["note"] is None, (
+        "this run kept a log; only the filter emptied the view, and what the "
+        "filter left is the caller's question rather than the run's")
+
+
+def test_the_filter_does_not_suppress_a_reason_that_is_true(client):
+    """The other half, and the one a narrower fix would have broken: a run that
+    genuinely kept no log still says so under the filter. Silence there would
+    swap one benign default for another."""
+    run_id = _log_a_run(client, levels=())
+    body = client.get(f"/api/v1/data/sync-runs/{run_id}/log?problems_only=true",
+                      headers=_hdr(client)).json()
+
+    assert body["note"] and "before its log was stored" in body["note"]
+
+
 def test_the_log_downloads_as_a_file_with_the_run_named_on_it(client):
     run_id = _log_a_run(client)
     r = client.get(f"/api/v1/data/sync-runs/{run_id}/log.txt", headers=_hdr(client))

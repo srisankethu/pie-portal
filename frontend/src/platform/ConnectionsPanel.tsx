@@ -322,6 +322,25 @@ function ConnectionCard({
     }
   }
 
+  // One rename reached two ways. Written as functions rather than twice inline
+  // because a key handler that repeats the button's body is how the two drift:
+  // the button carries `disabled={busy}`, and an Enter that skipped that guard
+  // would post the rename again while the first one was still in flight.
+  function saveRename() {
+    if (busy) return;
+    void run(async () => {
+      await onRename(conn.connection_id, label.trim());
+      setRenaming(false);
+    });
+  }
+
+  // Restores the stored name, so re-opening the editor does not show the draft
+  // that was explicitly abandoned.
+  function cancelRename() {
+    setLabel(conn.label);
+    setRenaming(false);
+  }
+
   return (
     <Bp className={`cx-card ${h.band}`.trim()}>
       <div className="cx-head">
@@ -334,19 +353,25 @@ function ConnectionCard({
                 autoFocus
                 value={label}
                 onChange={(e) => setLabel(e.target.value)}
+                // Enter saves, Escape cancels — the two presses somebody makes
+                // in a one-field inline editor without reaching for the mouse.
+                // Additive: both buttons stay, because a shortcut nobody can
+                // see is not an affordance on its own, and this editor is
+                // opened by people who have never used it before.
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); saveRename(); }
+                  else if (e.key === "Escape") { e.preventDefault(); cancelRename(); }
+                }}
                 sx={{ maxWidth: 260 }}
               />
               <Button
                 variant="contained" size="small"
                 disabled={busy}
-                onClick={() => run(async () => {
-                  await onRename(conn.connection_id, label.trim());
-                  setRenaming(false);
-                })}
+                onClick={saveRename}
               >
                 Save
               </Button>
-              <Button variant="text" size="small" onClick={() => { setLabel(conn.label); setRenaming(false); }}>
+              <Button variant="text" size="small" onClick={cancelRename}>
                 Cancel
               </Button>
             </>

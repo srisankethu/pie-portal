@@ -57,8 +57,8 @@ import { LineGrid } from "./components/LineGrid";
 import { NARROW_BREAKPOINT } from "./platform/DataGrid";
 import { QuoteOutcomeBar } from "./components/QuoteOutcomeBar";
 import { SummaryBar } from "./components/SummaryBar";
-import { EmptyState, ErrorState, FilterChip, FilterPanel, LoadingState, SectionHeader, TOUCH }
-  from "./platform/kit";
+import { EmptyState, ErrorState, FieldLabel, FilterChip, FilterPanel, LoadingState,
+         SectionHeader, TOUCH } from "./platform/kit";
 import { abilityFor } from "./platform/ability";
 import { PATH, pathFor } from "./platform/route";
 import type { PlatformSession } from "./platform/types";
@@ -292,7 +292,14 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       const tag = (document.activeElement?.tagName || "").toUpperCase();
       const typing = tag === "INPUT" || tag === "TEXTAREA";
       if (e.key === "Escape") {
-        if (intakeOpen) setIntakeOpen(false);
+        // Not while the intake is in flight. The dialog stops its *own*
+        // Escape then (`onClose` is withheld), and this listener is on the
+        // window, so without the same guard the keystroke would still close
+        // the one thing holding the pasted RFQ and the refusal about to be
+        // shown in it. `busy` is only ever raised by an action on this screen,
+        // and none of them is reachable behind a modal, so while the dialog is
+        // open it means the intake and nothing else.
+        if (intakeOpen) { if (!busy) setIntakeOpen(false); }
         else if (drawerLineId) setDrawerLineId(null);
         else if (typing) (document.activeElement as HTMLElement).blur();
         return;
@@ -304,7 +311,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
     }
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [intakeOpen, drawerLineId]);
+  }, [intakeOpen, drawerLineId, busy]);
 
   // No "could not be started" screen any more. It existed for the auto-create
   // that opened a quote against a literal customer on mount; starting a quote
@@ -382,15 +389,25 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
     }
   }
 
-  const doIntake = (text: string, channel: string, file: File | null) =>
-    guard(async () => {
+  /** Resolve a pasted RFQ into lines, with the document it arrived as.
+   *
+   *  Not through `guard`, for the reason `saveFields` is not: `guard` reports
+   *  through `flash` and then *swallows*, and a snackbar cannot say which of
+   *  the two calls was refused beside the text it is about. The dialog holds
+   *  the only copy of what was typed, so it awaits this promise, stays open on
+   *  a rejection and shows the server's own sentence — which means this must
+   *  reject rather than resolve quietly. `busy` is still raised and lowered by
+   *  hand, so the screen behind the dialog greys out exactly as it did. */
+  const doIntake = async (text: string, channel: string, file: File | null) => {
+    setBusy(true);
+    try {
       // The document first, and its id named by the intake — two calls rather
       // than one multipart request, because the upload has its own refusals
       // (413 for a size or archive ceiling, 415 for a type) and its own
       // statuses, and a document lost to an unrelated intake failure would
       // have to be attached again.
       //
-      // `guard` surfaces whichever one throws, so a refused document stops
+      // Whichever one throws reaches the dialog, so a refused document stops
       // here with the server's own sentence and the RFQ text is still in the
       // dialog to try again with. Uploading second would be worse in exactly
       // the way that matters: the lines would already be on the quote, and the
@@ -399,6 +416,9 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       const q = await api.intake(t, quote!.id, text, channel || undefined,
                                  doc?.rfq_document_id);
       setQuote(q);
+      // Closed here rather than by the dialog: this is the line that knows the
+      // enquiry landed, and the dialog stays open for every path that did not
+      // reach it.
       setIntakeOpen(false);
       const read = q.lines.filter((l) => l.proposed).length;
       // Whether the wording itself was kept. The server captures it only when
@@ -416,7 +436,13 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       flash(read
         ? `${q.summary.total} line(s) read from your message — check each one${kept}${attached}`
         : `${q.summary.total} line(s) in quote${kept}${attached}`);
-    });
+    } finally {
+      // No `catch`. The throw is the contract with the dialog, and swallowing
+      // it here is exactly the bug: a refusal that closed the dialog would
+      // take the pasted RFQ with it.
+      setBusy(false);
+    }
+  };
 
   const doConfirmReading = (id: string) =>
     guard(async () => {
@@ -559,17 +585,13 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         }}
       >
         <Box>
-          <Typography variant="overline" color="text.secondary" sx={{ display: "block", lineHeight: 1.3 }}>
-            Quote
-          </Typography>
+          <FieldLabel>Quote</FieldLabel>
           <Typography sx={{ fontFamily: "var(--font-heading)", fontWeight: 600 }}>
             {quote.number}
           </Typography>
         </Box>
         <Box sx={{ minWidth: 0 }}>
-          <Typography variant="overline" color="text.secondary" sx={{ display: "block", lineHeight: 1.3 }}>
-            Customer
-          </Typography>
+          <FieldLabel>Customer</FieldLabel>
           {/* A control, not a caption — and, until somebody answers, the
               question itself. A quote opens with no customer; this is where
               one is chosen, and it reads as a thing still to do rather than
@@ -603,9 +625,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           )}
         </Box>
         <Box sx={{ minWidth: 0 }}>
-          <Typography variant="overline" color="text.secondary" sx={{ display: "block", lineHeight: 1.3 }}>
-            Owner
-          </Typography>
+          <FieldLabel>Owner</FieldLabel>
           {/* Whose quote this is. Every quote has one — whoever started it —
               and only they change it, plus managers where the policy allows.
               The owner (or a manager) can hand it over from here. */}

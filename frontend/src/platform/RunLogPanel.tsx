@@ -47,7 +47,7 @@ import { tokens } from "../theme";
 import { papi } from "./api";
 import { saveBlob } from "./download";
 import { EmptyState, ErrorState, SectionHeader, StatusChip, TOUCH } from "./kit";
-import { Bp } from "./ui";
+import { Bp, Tip } from "./ui";
 import type { SyncLogLine } from "./types";
 
 /** How often a live run is polled. Slow enough to be cheap, fast enough that a
@@ -184,28 +184,32 @@ export function RunLogPanel({ token, runId, running }: {
                   : `The panel below holds the start of the log${problemsOnly ? ", as filtered" : ""}; the server holds more than one page of it. The download is the whole log, unfiltered.`}
               />
             )}
+            {/* The filter and the download are the panel's own controls, so
+                they belong on its heading line beside the chips that describe
+                what they act on. They sat in a row of their own only because
+                `SectionHeader`'s actions did not wrap, and a header carrying
+                two chips plus these two would have overflowed a narrow
+                viewport. It wraps now. */}
+            <FormControlLabel
+              // `TOUCH` because a switch is 20px of hit target and this screen
+              // is read on a tablet next to a machine — see kit.TOUCH.
+              sx={{ ...TOUCH, mr: 0 }}
+              control={<Switch size="small" checked={problemsOnly}
+                               onChange={(e) => setProblemsOnly(e.target.checked)} />}
+              label={<Typography variant="body2">Problems only</Typography>}
+            />
+            <Button variant="outlined" size="small" onClick={downloadText}
+                    disabled={saving}>
+              {saving ? "Preparing…" : "Download log"}
+            </Button>
+            {/* What the sentence beside the button used to say. A `Tip`
+                rather than body text because the heading line is not the
+                place for a sentence — and it can now say the rest of it,
+                which is that the filter above does not reach the file. */}
+            <Tip text="The whole log, not the part shown here: every line this run recorded, unfiltered, however the switch beside it is set." />
           </>
         }
       />
-
-      <Stack direction="row" spacing={1.5}
-             sx={{ mb: 1.5, alignItems: "center", flexWrap: "wrap" }}>
-        <FormControlLabel
-          // `TOUCH` because a switch is 20px of hit target and this screen is
-          // read on a tablet next to a machine — see kit.TOUCH.
-          sx={{ ...TOUCH, mr: 0 }}
-          control={<Switch size="small" checked={problemsOnly}
-                           onChange={(e) => setProblemsOnly(e.target.checked)} />}
-          label={<Typography variant="body2">Problems only</Typography>}
-        />
-        <Button variant="outlined" size="small" onClick={downloadText}
-                disabled={saving}>
-          {saving ? "Preparing…" : "Download log"}
-        </Button>
-        <Typography variant="body2" color="text.secondary">
-          The whole log, not the part shown here.
-        </Typography>
-      </Stack>
 
       {/* A poll that failed with lines already on screen. Said out loud rather
           than left to the fact that nothing new arrives: a log that has quietly
@@ -222,72 +226,80 @@ export function RunLogPanel({ token, runId, running }: {
 
       {failedOutright ? (
         <ErrorState title="The log did not load" error={error} />
-      ) : empty ? (
-        <EmptyState
-          // "has no log" is a verdict, and it is the wrong one about a run that
-          // started twenty seconds ago — the server's own reason below says
-          // "not yet", and a title contradicting it is the benign default in
-          // the other direction.
-          title={problemsOnly
-            ? "No warnings or errors recorded"
-            : running ? "No log lines yet" : "This run has no log"}
-          reason={problemsOnly
-            ? "Nothing at warning level or above came back for this run. That reads as a clean pull, and this filter cannot tell a clean pull from one that kept no log at all — turn it off before concluding either."
-            : note ?? "The server returned no lines and no reason for it, which is itself worth reporting."}
-          action={problemsOnly ? (
-            <Button variant="outlined" size="small"
-                    onClick={() => setProblemsOnly(false)}>
-              Show every line
-            </Button>
-          ) : undefined}
-        />
       ) : (
         <Bp sx={{ p: 0 }}>
-          <Box
-            component="pre"
-            // Focusable and named, because a scrollable region a mouse can
-            // reach and a keyboard cannot is unreachable for half its readers.
-            role="region"
-            aria-label="Sync log"
-            aria-busy={loading}
-            tabIndex={0}
-            sx={{
-              m: 0, p: 1.5,
-              maxHeight: { xs: 320, md: 460 },
-              overflow: "auto",
-              // The theme's own mono stack rather than one written out here —
-              // a literal is a value that will not follow (§11).
-              fontFamily: tokens.fontMono,
-              typography: "body2",
-              // Long lines — a traceback frame, a Zoho URL — wrap rather than
-              // pushing the page sideways.
-              whiteSpace: "pre-wrap", wordBreak: "break-word",
-            }}
-          >
-            {loading && held === 0 && (
-              <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
-                <CircularProgress size={16} />
-                <Typography variant="body2" color="text.secondary">
-                  Reading the log…
-                </Typography>
-              </Stack>
-            )}
-            {lines.map((line) => (
-              <Box key={line.seq} sx={{ color: toneOf(line.level) }}>
-                {/* Secondary, not disabled: the clock is read against the
-                    server's own log and at 38% ink it sat under the contrast
-                    floor small text needs. It still recedes, because the
-                    message beside it now takes the body ink. */}
-                <Box component="span" sx={{ color: "text.secondary" }}>
-                  {clockOf(line.at)}{" "}
+          {empty ? (
+            /* `flat`, so the panel shows the empty state *as* its content.
+               Without it `EmptyState` brought its own outlined `Paper` and the
+               only way to avoid an outlined box inside an outlined box was to
+               put it outside the panel — which read as a stray notice beside
+               the log rather than as what the log box currently holds. */
+            <EmptyState
+              flat
+              // "has no log" is a verdict, and it is the wrong one about a run
+              // that started twenty seconds ago — the server's own reason below
+              // says "not yet", and a title contradicting it is the benign
+              // default in the other direction.
+              title={problemsOnly
+                ? "No warnings or errors recorded"
+                : running ? "No log lines yet" : "This run has no log"}
+              reason={problemsOnly
+                ? "Nothing at warning level or above came back for this run. That reads as a clean pull, and this filter cannot tell a clean pull from one that kept no log at all — turn it off before concluding either."
+                : note ?? "The server returned no lines and no reason for it, which is itself worth reporting."}
+              action={problemsOnly ? (
+                <Button variant="outlined" size="small"
+                        onClick={() => setProblemsOnly(false)}>
+                  Show every line
+                </Button>
+              ) : undefined}
+            />
+          ) : (
+            <Box
+              component="pre"
+              // Focusable and named, because a scrollable region a mouse can
+              // reach and a keyboard cannot is unreachable for half its readers.
+              role="region"
+              aria-label="Sync log"
+              aria-busy={loading}
+              tabIndex={0}
+              sx={{
+                m: 0, p: 1.5,
+                maxHeight: { xs: 320, md: 460 },
+                overflow: "auto",
+                // The theme's own mono stack rather than one written out here —
+                // a literal is a value that will not follow (§11).
+                fontFamily: tokens.fontMono,
+                typography: "body2",
+                // Long lines — a traceback frame, a Zoho URL — wrap rather than
+                // pushing the page sideways.
+                whiteSpace: "pre-wrap", wordBreak: "break-word",
+              }}
+            >
+              {loading && held === 0 && (
+                <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+                  <CircularProgress size={16} />
+                  <Typography variant="body2" color="text.secondary">
+                    Reading the log…
+                  </Typography>
+                </Stack>
+              )}
+              {lines.map((line) => (
+                <Box key={line.seq} sx={{ color: toneOf(line.level) }}>
+                  {/* Secondary, not disabled: the clock is read against the
+                      server's own log and at 38% ink it sat under the contrast
+                      floor small text needs. It still recedes, because the
+                      message beside it now takes the body ink. */}
+                  <Box component="span" sx={{ color: "text.secondary" }}>
+                    {clockOf(line.at)}{" "}
+                  </Box>
+                  {line.level !== "INFO" && (
+                    <Box component="span" sx={{ fontWeight: 600 }}>{line.level} </Box>
+                  )}
+                  {line.message}
                 </Box>
-                {line.level !== "INFO" && (
-                  <Box component="span" sx={{ fontWeight: 600 }}>{line.level} </Box>
-                )}
-                {line.message}
-              </Box>
-            ))}
-          </Box>
+              ))}
+            </Box>
+          )}
         </Bp>
       )}
     </>

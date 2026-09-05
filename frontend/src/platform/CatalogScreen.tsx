@@ -80,7 +80,7 @@
 // default CLAUDE.md §1 forbids.
 
 import { useCallback, useEffect, useState } from "react";
-import type { CSSProperties, ReactNode } from "react";
+import type { ReactNode } from "react";
 import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
@@ -91,19 +91,18 @@ import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import LinearProgress from "@mui/material/LinearProgress";
-import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 
 import { papi } from "./api";
 import { CatalogSources, fileSize, megabytes } from "./CatalogSources";
-import { EmptyState, ErrorState, LoadingState, PercentageValue, SectionHeader,
-         StatusChip, type Tone } from "./kit";
+import { EmptyState, ErrorState, FactTable, LoadingState, Meta, PanelMark,
+         PercentageValue, SectionHeader, StatusChip, type Tone } from "./kit";
 import type { BindingChoice, CatalogueUnion, CompanyCatalogue,
               CompanyCatalogueEntry, CompanyCatalogues as View, DecoderArtifact,
               DecoderProposalResponse, PlatformSession } from "./types";
 import { CatalogLearning } from "./CatalogLearning";
-import { tokens } from "../theme";
+import { count } from "../money";
 import { Bp, Labelled, Tip } from "./ui";
 import { formatDateTime, since } from "../when";
 
@@ -111,17 +110,22 @@ import { formatDateTime, since } from "../when";
 // member short of `kit`'s, which is the small end of the duplication CLAUDE.md
 // §2 is about — two vocabularies for one question.
 
-type RuleSet = { id: string; path: string };
+// `count` rather than a bare `{n}`: 6717 and 9717 are counts of *records*, and
+// an ungrouped five-digit figure is one a reader has to count the digits of.
+// It is `money.count` and not a second formatter because the grouping belongs
+// to the organization — an item master of 667,170 rows reads as 6,67,170 for a
+// business trading in rupees — and a record counter that grouped one way beside
+// a revenue figure grouping the other is exactly the drift CLAUDE.md §2 warns
+// about. Structural counts — how many catalogues, files or shapes — are left
+// bare: they are bounded by the shape of the screen rather than by the size of
+// the book, so grouping them would be a rule nobody can ever see working.
+//
+// Monospace is `className="mono"` now. This file used to carry a local `MONO`
+// const reading `tokens.fontMono`, written because `.mono` was styled nowhere
+// as monospace and `CSS_VARS` never emitted `--font-mono`; theme.ts fixes both
+// at the source, so the workaround is gone rather than kept beside the fix.
 
-/** Monospace, for a hash somebody compares character by character.
- *
- *  Four places here wrote `fontFamily: "var(--font-mono, monospace)"`, and
- *  `theme.ts` does not publish `--font-mono` — `CSS_VARS` emits `--font-heading`
- *  and `--font-body` and stops there — so every one of them fell through to the
- *  browser's bare `monospace` and none of them used the token the theme
- *  actually holds. Read from `tokens.fontMono` instead, in one place, per
- *  ui-standards §11: a literal in a component is a value that will not follow. */
-const MONO: CSSProperties = { fontFamily: tokens.fontMono };
+type RuleSet = { id: string; path: string };
 
 /** The one state word for a catalogue, from the facts the server sends.
  *
@@ -148,7 +152,7 @@ function chipFor(c: CompanyCatalogueEntry): { label: string; tone: Tone } {
  *  so rather than reading as zero coverage. */
 function unionChip(c: CompanyCatalogue): { label: string; tone: Tone } {
   if (!c.union) return { label: "NOTHING BUILT", tone: "neutral" };
-  return { label: `RESOLVES ${c.union.records} RECORDS`, tone: "good" };
+  return { label: `RESOLVES ${count(c.union.records)} RECORDS`, tone: "good" };
 }
 
 /** What a catalogue is called on screen: its name, or its key until it has one.
@@ -161,48 +165,6 @@ function nameOf(c: CompanyCatalogueEntry): string {
  *  the connection id alone. */
 function keyOf(c: CompanyCatalogueEntry): string {
   return `${c.connection_id}/${c.catalogue_key}`;
-}
-
-/** The line a company or a catalogue is headed by: name, state, controls.
- *
- *  Written once because it was written twice — the same flex row, the same
- *  hardcoded `gap: 8` and `marginBottom: 8`, differing only in its children.
- *  That is ui-standards §10, and the spacing is now the theme's.
- *
- *  `level` is the part that earns the component. This screen has three rungs of
- *  structure — the page, a company, a manufacturer's catalogue inside it — and
- *  had one rung of type: both names were a bare `<b>`, so a reader scanning for
- *  "which company is this stamp under" had only the panel border to go on, on
- *  the one screen whose stated invariant is that a company's provenance must
- *  never be read against another's name. Company and catalogue now sit two
- *  rungs apart on the theme's own ramp (§4).
- *
- *  The catalogue's name stays a `<b>` element. Its section is delimited by the
- *  rule above it rather than by an outline level of its own, and the surrounding
- *  markup — the chip beside it, the controls after it — is what the assertions
- *  in `CatalogScreen.test.tsx` read off that element. */
-function HeadingRow({ name, level, chip, meta, actions }: {
-  name: string;
-  level: "company" | "catalogue";
-  chip: ReactNode;
-  /** Secondary metadata, between the state word and the controls. */
-  meta?: ReactNode;
-  actions?: ReactNode;
-}) {
-  return (
-    <Stack
-      direction="row" spacing={1} useFlexGap
-      sx={{ alignItems: "center", flexWrap: "wrap", mb: 1 }}
-    >
-      {level === "company"
-        ? <Typography variant="h3" component="h2">{name}</Typography>
-        : <Typography variant="h4" component="b">{name}</Typography>}
-      {chip}
-      {meta}
-      <Box sx={{ flex: 1 }} />
-      {actions}
-    </Stack>
-  );
 }
 
 /** One labelled half of the fact area under a catalogue.
@@ -219,40 +181,39 @@ function Pane({ title, note, children }: {
 }) {
   return (
     <Box>
-      {/* `component="p"`: `subtitle2` maps to an `<h6>` by default, and an h6
-          under a company's `<h2>` would claim four outline levels this screen
-          does not have. The tables carry their own `aria-label`, so the
-          accessible name is not riding on this line. */}
-      <Typography variant="subtitle2" component="p" color="text.secondary"
-                  sx={{ mb: 0.5 }}>
-        {title}
-      </Typography>
+      {/* `kit.PanelMark`, which is the rung this line was reaching for: a
+          panel's own micro-label, deliberately *not* a heading. It was
+          `subtitle2 component="p"`, and the `component` was the whole point —
+          `subtitle2` maps to an `<h6>` by default, and an h6 under a company's
+          `<h2>` would claim four outline levels this screen does not have.
+          PanelMark has no heading in it to suppress. The tables carry their own
+          `aria-label`, so the accessible name is not riding on this line. */}
+      <PanelMark sx={{ mb: 0.5 }}>{title}</PanelMark>
       {children}
-      {note && (
-        <Typography variant="caption" color="text.secondary" component="p"
-                    sx={{ mt: 0.75, mb: 0 }}>
-          {note}
-        </Typography>
-      )}
+      {note && <Meta sx={{ mt: 0.75 }}>{note}</Meta>}
     </Box>
   );
 }
 
 /** One action that failed, attributed to the thing it was tried on.
  *
- *  Two call sites — a company's action and a catalogue's — so it is written
- *  once. Not `kit.ErrorState`, which is this Alert with this title slot and no
- *  way to dismiss it: what this reports is one refused request beside controls
- *  that still work, not a screen that did not load, so it has to be closable. */
+ *  `kit.ErrorState` with its `onClose`, which was added for exactly this: what
+ *  this reports is one refused request beside controls that still work, not a
+ *  screen that did not load, so it has to be closable — and that was the only
+ *  reason this file carried its own Alert. The title stays "That did not work"
+ *  rather than kit's "This did not load" default, because the two are different
+ *  claims and this is the first one.
+ *
+ *  The `Box` is only for the margin: `ErrorState` renders the Alert itself and
+ *  takes no `sx`, and spacing a component from outside is the right way round. */
 function ProblemAlert({ message, onClose }: {
   message: string;
   onClose: () => void;
 }) {
   return (
-    <Alert severity="error" sx={{ mb: 1.5 }} onClose={onClose}>
-      <AlertTitle>That did not work</AlertTitle>
-      {message}
-    </Alert>
+    <Box sx={{ mb: 1.5 }}>
+      <ErrorState title="That did not work" error={message} onClose={onClose} />
+    </Box>
   );
 }
 
@@ -311,8 +272,8 @@ function RenameDialog({ catalogue, busy, onClose, onRename }: {
       <DialogContent>
         <DialogContentText sx={{ mb: 2 }}>
           Only what this screen calls it changes. Its key,{" "}
-          <span style={MONO}>{catalogue.catalogue_key}</span>, is its address on
-          disk and in every union row, and stays.
+          <span className="mono">{catalogue.catalogue_key}</span>, is its address
+          on disk and in every union row, and stays.
         </DialogContentText>
         <TextField autoFocus fullWidth size="small" label="Name" value={name}
                    disabled={busy} sx={{ mt: 1 }}
@@ -334,55 +295,61 @@ function RenameDialog({ catalogue, busy, onClose, onRename }: {
  *  Stated at the company rather than under any one catalogue because it is a
  *  fact about all of them together: a resolution is answered from the union
  *  file, and the retrieval index is built beside that file, not beside each
- *  catalogue. A fact panel — a fixed handful of rows — per ui-standards §3. */
+ *  catalogue. A fact panel — a fixed handful of rows — per ui-standards §3,
+ *  and `kit.FactTable` is that panel: it renders the labels as
+ *  `<th scope="row">`, which is what a screen reader needs to read a value back
+ *  with the thing it is a value *of*, and what this hand-written table's `<td>`
+ *  labels never said. The table's accessible name moves from an `aria-label` to
+ *  FactTable's `caption`, which names it for everybody rather than only for a
+ *  screen reader — the same words either way. */
 function UnionFacts({ union, total }: { union: CatalogueUnion; total: number }) {
   const built = union.catalogues.length;
   const of = built === total ? "" : ` of ${total}`;
   return (
     <Box sx={{ mb: 1.5 }}>
-      <table className="facttable" aria-label="What this company resolves against">
-        <tbody>
-          <tr>
-            <td>
-              <Labelled tip="Every built catalogue this company keeps, merged into the one file its resolutions read. The count is the union's own, from its manifest — not the catalogues added up, which would count a part number two of them share twice.">
-                Resolves against
-              </Labelled>
-            </td>
-            <td className="fv">
-              {union.records} records from {built}{of} catalogue{built === 1 ? "" : "s"}
+      <FactTable
+        caption="What this company resolves against"
+        rows={[
+          [
+            <Labelled tip="Every built catalogue this company keeps, merged into the one file its resolutions read. The count is the union's own, from its manifest — not the catalogues added up, which would count a part number two of them share twice.">
+              Resolves against
+            </Labelled>,
+            <>
+              {count(union.records)} records from {built}{of} catalogue
+              {built === 1 ? "" : "s"}
+              {/* `.mono` on a span inside the `Meta` rather than on it:
+                  `kit.Meta` takes `sx` and not a `className`, and reaching for
+                  the token through `sx` here would rebuild the local `MONO`
+                  const this change just removed. */}
               {union.version && (
-                <div className="fsrc" style={MONO}>union {union.version}</div>
+                <Meta><span className="mono">union {union.version}</span></Meta>
               )}
-            </td>
-          </tr>
-          <tr>
-            <td>
-              <Labelled tip="A line the engine cannot rank — a series named in words, a request with no ISO code in it — is also searched by description: the records whose text reads most like the line are offered as possibilities beneath the engine's own ranking, after the engine has compared them. The model id and record count here are what say which index found a given option. Built beside the union, so it spans every catalogue.">
-                Retrieval index
-              </Labelled>
-            </td>
-            <td className="fv">
-              {union.retrieval ? (
-                <>
-                  {union.retrieval.model_id}
-                  <div className="fsrc">
-                    {union.retrieval.records} records indexed
-                    {!union.retrieval.current && " · behind the union, rebuilt on next use"}
-                  </div>
-                </>
-              ) : (
-                <>
-                  none yet
-                  <div className="fsrc">built on first use</div>
-                </>
-              )}
-            </td>
-          </tr>
-        </tbody>
-      </table>
+            </>,
+          ],
+          [
+            <Labelled tip="A line the engine cannot rank — a series named in words, a request with no ISO code in it — is also searched by description: the records whose text reads most like the line are offered as possibilities beneath the engine's own ranking, after the engine has compared them. The model id and record count here are what say which index found a given option. Built beside the union, so it spans every catalogue.">
+              Retrieval index
+            </Labelled>,
+            union.retrieval ? (
+              <>
+                {union.retrieval.model_id}
+                <Meta>
+                  {count(union.retrieval.records)} records indexed
+                  {!union.retrieval.current && " · behind the union, rebuilt on next use"}
+                </Meta>
+              </>
+            ) : (
+              <>
+                none yet
+                <Meta>built on first use</Meta>
+              </>
+            ),
+          ],
+        ]}
+      />
       {union.duplicates > 0 && (
         <Alert severity="info" sx={{ mt: 1 }}>
-          {union.duplicates} part number{union.duplicates === 1 ? "" : "s"} appear
+          {count(union.duplicates)} part number{union.duplicates === 1 ? "" : "s"} appear
           {union.duplicates === 1 ? "s" : ""} in more than one catalogue — the most
           recently built catalogue&apos;s row was used for each.
           {union.duplicate_examples.length > 0 &&
@@ -459,20 +426,37 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
 
   return (
     <Box sx={{ borderTop: 1, borderColor: "divider", pt: 1.5, mt: 1.5 }}>
-      <HeadingRow
-        name={nameOf(c)}
-        level="catalogue"
-        chip={
+      {/* The catalogue's own heading, on the kit's ramp rather than on this
+          file's. It was `variant="h4" component="b"` — bold text at a size the
+          `SectionHeader` ramp does not have, and *not* a heading, so a screen
+          reader navigating by heading went company to company and never saw the
+          manufacturers inside one. A company keeps up to eight of these, each
+          with its own build state and its own stamp, and the invariant this
+          screen exists to hold is that one catalogue's provenance is never read
+          against another's name — which is a navigation problem before it is a
+          visual one. `widget` is the rung below the company's `section`.
+
+          `badge` is the slot the local `HeadingRow` was written for: a
+          `StatusChip` passed in `actions` lands at the far right beside the
+          buttons, where it reads as a control rather than as part of the name
+          it qualifies.
+
+          The record count moves from a caption beside the chip to `sub`. It is
+          what this section is — how much of the book this manufacturer's
+          catalogue answers for, and when — and inside the heading it would have
+          become part of the heading's accessible name. */}
+      <SectionHeader
+        level="widget"
+        title={nameOf(c)}
+        sub={c.exists
+          ? `${count(c.records)} decoded records, built ${since(c.built_at)}`
+          : undefined}
+        badge={
           <StatusChip label={chip.label} tone={chip.tone}
                       tip={c.exists
                         ? "This catalogue is built and on disk. It is part of what this company's quote lines resolve against."
                         : "This catalogue is not built, so nothing of this manufacturer's is in what the company resolves against — its part numbers answer UNKNOWN, not zero coverage, until it is."} />
         }
-        meta={c.exists ? (
-          <Typography variant="caption" color="text.secondary">
-            {c.records} decoded records, built {since(c.built_at)}
-          </Typography>
-        ) : undefined}
         actions={canManage ? (
           <>
             {/* Build first, and the only contained button in the row: a screen
@@ -574,11 +558,11 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
                       {c.sources.length === 1
                         ? c.sources[0].filename
                         : `${c.sources.length} files`}
-                      <div className="fsrc">
+                      <Meta>
                         {fileSize(c.sources.reduce(
                           (t, x) => t + x.size_bytes, 0))} · newest{" "}
                         {formatDateTime(c.corpus?.uploaded_at ?? null)}
-                      </div>
+                      </Meta>
                     </>
                   )}
                 </td>
@@ -596,16 +580,16 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
                       the catalogue would be a wrong answer to "what decoded
                       this record" — so each file's own is named. */}
                   {decodedThrough.length > 1 && (
-                    <div className="fsrc">
+                    <Meta>
                       {builtFrom.map((f) => `${f.filename} → ${f.rule_set ?? "—"}`)
                                 .join(" · ")}
-                    </div>
+                    </Meta>
                   )}
                   {c.exists && c.stamp.pack_id && (
-                    <div className="fsrc">
+                    <Meta>
                       nomenclature {c.stamp.pack_id} v{c.stamp.pack_version}
                       {c.stamp.org_id && ` · org layer ${c.stamp.org_id} v${c.stamp.org_version}`}
-                    </div>
+                    </Meta>
                   )}
                 </td>
               </tr>
@@ -617,13 +601,13 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
                         Ruleset checksum
                       </Labelled>
                     </td>
-                    <td className="fv" style={MONO}>
+                    <td className="fv mono">
                       {c.stamp.ruleset_checksum ?? "differs per file"}
                     </td>
                   </tr>
                   <tr>
-                    <td>Run id<div className="fsrc">input bytes + ruleset</div></td>
-                    <td className="fv" style={MONO}>
+                    <td>Run id<Meta>input bytes + ruleset</Meta></td>
+                    <td className="fv mono">
                       {c.stamp.run_id ?? "differs per file"}
                     </td>
                   </tr>
@@ -632,7 +616,7 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
                     <td className="fv">
                       {formatDateTime(c.built_at)}
                       {c.duration_s != null && (
-                        <div className="fsrc">took {c.duration_s}s</div>
+                        <Meta>took {c.duration_s}s</Meta>
                       )}
                     </td>
                   </tr>
@@ -643,24 +627,24 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
                       </Labelled>
                     </td>
                     <td className="fv">
-                      {c.rows_read}
+                      {count(c.rows_read)}
                       {c.built_from && c.built_from.length > 1 && (
-                        <div className="fsrc">
+                        <Meta>
                           merged from {c.built_from.length} files
                           {c.ingest && c.ingest.collisions > 0 &&
-                            `, ${c.ingest.collisions} overlapping`}
-                        </div>
+                            `, ${count(c.ingest.collisions)} overlapping`}
+                        </Meta>
                       )}
                     </td>
                   </tr>
-                  <tr><td>Classified</td><td className="fv">{c.records}</td></tr>
+                  <tr><td>Classified</td><td className="fv">{count(c.records)}</td></tr>
                   <tr>
                     <td>
                       <Labelled tip="Rows the rule set could not place in any family. Kept beside the catalogue rather than dropped — unknown means unknown.">
                         Quarantined
                       </Labelled>
                     </td>
-                    <td className="fv">{c.quarantined}</td>
+                    <td className="fv">{count(c.quarantined)}</td>
                   </tr>
                   {report && (
                     <tr>
@@ -672,10 +656,12 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
                       <td className="fv">
                         {newTokens.length === 0 ? "none" : newTokens.length}
                         {newTokens.length > 0 && (
-                          <div className="fsrc">
-                            {newTokens.slice(0, 8).map(([t, n]) => `${t} (${n})`).join(", ")}
+                          <Meta>
+                            {newTokens.slice(0, 8)
+                                      .map(([t, n]) => `${t} (${count(n)})`)
+                                      .join(", ")}
                             {newTokens.length > 8 && ", …"}
-                          </div>
+                          </Meta>
                         )}
                       </td>
                     </tr>
@@ -684,7 +670,7 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
                     <td>Engine</td>
                     <td className="fv">
                       v{c.stamp.engine_version}
-                      <div className="fsrc">schema v{c.stamp.schema_version}</div>
+                      <Meta>schema v{c.stamp.schema_version}</Meta>
                     </td>
                   </tr>
                 </>
@@ -721,13 +707,13 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
                   <tr key={f.source_key}>
                     <td>
                       {f.filename}
-                      <div className="fsrc">{f.rule_set ?? "—"}</div>
+                      <Meta>{f.rule_set ?? "—"}</Meta>
                     </td>
                     <td className="fv">
-                      {f.records} classified
-                      <div className="fsrc">
-                        {f.quarantined} quarantined of {f.rows_read} rows read
-                      </div>
+                      {count(f.records)} classified
+                      <Meta>
+                        {count(f.quarantined)} quarantined of {count(f.rows_read)} rows read
+                      </Meta>
                     </td>
                   </tr>
                 ))}
@@ -744,21 +730,24 @@ function CatalogueSection({ company, catalogue, ruleSets, canManage, busy,
             <table className="facttable"
                    aria-label={`Per-family parse rates for ${label} · ${nameOf(c)}`}>
               <tbody>
-                {families.map(([family, count]) => (
+                {/* `rows` rather than `count`: the module-level `count` is
+                    `money.count`, and a destructured name shadowing it here
+                    would silently make the grouped figure the ungrouped one. */}
+                {families.map(([family, rows]) => (
                   <tr key={family}>
                     <td>{family}</td>
                     <td className="fv">
-                      {count}
-                      <Box component="span" className="fsrc" sx={{ ml: 1 }}>
+                      {count(rows)}
+                      <Meta sx={{ display: "inline", ml: 1 }}>
                         <PercentageValue value={report.parse_rates[family]} digits={1} />
-                      </Box>
+                      </Meta>
                     </td>
                   </tr>
                 ))}
                 {report.unresolved_family > 0 && (
                   <tr>
                     <td>(no family resolved)</td>
-                    <td className="fv">{report.unresolved_family}</td>
+                    <td className="fv">{count(report.unresolved_family)}</td>
                   </tr>
                 )}
               </tbody>
@@ -925,28 +914,35 @@ export function CatalogScreen({ session }: { session: PlatformSession }) {
         const companyActing = busy === c.connection_id;
         const atCeiling = c.catalogues.length >= view.max_catalogues;
         return (
+          // `Bp` rather than `kit.Section`, which is the same outlined surface
+          // wrapped around the same `SectionHeader`: `Bp` is this app's
+          // blueprint panel and carries the four corner marks, and swapping it
+          // for the plain Paper would drop them from this screen alone.
           <Bp key={c.connection_id} sx={{ px: 2, pt: 1.5, pb: 2, mb: 1.5 }}>
-            <HeadingRow
-              name={c.label || c.connection_id}
-              level="company"
-              chip={
+            <SectionHeader
+              level="section"
+              title={c.label || c.connection_id}
+              badge={
                 <StatusChip label={chip.label} tone={chip.tone}
                             tip={c.union
                               ? "The union of every catalogue this company has built. Its quote lines resolve against this — never against another company's."
                               : "This company has built no catalogue. Its resolutions report UNKNOWN — not zero coverage — until one is built."} />
               }
-              // Said beside the disabled control it explains, not under it.
-              meta={view.can_manage && atCeiling ? (
-                <Typography variant="caption" color="text.secondary">
-                  at the ceiling of {view.max_catalogues}
-                </Typography>
-              ) : undefined}
+              // The ceiling note leads the actions row rather than sitting in
+              // `badge`, for two reasons: it is said beside the disabled control
+              // it explains, and anything in `badge` is inside the heading and
+              // so inside the heading's accessible name.
               actions={view.can_manage ? (
-                <Button size="small" variant="outlined"
-                        disabled={companyActing || atCeiling}
-                        onClick={() => setAdding(c.connection_id)}>
-                  Add a catalogue
-                </Button>
+                <>
+                  {atCeiling && (
+                    <Meta>at the ceiling of {view.max_catalogues}</Meta>
+                  )}
+                  <Button size="small" variant="outlined"
+                          disabled={companyActing || atCeiling}
+                          onClick={() => setAdding(c.connection_id)}>
+                    Add a catalogue
+                  </Button>
+                </>
               ) : undefined}
             />
             {companyActing && <LinearProgress sx={{ mb: 1 }} />}

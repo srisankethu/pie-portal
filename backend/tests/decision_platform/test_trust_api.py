@@ -19,6 +19,7 @@ from sqlalchemy.orm import sessionmaker
 
 import dbsupport
 from app.db import get_session
+from app.domain import models
 from app.routers import platform_auth, trust
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
@@ -59,7 +60,12 @@ def client():
             sess.close()
 
     app.dependency_overrides[get_session] = _override
-    return TestClient(app)
+    tc = TestClient(app)
+    # Kept on the client so a test can seed rows the router then reports on,
+    # the same way `test_sync_jobs` does. Both list endpoints truncate, and a
+    # truncation is only observable against rows somebody put there.
+    tc.Maker = Maker
+    return tc
 
 
 def _hdr(client, email):
@@ -127,3 +133,74 @@ def test_the_disclosure_names_the_provider_that_will_actually_run(client):
     assert body["model"]              # present, and about a provider nothing calls
     assert body["training_on_customer_data"] is False
     assert body["never_sent"] and body["allowed"]
+
+
+# ── how much of the log is on screen ────────────────────────────────────────
+#
+# Both list endpoints truncate server-side — payloads at 50, access at 200 —
+# and neither used to say so. A screen holding fifty rows could not tell a
+# complete log from the head of a longer one, so every sentence on it had to be
+# worded as a claim about the rows in hand: "every payload in this report",
+# never "every payload logged". On a surface whose entire purpose is that a
+# promise is checkable, "we show you everything" and "we show you the last two
+# hundred" are different promises, and the screen could not tell them apart.
+#
+# So each response carries a total beside its rows. These pin that it counts the
+# whole set rather than the page, and that it counts only this tenant's — a
+# count with the organization left off its filter is a cross-tenant leak that
+# no per-row assertion in this file would notice.
+
+
+def _seed_payloads(client, n, org=ORG):
+    s = client.Maker()
+    for i in range(n):
+        s.add(models.ModelPayload(
+            organization_id=org, decision_type="TEST", provider="mock",
+            model="mock-1", payload_ciphertext=f"ciphertext {i}"))
+    s.commit()
+    s.close()
+
+
+def _seed_access_events(client, n, org=ORG):
+    s = client.Maker()
+    for i in range(n):
+        s.add(models.AccessEvent(
+            organization_id=org, access_grant_id=f"grant_{i}",
+            staff_user_id="support@pie.example", action="ACCESSED",
+            detail=f"opened decision {i}"))
+    s.commit()
+    s.close()
+
+
+def test_the_payload_list_says_how_many_it_is_showing_of(client):
+    _seed_payloads(client, 3)
+    body = client.get("/api/v1/trust/payloads?limit=2",
+                      headers=_hdr(client, "s.menon@pie.example")).json()
+
+    assert len(body["payloads"]) == 2, "the cap is unchanged"
+    assert body["total"] == 3, "and the total is of the log, not of the page"
+    # `summary` still describes the rows in hand — it is the set the checker's
+    # findings were read off, and it is not a fraction of the total.
+    assert body["summary"] == {"payloads": 2, "flagged": 0}
+
+
+def test_the_access_log_says_how_many_it_is_showing_of(client):
+    _seed_access_events(client, 3)
+    body = client.get("/api/v1/trust/access?limit=2",
+                      headers=_hdr(client, "s.menon@pie.example")).json()
+
+    assert len(body["events"]) == 2
+    assert body["total"] == 3
+    assert body["note"], "the server's own sentence is untouched"
+
+
+def test_neither_total_counts_another_tenants_rows(client):
+    """The one way a count can be worse than no count. Asserted for both, from
+    an empty tenant, so a missing organization filter shows up as a number
+    rather than as a row somebody would have spotted."""
+    _seed_payloads(client, 4, org="org_someone_else")
+    _seed_access_events(client, 4, org="org_someone_else")
+    hdr = _hdr(client, "s.menon@pie.example")
+
+    assert client.get("/api/v1/trust/payloads", headers=hdr).json()["total"] == 0
+    assert client.get("/api/v1/trust/access", headers=hdr).json()["total"] == 0

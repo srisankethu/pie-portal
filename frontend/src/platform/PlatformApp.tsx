@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
-import { EmptyState, ErrorState, FilterChip, HumanLog, LoadingState, SectionHeader, StatusChip, TOUCH } from "./kit";
+import { EmptyState, ErrorState, FilterChip, HumanLog, LoadingState, PanelMark, SectionHeader, StatusChip, TOUCH } from "./kit";
 import { formatDate } from "../when";
 import {
   clearPlatformSession,
@@ -47,6 +47,9 @@ import { Landing } from "../landing/Landing";
 import { abilityFor } from "./ability";
 import { Seg } from "./viz/Seg";
 import { money } from "../money";
+// `tokens.mark` — the square on a panel mark, which has to stay the size of
+// the one the interpretation panel draws in ui.tsx.
+import { tokens } from "../theme";
 import "./viz/viz.css";
 
 /* ── screens, loaded when they are opened ───────────────────────────────────
@@ -776,17 +779,21 @@ export default function PlatformApp() {
   //
   // Recorded here rather than in `getDetail`, because `load` prefetches the
   // detail of every decision in the list: hanging it off the fetch would mark
-  // the whole queue VIEWED the moment the queue rendered. Navigation is the
-  // only place that means a person opened this one.
+  // the whole queue VIEWED the moment the queue rendered. Opening one is the
+  // only thing that means a person read this one.
+  //
+  // Its own callback, separate from the navigation, because a decision card's
+  // Open is an `<a href>` now (§9) and the browser does the moving. Handing the
+  // card `openDetail` instead would `navigate()` on a ctrl-click too, taking
+  // over the tab the reader asked to keep — the exact thing the anchor is for.
   //
   // Sent only while the decision is still OPEN. That is exactly when it carries
   // information — the server's VIEW handler moves OPEN → VIEWED and leaves every
   // other status alone — so it fires once per open period, and again after a
   // REOPEN, instead of appending a trail entry on every visit. Fire-and-forget:
   // reading a card must never fail because recording the read did.
-  const openDetail = useCallback(
+  const recordView = useCallback(
     (id: string) => {
-      navigate(pathFor("detail", id));
       if (!session) return;
       // Unknown status — the list has not loaded — is not OPEN for this
       // purpose. Recording a view we cannot place in the lifecycle would be a
@@ -796,7 +803,21 @@ export default function PlatformApp() {
         .then(() => refresh(id))
         .catch(() => undefined);
     },
-    [navigate, session, summaries, refresh]);
+    [session, summaries, refresh]);
+
+  /** Where a decision lives. One arrow rather than an inline one per screen, so
+   *  the destination is written once and the cards are links to it. */
+  const detailPath = useCallback((id: string) => pathFor("detail", id), []);
+
+  /** Opening a decision from something that is *not* a link: the list's grid
+   *  rows, which AG Grid draws itself — §9's one exception, and the reason this
+   *  still exists beside `detailPath`. */
+  const openDetail = useCallback(
+    (id: string) => {
+      navigate(detailPath(id));
+      recordView(id);
+    },
+    [navigate, detailPath, recordView]);
 
   const undoAction = async (id: string) => {
     if (!session) return;
@@ -1191,7 +1212,8 @@ export default function PlatformApp() {
                   open={openDecisions}
                   details={details}
                   loading={loading}
-                  onOpen={openDetail}
+                  openPath={detailPath}
+                  onOpened={recordView}
                   onSeeAll={() => navigate(PATH.list)}
                   onNavigate={goViz}
                 />
@@ -1246,7 +1268,8 @@ export default function PlatformApp() {
                   <CustomerRoute
                     session={session}
                     details={details}
-                    onOpen={openDetail}
+                    openPath={detailPath}
+                    onOpened={recordView}
                     onNavigate={goViz}
                   />
                 }
@@ -1419,11 +1442,15 @@ function Fact({ label, value }: { label: string; value: string }) {
 }
 
 function CustomerRoute({
-  session, details, onOpen, onNavigate,
+  session, details, openPath, onOpened, onNavigate,
 }: {
   session: PlatformSession;
   details: Record<string, DecisionDetail>;
-  onOpen: (id: string) => void;
+  /** Where a decision card goes, and what to record when one is opened from
+   *  here. Two props because the card is a link now: the anchor carries the
+   *  destination and the handler carries only the trail entry. */
+  openPath: (id: string) => string;
+  onOpened: (id: string) => void;
   onNavigate: (route: string) => void;
 }) {
   // Absent on the picker path, present on `/account/<id>` — the one piece of
@@ -1436,7 +1463,8 @@ function CustomerRoute({
       details={details}
       customerId={id ?? null}
       setCustomerId={(cid) => navigate(cid ? pathFor("customer", cid) : PATH.customer)}
-      onOpen={onOpen}
+      openPath={openPath}
+      onOpened={onOpened}
       onOpenItem={(pid) => id && navigate(pathFor("customerItem", id, pid))}
       onNavigate={onNavigate}
     />
@@ -1513,7 +1541,8 @@ const BAND_ORDER = ["HIGH", "MEDIUM", "LOW"] as const;
 const HOME_CARDS = 5;
 
 function HomeScreen({
-  session, title, sub, open, details, loading, onOpen, onSeeAll, onNavigate,
+  session, title, sub, open, details, loading, openPath, onOpened, onSeeAll,
+  onNavigate,
 }: {
   session: PlatformSession;
   title: string;
@@ -1521,7 +1550,10 @@ function HomeScreen({
   open: DecisionSummary[];
   details: Record<string, DecisionDetail>;
   loading: boolean;
-  onOpen: (id: string) => void;
+  /** Passed straight to `DecisionCard` — see its props for why a card takes a
+   *  destination rather than a handler. */
+  openPath: (id: string) => string;
+  onOpened: (id: string) => void;
   onSeeAll: () => void;
   onNavigate: (route: string) => void;
 }) {
@@ -1615,7 +1647,15 @@ function HomeScreen({
             {top.map((s) => {
               const d = details[s.decision_id];
               return d
-                ? <DecisionCard key={s.decision_id} d={d} onOpen={onOpen} compact />
+                ? (
+                  <DecisionCard
+                    key={s.decision_id}
+                    d={d}
+                    openPath={openPath}
+                    onOpened={onOpened}
+                    compact
+                  />
+                )
                 : <Skeleton key={s.decision_id} variant="rounded" height={104} />;
             })}
           </div>
@@ -2040,7 +2080,25 @@ function DetailScreen({
             </>
           ) : (
           <>
-          <div className="facts-mark">Facts · what the data shows</div>
+          {/* The fourth hand-built copy of the panel mark, and the ink twin of
+              the interpretation panel's: `PanelMark` for the label, and the
+              square `.facts-mark::before` used to draw, at `tokens.mark` so it
+              stays the size of the accent one in ui.tsx. Ink rather than the
+              kit's muted default, because that is what the class drew and the
+              tint is the only thing separating "a model wrote this" from "this
+              is arithmetic". */}
+          <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", mb: 1 }}>
+            <Box
+              aria-hidden
+              sx={{
+                width: tokens.mark, height: tokens.mark,
+                flex: "0 0 auto", bgcolor: "text.primary",
+              }}
+            />
+            <PanelMark sx={{ color: "text.primary" }}>
+              Facts · what the data shows
+            </PanelMark>
+          </Stack>
           {d.facts.length === 0 ? (
             <EmptyState
               title="No facts to show"
@@ -2165,7 +2223,8 @@ function CustomerScreen({
   details,
   customerId,
   setCustomerId,
-  onOpen,
+  openPath,
+  onOpened,
   onOpenItem,
   onNavigate,
 }: {
@@ -2173,7 +2232,10 @@ function CustomerScreen({
   details: Record<string, DecisionDetail>;
   customerId: string | null;
   setCustomerId: (id: string | null) => void;
-  onOpen: (id: string) => void;
+  /** Passed straight to `DecisionCard` — see its props for why a card takes a
+   *  destination rather than a handler. */
+  openPath: (id: string) => string;
+  onOpened: (id: string) => void;
   onOpenItem: (productId: string) => void;
   /** Where the whole-book views send a click. Same signature every viz screen
    *  takes, so this screen does not become a second routing table. */
@@ -2500,7 +2562,12 @@ function CustomerScreen({
             blank body — the impact and the rationale it does carry were not in
             the branch. Sharing the card fixed that here as a side effect. */}
         {decs.map((d) => (
-          <DecisionCard key={d.decision_id} d={d} onOpen={onOpen} />
+          <DecisionCard
+            key={d.decision_id}
+            d={d}
+            openPath={openPath}
+            onOpened={onOpened}
+          />
         ))}
       </div>
       </>

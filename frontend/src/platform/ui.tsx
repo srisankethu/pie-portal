@@ -15,14 +15,16 @@
 // queue. Those classes read `var(--color-*)`, which `theme.ts` emits, so they
 // already follow the palette; converting them would be churn, not alignment.
 //
-// **Money here is a decimal string, so `money()` stays.** §10 lists kit's
-// `CurrencyValue` as the replacement for a bare `money()` in JSX, and it cannot
-// be used on this screen: `DecisionImpact.financial`, `DecisionRanking.financial`
-// and `rupees_per_point` are serialized as decimal *strings* so the server's
-// `Decimal` never round-trips through a float, and `CurrencyValue` is typed
-// `number` only. `money()` accepts both shapes. This is a deliberate exception,
-// not a missed conversion — widening the kit prop is the fix, and that file is
-// not this one's to edit.
+// **Money here is a decimal string, and `CurrencyValue` takes one now.**
+// `DecisionImpact.financial`, `DecisionRanking.financial` and
+// `rupees_per_point` are serialized as decimal *strings* so the server's
+// `Decimal` never round-trips through a float, and the kit prop was typed
+// `number` only — which is the whole reason every figure in this file was a
+// bare `money()` call and §10's "CurrencyValue replaces bare `money()` in JSX"
+// could not reach it. The prop is `number | string` now, so they are
+// `CurrencyValue`: one place decides that a column of rupees lines up, and the
+// em dash it renders for anything that is not a finite number is the same
+// refusal `money()` already made rather than a new one.
 //
 // The `<table className="facttable">` in `WhyPanel` stays a `<table>` on
 // purpose. It is a fact panel — a label and a value, one row per state field on
@@ -35,7 +37,6 @@ import type { ReactNode } from "react";
 import type { DecisionDetail, Fact } from "./types";
 import { CONF_LABEL, TYPE_LABEL, aiState, factLabel, factValue, isPrimaryFact,
          stateFieldLabel, stateFieldValue } from "./format";
-import { money } from "../money";
 import type { DecisionAction, DecisionImpact, DecisionRanking } from "./types";
 
 // Shared with the Quote Builder — see src/Tip.tsx. Imported as well as
@@ -49,7 +50,11 @@ import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import type { SxProps, Theme } from "@mui/material/styles";
-import { PriorityChip, SectionHeader, StatusChip, TOUCH } from "./kit";
+import { Link as RouterLink } from "react-router-dom";
+import { CurrencyValue, PanelMark, PriorityChip, SectionHeader, StatusChip, TOUCH } from "./kit";
+// Border widths and the mark square, so the two panels that say "a model wrote
+// this" and "this is arithmetic" cannot drift apart in a literal.
+import { tokens } from "../theme";
 export { Tip, Labelled } from "../Tip";
 
 type BpProps = {
@@ -218,15 +223,25 @@ export function Interpretation({ d }: { d: DecisionDetail }) {
         p: 2,
         bgcolor: "info.light",
         borderColor: "var(--color-accent-300)",
-        borderLeftWidth: "2px",
+        // `tokens.rule`: the 2px left edge is the whole vocabulary separating
+        // this panel from the impact panel below, and it was a literal in both.
+        borderLeftWidth: tokens.rule,
         borderLeftColor: "primary.main",
       }}
     >
       <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", mb: 1 }}>
-        <Box aria-hidden sx={{ width: 7, height: 7, flex: "0 0 auto", bgcolor: "primary.main" }} />
-        <Typography variant="overline" sx={{ color: "var(--color-accent-800)" }}>
-          AI recommendation
-        </Typography>
+        {/* `tokens.mark`, because this square has to stay the size of the ink
+            one beside "Facts · what the data shows" in `PlatformApp`: the same
+            mark, and the tint is the only thing that separates "a model wrote
+            this" from "this is arithmetic". */}
+        <Box
+          aria-hidden
+          sx={{
+            width: tokens.mark, height: tokens.mark,
+            flex: "0 0 auto", bgcolor: "primary.main",
+          }}
+        />
+        <PanelMark sx={{ color: "var(--color-accent-800)" }}>AI recommendation</PanelMark>
       </Stack>
       {d.interpretation.explanation && (
         <Typography variant="body2" sx={{ maxWidth: "68ch" }}>
@@ -298,17 +313,17 @@ export function ImpactPanel({ impact }: { impact: DecisionImpact }) {
   return (
     <Paper
       variant="outlined"
-      sx={{ p: 2, mb: 2, borderLeftWidth: "2px", borderLeftColor: "text.primary" }}
+      sx={{ p: 2, mb: 2, borderLeftWidth: tokens.rule, borderLeftColor: "text.primary" }}
     >
-      <Typography variant="overline" color="text.secondary" sx={{ display: "block" }}>
-        Business impact
-      </Typography>
+      <PanelMark>Business impact</PanelMark>
       {/* `component="div"`: this is the largest thing on the panel and it is a
           number, not a heading. Rendered as an `<h2>` it would join the page's
           heading outline, and a screen reader would announce "₹4,00,000" as a
-          section. `h2` is the size rung; the element is a div. */}
-      <Typography variant="h2" component="div" sx={{ fontVariantNumeric: "tabular-nums" }}>
-        {money(impact.financial)}
+          section. `h2` is the size rung; the element is a div. The tabular
+          figures come from `CurrencyValue` rather than from an `sx` here, so
+          the panel and the card decide alignment the same way. */}
+      <Typography variant="h2" component="div">
+        <CurrencyValue value={impact.financial} />
       </Typography>
       {/* The sentence matters as much as the figure: capital locked and annual
           holding cost can be the same number and are not the same claim. */}
@@ -318,11 +333,8 @@ export function ImpactPanel({ impact }: { impact: DecisionImpact }) {
         </Typography>
       )}
       {impact.monthly && (
-        <Typography
-          variant="body1"
-          sx={{ mt: 1, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}
-        >
-          {money(impact.monthly)}{" "}
+        <Typography variant="body1" sx={{ mt: 1, fontWeight: 600 }}>
+          <CurrencyValue value={impact.monthly} />{" "}
           <Box
             component="span"
             sx={{ typography: "caption", fontWeight: 400, color: "text.secondary" }}
@@ -415,11 +427,11 @@ export function RankingPanel({ ranking }: { ranking: DecisionRanking }) {
   // divider rather than from a `.ranking` rule.
   return (
     <Paper variant="outlined" sx={{ p: 1.5, mt: 2, borderStyle: "dashed" }}>
-      <Typography variant="overline" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
+      <PanelMark sx={{ mb: 0.75 }}>
         <Labelled tip="Money first, lateness second, both capped. The rupee scale is a versioned setting, so re-tuning the queue does not make last quarter's ordering unexplainable.">
           Why it sits here
         </Labelled>
-      </Typography>
+      </PanelMark>
       <Stack
         direction="row"
         spacing={0.75}
@@ -428,7 +440,7 @@ export function RankingPanel({ ranking }: { ranking: DecisionRanking }) {
       >
         <Typography variant="body2">
           <Box component="b" sx={FIGURE}>{ranking.money_points}</Box>{" "}
-          from {money(ranking.financial)}
+          from <CurrencyValue value={ranking.financial} />
         </Typography>
         <Typography variant="body2" color="text.secondary">+</Typography>
         <Typography variant="body2">
@@ -445,7 +457,7 @@ export function RankingPanel({ ranking }: { ranking: DecisionRanking }) {
         </Typography>
       </Stack>
       <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
-        one point per {money(ranking.rupees_per_point)} · money caps at{" "}
+        one point per <CurrencyValue value={ranking.rupees_per_point} /> · money caps at{" "}
         {ranking.money_cap}, lateness at {ranking.urgency_cap}
       </Typography>
     </Paper>
@@ -505,10 +517,28 @@ const CARD_FACTS = 4;
  * the compact variant gets its tighter padding from outside.
  */
 export function DecisionCard({
-  d, onOpen, compact = false,
+  d, openPath, onOpened, compact = false,
 }: {
   d: DecisionDetail;
-  onOpen: (id: string) => void;
+  /** Where this card goes, given its decision id — `pathFor` from `route.ts`,
+   *  never a URL written out here.
+   *
+   *  A path rather than the `onOpen: (id) => void` this used to take, because
+   *  the Open below is an `<a href>` now: a handler navigates on a left click
+   *  and does nothing at all on ctrl-click, middle-click or "open in a new
+   *  tab", which is what `ui-standards.md` §9 is about — two screens side by
+   *  side is the ordinary way this desk is used, and a button cannot open one.
+   *  The shape is `viz/Dependency`'s `openPath`: the caller owns the
+   *  destination, the component owns the control. */
+  openPath: (id: string) => string;
+  /** What a press still has to record — the VIEW trail entry — now that it no
+   *  longer navigates. Optional: the anchor opens the decision with or without
+   *  it, so a card rendered somewhere with nothing to record still works.
+   *
+   *  It cannot fire on a middle-click, which raises no `click` event at all.
+   *  That leaves a gap in the trail rather than in the navigation, and the
+   *  alternative is the button that made those presses do nothing whatever. */
+  onOpened?: (id: string) => void;
   /** Drop the impact basis and trim the fact chips. Used where the card is one
    *  of several on a screen that is not only about decisions. */
   compact?: boolean;
@@ -524,9 +554,23 @@ export function DecisionCard({
         <span className="dcard-subject">{d.subject_label}</span>
         <span className="dp-spacer" />
         {/* The card's row action, and on a phone the only way into the
-            decision. `TOUCH` so it is hittable with a thumb — see kit.TOUCH. */}
-        <Button variant="text" size="small" sx={TOUCH}
-                onClick={() => onOpen(d.decision_id)}>
+            decision. `TOUCH` so it is hittable with a thumb — see kit.TOUCH.
+            `component={RouterLink}` rather than `InlineLink`, which §9 offers
+            for the same job: this is a control at the end of a row, not a name
+            inside a sentence, and the underlined body-text link that component
+            renders would drop both the button shape and the thumb target.
+            `aria-label` because a screen reader listing the links on a queue of
+            five cards otherwise hears "Open" five times with nothing to tell
+            them apart — the row supplies that context only on screen. */}
+        <Button
+          component={RouterLink}
+          to={openPath(d.decision_id)}
+          variant="text"
+          size="small"
+          aria-label={`Open: ${typeLabel(d.decision_type)} on ${d.subject_label}`}
+          sx={TOUCH}
+          onClick={() => onOpened?.(d.decision_id)}
+        >
           Open →
         </Button>
       </div>
@@ -535,7 +579,20 @@ export function DecisionCard({
         <>
           {d.impact?.financial != null && (
             <div className="dcard-impact">
-              <b>{money(d.impact.financial)}</b>
+              <b>
+                {/* The doubled selector is not decoration. `.dcard-impact span`
+                    in `styles.css` is (0,1,1) and an `sx` class is (0,1,0), so
+                    the rule written for the basis sentence beside this figure
+                    would otherwise take the figure itself down to its 12.5px
+                    grey. The class stays — `.dp-cards.tight .dcard` is the
+                    queue screen's own rule, per the note at the top of this
+                    file — and the real fix is one character in the stylesheet
+                    (`.dcard-impact > span`), which is not this file's to make. */}
+                <CurrencyValue
+                  value={d.impact.financial}
+                  sx={{ "&&": { fontSize: "inherit", color: "inherit" } }}
+                />
+              </b>
               {/* The sentence matters as much as the figure: capital locked and
                   revenue at risk can be the same number and are not the same
                   claim, and a reader who sums them across cards is wrong. */}

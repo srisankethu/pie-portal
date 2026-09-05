@@ -27,20 +27,50 @@ triggered by a single click is a design that eventually fires by accident.
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import clock
 from ..authz import Principal, require_owner
 from ..db import get_session
+from ..domain import models
 from ..trust import access, audit, disclosure, erasure, keys
 
 log = logging.getLogger("pie_portal.trust")
 
 router = APIRouter(prefix="/api/v1/trust", tags=["trust"])
+
+
+def _held(session: Session, model: Any, organization_id: str) -> int:
+    """How many rows of one table this organization holds.
+
+    The two list endpoints below truncate server-side, and until this existed
+    neither said so: a screen holding fifty payloads could not tell a complete
+    log from the head of a longer one, so every sentence on it had to be worded
+    as a claim about the rows in hand rather than about the record. A total is
+    what lets it say which of the two it is showing.
+
+    Cheap on purpose — a count over the same indexed ``organization_id`` the
+    list is drawn from, not a second read of the rows themselves, which for
+    ``ModelPayload`` are ciphertext.
+
+    It sits in the router rather than beside ``payloads_for`` and
+    ``events_for``, which is the weaker of the two placements: a count whose
+    filter is written out apart from the list's is a second copy of "which rows
+    are in this set", and the copy that drifts. It holds today because both sets
+    are defined by tenancy alone — ``events_for`` says in as many words that
+    there is no supported way to ask for a subset — so there is nothing for the
+    two to disagree about. The moment either list grows a filter, the count
+    belongs beside it rather than here.
+    """
+    return int(session.scalar(
+        select(func.count()).select_from(model)
+        .where(model.organization_id == organization_id)) or 0)
 
 
 # ── what reaches a model ────────────────────────────────────────────────────
@@ -64,6 +94,14 @@ def get_payloads(limit: int = Query(50, ge=1, le=200),
 
     ``reveal=false`` by default: the list view is metadata, and decrypting a
     hundred payloads to render a table nobody reads is work done for nothing.
+
+    ``total`` is how many payloads this organization has logged, against the
+    page of them ``payloads`` holds. ``summary`` is **not** the same number and
+    is not being replaced by it: that counts the rows in this response, which is
+    the set the checker's findings were read off. A reader must not divide one
+    by the other — ``flagged`` is a defect report rather than a rate, and
+    counting findings across the whole table would mean a predicate over a JSON
+    column that is not the same query on SQLite and on PostgreSQL.
     """
     rows = disclosure.payloads_for(session, principal.organization_id, limit)
     # One key for the page. Revealing per row read and unwrapped this
@@ -72,6 +110,7 @@ def get_payloads(limit: int = Query(50, ge=1, le=200),
     # a hundred times over whenever somebody did ask to see them.
     plaintext = disclosure.reveal_many(session, rows) if reveal else {}
     return {
+        "total": _held(session, models.ModelPayload, principal.organization_id),
         "summary": disclosure.findings_summary(rows),
         "payloads": [
             {
@@ -97,9 +136,16 @@ def get_access(limit: int = Query(200, ge=1, le=500),
 
     No filter parameter and no suppression: a log the vendor can curate is a
     log that answers the vendor's question rather than the customer's.
+
+    ``total`` is how many events there are, against the ``limit`` of them
+    ``events`` holds. Truncation is fine; truncation a reader cannot see is not
+    — "we show you everything" and "we show you the last two hundred" are
+    different promises, and this is the surface where the difference is the
+    whole point.
     """
     rows = access.events_for(session, principal.organization_id, limit)
     return {
+        "total": _held(session, models.AccessEvent, principal.organization_id),
         "events": [
             {
                 "event_id": e.event_id,

@@ -2738,3 +2738,219 @@ export interface MonetizationSegments {
   archetypes: Record<string, Record<string, unknown>>;
   impacts: Record<string, Record<string, number>>;
 }
+
+/* ── the operations dashboard (manager or owner) ─────────────────────────────
+ * Mirrors `backend/app/observability/dashboard.py`, `health.py` and
+ * `capacity.py`.
+ *
+ * **The nulls are the contract, not an oversight.** Every optional field below
+ * is a value that module deliberately refuses to invent: an unmeasured capacity
+ * component, an error rate over a worker that has served no requests, a
+ * throughput with no finished run to derive it from, a bottleneck ranked over
+ * nothing. Each is a `null` with a `basis` sentence beside it, written to the
+ * rule in CLAUDE.md §1 — absence of evidence is not a pass.
+ *
+ * They are typed `| null` here so the screen cannot quietly undo that. The
+ * previous shape declared them required, and the component rendered
+ * `error_rate?.toFixed(2) || "0"` — an idle worker whose rate the server had
+ * declined to state, drawn as a green 0%.
+ */
+
+/** One registered health check, as `HealthRegistry.to_dict` states it. */
+export interface HealthComponent {
+  name: string;
+  /** `healthy` | `degraded` | `unhealthy` | `unknown`. A bare string because
+   *  it is `HealthStatus.value` and a union here would need updating in two
+   *  places to add one. */
+  status: string;
+  timestamp: string;
+  message: string | null;
+  details: Record<string, unknown>;
+}
+
+export interface SystemHealth {
+  timestamp: string;
+  /** The worst any component reports, where `unknown` outranks `healthy`. */
+  status: string;
+  components: Record<string, HealthComponent>;
+}
+
+export interface CapacityComponent {
+  name: string;
+  /** Utilization as a ratio, or null where the component was not measured. */
+  current: number | null;
+  /** `healthy` | `warning` | `critical` | `unknown`. */
+  status: string;
+  percentage: number | null;
+  /** How much more load fits before critical. Null when `current` is —
+   *  headroom over an unmeasured base is a reassuring number meaning nothing. */
+  safe_capacity_multiplier: number | null;
+  threshold_warning: number;
+  threshold_critical: number;
+  basis: string;
+}
+
+export interface Capacity {
+  timestamp: string;
+  components: CapacityComponent[];
+  /** Null when no component reported a usable figure: an unmeasured component
+   *  cannot be ranked, so there is no most-saturated one to name. */
+  bottleneck: { component: string; current: number; status: string } | null;
+  /** Null for the same reason, and never to be read as "plenty of room". */
+  safe_capacity_headroom: { multiplier: number; message: string } | null;
+  /** The components the headroom claim does *not* rest on, by name. */
+  unmeasured: string[];
+  recommended_action: string;
+}
+
+export interface CurrentLoad {
+  timestamp: string;
+  /** `active_requests` is null, not 0: nothing tracks in-flight requests, and
+   *  a placeholder zero is indistinguishable from a genuinely idle server. */
+  api: { requests_total: number; active_requests: number | null; basis: string };
+  database: { queries_total: number; basis: string };
+  background: {
+    active_jobs: number;
+    active_syncs: number;
+    stalled: number;
+    total_active: number;
+    basis: string;
+  };
+}
+
+/** p50/p95/p99 in milliseconds. The block is null when nothing instrumented
+ *  the histogram at all; a percentile inside it is null when the histogram
+ *  exists and has seen nothing. Two different facts, and the screen says so. */
+export type Latencies = { p50: number | null; p95: number | null; p99: number | null };
+
+export interface ApiPerformance {
+  timestamp: string;
+  /** Always `"worker"` — these counters are one process's, not the
+   *  deployment's, and the payload says so rather than letting a reader add
+   *  them up. */
+  scope: string;
+  worker: string;
+  counting_since: string;
+  observed_minutes: number;
+  basis: string;
+  requests_total: number;
+  errors_total: number;
+  /** Null over zero requests: a rate with no denominator is undefined, and 0%
+   *  on an idle worker reads as healthy rather than as silent. */
+  error_rate: number | null;
+  latency_ms: Latencies | null;
+}
+
+export interface DatabaseStatus {
+  timestamp: string;
+  connections: { active: number };
+  queries: { total: number; errors: number };
+  latency_ms: Latencies | null;
+}
+
+/** Dates that tell a quiet window from a dead one. An all-zero, all-green
+ *  payload is what a revoked refresh token looks like too. */
+export interface RunHistory {
+  last_run_at: string | null;
+  last_successful_run_at: string | null;
+  ever_run: boolean;
+  basis: string;
+}
+
+export interface StalledRuns {
+  count: number;
+  by_phase: Record<string, number>;
+  /** Empty when nothing is stalled. */
+  detail: string;
+}
+
+/** A run that failed or half-finished. The server sends the ten most recent
+ *  under `jobs` and the five most recent under `syncs`; `recent_24h` carries
+ *  the true totals, so a screen can say which of the two it is showing. */
+export interface RunIssue {
+  sync_run_id: string;
+  connection_id: string | null;
+  /** `FAILED` or `PARTIAL`. Partial is its own outcome: it wrote rows and did
+   *  not finish, so counting it either way misstates what arrived. */
+  status: string;
+  error: string | null;
+  timestamp: string | null;
+}
+
+export interface JobFailure extends RunIssue {
+  job_kind: string;
+}
+
+export interface BackgroundJobs {
+  timestamp: string;
+  source: string;
+  /** Every job kind this deployment records. There is one, and publishing it
+   *  is what makes an empty `active` block mean "idle" rather than "unmeasured". */
+  job_kinds: string[];
+  active: { count: number; by_phase: Record<string, number> };
+  stalled: StalledRuns;
+  history: RunHistory;
+  recent_24h: {
+    basis: string;
+    completed: number;
+    partial: number;
+    failed: number;
+    total_records_processed: number;
+  };
+  failures: JobFailure[];
+}
+
+export interface ErpSyncStatus {
+  timestamp: string;
+  source: string;
+  active: {
+    count: number;
+    by_phase: Record<string, number>;
+    by_connection: Record<string, number>;
+  };
+  stalled: StalledRuns;
+  history: RunHistory;
+  recent_24h: {
+    basis: string;
+    completed: number;
+    partial: number;
+    failed: number;
+    total_records_fetched: number;
+    total_records_processed: number;
+    /** Null where no finished run could answer it. Never 0 — that is what a
+     *  sync moving no data looks like. */
+    throughput_records_per_sec: number | null;
+    throughput_basis: string;
+  };
+  issues: RunIssue[];
+}
+
+export interface TenantUsageRow {
+  organization_id: string;
+  signals_generated: number;
+}
+
+export interface TenantUsage {
+  timestamp: string;
+  tenants: TenantUsageRow[];
+  total_tenants?: number;
+  /** Which of the two lists this is. The query carries no organization
+   *  predicate on purpose — row-level security scopes it where the policy
+   *  binds, and this field is how a reader tells a scoped result from an
+   *  unscoped one instead of guessing from the row count. */
+  scope?: "OWN_ORGANIZATION" | "ALL_ORGANIZATIONS";
+  /** Present instead of a list when the query itself failed. */
+  error?: string;
+}
+
+export interface ObservabilityDashboard {
+  timestamp: string;
+  health: SystemHealth;
+  load: CurrentLoad;
+  api: ApiPerformance;
+  database: DatabaseStatus;
+  jobs: BackgroundJobs;
+  syncs: ErpSyncStatus;
+  capacity: Capacity;
+  tenants: TenantUsage;
+}

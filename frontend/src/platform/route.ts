@@ -83,6 +83,12 @@ export type Screen =
    *  all: the endpoints behind it sit on an allowlist outside every workspace,
    *  and the nav item exists only for an identity the server has confirmed. */
   | "monetization"
+  /** The platform's own vitals rather than the book's: component health,
+   *  capacity headroom, and whether the last sync finished. Manager and owner,
+   *  mirroring `require_manager_or_owner` on every `/internal/observability/*`
+   *  route — a stalled sync is the first thing a desk asks about when the
+   *  numbers stop moving, and it is a question about the platform. */
+  | "observability"
   /** The approval queue, and organization settings (owner is super admin). */
   | "approvals" | "settings"
   /** Which connector records describe the same customer or item. */
@@ -113,6 +119,7 @@ export const PATH: Record<Screen, string> = {
   approvals: "/approvals",
   settings: "/settings",
   identity: "/identity",
+  observability: "/system-health",
   trust: "/trust",
   weather: "/weather",
   opportunities: "/opportunities",

@@ -32,6 +32,7 @@ import Skeleton from "@mui/material/Skeleton";
 import { useSnackbar } from "notistack";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
+import Card from "@mui/material/Card";
 import Typography from "@mui/material/Typography";
 import { Link as RouterLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
@@ -1398,6 +1399,23 @@ function DetailRoute({
   );
 }
 
+/** One label-and-value on a narrow customer card.
+ *
+ *  Four of these wrap into whatever width the phone gives them. A `<dl>` would
+ *  be more correct semantically and wraps far worse — these are chips of fact,
+ *  not a definition list somebody reads through. */
+function Fact({ label, value }: { label: string; value: string }) {
+  return (
+    <Box sx={{ minWidth: 0 }}>
+      <Typography variant="overline" color="text.secondary"
+                  sx={{ display: "block", lineHeight: 1.2 }}>
+        {label}
+      </Typography>
+      <Typography variant="body2" sx={{ lineHeight: 1.3 }}>{value}</Typography>
+    </Box>
+  );
+}
+
 function CustomerRoute({
   session, details, onOpen, onNavigate,
 }: {
@@ -2280,6 +2298,59 @@ function CustomerScreen({
               pageSize={25}
               rows={rows}
               onRowClick={(a) => setCustomerId(a.customer_id)}
+              /* On a phone this grid used to reduce to a column of names.
+                 Every other column declares a `minGridWidth` above the ~350px
+                 a 390px viewport gives it, so last order, twelve-month value
+                 and "needs you" all dropped — and this is the screen a
+                 salesperson opens standing in somebody's factory. The card
+                 carries the four facts the row is read for, which is what
+                 `renderNarrow` is for; `LineGrid`'s `LineCard` is the model. */
+              renderNarrow={(a) => (
+                <Card
+                  variant="outlined"
+                  role="listitem"
+                  key={a.customer_id}
+                  sx={{ p: 1.5 }}
+                >
+                  <Box
+                    component="button"
+                    type="button"
+                    onClick={() => setCustomerId(a.customer_id)}
+                    sx={{
+                      ...TOUCH,
+                      width: "100%", textAlign: "left", background: "none",
+                      border: 0, p: 0, cursor: "pointer", color: "inherit", font: "inherit",
+                    }}
+                  >
+                    <EntityName
+                      name={a.name}
+                      origin={a.origin}
+                      show={Boolean(a.sources_differ)}
+                      sub={(a.status || "").toUpperCase() !== "ACTIVE"
+                        ? <span className="acct-flag">inactive</span>
+                        : undefined}
+                    />
+                  </Box>
+                  <Stack direction="row" useFlexGap
+                         sx={{ flexWrap: "wrap", gap: 1.5, mt: 1 }}>
+                    <Fact label="Last order"
+                          value={a.last_order ? formatDate(String(a.last_order)) : "never ordered"} />
+                    <Fact label="Value (12m)" value={money(a.revenue_12m)} />
+                    <Fact label="Orders (12m)" value={String(a.orders_12m)} />
+                    <Fact label="Covered by" value={a.assigned_to || "unassigned"} />
+                  </Stack>
+                  {Number(a.open_decisions) > 0 && (
+                    <Box sx={{ mt: 1 }}>
+                      <StatusChip
+                        label={`${a.open_decisions} needs you`}
+                        tone="warn"
+                        dense
+                        tip="Open decisions flagged on this account."
+                      />
+                    </Box>
+                  )}
+                </Card>
+              )}
               columns={[
                 {
                   field: "name", headerName: "Customer", flex: 1, minWidth: 240,

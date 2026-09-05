@@ -32,7 +32,6 @@
 import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
-import Grid from "@mui/material/Grid";
 import LinearProgress from "@mui/material/LinearProgress";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
@@ -41,7 +40,8 @@ import Typography from "@mui/material/Typography";
 import { formatDate } from "../when";
 import { papi } from "./api";
 import {
-  EmptyState, ErrorState, LoadingState, MetricCard, SectionHeader, StatusChip,
+  EmptyState, ErrorState, LoadingState, MetricCard, PanelMark, SectionHeader,
+  StatusChip, TileGrid,
 } from "./kit";
 import type {
   PlatformSession, Retrospective, RetrospectiveDetector,
@@ -150,11 +150,15 @@ function Check({ row, suppressFindings }: {
         <Box sx={{ mt: 1.5 }}>
           {/* Named, rather than left as a bare list under a bar. The chip's tip
               says the reasons are below; a reader who does not hover it was
-              being shown counts with nothing to say what they counted. */}
-          <Typography variant="overline" color="text.secondary"
-                      sx={{ display: "block" }}>
-            Could not be judged
-          </Typography>
+              being shown counts with nothing to say what they counted.
+
+              `PanelMark` rather than the `overline` this had built by hand:
+              the ramp's smallest heading is 21px, so a panel wanting an 11px
+              label had nowhere to go and four places invented the same one.
+              It is deliberately not a heading — this is a label on a surface,
+              and promoting it would put one entry per detector panel into the
+              document outline, none of which answers anything. */}
+          <PanelMark>Could not be judged</PanelMark>
           <Box component="ul" sx={{ m: 0, pl: 2.5 }}>
             {row.withheld.map((w) => (
               <Typography component="li" variant="body2" color="text.secondary"
@@ -215,37 +219,32 @@ export function RetrospectiveScreen({ session }: { session: PlatformSession }) {
               level="section"
               title="The history that arrived"
               sub="What came across when you connected, and how much of it could be judged." />
-            {/* `Grid`, as §1 asks of a responsive page layout and as every
-                other tile row in this app already does it. What it replaces was
-                a wrapping `Stack` of `flex: 1 1 200px` boxes — a second answer
-                to a question the design system answers, and one whose
-                breakpoints only this screen knew. */}
-            <Grid container spacing={2}>
-              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                <MetricCard
-                  label="History read"
-                  value={history.months === null ? "—" : `${history.months} months`}
-                  sub={`${formatDate(history.first_document)} – ${formatDate(history.last_document)}`} />
-              </Grid>
-              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                <MetricCard label="Invoice lines"
-                            value={history.sales_lines.toLocaleString()} />
-              </Grid>
-              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                {/* Named beside the invoice count on purpose: zero here is the
-                    single most common reason the margin checks below cannot
-                    speak, and seeing the two side by side is what makes that
-                    legible without reading the reasons. They stay consecutive
-                    at every width, and side by side from `md` up. */}
-                <MetricCard label="Purchase cost lines"
-                            value={history.cost_lines.toLocaleString()} />
-              </Grid>
-              <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-                <MetricCard label="Subjects judged"
-                            value={share(data.judged_share)}
-                            sub={`${data.judged} of ${data.considered} customers and products`} />
-              </Grid>
-            </Grid>
+            {/* `kit.TileGrid`, which is the `Grid container` this row wrote
+                out — one of the six copies that made it a kit component. It
+                emits the same breakpoints, so the pairing below still holds.
+                What both replace was a wrapping `Stack` of `flex: 1 1 200px`
+                boxes: a second answer to a question the design system answers,
+                and one whose breakpoints only this screen knew. */}
+            <TileGrid>
+              <MetricCard
+                label="History read"
+                value={history.months === null ? "—" : `${history.months} months`}
+                sub={`${formatDate(history.first_document)} – ${formatDate(history.last_document)}`} />
+              <MetricCard label="Invoice lines"
+                          value={history.sales_lines.toLocaleString()} />
+              {/* Named beside the invoice count on purpose: zero here is the
+                  single most common reason the margin checks below cannot
+                  speak, and seeing the two side by side is what makes that
+                  legible without reading the reasons. They stay consecutive at
+                  every width, and side by side from `md` up — `TileGrid` fixes
+                  the small breakpoints, so that pairing is not this screen's
+                  to keep any more. */}
+              <MetricCard label="Purchase cost lines"
+                          value={history.cost_lines.toLocaleString()} />
+              <MetricCard label="Subjects judged"
+                          value={share(data.judged_share)}
+                          sub={`${data.judged} of ${data.considered} customers and products`} />
+            </TileGrid>
           </Box>
 
           <Box component="section">

@@ -1973,6 +1973,14 @@ export interface ModelPayloadRow {
 }
 
 export interface PayloadsReport {
+  /** How many payloads this organization has logged, against the page of them
+   *  `payloads` holds — the endpoint caps at 50. Without it the screen could
+   *  not tell a complete log from the head of a longer one, so every sentence
+   *  on it had to be worded as a claim about the rows in hand. */
+  total: number;
+  /** Counts of the rows in *this response*, not of everything logged — the set
+   *  the checker's findings were read off. Not a fraction of `total`:
+   *  `flagged` is a defect report, and a defect count needs no denominator. */
   summary: { payloads: number; flagged: number };
   payloads: ModelPayloadRow[];
 }
@@ -1988,6 +1996,11 @@ export interface AccessEventRow {
 }
 
 export interface AccessReport {
+  /** Every event recorded against this organization, against the page of them
+   *  `events` holds — the endpoint caps at 200. Truncation is fine; truncation
+   *  a reader cannot see is not, and on this surface "everything" and "the last
+   *  two hundred" are different promises. */
+  total: number;
   events: AccessEventRow[];
   note: string;
 }

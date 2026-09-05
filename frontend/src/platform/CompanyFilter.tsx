@@ -24,10 +24,9 @@ import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
-import Typography from "@mui/material/Typography";
 
 import { connectorMark } from "./EntityName";
-import { TOUCH } from "./kit";
+import { Meta, TOUCH } from "./kit";
 import type { Sourced } from "./types";
 
 /** All companies. Empty string rather than null so it is a valid select value. */
@@ -146,6 +145,16 @@ function CompanySelect({
       // kind of control: a 40px select beside 44px chips is both harder to hit
       // and visibly out of line. It is applied here rather than at either call
       // site precisely so it cannot be applied to only one of them again.
+      //
+      // **And it is not redundant with the theme.** `theme.ts` gives `MuiSelect`
+      // a 44px `minHeight` default, which reaches a bare `<Select>` and not
+      // this: `TextField select` builds its own `OutlinedInput` and hands it to
+      // `Select` as `input`, and `Select` clones that rather than rendering the
+      // `styled(OutlinedInput, { name: "MuiSelect" })` the override is attached
+      // to. The `.MuiSelect-root` class lands on the element and carries no
+      // rule. Verified by rendering both — the bare select computes 44px here
+      // and a `TextField select` computes nothing at all. Delete this spread
+      // and both controls quietly drop to 40.
       sx={{ minWidth, mb, "& .MuiInputBase-root": TOUCH }}
     >
       {children}
@@ -168,19 +177,25 @@ function CompanySelect({
  *  whole point of this control on a busy desk. It also happens to be the order
  *  `sourceLabel` already argues for: somebody working three books thinks in
  *  companies, and only needs the connector once two of them come from
- *  different systems. */
-function Meta({ mark, children }: { mark?: string; children: ReactNode }) {
+ *  different systems.
+ *
+ *  `kit.Meta` underneath rather than a fourth private answer to "the muted
+ *  second line" — this file wrote one of the three local copies that made it a
+ *  kit component. What is left here is only the part that is about a *menu
+ *  option*: the connector mark and the separator. The one override is
+ *  `display: inline`, because the kit's default is a block — a `Meta` usually
+ *  sits *under* the value it qualifies, and this one sits beside a name on one
+ *  line of a menu. Everything else, the 1.45 line-height included, is what the
+ *  local copy was already inheriting from the theme's `caption`. */
+function OptionMeta({ mark, children }: { mark?: string; children: ReactNode }) {
   return (
-    <Typography
-      component="span" variant="caption" color="text.secondary"
-      sx={{ ml: 0.75 }}
-    >
+    <Meta sx={{ display: "inline", ml: 0.75 }}>
       {/* Hidden from a screen reader for the reason `EntitySource` hides it:
           it is a picture of the word beside it, and "diamond SLS Engineers"
           read aloud is worse than "SLS Engineers". */}
       {mark && <span aria-hidden="true">{mark} </span>}
       · {children}
-    </Typography>
+    </Meta>
   );
 }
 
@@ -198,11 +213,11 @@ export function CompanyFilter({
   return (
     <CompanySelect label={label} value={value} onChange={onChange} minWidth={210}>
       <MenuItem value={ALL}>
-        All companies<Meta>{total}</Meta>
+        All companies<OptionMeta>{total}</OptionMeta>
       </MenuItem>
       {options.map((o) => (
         <MenuItem key={o.connectionId} value={o.connectionId}>
-          {o.label}<Meta mark={o.icon}>{o.count}</Meta>
+          {o.label}<OptionMeta mark={o.icon}>{o.count}</OptionMeta>
         </MenuItem>
       ))}
     </CompanySelect>
@@ -267,7 +282,9 @@ export function CompanyScope({
         <MenuItem key={o.connection_id} value={o.connection_id}>
           {o.label}
           {o.customers != null && (
-            <Meta>{o.customers} {unit}{o.customers === 1 ? "" : "s"}</Meta>
+            <OptionMeta>
+              {o.customers} {unit}{o.customers === 1 ? "" : "s"}
+            </OptionMeta>
           )}
         </MenuItem>
       ))}

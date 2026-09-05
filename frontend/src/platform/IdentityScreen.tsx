@@ -1,9 +1,20 @@
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Checkbox from "@mui/material/Checkbox";
+import Chip from "@mui/material/Chip";
+import FormControlLabel from "@mui/material/FormControlLabel";
+import Stack from "@mui/material/Stack";
+import Tab from "@mui/material/Tab";
+import Tabs from "@mui/material/Tabs";
+import TextField from "@mui/material/TextField";
+import ToggleButton from "@mui/material/ToggleButton";
+import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import { useCallback, useEffect, useState } from "react";
 import { since } from "../when";
 import { papi } from "./api";
-import { EmptyState, ErrorState, LoadingState, StatusChip } from "./kit";
+import {
+  EmptyState, ErrorState, FilterPanel, LoadingState, SectionHeader, StatusChip,
+} from "./kit";
 import type { ConnectorRecord, EntityKind, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion } from "./types";
 import { Bp, Labelled, Tip } from "./ui";
 
@@ -102,20 +113,53 @@ function IdentityCard({
   const [label, setLabel] = useState(identity.label ?? "");
   const linked = identity.connector_count > 1;
 
+  // One rename reached two ways, written once. `ConnectionsPanel`'s connection
+  // card carries the identical inline editor and gained the identical pair in
+  // the same change — two screens with one rename field must not answer Enter
+  // differently.
+  function saveLabel() {
+    onRelabel(identity.identity_id, label);
+    setEditing(false);
+  }
+
+  // Restores the stored name rather than leaving the abandoned draft in the
+  // box. Without it, cancelling and re-opening shows the text that was
+  // explicitly not saved, which reads as though it had been.
+  function cancelLabel() {
+    setLabel(identity.label ?? "");
+    setEditing(false);
+  }
+
   return (
     <Bp className={`id-card ${linked ? "linked" : ""}`}>
       <div className="id-head">
         <div className="id-name">
           {editing ? (
             <>
-              <input className="input" value={label} autoFocus
-                     aria-label="Identity name"
-                     onChange={(e) => setLabel(e.target.value)} />
-              <Button variant="contained" size="small"
-                      onClick={() => { onRelabel(identity.identity_id, label); setEditing(false); }}>
+              {/* A `TextField`, per ui-standards §8 — this was a bare
+                  `<input className="input">` carrying an `aria-label` because
+                  it had no visible one. The connection card opposite already
+                  uses the MUI control for the same field. */}
+              <TextField
+                size="small"
+                label="Identity name"
+                autoFocus
+                value={label}
+                onChange={(e) => setLabel(e.target.value)}
+                // Enter saves, Escape cancels — the two presses somebody makes
+                // in a one-field inline editor without reaching for the mouse.
+                // Additive: both buttons stay, because a shortcut nobody can
+                // see is not an affordance on its own.
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") { e.preventDefault(); saveLabel(); }
+                  else if (e.key === "Escape") { e.preventDefault(); cancelLabel(); }
+                }}
+                sx={{ maxWidth: 260 }}
+              />
+              <Button variant="contained" size="small" onClick={saveLabel}>
                 Save
               </Button>
-              <Button variant="text" size="small" onClick={() => setEditing(false)}>
+              <Button variant="text" size="small" onClick={cancelLabel}>
                 Cancel
               </Button>
             </>
@@ -366,56 +410,97 @@ export function IdentityScreen({ token }: { token: string }) {
 
   return (
     <div className="dp-screen">
-      <div className="dp-screen-head">
-        <div>
-          <h2>
-            <Labelled
-              tip={
-                <>
-                  Records from different systems are <b>linked, never merged</b>. Each
-                  connector stays the source of truth for its own data; an identity
-                  only records which rows describe the same business entity, so a
-                  figure can always be traced back to the system it came from.
-                </>
-              }
-            >
-              Identities
-            </Labelled>
-          </h2>
-          <p className="text-muted">{KINDS.find((k) => k.key === kind)?.hint}</p>
-        </div>
-        <div className="dp-screen-actions">
-          <div className="cx-tabs">
+      {/* `kit.SectionHeader`, per §10 — this was a `<div className=
+          "dp-screen-head">` wrapping a hand-written `<h2>`/`<p>` pair, and
+          `.dp-screen-head` has no rule anywhere in the stylesheet, so the
+          layout it appeared to carry was doing nothing. `ConnectionsPanel`
+          moved off the same class first; this is the same conversion, so two
+          screens do not describe one heading two ways. The tip carries a
+          `<b>`, which `SectionHeader` can hold now that its `tip` is a
+          ReactNode. */}
+      <SectionHeader
+        title="Identities"
+        tip={
+          <>
+            Records from different systems are <b>linked, never merged</b>. Each
+            connector stays the source of truth for its own data; an identity
+            only records which rows describe the same business entity, so a
+            figure can always be traced back to the system it came from.
+          </>
+        }
+        sub={KINDS.find((k) => k.key === kind)?.hint}
+        actions={
+          /* A `ToggleButtonGroup`, per ui-standards §5 and following the
+             conversion `ConnectionsPanel` already made of these same `.cx-tab`
+             pills: hand-rolled `<button>`s whose selected state existed only
+             as an `aria-pressed` attribute selector in the stylesheet, with
+             the focus ring and hit target that implies. Deliberately *not*
+             `Tabs` — this picks which records the screen is about, and the tab
+             strip below picks which view of them, so making both tab bars
+             would leave nothing saying which is the outer scope. */
+          <ToggleButtonGroup
+            exclusive
+            size="small"
+            value={kind}
+            onChange={(_e, v) => {
+              // `exclusive` sends null when the pressed one is pressed again;
+              // that is a no-op here rather than a scope with no kind.
+              if (v) { setKind(v as EntityKind); setTab("review"); }
+            }}
+            aria-label="Which records"
+          >
             {KINDS.map((k) => (
-              <button key={k.key} type="button" className="cx-tab"
-                      aria-pressed={kind === k.key}
-                      onClick={() => { setKind(k.key); setTab("review"); }}>
-                {k.label}
-              </button>
+              <ToggleButton key={k.key} value={k.key}>{k.label}</ToggleButton>
             ))}
-          </div>
-        </div>
-      </div>
+          </ToggleButtonGroup>
+        }
+      />
 
       {/* `ErrorState`, not a bare Alert: "we could not look" must never be read
           as "there is nothing to see", and the empty states below are now
           specific enough that an error styled like one would be mistaken for
           one. The kit component is the one that also offers the way back. */}
-      {error && <div style={{ marginBottom: 12 }}><ErrorState error={error} onRetry={load} busy={loading} /></div>}
+      {error && (
+        <Box sx={{ mb: 2 }}>
+          <ErrorState error={error} onRetry={load} busy={loading} />
+        </Box>
+      )}
 
-      <div className="cx-tabs" style={{ marginBottom: 12 }}>
-        <button type="button" className="cx-tab" aria-pressed={tab === "review"}
-                onClick={() => setTab("review")}>
-          To review {suggestions.length > 0 && <b>({suggestions.length})</b>}
-        </button>
-        <button type="button" className="cx-tab" aria-pressed={tab === "all"}
-                onClick={() => setTab("all")}>
-          All identities
-        </button>
-      </div>
+      {/* MUI `Tabs`, per ui-standards §9 — the same `.cx-tab` pills, but this
+          pair genuinely switches between two panels of one screen rather than
+          narrowing a scope, so it is a tab list and carries the roles a screen
+          reader needs to announce "1 of 2" and to find the panel each one
+          controls. The count is a `Chip` rather than the `<b>` it was: §6, and
+          a queue length is a state a reader scans for, not emphasis. */}
+      <Tabs
+        value={tab}
+        onChange={(_e, v) => setTab(v as "review" | "all")}
+        aria-label="Which identities"
+        sx={{ mb: 2 }}
+      >
+        <Tab
+          value="review"
+          id="id-tab-review"
+          aria-controls="id-panel-review"
+          label={
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+              <span>To review</span>
+              {suggestions.length > 0 && (
+                <Chip size="small" label={suggestions.length} />
+              )}
+            </Stack>
+          }
+        />
+        <Tab
+          value="all"
+          id="id-tab-all"
+          aria-controls="id-panel-all"
+          label="All identities"
+        />
+      </Tabs>
 
       {tab === "review" ? (
-        <>
+        <Box role="tabpanel" id="id-panel-review" aria-labelledby="id-tab-review">
           {policy && (
             <Bp className="st-section">
               <h3>
@@ -449,21 +534,34 @@ export function IdentityScreen({ token }: { token: string }) {
                                 guard(() => papi.decideSuggestion(token, kind, id, accept))} />
             ))}
           </div>
-        </>
+        </Box>
       ) : (
-        <>
-          <div className="ci-controls">
-            <label>
-              Search
-              <input className="input" value={q} placeholder="name, id, GSTIN or SKU"
-                     onChange={(e) => setQ(e.target.value)} />
-            </label>
-            <label className="sync-check">
-              <input type="checkbox" checked={linkedOnly}
-                     onChange={(e) => setLinkedOnly(e.target.checked)} />
-              Only entities seen in more than one system
-            </label>
-          </div>
+        <Box role="tabpanel" id="id-panel-all" aria-labelledby="id-tab-all">
+          {/* `kit.FilterPanel`, per §10 — "the controls above a list", which is
+              what `.ci-controls` was a fourth answer to. Its own `label` rule
+              set `display: grid` on every label inside it, so a
+              `FormControlLabel` could not live there: the checkbox would have
+              stacked above its words. That is why the whole row moves rather
+              than the checkbox alone. `.sync-check` is retired with it. */}
+          <FilterPanel>
+            <TextField
+              size="small"
+              label="Search"
+              placeholder="name, id, GSTIN or SKU"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              sx={{ minWidth: 240 }}
+            />
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={linkedOnly}
+                  onChange={(e) => setLinkedOnly(e.target.checked)}
+                />
+              }
+              label="Only entities seen in more than one system"
+            />
+          </FilterPanel>
 
           {loading && <LoadingState rows={3} />}
           {!loading && identities.length === 0 && (
@@ -483,7 +581,7 @@ export function IdentityScreen({ token }: { token: string }) {
                               guard(() => papi.relabelIdentity(token, kind, id, label))} />
             ))}
           </div>
-        </>
+        </Box>
       )}
     </div>
   );

@@ -49,7 +49,7 @@ import ExpandMoreRounded from "@mui/icons-material/ExpandMoreRounded";
 import LogoutOutlined from "@mui/icons-material/LogoutOutlined";
 import CheckRounded from "@mui/icons-material/CheckRounded";
 
-import { TOUCH, TOUCH_TARGET } from "./kit";
+import { Meta, TOUCH, TOUCH_TARGET } from "./kit";
 import type { OrganizationMembershipView } from "./types";
 
 /** The role, as a person reads it. The same three words the rest of the shell
@@ -174,8 +174,9 @@ export default function AccountMenu({
         <Monogram mark={mark} size={32} />
         <Box sx={{ display: { xs: "none", sm: "block" }, textAlign: "left", lineHeight: 1.2 }}>
           {/* Sizes off the ramp rather than picked here: `body2` is the 13px
-              rung and `caption` the metadata one, so a change to the ramp
-              moves the toolbar with everything else. */}
+              rung and `Meta` the metadata one, so a change to the ramp moves
+              the toolbar with everything else. The tighter line is this
+              toolbar's own — the bar is 52px tall and holds two lines. */}
           <Typography
             component="span"
             sx={{
@@ -188,9 +189,7 @@ export default function AccountMenu({
           >
             {userName}
           </Typography>
-          <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.25 }}>
-            {roleLabel}
-          </Typography>
+          <Meta sx={{ lineHeight: 1.25 }}>{roleLabel}</Meta>
         </Box>
         <ExpandMoreRounded
           fontSize="small"
@@ -247,9 +246,9 @@ export default function AccountMenu({
                 a workspace switcher below, because that is a different kind of
                 fact: a role is granted to you, a workspace is one you are
                 standing in and can leave. */}
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+            <Meta>
               {organizationName ? `${organizationName} · ${roleLabel}` : roleLabel}
-            </Typography>
+            </Meta>
           </Box>
         </Box>
 
@@ -259,17 +258,15 @@ export default function AccountMenu({
             a switcher listing the workspace you are already in is a control
             that teaches people the menu does not work. */}
         {switchable && (
-          <ListSubheader
-            disableSticky
-            sx={{
-              typography: "overline",
-              color: "text.secondary",
-              bgcolor: "transparent",
-              lineHeight: 2,
-              px: 2,
-              pt: 1,
-            }}
-          >
+          /* Five of the six values this used to set are `theme.ts`'s now.
+             MUI's own subheader is sized for a settings list — a 48px line,
+             16px gutters, 14px sentence case — so this menu corrected the
+             line, the gutters and the type at its call site, and the next menu
+             with a section label would have corrected the same three again.
+             `pt` is the one that stays: it is the gap to the divider directly
+             above, which belongs to this menu's composition rather than to
+             every subheader in the product. */
+          <ListSubheader disableSticky sx={{ pt: 1 }}>
             Switch workspace
           </ListSubheader>
         )}

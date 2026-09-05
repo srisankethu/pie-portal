@@ -40,7 +40,7 @@ import { useQuery } from "@tanstack/react-query";
 
 import { papi } from "./api";
 import type { OnboardingStep, PlatformSession } from "./types";
-import { SectionHeader, StatusChip } from "./kit";
+import { Meta, SectionHeader, StatusChip } from "./kit";
 
 function StepRow({ step, canAct }: { step: OnboardingStep; canAct: boolean }) {
   return (
@@ -130,11 +130,7 @@ export function SetupChecklist({ session }: { session: PlatformSession }) {
         // sighted reader could see it. Every step in it is listed below, so it
         // counts the recommended ones too — a figure measuring a different set
         // from the list under it would be worse than no figure.
-        actions={
-          <Typography variant="caption" color="text.secondary">
-            {done} of {total} done
-          </Typography>
-        }
+        actions={<Meta>{done} of {total} done</Meta>}
       />
 
       <LinearProgress

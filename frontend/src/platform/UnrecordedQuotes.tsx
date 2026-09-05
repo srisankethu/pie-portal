@@ -38,7 +38,6 @@
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
-import Grid from "@mui/material/Grid";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { useSnackbar } from "notistack";
@@ -48,11 +47,11 @@ import { intelligence } from "../intelligence";
 import { money } from "../money";
 import { formatDate } from "../when";
 import { papi } from "./api";
-import { DataGrid, numeric, text } from "./DataGrid";
+import { actionColumn, DataGrid, numeric, text } from "./DataGrid";
 import type { ColDef } from "./DataGrid";
 import {
   CurrencyValue, EmptyState, ErrorState, FilterChip, FilterPanel, LoadingState,
-  MetricCard, SectionHeader, StatusChip, TOUCH, type Tone,
+  MetricCard, SectionHeader, StatusChip, TileGrid, TOUCH, type Tone,
 } from "./kit";
 import { RecordOutcomeDialog } from "./RecordOutcomeDialog";
 import type {
@@ -224,21 +223,20 @@ export function UnrecordedQuotesScreen({ session }: { session: PlatformSession }
       ...text<UnrecordedQuote>("raised_on", "Raised", { flex: 0.5, minWidth: 120 }),
       valueFormatter: (p: { value?: unknown }) => formatDate(String(p.value ?? "")),
     },
-    {
-      headerName: "", width: 150, sortable: false, filter: false,
-      // The column carries its own control, so clicking it must not also fire a
-      // row handler — `DataGridProps` documents this, and `context.noRowClick`
-      // is the flag it documents. This comment claimed the opt-out for a while
-      // without the flag that performs it; the two handlers happened to do the
-      // same thing, so nothing looked wrong and the next control put in this
-      // column would have inherited a silent second press.
-      context: { noRowClick: true },
-      cellRenderer: (p: { data?: UnrecordedQuote }) => (p.data ? (
+    // Through `actionColumn` rather than written out: no sort, no filter, and
+    // `context.noRowClick` so pressing the button does not also fire the row
+    // handler. This column is why that helper exists — it had two of the three
+    // and a comment claiming the third, and because both handlers happened to
+    // open the same dialog nothing looked wrong. The next control put here
+    // would have inherited a silent second press, so the trio is one call now.
+    actionColumn<UnrecordedQuote>(
+      (p: { data?: UnrecordedQuote }) => (p.data ? (
         <Button size="small" onClick={() => setRecording(p.data!)}>
           Record…
         </Button>
       ) : null),
-    },
+      { width: 150 },
+    ),
   ], []);
 
   if (loading) {
@@ -265,65 +263,59 @@ export function UnrecordedQuotesScreen({ session }: { session: PlatformSession }
         actions={<Button size="small" onClick={reload}>Refresh</Button>}
       />
 
-      {/* `Grid`, per §1 and per every other tile row in this app. The four
-          tiles used to be flex-1 boxes that went to a row at `sm`, which put
-          four figures and four explanatory lines across 600px. */}
-      <Grid container spacing={2}>
-        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-          <MetricCard
-            label="Unanswered"
-            value={total}
-            // The whole reason `build()` returns the pile and the router slices
-            // it: a headline that agreed with the visible rows would make the
-            // pile look the size of the page.
-            sub={listed < total
-              ? `Showing the top ${listed}. The other ${total - listed} are real `
-                + "and not on this page."
-              : `All ${listed} are on this page.`}
-            tip="Quotes with no recorded outcome. A quote the customer never
-                 answered is not a loss, and nothing here treats it as one."
-          />
-        </Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-          <MetricCard
-            label="Value at stake"
-            value={<CurrencyValue value={data?.value_at_stake ?? null} />}
-            sub={(data?.quotes_without_a_value ?? 0) > 0
-              ? `${data?.quotes_without_a_value} of these carry no total and are `
-                + "not in this figure"
-              : "Every quote on the list carries a total"}
-            tip="The sum of the quotes that carry a selling total, and of no
-                 others. Their own price to the customer — never cost."
-          />
-        </Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-          <MetricCard
-            label="Longest lapse"
-            // `== null` catches the server's null and the not-yet-loaded
-            // undefined in one test, which is the same two-line check the `sub`
-            // below already made. Still an em dash and never a zero: nothing on
-            // the list having an expiry date to have passed is not a lapse of
-            // no days.
-            value={data?.longest_lapse_days == null
-              ? "—"
-              : `${data.longest_lapse_days} days`}
-            sub={data?.longest_lapse_days == null
-              ? "Nothing on this list has an expiry date to have passed"
-              : "Since the oldest offer on this list ran out"}
-            tip="Measured over the whole pile, not over this page — the counts
-                 above it are too, which is why they can disagree with the rows."
-          />
-        </Grid>
-        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
-          <MetricCard
-            label="Opened by the customer"
-            value={data?.opened ?? 0}
-            sub={`${data?.opening_not_recorded ?? 0} with no open recorded`}
-            tip="An open the ERP saw. No open on record is not the same as the
-                 customer never opening it — the quote may never have been sent."
-          />
-        </Grid>
-      </Grid>
+      {/* `kit.TileGrid`, which is this row's own `Grid container` promoted to
+          the kit after six screens had written it out. It emits the same
+          breakpoints — the tiles used to be flex-1 boxes that went to a row at
+          `sm`, which put four figures and four explanatory lines across 600px,
+          and the fix is now one component rather than six copies of it. */}
+      <TileGrid>
+        <MetricCard
+          label="Unanswered"
+          value={total}
+          // The whole reason `build()` returns the pile and the router slices
+          // it: a headline that agreed with the visible rows would make the
+          // pile look the size of the page.
+          sub={listed < total
+            ? `Showing the top ${listed}. The other ${total - listed} are real `
+              + "and not on this page."
+            : `All ${listed} are on this page.`}
+          tip="Quotes with no recorded outcome. A quote the customer never
+               answered is not a loss, and nothing here treats it as one."
+        />
+        <MetricCard
+          label="Value at stake"
+          value={<CurrencyValue value={data?.value_at_stake ?? null} />}
+          sub={(data?.quotes_without_a_value ?? 0) > 0
+            ? `${data?.quotes_without_a_value} of these carry no total and are `
+              + "not in this figure"
+            : "Every quote on the list carries a total"}
+          tip="The sum of the quotes that carry a selling total, and of no
+               others. Their own price to the customer — never cost."
+        />
+        <MetricCard
+          label="Longest lapse"
+          // `== null` catches the server's null and the not-yet-loaded
+          // undefined in one test, which is the same two-line check the `sub`
+          // below already made. Still an em dash and never a zero: nothing on
+          // the list having an expiry date to have passed is not a lapse of
+          // no days.
+          value={data?.longest_lapse_days == null
+            ? "—"
+            : `${data.longest_lapse_days} days`}
+          sub={data?.longest_lapse_days == null
+            ? "Nothing on this list has an expiry date to have passed"
+            : "Since the oldest offer on this list ran out"}
+          tip="Measured over the whole pile, not over this page — the counts
+               above it are too, which is why they can disagree with the rows."
+        />
+        <MetricCard
+          label="Opened by the customer"
+          value={data?.opened ?? 0}
+          sub={`${data?.opening_not_recorded ?? 0} with no open recorded`}
+          tip="An open the ERP saw. No open on record is not the same as the
+               customer never opening it — the quote may never have been sent."
+        />
+      </TileGrid>
 
       {total === 0 ? (
         <EmptyState

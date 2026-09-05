@@ -50,17 +50,15 @@ import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
-import type { SxProps, Theme } from "@mui/material/styles";
 
 import { money, moneySymbol, count as counted } from "../money";
-import { tokens } from "../theme";
 import { formatDate, formatDateTime } from "../when";
 import { abilityFor } from "./ability";
 import { papi } from "./api";
 import { DataGrid, type ColDef } from "./DataGrid";
 import {
-  EmptyState, ErrorState, LoadingState, MetricCard, SectionHeader, StatusChip,
-  TOUCH, type Tone,
+  EmptyState, ErrorState, FactTable, LoadingState, Meta, MetricCard, PanelMark,
+  Section, SectionHeader, StatusChip, TileGrid, TOUCH, type Tone,
 } from "./kit";
 import type {
   AttributionEvaluation, AttributionEvents, AttributionPeriod,
@@ -172,13 +170,20 @@ function amountOf(raw: string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-/** UNKNOWN, in the value slot of a tile, at a size that does not pretend to be
- *  a figure. A word rather than a dash, for the reason `Amount` gives. */
+/** UNKNOWN where a figure would be, at a size that does not pretend to be one.
+ *  A word rather than a dash, for the reason `Amount` gives.
+ *
+ *  It used to reach for a bare `fontSize: "0.6em"`, because there was no token
+ *  for "smaller than whatever this is sitting inside". `MetricCard` has an
+ *  `unknown` slot now and every tile uses it (see `amountTile`), so the literal
+ *  is gone and this is `body2` — the same rung the tile's own slot renders at.
+ *  What is left here is the places a `MetricCard` cannot reach: a fact cell, a
+ *  grid cell, and the drill-down's `h4`. */
 function UnknownValue({ children }: { children: React.ReactNode }) {
   return (
-    <Box component="span" sx={{ color: "text.secondary", fontSize: "0.6em" }}>
+    <Typography component="span" variant="body2" color="text.secondary">
       {children}
-    </Box>
+    </Typography>
   );
 }
 
@@ -200,6 +205,28 @@ function Amount({ value, unknown = "Not measured" }: {
   const n = amountOf(value);
   if (n === null) return <UnknownValue>{unknown}</UnknownValue>;
   return <Box component="span" sx={{ fontVariantNumeric: "tabular-nums" }}>{money(n)}</Box>;
+}
+
+/** The `value`/`unknown` pair a `MetricCard` needs for a serialized amount.
+ *
+ *  A tile cannot use `Amount`: `MetricCard` renders whatever `value` holds at
+ *  `h3`, so the absent branch had to shrink itself back down and did it with a
+ *  bare `fontSize: "0.6em"`. The kit has a slot for words in the figure's place
+ *  now, and it is a different slot rather than a smaller figure — which is the
+ *  distinction this whole screen turns on.
+ *
+ *  Spread at the call site (`{...amountTile(x)}`) so the two props cannot be
+ *  set apart from each other: a tile with a figure *and* an unknown reason is
+ *  the one combination that would quietly show the wrong one.
+ *
+ *  Still not `CurrencyValue`, which renders an em dash for `null` — right on
+ *  every other screen, and here the one mistake this screen exists to avoid. */
+function amountTile(raw: string | null | undefined, unknown = "Not measured"):
+    { value: React.ReactNode; unknown?: React.ReactNode } {
+  const n = amountOf(raw);
+  // `MetricCard` already gives the figure tabular numerals, so this is the
+  // formatted string and nothing else.
+  return n === null ? { value: null, unknown } : { value: money(n) };
 }
 
 /* ── the evidence gaps, printed rather than tucked away ───────────────────── */
@@ -242,99 +269,19 @@ function EvidenceGaps({ gaps, title, mb = 3 }: {
 
 /* ── the shapes this screen is built out of ───────────────────────────────── */
 
-/** One tile in a row of them, at the width below which the row wraps rather
- *  than squeezing a figure into a column too narrow to read.
- *
- *  Eighteen copies of this `Box` differed in one number and nothing else. It
- *  is a `MetricCard`'s *layout*, which is why it is here and not a second
- *  metric component beside `kit`'s. */
-function Tile({ basis = 240, children }: {
-  basis?: number;
-  children: React.ReactNode;
-}) {
-  return <Box sx={{ flex: `1 1 ${basis}px`, minWidth: basis }}>{children}</Box>;
-}
-
-/** A row of tiles that wraps instead of shrinking. */
-function TileRow({ mb, children }: {
-  mb?: number;
-  children: React.ReactNode;
-}) {
-  return (
-    <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: "wrap", mb }}>
-      {children}
-    </Stack>
-  );
-}
-
-/** A label, a value, a fixed handful of rows — the shape `DataGrid.tsx` names
- *  as the one that stays a `<table>`.
- *
- *  Five of them on this screen: the two class breakdowns, the two panels of
- *  the owner's report, and the operands behind one ledger row. Every one is
- *  sized by what the code measures — five event types, three margin figures,
- *  four window counts, the operands of one formula — and none of them by the
- *  size of the business, which is the test §3 states and the only test that
- *  decides this.
- *
- *  Written once because the boilerplate was written five times, and because
- *  `styles.css` gives `.facttable` a rule for `td` and none for `th`: the one
- *  panel here with a header row fell through to the browser's own, centred and
- *  unpadded above left-aligned padded cells. That header ramp is the theme's
- *  overline rung rather than a copy of `.dp-table th`'s literals, per §11. */
-function FactTable({ ariaLabel, columns, children }: {
-  ariaLabel: string;
-  /** Column headings, for a panel carrying more than a label and a value. The
-   *  first is the label column; the rest are values and align with them. */
-  columns?: string[];
-  children: React.ReactNode;
-}) {
-  return (
-    <Box
-      component="table"
-      className="facttable"
-      aria-label={ariaLabel}
-      sx={{
-        "& th": {
-          typography: "overline",
-          color: "text.secondary",
-          textAlign: "left",
-          verticalAlign: "bottom",
-          py: 0.75,
-          px: 0.5,
-          borderBottom: 1,
-          borderColor: "divider",
-        },
-        "& th.fv": { textAlign: "right" },
-        // Top, so a figure sits level with the first line of the label it
-        // answers rather than floating against the middle of a three-line one.
-        "& td": { verticalAlign: "top" },
-      }}
-    >
-      {columns && (
-        <thead>
-          <tr>
-            {columns.map((c, i) => (
-              <th key={c} scope="col" className={i === 0 ? undefined : "fv"}>
-                {c}
-              </th>
-            ))}
-          </tr>
-        </thead>
-      )}
-      <tbody>{children}</tbody>
-    </Box>
-  );
-}
-
 /** Prose where a figure would be, inside a fact cell.
  *
- *  `.facttable .fv` sets `white-space: nowrap`, `font-weight: 600` and tabular
- *  figures: right for a number, wrong for the sentence a value cell carries
- *  when there is no number — which on this screen is the common case, not the
- *  edge one. Nowrap does not wrap a sentence, it pushes the panel sideways.
- *  Set on a child rather than on the cell because the stylesheet's rule is the
- *  more specific of the two and wins on the cell itself. */
+ *  `.facttable .fv` — which `kit.FactTable` puts on every value — sets
+ *  `white-space: nowrap`, `font-weight: 600` and tabular figures: right for a
+ *  number, wrong for the sentence a value cell carries when there is no number,
+ *  which on this screen is the common case rather than the edge one. Nowrap
+ *  does not wrap a sentence, it pushes the panel sideways. Set on a child
+ *  rather than on the cell because the stylesheet's rule is the more specific
+ *  of the two and wins on the cell itself.
+ *
+ *  `TrustScreen`'s `FactWords` is the same escape for the same reason, which
+ *  makes one idea with two call sites — a `kit` candidate under §10, and not
+ *  something either file may add. */
 function FactNote({ children }: { children: React.ReactNode }) {
   return (
     <Box
@@ -353,23 +300,31 @@ function FactNote({ children }: { children: React.ReactNode }) {
 
 /** An operand or a record id, as it was stored.
  *
- *  Monospace, because these are the values somebody compares character by
- *  character — and read from `tokens.fontMono` rather than written out, per
- *  §11. The `mono` class these cells carried is styled nowhere: `theme.ts`
- *  gives `.mono` tabular figures and `CSS_VARS` never emits `--font-mono`, so
- *  every one of them rendered in the body face. `CatalogScreen` found the same
- *  hole and closed it the same way.
+ *  Monospace through the `mono` class, which `theme.ts` finally gives a face —
+ *  so the local `tokens.fontMono` constant this file carried for it is gone.
+ *  These are the values somebody compares character by character.
  *
- *  Not `.fv` either, for the reason `FactNote` gives: a record id is exactly
- *  the value that outgrows a `maxWidth="sm"` dialog, and the
- *  `word-break: break-all` that sat beside it could never take effect because
- *  nowrap suppresses the wrap break-all would have relaxed. */
-const OPERAND: SxProps<Theme> = {
-  fontFamily: tokens.fontMono,
-  textAlign: "right",
-  whiteSpace: "normal",
-  overflowWrap: "anywhere",
-};
+ *  A child of the value cell rather than the cell itself, for the reason
+ *  `FactNote` gives: a record id is exactly the value that outgrows a
+ *  `maxWidth="sm"` dialog, and the `word-break` beside it could never take
+ *  effect because `.fv`'s nowrap suppresses the wrap it would have relaxed.
+ *  The right alignment is inherited from the cell rather than restated. */
+function Operand({ children }: { children: React.ReactNode }) {
+  return (
+    <Box
+      component="span"
+      className="mono"
+      sx={{
+        display: "block",
+        fontWeight: 400,
+        whiteSpace: "normal",
+        overflowWrap: "anywhere",
+      }}
+    >
+      {children}
+    </Box>
+  );
+}
 
 /* ── the headline ─────────────────────────────────────────────────────────── */
 
@@ -451,44 +406,67 @@ function ClassBreakdown({ rows, types, valueClass, title, unmeasurable }: {
   if (!types.length) return null;
   return (
     <Box sx={{ mt: 3 }}>
-      <Typography variant="subtitle2" sx={{ mb: 1 }}>{title}</Typography>
-      <FactTable ariaLabel={title}
-                 columns={["What was measured", "Events", "Amount"]}>
-        {types.map((type) => {
-          // A lookup, never a sum: two classes of the same event type can
-          // describe one quote line, so adding down this column would double
-          // count it. The summary is the only legitimate rollup.
-          const row = rows.find(
-            (r) => r.event_type === type && r.value_class === valueClass);
-          return (
-            <tr key={type}>
-              <td>
-                {eventTypeLabel(type)}
-                {EVENT_TYPE[type] && (
-                  <div className="fsrc">{EVENT_TYPE[type].what}</div>
-                )}
-              </td>
-              {row ? (
-                <>
-                  <td className="fv">{counted(row.events)}</td>
-                  <td className="fv">
-                    <Amount value={row.amount} unknown="no amount" />
-                  </td>
-                </>
-              ) : unmeasurable.has(type) ? (
-                <td colSpan={2}>
-                  <FactNote>nothing measures this — see the gaps above</FactNote>
+      <PanelMark sx={{ mb: 1 }}>{title}</PanelMark>
+      {/* Not `kit.FactTable`: that is the two-column label-and-value panel, and
+          this carries a count *and* an amount under their own headings — two
+          measurements that must stay in separate columns, because the whole
+          point of the panel is that a count and an amount are different facts.
+          The cell shape, the row header and the heavier `thead` now come from
+          `.facttable` in the stylesheet rather than from a local component;
+          what is left is the alignment, which is this table's own: the label
+          column carries a paragraph, so a figure has to sit level with the
+          first line of what it answers rather than against the middle of it. */}
+      <Box
+        component="table"
+        className="facttable"
+        aria-label={title}
+        sx={{
+          "& th, & td": { verticalAlign: "top" },
+          "& thead th": { verticalAlign: "bottom" },
+        }}
+      >
+        <thead>
+          <tr>
+            <th scope="col">What was measured</th>
+            <th scope="col" className="fv">Events</th>
+            <th scope="col" className="fv">Amount</th>
+          </tr>
+        </thead>
+        <tbody>
+          {types.map((type) => {
+            // A lookup, never a sum: two classes of the same event type can
+            // describe one quote line, so adding down this column would double
+            // count it. The summary is the only legitimate rollup.
+            const row = rows.find(
+              (r) => r.event_type === type && r.value_class === valueClass);
+            return (
+              <tr key={type}>
+                <td>
+                  {eventTypeLabel(type)}
+                  {EVENT_TYPE[type] && <Meta>{EVENT_TYPE[type].what}</Meta>}
                 </td>
-              ) : (
-                <>
-                  <td className="fv">{counted(0)}</td>
-                  <td className="fv"><FactNote>no events recorded</FactNote></td>
-                </>
-              )}
-            </tr>
-          );
-        })}
-      </FactTable>
+                {row ? (
+                  <>
+                    <td className="fv">{counted(row.events)}</td>
+                    <td className="fv">
+                      <Amount value={row.amount} unknown="no amount" />
+                    </td>
+                  </>
+                ) : unmeasurable.has(type) ? (
+                  <td colSpan={2}>
+                    <FactNote>nothing measures this — see the gaps above</FactNote>
+                  </td>
+                ) : (
+                  <>
+                    <td className="fv">{counted(0)}</td>
+                    <td className="fv"><FactNote>no events recorded</FactNote></td>
+                  </>
+                )}
+              </tr>
+            );
+          })}
+        </tbody>
+      </Box>
     </Box>
   );
 }
@@ -526,29 +504,23 @@ function EventDrilldown({ row, onClose }: {
           {row.currency} · occurred {formatDateTime(row.occurred_at)}
         </Typography>
 
-        <Typography variant="subtitle2" sx={{ mt: 3, mb: 1 }}>
-          How it was computed
-        </Typography>
+        {/* The mark stays above rather than becoming the table's `<caption>`:
+            it heads whichever of the two branches renders, and a caption can
+            only head the table. Same below. */}
+        <PanelMark sx={{ mt: 3, mb: 1 }}>How it was computed</PanelMark>
         {basis.length === 0 ? (
           <Typography variant="body2" color="text.secondary">
             This row carries no basis. Treat the amount as unsupported.
           </Typography>
         ) : (
-          <FactTable ariaLabel="The operands this amount was computed from">
-            {basis.map(([key, value]) => (
-              <tr key={key}>
-                <td>{key.replace(/_/g, " ")}</td>
-                <Box component="td" sx={OPERAND}>
-                  {Array.isArray(value) ? value.join(", ") : String(value)}
-                </Box>
-              </tr>
-            ))}
-          </FactTable>
+          <FactTable
+            rows={basis.map(([key, value]): readonly [React.ReactNode, React.ReactNode] => [
+              key.replace(/_/g, " "),
+              <Operand>{Array.isArray(value) ? value.join(", ") : String(value)}</Operand>,
+            ])} />
         )}
 
-        <Typography variant="subtitle2" sx={{ mt: 3, mb: 1 }}>
-          The records it was computed over
-        </Typography>
+        <PanelMark sx={{ mt: 3, mb: 1 }}>The records it was computed over</PanelMark>
         {row.evidence_refs.length === 0 ? (
           // The ledger refuses to write an event without evidence, so this is
           // a defect report rather than an empty state.
@@ -557,16 +529,11 @@ function EventDrilldown({ row, onClose }: {
             seeing this is a fault worth reporting.
           </Alert>
         ) : (
-          <FactTable ariaLabel="The records this event was computed over">
-            {row.evidence_refs.map((ref, i) => (
-              <tr key={i}>
-                <td>{String(ref.record_type ?? "record").replace(/_/g, " ")}</td>
-                <Box component="td" sx={OPERAND}>
-                  {String(ref.record_id ?? "—")}
-                </Box>
-              </tr>
-            ))}
-          </FactTable>
+          <FactTable
+            rows={row.evidence_refs.map((ref): readonly [React.ReactNode, React.ReactNode] => [
+              String(ref.record_type ?? "record").replace(/_/g, " "),
+              <Operand>{String(ref.record_id ?? "—")}</Operand>,
+            ])} />
         )}
 
         <Typography variant="caption" color="text.secondary"
@@ -766,12 +733,10 @@ function ValueLedger({ session }: { session: PlatformSession }) {
           ) : (
           <>
           {/* ── the headline ── */}
-          <Paper variant="outlined" sx={{ p: 3 }}>
-            <SectionHeader
-              level="section"
-              title="Attributed value"
-              sub="The money moved and an intervention is on record as preceding it. This is the only figure on the screen that may be called what the platform was worth." />
-
+          <Section
+            title="Attributed value"
+            sub="The money moved and an intervention is on record as preceding it. This is the only figure on the screen that may be called what the platform was worth."
+          >
             {/* The sentence first, then the figures it governs. It sat under
                 five tiles, which is the wrong way round in exactly the two
                 cases this screen was written for: a window with nothing
@@ -782,123 +747,95 @@ function ValueLedger({ session }: { session: PlatformSession }) {
             <Verdict attributed={data.attributed_value}
                      events={data.attributed_events} />
 
-            <TileRow mb={1}>
-              <Tile>
+            {/* Two rows, not five tiles in one: the three counts answer "how
+                much, over how many", and the two amounts under them answer
+                "from which guardrail". The `Stack` is the gap the first row's
+                own `mb` used to carry. */}
+            <Stack spacing={1}>
+              <TileGrid per={3}>
                 <MetricCard
                   label="Attributed value"
-                  value={<Amount value={data.attributed_value} />}
+                  {...amountTile(data.attributed_value)}
                   sub={`${counted(data.attributed_events ?? 0)} attributed event(s) · ${data.currency ?? "INR"}`}
                   tip="ATTRIBUTED events only. Potential and estimated figures are never added into this." />
-              </Tile>
-              <Tile>
                 <MetricCard
                   label="Opportunities identified"
                   value={counted(data.potential_events ?? 0)}
                   sub="flagged during a live quote; nothing has happened yet"
                   tip="POTENTIAL events. An identified opportunity is not money, and the count is shown beside the realized one rather than as a share of it — the same line can appear in both." />
-              </Tile>
-              <Tile>
                 <MetricCard
                   label="Opportunities realized"
                   value={counted(data.attributed_events ?? 0)}
                   sub="the money moved, with the intervention on record first"
                   tip="ATTRIBUTED events. Deliberately not expressed as a percentage of the identified count: the two sets overlap rather than nest, so a ratio would be a number the evidence does not support." />
-              </Tile>
-            </TileRow>
+              </TileGrid>
 
-            <TileRow>
-              <Tile>
+              <TileGrid per={2}>
                 <MetricCard
                   label="Margin protected"
-                  value={
-                    <Amount
-                      value={cellOf(breakdown, "MARGIN_PROTECTED", "ATTRIBUTED")?.amount}
-                      unknown="Not measured" />
-                  }
+                  {...amountTile(cellOf(breakdown, "MARGIN_PROTECTED", "ATTRIBUTED")?.amount)}
                   sub="below-floor lines flagged, repriced above the floor, and won"
                   tip={EVENT_TYPE.MARGIN_PROTECTED.what} />
-              </Tile>
-              <Tile>
                 <MetricCard
                   label="Discount recovered"
-                  value={
-                    <Amount
-                      value={cellOf(breakdown, "DISCOUNT_LEAKAGE_PREVENTED", "ATTRIBUTED")?.amount}
-                      unknown="Not measured" />
-                  }
+                  {...amountTile(cellOf(breakdown, "DISCOUNT_LEAKAGE_PREVENTED", "ATTRIBUTED")?.amount)}
                   sub="price a flagged line regained between snapshots"
                   tip={EVENT_TYPE.DISCOUNT_LEAKAGE_PREVENTED.what} />
-              </Tile>
-            </TileRow>
+              </TileGrid>
+            </Stack>
 
             <ClassBreakdown rows={breakdown} types={types}
                             unmeasurable={unmeasurable}
                             valueClass="ATTRIBUTED"
                             title="Attributed, by what was measured" />
-          </Paper>
+          </Section>
 
           {/* ── everything that is NOT money earned ── */}
-          <Paper variant="outlined" sx={{ p: 3 }}>
-            <SectionHeader
-              level="section"
-              title="Identified, observed and modelled — not money earned"
-              sub="Kept apart from the headline on purpose. These are real figures about real lines, and none of them is a claim that the platform earned anything." />
-
+          <Section
+            title="Identified, observed and modelled — not money earned"
+            sub="Kept apart from the headline on purpose. These are real figures about real lines, and none of them is a claim that the platform earned anything."
+          >
             <Alert severity="info" icon={false} sx={{ mb: 2 }}>
               {data.class_totals_are_not_summable
                 ?? "These classes describe overlapping facts about the same "
                  + "lines and must never be added together."}
             </Alert>
 
-            <TileRow>
-              <Tile>
-                <MetricCard
-                  label="Potential"
-                  value={<Amount value={data.potential_value} unknown="None recorded" />}
-                  sub={`${counted(data.potential_events ?? 0)} opportunity event(s)`}
-                  tip={VALUE_CLASS.POTENTIAL.tip} />
-              </Tile>
-              <Tile>
-                <MetricCard
-                  label="Realized, not attributed"
-                  value={<Amount value={data.realized_value} unknown="None recorded" />}
-                  sub={`${counted(data.realized_events ?? 0)} event(s)`}
-                  tip={VALUE_CLASS.REALIZED.tip} />
-              </Tile>
-              {/* No "Estimated" tile. Nothing in the evidence produces that
-                  class today, and a card reading "Estimated — None recorded"
-                  states a measurement that was never attempted. The server
-                  stopped sending the field for the same reason. */}
-            </TileRow>
+            {/* No "Estimated" tile. Nothing in the evidence produces that class
+                today, and a card reading "Estimated — None recorded" states a
+                measurement that was never attempted. The server stopped
+                sending the field for the same reason. */}
+            <TileGrid per={2}>
+              <MetricCard
+                label="Potential"
+                {...amountTile(data.potential_value, "None recorded")}
+                sub={`${counted(data.potential_events ?? 0)} opportunity event(s)`}
+                tip={VALUE_CLASS.POTENTIAL.tip} />
+              <MetricCard
+                label="Realized, not attributed"
+                {...amountTile(data.realized_value, "None recorded")}
+                sub={`${counted(data.realized_events ?? 0)} event(s)`}
+                tip={VALUE_CLASS.REALIZED.tip} />
+            </TileGrid>
 
             <ClassBreakdown rows={breakdown} types={types}
                             unmeasurable={unmeasurable}
                             valueClass="POTENTIAL"
                             title="Identified, by what was measured" />
-          </Paper>
+          </Section>
 
           {/* ── work done, counted and never valued ── */}
           {data.productivity && (
-            <Paper variant="outlined" sx={{ p: 3 }}>
-              <SectionHeader
-                level="section"
-                title="Work the platform did"
-                sub={data.productivity.note} />
-              <TileRow>
-                <Tile basis={200}>
-                  <MetricCard label="Quotes priced"
-                              value={counted(data.productivity.quotes_priced)} />
-                </Tile>
-                <Tile basis={200}>
-                  <MetricCard label="Lines priced"
-                              value={counted(data.productivity.lines_priced)} />
-                </Tile>
-                <Tile basis={200}>
-                  <MetricCard label="Approvals turned round"
-                              value={counted(data.productivity.approvals_turned_round)} />
-                </Tile>
-              </TileRow>
-            </Paper>
+            <Section title="Work the platform did" sub={data.productivity.note}>
+              <TileGrid per={3}>
+                <MetricCard label="Quotes priced"
+                            value={counted(data.productivity.quotes_priced)} />
+                <MetricCard label="Lines priced"
+                            value={counted(data.productivity.lines_priced)} />
+                <MetricCard label="Approvals turned round"
+                            value={counted(data.productivity.approvals_turned_round)} />
+              </TileGrid>
+            </Section>
           )}
           </>
           )}
@@ -906,12 +843,10 @@ function ValueLedger({ session }: { session: PlatformSession }) {
       )}
 
       {/* ── the ledger ── */}
-      <Paper variant="outlined" sx={{ p: 3 }}>
-        <SectionHeader
-          level="section"
-          title="The ledger"
-          sub="Every event behind the figures above, each one opening onto the operands it was computed from and the records those came from." />
-
+      <Section
+        title="The ledger"
+        sub="Every event behind the figures above, each one opening onto the operands it was computed from and the records those came from."
+      >
         {ledger.error ? (
           <ErrorState title="The ledger could not be read" error={ledger.error}
                       onRetry={ledger.reload} />
@@ -993,7 +928,7 @@ function ValueLedger({ session }: { session: PlatformSession }) {
             </Typography>
           </>
         )}
-      </Paper>
+      </Section>
 
       {/* ── the 30-day report, then the span it cannot cover ── */}
       {mayReadReport ? (
@@ -1002,11 +937,10 @@ function ValueLedger({ session }: { session: PlatformSession }) {
           <RollupPanel session={session} />
         </>
       ) : (
-        <Paper variant="outlined" sx={{ p: 3 }}>
-          <SectionHeader
-            level="section"
-            title="The 30-day report"
-            sub="What the platform was worth against what it costs, set beside how the business ran before it." />
+        <Section
+          title="The 30-day report"
+          sub="What the platform was worth against what it costs, set beside how the business ran before it."
+        >
           <Typography variant="body2" color="text.secondary" sx={{ maxWidth: PROSE }}>
             Shown to the owner only. It compares one book&rsquo;s performance
             before the platform against its performance during, and the cost
@@ -1014,7 +948,7 @@ function ValueLedger({ session }: { session: PlatformSession }) {
             it for that role alone. The ledger above is the evidence it is built
             from, and none of it is withheld from you.
           </Typography>
-        </Paper>
+        </Section>
       )}
 
       <EventDrilldown row={open} onClose={() => setOpen(null)} />
@@ -1145,12 +1079,10 @@ function EvaluationPanel({ session }: { session: PlatformSession }) {
     ? attributed - costValue : null;
 
   return (
-    <Paper variant="outlined" sx={{ p: 3 }}>
-      <SectionHeader
-        level="section"
-        title="The 30-day report"
-        sub="What the platform was worth against what it costs, and how this book ran in the 90 days before the trial started." />
-
+    <Section
+      title="The 30-day report"
+      sub="What the platform was worth against what it costs, and how this book ran in the 90 days before the trial started."
+    >
       <CostForm
         cost={cost}
         label="What PIE costs you for this window"
@@ -1163,44 +1095,36 @@ function EvaluationPanel({ session }: { session: PlatformSession }) {
         <LoadingState rows={2} height={110} label="Building the report…" />
       ) : (
         <>
-          <TileRow>
-            <Tile basis={220}>
-              <MetricCard
-                label="Attributed value"
-                value={<Amount value={report.attributed_value} />}
-                sub="ATTRIBUTED events only" />
-            </Tile>
-            <Tile basis={220}>
-              <MetricCard
-                label="What PIE costs you"
-                value={costValue === null
-                  ? <UnknownValue>Not supplied</UnknownValue>
-                  : money(costValue)}
-                sub="your figure, for this window" />
-            </Tile>
-            <Tile basis={220}>
-              <MetricCard
-                label="Net value"
-                value={net === null
-                  ? <UnknownValue>Unknown</UnknownValue>
-                  : money(net)}
-                sub={net === null
-                  ? "needs both an attributed figure and a cost"
-                  : "attributed value less the cost you entered"}
-                tip="Attributed value minus the cost above. Unknown while either side is unknown — a missing cost does not make the net equal to the value." />
-            </Tile>
-            <Tile basis={220}>
-              <MetricCard
-                label="Value per rupee of cost"
-                value={report.roi_is_unknown || report.roi === null
-                  ? <UnknownValue>Unknown</UnknownValue>
-                  : `${Number(report.roi).toFixed(2)}×`}
-                sub={report.roi_is_unknown
-                  ? "no cost supplied, or no attributed value is measurable"
-                  : "attributed value ÷ the cost you entered"}
-                tip="Computed on the server from the cost you supplied. Unknown is rendered as unknown — a return of 0x would be a claim, and nobody has supplied the evidence for one." />
-            </Tile>
-          </TileRow>
+          <TileGrid per={4}>
+            <MetricCard
+              label="Attributed value"
+              {...amountTile(report.attributed_value)}
+              sub="ATTRIBUTED events only" />
+            <MetricCard
+              label="What PIE costs you"
+              value={costValue === null ? null : money(costValue)}
+              unknown={costValue === null ? "Not supplied" : undefined}
+              sub="your figure, for this window" />
+            <MetricCard
+              label="Net value"
+              value={net === null ? null : money(net)}
+              unknown={net === null ? "Unknown" : undefined}
+              sub={net === null
+                ? "needs both an attributed figure and a cost"
+                : "attributed value less the cost you entered"}
+              tip="Attributed value minus the cost above. Unknown while either side is unknown — a missing cost does not make the net equal to the value." />
+            <MetricCard
+              label="Value per rupee of cost"
+              value={report.roi_is_unknown || report.roi === null
+                ? null
+                : `${Number(report.roi).toFixed(2)}×`}
+              unknown={report.roi_is_unknown || report.roi === null
+                ? "Unknown" : undefined}
+              sub={report.roi_is_unknown
+                ? "no cost supplied, or no attributed value is measurable"
+                : "attributed value ÷ the cost you entered"}
+              tip="Computed on the server from the cost you supplied. Unknown is rendered as unknown — a return of 0x would be a claim, and nobody has supplied the evidence for one." />
+          </TileGrid>
 
           {/* The honest verdict on the value itself is stated once, at the
               headline, and deliberately not repeated here: two alerts saying
@@ -1209,9 +1133,10 @@ function EvaluationPanel({ session }: { session: PlatformSession }) {
               side, and the tiles above say UNKNOWN where it is unknown. */}
 
           <Box sx={{ mt: 3 }}>
-            <Typography variant="subtitle2" sx={{ mb: 1 }}>
-              Before the trial, and during it
-            </Typography>
+            {/* Above the branch rather than inside the table as a `<caption>`:
+                two of the three branches are an Alert, and a caption can only
+                head a table. */}
+            <PanelMark sx={{ mb: 1 }}>Before the trial, and during it</PanelMark>
             {report.baseline === null ? (
               <Alert severity="warning">
                 <AlertTitle>There is nothing to compare against</AlertTitle>
@@ -1229,84 +1154,73 @@ function EvaluationPanel({ session }: { session: PlatformSession }) {
                 figure is not an improvement.
               </Alert>
             ) : (
-              <FactTable ariaLabel="Quoted margin before the trial and during it">
-                <tr>
-                  <td>
-                    Quoted margin before
-                    <div className="fsrc">
+              <FactTable
+                rows={[
+                  [
+                    "Quoted margin before",
+                    pct(report.comparison.quoted_margin_before),
+                    <>
                       {formatDate(report.baseline.window_start)} –{" "}
                       {formatDate(report.baseline.window_end)}
-                    </div>
-                  </td>
-                  <td className="fv">{pct(report.comparison.quoted_margin_before)}</td>
-                </tr>
-                <tr>
-                  <td>Quoted margin during the trial</td>
-                  <td className="fv">{pct(report.comparison.quoted_margin_after)}</td>
-                </tr>
-                <tr>
-                  <td>
-                    Movement
-                    <div className="fsrc">
-                      Percentage points, not percent — 24% to 20% is −4 pp.
-                    </div>
-                  </td>
-                  <td className="fv">
-                    {/* The server sends this already in percentage points;
-                        `pp` takes a ratio, so it is divided back. The shared
-                        formatter rather than a fourth private one — three
-                        copies of it existed before it was moved to
-                        `useInsight`, and they had drifted. */}
-                    {pp(report.comparison.quoted_margin_movement_pp / 100)}
-                  </td>
-                </tr>
-              </FactTable>
+                    </>,
+                  ],
+                  [
+                    "Quoted margin during the trial",
+                    pct(report.comparison.quoted_margin_after),
+                  ],
+                  [
+                    "Movement",
+                    /* The server sends this already in percentage points; `pp`
+                       takes a ratio, so it is divided back. The shared
+                       formatter rather than a fourth private one — three copies
+                       of it existed before it was moved to `useInsight`, and
+                       they had drifted. */
+                    pp(report.comparison.quoted_margin_movement_pp / 100),
+                    "Percentage points, not percent — 24% to 20% is −4 pp.",
+                  ],
+                ]} />
             )}
           </Box>
 
           {report.during && (
             <Box sx={{ mt: 3 }}>
-              <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                The window itself
-              </Typography>
-              <FactTable ariaLabel="What the trial window itself held">
-                <tr>
-                  <td>Lines priced through the platform</td>
-                  <td className="fv">{counted(report.during.priced_lines)}</td>
-                </tr>
-                <tr>
-                  <td>
-                    Of those, carrying a purchase cost
-                    <div className="fsrc">
-                      A line with no cost is excluded from the margin above
-                      rather than counted as a zero-margin one.
-                    </div>
-                  </td>
-                  <td className="fv">
-                    {counted(report.during.costed_lines)}
-                    {report.during.uncostable_lines > 0
-                      && ` · ${counted(report.during.uncostable_lines)} without`}
-                  </td>
-                </tr>
-                <tr>
-                  <td>Lines that needed approval</td>
-                  <td className="fv">
-                    {counted(report.during.approval_required_lines)}
-                    {report.during.approval_required_rate !== null
-                      && ` · ${pct(report.during.approval_required_rate)} of costed lines`}
-                  </td>
-                </tr>
-                <tr>
-                  <td>Quotes decided</td>
-                  <td className="fv">
-                    {report.during.quotes_decided === 0
+              {/* The table is this block's only content, so the mark is its
+                  `<caption>` — announced with the rows it heads rather than
+                  merely sitting above them, and it keeps the mark rung. */}
+              <FactTable
+                caption={<PanelMark>The window itself</PanelMark>}
+                rows={[
+                  [
+                    "Lines priced through the platform",
+                    counted(report.during.priced_lines),
+                  ],
+                  [
+                    "Of those, carrying a purchase cost",
+                    <>
+                      {counted(report.during.costed_lines)}
+                      {report.during.uncostable_lines > 0
+                        && ` · ${counted(report.during.uncostable_lines)} without`}
+                    </>,
+                    "A line with no cost is excluded from the margin above "
+                      + "rather than counted as a zero-margin one.",
+                  ],
+                  [
+                    "Lines that needed approval",
+                    <>
+                      {counted(report.during.approval_required_lines)}
+                      {report.during.approval_required_rate !== null
+                        && ` · ${pct(report.during.approval_required_rate)} of costed lines`}
+                    </>,
+                  ],
+                  [
+                    "Quotes decided",
+                    report.during.quotes_decided === 0
                       ? <FactNote>none decided in this window</FactNote>
                       : `${counted(report.during.quotes_won)} won · `
                         + `${counted(report.during.quotes_lost)} lost · `
-                        + `${pct(report.during.quote_win_rate)} won`}
-                  </td>
-                </tr>
-              </FactTable>
+                        + `${pct(report.during.quote_win_rate)} won`,
+                  ],
+                ]} />
             </Box>
           )}
 
@@ -1319,7 +1233,7 @@ function EvaluationPanel({ session }: { session: PlatformSession }) {
           )}
         </>
       )}
-    </Paper>
+    </Section>
   );
 }
 
@@ -1404,12 +1318,10 @@ function RollupPanel({ session }: { session: PlatformSession }) {
   ], []);
 
   return (
-    <Paper variant="outlined" sx={{ p: 3 }}>
-      <SectionHeader
-        level="section"
-        title="Month by month"
-        sub="What the platform has been worth over a longer span, and the return on it — the figure the 30-day report stops giving once a trial ends." />
-
+    <Section
+      title="Month by month"
+      sub="What the platform has been worth over a longer span, and the return on it — the figure the 30-day report stops giving once a trial ends."
+    >
       <CostForm
         cost={cost}
         label="What PIE costs you per month"
@@ -1436,44 +1348,38 @@ function RollupPanel({ session }: { session: PlatformSession }) {
         <LoadingState rows={2} height={110} label="Rolling up the months…" />
       ) : (
         <>
-          <TileRow mb={3}>
-            <Tile basis={220}>
+          <Box sx={{ mb: 3 }}>
+            <TileGrid per={4}>
               <MetricCard
                 label="Attributed value"
-                value={<Amount value={data.attributed_value} />}
+                {...amountTile(data.attributed_value)}
                 sub={data.span.label
                   ? `${data.span.label} · complete months only`
                   : "no complete month in this span"} />
-            </Tile>
-            <Tile basis={220}>
               <MetricCard
                 label="What PIE cost you"
-                value={data.platform_cost === null
-                  ? <UnknownValue>Not supplied</UnknownValue>
-                  : <Amount value={data.platform_cost} />}
+                {...amountTile(data.platform_cost, "Not supplied")}
                 sub={data.monthly_cost === null
                   ? "your monthly figure, for this span"
                   : `your rate × ${counted(data.span.complete_months)} complete month(s)`} />
-            </Tile>
-            <Tile basis={220}>
               <MetricCard
                 label="Value per rupee of cost"
                 value={data.roi_is_unknown || data.roi === null
-                  ? <UnknownValue>Unknown</UnknownValue>
+                  ? null
                   : `${Number(data.roi).toFixed(2)}×`}
+                unknown={data.roi_is_unknown || data.roi === null
+                  ? "Unknown" : undefined}
                 sub={data.roi_is_unknown
                   ? "no monthly cost supplied, or a month in this span was never measured"
                   : "attributed value ÷ the cost above"}
                 tip="Refused outright where any complete month in the span has nothing on record. The value would cover fewer months than the cost does, and the ratio would read low — which is still a number nobody measured." />
-            </Tile>
-            <Tile basis={220}>
               <MetricCard
                 label="Months measured"
                 value={`${counted(data.span.measured_months)} of ${counted(data.span.complete_months)}`}
                 sub="complete months with any event on record"
                 tip="A month with no event is not a month worth nothing. It is a month this platform cannot speak for, and the return is withheld while one is in the span." />
-            </Tile>
-          </TileRow>
+            </TileGrid>
+          </Box>
 
           <EvidenceGaps gaps={data.evidence_gaps} mb={2}
                         title="What is not measured" />
@@ -1506,9 +1412,9 @@ function RollupPanel({ session }: { session: PlatformSession }) {
 
           {data.in_progress ? (
             <Box sx={{ mt: 2 }}>
-              <Typography variant="subtitle2" sx={{ mb: 0.5 }}>
+              <PanelMark sx={{ mb: 0.5 }}>
                 {data.in_progress.label} — still running
-              </Typography>
+              </PanelMark>
               <Typography variant="body2" color="text.secondary"
                           sx={{ maxWidth: PROSE }}>
                 <PeriodAmount row={data.in_progress} /> attributed so far, from{" "}
@@ -1522,6 +1428,6 @@ function RollupPanel({ session }: { session: PlatformSession }) {
           ) : null}
         </>
       )}
-    </Paper>
+    </Section>
   );
 }

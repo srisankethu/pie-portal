@@ -21,9 +21,9 @@
 // tones and two words is the version of that claim that survives being skimmed.
 
 import { useCallback, useEffect, useState } from "react";
-import type { ReactNode } from "react";
 import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Typography from "@mui/material/Typography";
 
@@ -31,27 +31,9 @@ import { count, money } from "../money";
 import { papi } from "./api";
 import { DataGrid, numeric, type ColDef } from "./DataGrid";
 import { saveBlob } from "./download";
-import { SectionHeader, StatusChip } from "./kit";
+import { ErrorState, Meta, SectionHeader, StatusChip } from "./kit";
 import { Bp } from "./ui";
 import type { SkippedRow, SyncRun } from "./types";
-
-/** The second line of a grid cell or a card: what the row is, after what it is.
- *
- *  This was `className="fsrc"`, in five places here and fifty-five across
- *  `platform/`, and `styles.css` declares `.fsrc` only inside `.facttable`,
- *  `.sync-opts` and `.cx-add` — so inside an AG Grid cell it matched nothing
- *  and both lines of a two-line row rendered at body size in body ink. The
- *  height `twoLineRows` reserves is for a hierarchy that was not being drawn.
- *  Theme tokens through `Typography`, per ui-standards §11; local, because
- *  `kit.tsx` is not this change's to edit and a fix for all fifty-five belongs
- *  there rather than copied into each screen. */
-function Meta({ children }: { children: ReactNode }) {
-  return (
-    <Typography variant="caption" component="div" color="text.secondary">
-      {children}
-    </Typography>
-  );
-}
 
 /** The sample the run row carries, in the shape of a full row.
  *
@@ -159,6 +141,15 @@ export function SkippedRowsPanel({ token, run, canExport }: {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [exportError, setExportError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  /** Bumped by the retry beside the refusal. The fetch stays inside the effect
+   *  — its `live` flag is what stops a reply landing on a run that has since
+   *  changed — so re-running it is a dependency changing, not a second copy of
+   *  the request written next to the button. Without this the only way back
+   *  from a failed list was to leave the screen and come back. */
+  const [attempt, setAttempt] = useState(0);
+  /** Whether a fetch is out. Read only by the retry, which has to say it is
+   *  working: the grid draws its own skeleton for the first one. */
+  const [loading, setLoading] = useState(false);
   const runId = run.sync_run_id;
 
   useEffect(() => {
@@ -167,20 +158,31 @@ export function SkippedRowsPanel({ token, run, canExport }: {
       return;
     }
     let live = true;
+    setLoading(true);
     papi.syncSkipped(token, runId).then((r) => {
       if (!live) return;
       setRows(r.rows);
       setIncomplete(r.incomplete);
+      // A retry that worked takes the refusal down with it. Left standing, the
+      // panel would keep a sentence about a fetch that has since succeeded
+      // over the full list it was complaining about not having.
+      setLoadError(null);
     }).catch((e) => {
       if (!live) return;
       // The sample is still worth showing, but not silently in place of the
       // full list — an apparently complete twenty-row table is the failure
       // this panel exists to end.
       setRows(fromSample(run));
+      // The run row's sample is not the server's "not the whole list" note, so
+      // a note kept from an earlier success would be describing rows that are
+      // no longer the ones below it.
+      setIncomplete(null);
       setLoadError((e as Error).message);
+    }).finally(() => {
+      if (live) setLoading(false);
     });
     return () => { live = false; };
-  }, [token, runId, canExport, run]);
+  }, [token, runId, canExport, run, attempt]);
 
   const exportCsv = useCallback(async () => {
     setSaving(true);
@@ -245,26 +247,52 @@ export function SkippedRowsPanel({ token, run, canExport }: {
         </Alert>
       )}
       {loadError && (
-        <Alert severity="error" sx={{ mb: 2 }}>
-          <AlertTitle>The full list did not load</AlertTitle>
-          {/* The server's sentence stands on its own line: it may or may not
-              end in a full stop, and running our prose onto the end of it made
-              one sentence out of two whichever way it landed. */}
-          {loadError}
-          <Typography variant="body2" sx={{ mt: 1 }}>
-            What follows is the smaller sample the run row itself carried, which
-            is why the count beside the heading is short of the total.
-          </Typography>
-        </Alert>
+        <Box sx={{ mb: 2 }}>
+          {/* `onRetry`, because the fallback said what had happened and offered
+              nothing to do about it: the only way back to the full list was to
+              leave the screen and return. Not dismissible — behind it is a
+              sample standing in for the list, and a reader who closed the
+              refusal would be left reconciling against twenty rows believing
+              they had all of them. */}
+          <ErrorState
+            title="The full list did not load"
+            error={
+              <>
+                {/* The server's sentence stands on its own line: it may or may
+                    not end in a full stop, and running our prose onto the end
+                    of it made one sentence out of two whichever way it
+                    landed. */}
+                {loadError}
+                <Typography variant="body2" sx={{ mt: 1 }}>
+                  What follows is the smaller sample the run row itself carried,
+                  which is why the count beside the heading is short of the
+                  total.
+                </Typography>
+              </>
+            }
+            onRetry={() => setAttempt((n) => n + 1)}
+            busy={loading}
+          />
+        </Box>
       )}
       {exportError && (
-        <Alert severity="error" sx={{ mb: 2 }} onClose={() => setExportError(null)}>
-          <AlertTitle>The export did not download</AlertTitle>
-          {exportError}
-          <Typography variant="body2" sx={{ mt: 1 }}>
-            The rows below are unaffected.
-          </Typography>
-        </Alert>
+        <Box sx={{ mb: 2 }}>
+          {/* Dismissible, and only this one: a file that did not download is a
+              refused request beside a grid that is untouched, so there is
+              something behind it worth clearing the way to. */}
+          <ErrorState
+            title="The export did not download"
+            error={
+              <>
+                {exportError}
+                <Typography variant="body2" sx={{ mt: 1 }}>
+                  The rows below are unaffected.
+                </Typography>
+              </>
+            }
+            onClose={() => setExportError(null)}
+          />
+        </Box>
       )}
 
       <Bp sx={{ p: 0.25 }}>

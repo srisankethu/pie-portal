@@ -35,7 +35,7 @@
  * likewise unused.
  */
 import { useCallback, useEffect, useMemo, useState } from "react";
-import type { CSSProperties } from "react";
+import type { ReactNode } from "react";
 
 import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
@@ -45,54 +45,46 @@ import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
+import type { SxProps, Theme } from "@mui/material/styles";
 
-import { tokens } from "../theme";
 import { formatDateTime } from "../when";
 import { abilityFor } from "./ability";
 import { papi } from "./api";
 import { DataGrid, type ColDef } from "./DataGrid";
 import { saveJson } from "./download";
 import {
-  EmptyState, ErrorState, LoadingState, SectionHeader, StatusChip, TOUCH, type Tone,
+  EmptyState, ErrorState, FactTable, LoadingState, PanelMark, Section,
+  SectionHeader, StatusChip, TOUCH, type Tone,
 } from "./kit";
 import type {
   AccessEventRow, AccessReport, DisclosureStatement, ErasureState, PayloadsReport,
   PlatformSession,
 } from "./types";
 
-/** Monospace, for an identifier somebody compares character by character.
+/** Words where a figure would be, inside a fact cell.
  *
- *  This file wrote `className="mono"` in four places and `styles.css` has no
- *  bare `.mono` rule — the only three are scoped to other screens
- *  (`.cred-org`, `.cx-unused`, `.cx-scopes td`) and none of them sets a font
- *  family anyway, so a payload id, two `table.column` references and a
- *  signature all rendered in the body font. `CatalogScreen` hit the same gap
- *  from the other direction (`var(--font-mono)`, which `theme.ts` does not
- *  emit) and fixed it this way: the value comes from the token, once (§11). */
-const MONO: CSSProperties = { fontFamily: tokens.fontMono };
-
-/** The receipt's signature: one unbroken run of characters in a table cell,
- *  which needs a break rule of its own or it decides the column's width. */
-const MONO_WRAP: CSSProperties = { ...MONO, wordBreak: "break-all" };
-
-/** The cell shape both fact panels on this screen share.
+ *  `.facttable .fv` — which `kit.FactTable` puts on every value — is a *figure*
+ *  treatment: right-aligned, bold, tabular and `white-space: nowrap`. Four of
+ *  the receipt's seven values are a sentence, a list or a signature, and nowrap
+ *  does not wrap a sentence, it pushes the panel sideways. Set on a child
+ *  rather than on the cell because the stylesheet's `.facttable .fv` is the
+ *  more specific of the two and wins on the cell itself.
  *
- *  `.facttable` styles `td` and stops there — there is no `th` rule anywhere in
- *  the stylesheet — so the "May be sent" header row fell through to the
- *  browser's centred bold, and the row-header labels the receipt wants would
- *  have had no padding and no rule. Stated here so the two tables agree with
- *  each other instead of one taking its border from the stylesheet and the
- *  other from the theme; the class keeps the width, the collapse and the 13px,
- *  which are the parts it gets right. Theme tokens, per §11. */
-const FACT_CELLS = {
-  "& th, & td": {
-    verticalAlign: "top",
-    py: "7px",
-    px: "4px",
-    borderBottom: 1,
-    borderColor: "divider",
-  },
-} as const;
+ *  `AttributionScreen`'s `FactNote` is the same escape for the same reason and
+ *  differs only in muting the ink, which makes this the second call site for
+ *  one idea — a `kit` candidate under ui-standards §10, and not something
+ *  either file may add. */
+function FactWords({ children, sx }: { children: ReactNode; sx?: SxProps<Theme> }) {
+  return (
+    <Box
+      sx={{
+        textAlign: "left", fontWeight: 400, whiteSpace: "normal", ...sx,
+      }}
+    >
+      {children}
+    </Box>
+  );
+}
 
 /** What each break-glass action is called, and how loud it is.
  *
@@ -129,13 +121,10 @@ function DisclosurePanel({
 }: { statement: DisclosureStatement; payloads: PayloadsReport | null }) {
   const live = statement.provider !== "mock";
   return (
-    <Paper variant="outlined" sx={{ p: 3 }}>
-      <SectionHeader
-        level="section"
-        title="What reaches a model"
-        sub="Served from the same constants the outbound checker measures against, so this statement and the behaviour cannot drift apart without a test failing."
-      />
-
+    <Section
+      title="What reaches a model"
+      sub="Served from the same constants the outbound checker measures against, so this statement and the behaviour cannot drift apart without a test failing."
+    >
       <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", mb: 2 }}>
         {/* The provider, not the model. `disclosure.statement()` reports
             `AI_MODEL` whatever the provider is, so on the default configuration
@@ -181,31 +170,41 @@ function DisclosurePanel({
           by the size of the business, and these two are set by the code.
           The scroll box is the wrapper §3 asks for: three columns, one of them
           a sentence, must scroll inside their own box on a tablet rather than
-          taking the page sideways with them. */}
-      <Typography variant="subtitle2" sx={{ mb: 1 }}>May be sent</Typography>
+          taking the page sideways with them.
+
+          Not `kit.FactTable`: that is the two-column label-and-value panel, and
+          this carries three columns under their own headings. What the kit does
+          settle is the cell shape — padding, the rule under each cell, the
+          left-aligned row header and the heavier `thead` — which now comes from
+          `.facttable` in the stylesheet rather than from a local const. The
+          alignment is all that is left, and it is this table's own: one column
+          is a sentence, so a category has to sit level with the first line of
+          its reason rather than against the middle of it. */}
+      <PanelMark sx={{ mb: 1 }}>May be sent</PanelMark>
       <Box sx={{ overflowX: "auto", mb: 3 }}>
         <Box
           component="table"
           className="facttable"
           sx={{
-            ...FACT_CELLS,
             minWidth: 520,
-            "& th": {
-              typography: "subtitle2",
-              color: "text.secondary",
-              textAlign: "left",
-              verticalAlign: "bottom",
-            },
+            "& th, & td": { verticalAlign: "top" },
+            "& thead th": { verticalAlign: "bottom" },
           }}
         >
           <thead>
-            <tr><th>Category</th><th>Example</th><th>Why it has to go</th></tr>
+            <tr>
+              <th scope="col">Category</th>
+              <th scope="col">Example</th>
+              <th scope="col">Why it has to go</th>
+            </tr>
           </thead>
           <tbody>
             {statement.allowed.map((a) => (
               <tr key={a.category}>
                 <td>{a.category}</td>
-                <td style={MONO}>{a.example}</td>
+                {/* `theme.ts` gives `.mono` a face now, so the identifier this
+                    cell holds no longer needs a local font constant. */}
+                <td className="mono">{a.example}</td>
                 <Box component="td" sx={{ color: "text.secondary" }}>{a.why}</Box>
               </tr>
             ))}
@@ -213,13 +212,13 @@ function DisclosurePanel({
         </Box>
       </Box>
 
-      <Typography variant="subtitle2" sx={{ mb: 1 }}>Never sent</Typography>
+      <PanelMark sx={{ mb: 1 }}>Never sent</PanelMark>
       <Box component="ul" sx={{ pl: 3, my: 0, "& li": { mb: 0.5 } }}>
         {statement.never_sent.map((n) => (
           <Typography component="li" key={n} variant="body2">{n}</Typography>
         ))}
       </Box>
-    </Paper>
+    </Section>
   );
 }
 
@@ -270,7 +269,7 @@ function PayloadCheck({ payloads }: { payloads: PayloadsReport }) {
       <Box component="ul" sx={{ pl: 3, mt: 1, mb: 0 }}>
         {bad.map((p) => (
           <Typography component="li" key={p.payload_id} variant="body2">
-            <span style={MONO}>{p.payload_id}</span>
+            <span className="mono">{p.payload_id}</span>
             {p.decision_type ? ` · ${p.decision_type}` : ""}
             {" — "}{p.findings.join(", ")}
           </Typography>
@@ -321,12 +320,10 @@ function AccessPanel({ report }: { report: AccessReport }) {
   ], []);
 
   return (
-    <Paper variant="outlined" sx={{ p: 3 }}>
-      <SectionHeader
-        level="section"
-        title="Who has opened your data"
-        sub="One row per event — a grant, each use inside it, and the revocation — newest first. There is no filter on this endpoint and no way to ask for a redacted subset."
-      />
+    <Section
+      title="Who has opened your data"
+      sub="One row per event — a grant, each use inside it, and the revocation — newest first. There is no filter on this endpoint and no way to ask for a redacted subset."
+    >
       <DataGrid<AccessEventRow>
         ariaLabel="Staff access to this organization"
         rows={report.events}
@@ -363,7 +360,7 @@ function AccessPanel({ report }: { report: AccessReport }) {
       <Typography variant="body2" color="text.secondary" sx={{ mt: 2, maxWidth: "80ch" }}>
         {report.note}
       </Typography>
-    </Paper>
+    </Section>
   );
 }
 
@@ -390,12 +387,10 @@ function ExportPanel({ token }: { token: string }) {
   }
 
   return (
-    <Paper variant="outlined" sx={{ p: 3 }}>
-      <SectionHeader
-        level="section"
-        title="Take your data elsewhere"
-        sub="Everything this organization owns, as JSON — including the cross-connector identity graph, which no single source system holds."
-      />
+    <Section
+      title="Take your data elsewhere"
+      sub="Everything this organization owns, as JSON — including the cross-connector identity graph, which no single source system holds."
+    >
       {error && <Box sx={{ mb: 2 }}><ErrorState error={error} /></Box>}
       {/* MUI's own loading state, and the label stays put underneath it: a word
           that swaps to "Preparing…" is a button whose accessible name moves
@@ -406,7 +401,7 @@ function ExportPanel({ token }: { token: string }) {
         onClick={download} loading={busy} loadingPosition="start">
         Download export
       </Button>
-    </Paper>
+    </Section>
   );
 }
 
@@ -450,11 +445,10 @@ function ErasurePanel({
   if (state.erased && state.receipt) {
     const r = state.receipt;
     return (
-      <Paper variant="outlined" sx={{ p: 3 }}>
-        <SectionHeader
-          level="section"
-          title="This organization has been erased"
-          sub="The data key was destroyed, so everything encrypted under it is unreadable everywhere it exists — including in backups that cannot be selectively edited." />
+      <Section
+        title="This organization has been erased"
+        sub="The data key was destroyed, so everything encrypted under it is unreadable everywhere it exists — including in backups that cannot be selectively edited."
+      >
         <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap", mb: 2 }}>
           <StatusChip
             label={r.verified ? "Receipt signature verified" : "Receipt signature does NOT verify"}
@@ -474,63 +468,51 @@ function ErasurePanel({
                         tip="A receipt exists but the data key was not destroyed. That is a defect — report it." />
           )}
         </Stack>
-        <Box
-          component="table"
-          className="facttable"
-          sx={{
-            ...FACT_CELLS,
-            /* The label column is a row header, not a value: `<th scope="row">`
-               so a screen reader announces "Method — key destruction" rather
-               than reading a naked value out of a two-column grid. `.facttable`
-               has no `th` rule, which is what `FACT_CELLS` is covering. */
-            "& th": {
-              textAlign: "left",
-              fontWeight: 600,
-              color: "text.secondary",
-              width: "24ch",
-              pr: 2,
-            },
-          }}
-        >
-          <tbody>
-            <tr><th scope="row">Erased</th><td>{formatDateTime(r.erased_at)}</td></tr>
-            <tr><th scope="row">Reason given</th><td>{r.reason}</td></tr>
-            <tr><th scope="row">Requested by</th><td>{r.actor_user_id || "—"}</td></tr>
-            <tr><th scope="row">Method</th><td>{r.method}</td></tr>
-            {/* Both halves of the attestation, verbatim from the signed body.
-                The uncomfortable half is the one this panel must not omit:
-                a receipt that lists only what was destroyed is the
-                overstatement the server just stopped making.
+        {/* `kit.FactTable` owns the row-header shape now: it emits
+            `<th scope="row">` so a screen reader announces "Method — key
+            destruction" rather than reading a naked value out of a two-column
+            grid, and the padding and rule come from `.facttable` rather than
+            from a local cell const.
 
-                An empty list says so in words rather than leaving the cell
-                blank. A blank "Still readable, in plaintext" reads as "nothing
-                survived", which is exactly the claim the receipt declines to
-                make — absence of an entry is not evidence of an absence. */}
-            <tr>
-              <th scope="row">Destroyed with the key</th>
-              <td><ReceiptList
+            The two attestation rows carry both halves, verbatim from the signed
+            body. The uncomfortable half is the one this panel must not omit: a
+            receipt that lists only what was destroyed is the overstatement the
+            server just stopped making. An empty list says so in words rather
+            than leaving the cell blank — a blank "Still readable, in plaintext"
+            reads as "nothing survived", which is exactly the claim the receipt
+            declines to make. */}
+        <FactTable
+          rows={[
+            ["Erased", formatDateTime(r.erased_at)],
+            ["Reason given", <FactWords>{r.reason}</FactWords>],
+            ["Requested by", r.actor_user_id || "—"],
+            ["Method", r.method],
+            ["Destroyed with the key", (
+              <ReceiptList
                 items={(r.destroyed ?? []).map((d) => ({
                   id: `${d.table}.${d.column}`,
                   ref: `${d.table}.${d.column}`,
                   text: d.holds,
-                }))} /></td>
-            </tr>
-            <tr>
-              <th scope="row">Still readable, in plaintext</th>
-              <td><ReceiptList
+                }))} />
+            )],
+            ["Still readable, in plaintext", (
+              <ReceiptList
                 items={(r.survives_plaintext ?? []).map((s) => ({
                   id: `${s.table}:${s.column}`,
                   ref: `${s.table}: ${s.column}`,
                   text: s.why,
-                }))} /></td>
-            </tr>
-            <tr>
-              <th scope="row">Signature</th>
-              <td style={MONO_WRAP}>{r.signature}</td>
-            </tr>
-          </tbody>
-        </Box>
-      </Paper>
+                }))} />
+            )],
+            /* One unbroken run of characters, so it needs a break rule of its
+               own or it decides the column's width. */
+            ["Signature", (
+              <FactWords sx={{ wordBreak: "break-all" }}>
+                <span className="mono">{r.signature}</span>
+              </FactWords>
+            )],
+          ]}
+        />
+      </Section>
     );
   }
 
@@ -561,7 +543,13 @@ function ErasurePanel({
        it out. A left rule in the error colour is the house idiom already
        (`.ap-card.ap-rejected`), and it is emphasis rather than meaning: the
        heading, the warning and the button colour all say "destructive" in
-       words, so a reader who loses the hue loses nothing (§6). */
+       words, so a reader who loses the hue loses nothing (§6).
+
+       The one section on this screen that is still a hand-written `Paper`:
+       `kit.Section` takes no `sx`, so it has nowhere to put that rule, and
+       dropping the rule to use the kit would trade the marking for the
+       vocabulary. Recorded rather than worked around — a `tone` or an `sx` on
+       `Section` is the fix, and it belongs in kit.tsx. */
     <Paper variant="outlined" sx={{ p: 3, borderLeft: 3, borderLeftColor: "error.main" }}>
       <SectionHeader
         level="section"
@@ -677,19 +665,26 @@ function ReceiptList({
 }: { items: { id: string; ref: string; text: string }[] }) {
   if (items.length === 0) {
     return (
-      <Typography variant="body2" color="text.secondary">
-        The receipt lists none.
-      </Typography>
+      <FactWords>
+        <Typography variant="body2" color="text.secondary">
+          The receipt lists none.
+        </Typography>
+      </FactWords>
     );
   }
   return (
-    <Stack spacing={0.5}>
-      {items.map((i) => (
-        <Typography variant="body2" key={i.id}>
-          <span style={MONO}>{i.ref}</span> — {i.text}
-        </Typography>
-      ))}
-    </Stack>
+    /* `FactWords` on the way out rather than at each call site: this renders
+       into a value cell both times, and a list of column references is the
+       furthest thing on the panel from the figure `.fv` is shaped for. */
+    <FactWords>
+      <Stack spacing={0.5}>
+        {items.map((i) => (
+          <Typography variant="body2" key={i.id}>
+            <span className="mono">{i.ref}</span> — {i.text}
+          </Typography>
+        ))}
+      </Stack>
+    </FactWords>
   );
 }
 

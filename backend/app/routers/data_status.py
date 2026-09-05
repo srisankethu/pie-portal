@@ -822,7 +822,8 @@ LOG_PAGE = 2000
 
 def _log_rows(session: Session, org: str, sync_run_id: str, *,
               after_seq: int, limit: int,
-              levels: Optional[set[str]] = None) -> tuple[models.SyncRun, list[dict[str, Any]], int]:
+              levels: Optional[set[str]] = None
+              ) -> tuple[models.SyncRun, list[dict[str, Any]], int, int]:
     """One run's log from a cursor, with how many lines it holds in total.
 
     Scoped to the caller's organization inside the query rather than checked
@@ -832,6 +833,14 @@ def _log_rows(session: Session, org: str, sync_run_id: str, *,
     ``after_seq`` is what makes a live pull watchable — the screen polls for
     what it has not already seen instead of re-fetching an hour of log every
     two seconds.
+
+    **Two counts come back, and they answer different questions.** ``total`` is
+    how many lines match what was *asked for*, narrowed by ``levels`` — the
+    denominator a reader is paging through. ``stored`` is how many lines the run
+    kept at all, which is a property of the run rather than of this request, and
+    is what :func:`_log_note` has to read: "this run kept no log" is a claim
+    about the run, and building it from the filtered count said it about a
+    perfectly clean run that simply had nothing to warn about.
     """
     run = session.scalar(
         select(models.SyncRun)
@@ -848,6 +857,13 @@ def _log_rows(session: Session, org: str, sync_run_id: str, *,
         stmt = stmt.where(models.SyncRunLog.level.in_(sorted(levels)))
     total = int(session.scalar(
         select(func.count()).select_from(stmt.subquery())) or 0)
+    # Counted separately only where a filter narrowed the set. Without one the
+    # two questions have the same answer, and asking twice would double the
+    # queries the whole-log download makes on every one of its pages.
+    stored = total if not levels else int(session.scalar(
+        select(func.count()).select_from(models.SyncRunLog)
+        .where(models.SyncRunLog.sync_run_id == sync_run_id,
+               models.SyncRunLog.organization_id == org)) or 0)
     rows = session.scalars(
         stmt.where(models.SyncRunLog.seq > after_seq)
         .order_by(models.SyncRunLog.seq).limit(limit)).all()
@@ -860,7 +876,7 @@ def _log_rows(session: Session, org: str, sync_run_id: str, *,
             "message": r.message,
         }
         for r in rows
-    ], total
+    ], total, stored
 
 
 @router.get("/sync-runs/{sync_run_id}/log")
@@ -879,7 +895,7 @@ def sync_run_log(
     answer is a handful of lines inside several thousand.
     """
     levels = {"WARNING", "ERROR", "CRITICAL"} if problems_only else None
-    run, rows, total = _log_rows(
+    run, rows, total, stored = _log_rows(
         session, principal.organization_id, sync_run_id,
         after_seq=after_seq, limit=max(1, min(limit, LOG_PAGE)), levels=levels)
     return {
@@ -899,14 +915,28 @@ def sync_run_log(
         "next_seq": rows[-1]["seq"] if rows else after_seq,
         # Said plainly rather than left to be inferred from a line count: a run
         # from before this table existed holds no log, and an empty panel that
-        # cannot say why reads as "the sync did nothing".
-        "note": _log_note(run, total),
+        # cannot say why reads as "the sync did nothing". Built from `stored`
+        # and never from `total` — see `_log_note`.
+        "note": _log_note(run, stored),
     }
 
 
-def _log_note(run: models.SyncRun, held: int) -> Optional[str]:
-    """Why a log is empty, when it is. Absence needs a reason, not a blank box."""
-    if held:
+def _log_note(run: models.SyncRun, stored: int) -> Optional[str]:
+    """Why a log is empty, when it is. Absence needs a reason, not a blank box.
+
+    ``stored`` is how many lines the run kept **in total**, never how many this
+    request returned. The two differ the moment ``problems_only`` is on, and
+    this sentence used to be built from the filtered count — so a run that
+    completed cleanly *with* a full log was told it "kept no log", because the
+    filter had removed every line and nothing here could tell that apart from a
+    run that recorded nothing. A claim about the run made out of a fact about
+    the view: exactly the benign default CLAUDE.md §1 rules out, and in the
+    direction that reads as reassurance.
+
+    What a filter left is the caller's own question and stays with the caller —
+    only it knows what it asked for. This answers the run's question.
+    """
+    if stored:
         return None
     if run.status in jobs.ACTIVE:
         return "This run has not written its first log lines yet."
@@ -929,10 +959,14 @@ def sync_run_log_text(
     """
     org = principal.organization_id
     lines: list[str] = []
-    after, run = -1, None
+    # `stored` is the same on every page — it counts the run's lines, not this
+    # page's — so the last one read is the whole log's count. Seeded here for
+    # the reason `run` is: the note below is written whether or not the loop
+    # found anything to page through.
+    after, run, stored = -1, None, 0
     while True:
-        run, rows, _total = _log_rows(session, org, sync_run_id,
-                                      after_seq=after, limit=LOG_PAGE)
+        run, rows, _total, stored = _log_rows(session, org, sync_run_id,
+                                              after_seq=after, limit=LOG_PAGE)
         if not rows:
             break
         lines.extend(f"{r['at']} {r['level']:<8} {r['logger']}: {r['message']}"
@@ -949,7 +983,7 @@ def sync_run_log_text(
     ]
     if run is not None and run.error:
         header[-1:] = [f"# error {run.error}", ""]
-    note = _log_note(run, len(lines)) if run is not None else None
+    note = _log_note(run, stored) if run is not None else None
     if note:
         header[-1:] = [f"# {note}", ""]
 

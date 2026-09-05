@@ -212,15 +212,8 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 .factchip .v { font-variant-numeric: tabular-nums; font-weight: 600; }
 .dcard-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 
-/* the interpretation panel — steel tint + 2px accent edge, distinct from facts */
-.interp { border: 1px solid var(--color-accent-300); border-left: 2px solid var(--color-accent); background: var(--color-accent-100); padding: 12px 14px; }
-.interp-mark { font-family: var(--font-heading); font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-accent-800); display: inline-flex; align-items: center; gap: 6px; margin-bottom: 6px; }
-.interp-mark::before { content: ""; width: 7px; height: 7px; background: var(--color-accent); }
-.interp p { margin: 0; font-size: 14px; line-height: 1.5; }
+/* the interpretation panel — steel tint + 2px accent edge, distinct from facts */.interp p { margin: 0; font-size: 14px; line-height: 1.5; }
 .interp .rec { font-weight: 600; }
-
-.facts-mark { font-family: var(--font-heading); font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-text); display: inline-flex; align-items: center; gap: 6px; margin-bottom: 8px; }
-.facts-mark::before { content: ""; width: 7px; height: 7px; background: var(--color-text); }
 
 /* ── the state-derived decision card ────────────────────────────────────────
  *
@@ -228,29 +221,10 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
  * means "a model wrote this"; these numbers are arithmetic and colouring them
  * the same way would teach the reader the wrong thing about both.
  */
-.impact { border: 1px solid var(--color-divider); border-left: 2px solid var(--color-text); padding: 12px 14px; margin-bottom: 14px; }
-.impact-mark { font-family: var(--font-heading); font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-neutral-700); margin-bottom: 4px; }
-.impact-figure { font-family: var(--font-heading); font-size: 30px; font-variant-numeric: tabular-nums; line-height: 1.1; }
-.impact-basis { font-size: 12.5px; color: var(--color-neutral-700); margin-top: 4px; max-width: 46ch; }
-.impact-monthly { margin-top: 8px; font-size: 15px; font-variant-numeric: tabular-nums; font-weight: 600; }
-.impact-monthly span { font-weight: 400; font-size: 12.5px; color: var(--color-neutral-700); }
-.impact-ops { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: 10px; font-size: 12px; color: var(--color-neutral-700); }
-.impact-ops b { font-variant-numeric: tabular-nums; color: var(--color-text); }
-
-.why-text { font-size: 13.5px; line-height: 1.55; margin: 0 0 10px; max-width: 62ch; }
-
 .actions-list { list-style: none; margin: 0 0 14px; padding: 0; }
 /* Equals, not a primary and some alternatives: the platform presents these and
    does not choose, and a highlighted first option would be choosing. */
 .actions-list li { border: 1px solid var(--color-divider); border-left: 2px solid var(--color-neutral-500); padding: 7px 11px; margin-bottom: 6px; font-size: 13.5px; }
-
-.ranking { border: 1px dashed var(--color-divider); padding: 10px 12px; margin-top: 12px; }
-.ranking-mark { font-family: var(--font-heading); font-size: 10.5px; letter-spacing: 0.09em; text-transform: uppercase; color: var(--color-neutral-700); margin-bottom: 6px; }
-.ranking-sum { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; font-size: 12.5px; }
-.ranking-sum b { font-variant-numeric: tabular-nums; font-size: 15px; }
-.ranking-sum .op { color: var(--color-neutral-600); font-size: 14px; }
-.ranking-sum .total b { font-size: 18px; }
-.ranking-scale { margin-top: 6px; font-size: 11px; color: var(--color-neutral-600); }
 
 /* the drill-down */
 .trace { border-left: 2px solid var(--color-divider); padding-left: 12px; margin: 10px 0 4px; }
@@ -492,10 +466,6 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
   color: var(--color-neutral-500); margin-top: 3px;
 }
 .sync-opts .input { max-width: 200px; }
-.sync-check {
-  display: flex; align-items: center; gap: 7px;
-  font-size: 13px; font-weight: 400; color: var(--color-neutral-700);
-}
 .conn-result {
   margin-top: 12px; padding: 9px 12px; border-radius: var(--radius-md);
   background: var(--color-accent-100); border: 1px solid var(--color-accent-200);
@@ -533,7 +503,6 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 
 .ci-controls { display: flex; gap: 12px; align-items: flex-end; margin-bottom: 10px; flex-wrap: wrap; }
 .ci-controls label { font-size: 12px; font-weight: 600; color: var(--color-neutral-700); display: grid; gap: 4px; }
-.ci-controls .input { min-width: 190px; }
 
 /* Wide comparative tables scroll inside their own card rather than pushing the
    page sideways. */
@@ -805,16 +774,6 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
   font-family: "Barlow Condensed", sans-serif; text-transform: uppercase;
   letter-spacing: .06em; font-weight: 600; font-size: 12.5px; margin-bottom: 4px;
 }
-.cred-orgs { list-style: none; margin: 8px 0 0; padding: 0; }
-.cred-orgs li { margin-bottom: 4px; }
-.cred-org {
-  width: 100%; text-align: left; font-size: 12.5px; padding: 6px 9px;
-  border: 1px solid var(--color-divider); border-radius: 3px;
-  background: var(--color-surface); cursor: pointer;
-}
-.cred-org:disabled { opacity: .55; cursor: default; }
-.cred-org .mono { color: var(--color-neutral-600); font-size: 11px; }
-.cred-org em { color: var(--color-accent-700); font-style: normal; font-size: 11px; }
 .cred-or {
   margin-top: 12px; font-size: 11.5px; color: var(--color-neutral-600);
   text-align: center; text-transform: lowercase;
@@ -921,13 +880,7 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 .mp-fixed dt { font-size: 10.5px; color: var(--color-neutral-600); }
 .mp-fixed dd { margin: 0; font-size: 13.5px; font-weight: 600; font-variant-numeric: tabular-nums; }
 
-/* ── connections ──────────────────────────────────────────────────────────── */
-.cx-pool {
-  font-size: 12px; padding: 9px 12px; border-radius: 3px; margin-bottom: 12px;
-  background: var(--caution-bg); color: var(--caution-fg);
-  border-left: 3px solid var(--warn);
-}
-.cx-list { display: flex; flex-direction: column; gap: 10px; }
+/* ── connections ──────────────────────────────────────────────────────────── */.cx-list { display: flex; flex-direction: column; gap: 10px; }
 .cx-card { padding: 13px 15px; border-left: 3px solid var(--color-neutral-400); }
 .cx-card.ok { border-left-color: var(--color-accent); }
 .cx-card.bad { border-left-color: var(--danger-fg); }
@@ -937,12 +890,6 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 .cx-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .cx-name h4 { margin: 0; font-size: 15px; }
 .cx-name .input { font-size: 14px; padding: 3px 7px; max-width: 260px; }
-.cx-badge {
-  font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
-  padding: 2px 8px; border-radius: 10px; border: 1px solid currentColor; white-space: nowrap;
-}
-.cx-badge.ok { color: var(--color-accent-700); }
-.cx-badge.bad { color: var(--danger-fg); }
 .cx-badge.unknown { color: var(--color-neutral-600); }
 .cx-badge.off { color: var(--color-neutral-600); }
 .cx-facts {
@@ -951,8 +898,6 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 }
 .cx-facts dt { font-size: 10.5px; color: var(--color-neutral-600); display: flex; align-items: center; }
 .cx-facts dd { margin: 0; font-size: 13px; word-break: break-word; }
-.cx-detail { font-size: 12px; color: var(--color-neutral-700); margin: 7px 0 0; }
-.cx-detail.bad { color: var(--danger-fg); }
 /* The window to read, on the card whose button uses it. It used to sit in a
    panel further down the page, so a per-company pull read as a pull with no
    date — and silently used whatever had been typed for a different company. */
@@ -962,8 +907,6 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 }
 .cx-pull > label { font-size: 11.5px; font-weight: 600; color: var(--color-neutral-700); }
 .cx-pull .input { max-width: 190px; padding: 4px 8px; font-size: 13px; }
-.cx-pull .sync-check { font-size: 12px; }
-.cx-lastpull { font-size: 11.5px; color: var(--color-neutral-600); }
 .cx-actions { display: flex; gap: 7px; flex-wrap: wrap; margin-top: 12px; align-items: center; }
 .cx-actions .spacer { flex: 1 1 auto; }
 .cx-add { margin-top: 14px; }
@@ -987,16 +930,7 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
   margin-top: 14px; padding-top: 10px;
   border-top: 1px solid var(--color-divider);
 }
-.cx-unused .cred-orgs li { display: flex; align-items: center; gap: 6px; }
 .cx-unused .mono { font-size: 11.5px; color: var(--color-neutral-600); }
-
-.cx-tabs { display: flex; gap: 6px; margin-bottom: 12px; flex-wrap: wrap; }
-.cx-tab {
-  font-size: 12px; padding: 4px 11px; border-radius: 12px; cursor: pointer;
-  border: 1px solid var(--color-divider); background: var(--color-surface);
-  font-family: var(--font-body); color: var(--color-neutral-700);
-}
-.cx-tab[aria-pressed="true"] { background: var(--color-accent); color: #fff; border-color: var(--color-accent); }
 .cx-scopes { width: 100%; border-collapse: collapse; font-size: 12.5px; margin-top: 8px; }
 .cx-scopes td { padding: 6px 8px 6px 0; border-bottom: 1px solid var(--color-divider); vertical-align: top; }
 .cx-scopes td.mono { white-space: nowrap; color: var(--color-accent-800); }
@@ -1006,15 +940,7 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 }
 /* What a grant probe found missing. Only the gaps are listed, so this block is
    absent entirely on a healthy connection rather than showing ten green ticks
-   nobody needs to read. */
-.cx-scopegaps {
-  list-style: none; margin: 7px 0 0; padding: 0;
-  font-size: 12px; color: var(--color-neutral-700);
-}
-.cx-scopegaps li { margin-bottom: 3px; }
-.cx-scopegaps li.bad { color: var(--danger-fg); }
-.cx-scopegaps code { font-size: 11.5px; }
-.cx-scopestring {
+   nobody needs to read. */.cx-scopestring {
   margin-top: 10px; padding: 8px 10px; background: var(--color-neutral-100);
   border: 1px solid var(--color-divider); border-radius: 3px;
   font-size: 11.5px; word-break: break-all; display: flex; gap: 10px; align-items: center;
@@ -1026,7 +952,6 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
    describe different connectors. */
 .cx-access { margin-top: 18px; border-top: 1px solid var(--color-divider); }
 .cx-access .section-h { margin-top: 14px; }
-.cx-empty { padding: 16px; font-size: 13px; color: var(--color-neutral-700); }
 
 /* ── sync status ────────────────────────────────────────────────────────────
    The screen renders from persisted job state, so this card is what a page
@@ -1129,7 +1054,6 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 .id-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; }
 .id-name { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .id-name h4 { margin: 0; font-size: 15px; }
-.id-name .input { font-size: 14px; padding: 3px 7px; max-width: 260px; }
 .id-badge {
   font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
   padding: 2px 9px; border-radius: 10px; border: 1px solid currentColor; white-space: nowrap;
@@ -1231,9 +1155,7 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 }
 
 /* Rotating a connection's Zoho token. Closed until asked for: a token box
-   sitting open on a working connection invites somebody to paste into it. */
-.cx-rotate-open { margin-top: 4px; padding-left: 0; }
-.cx-rotate {
+   sitting open on a working connection invites somebody to paste into it. */.cx-rotate {
   margin: 10px 0 4px; padding: 12px 14px;
   border-left: 3px solid var(--color-accent);
   background: var(--color-accent-100);

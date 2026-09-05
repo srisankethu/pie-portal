@@ -17,7 +17,8 @@ import { count, money } from "../money";
 import { formatDateTime, since as when, todayISO } from "../when";
 import { papi } from "./api";
 import {
-  ErrorState, LoadingState, SectionHeader, StatusChip, TOUCH, type Tone,
+  ErrorState, FactTable, LoadingState, Meta, PanelMark, SectionHeader,
+  StatusChip, TOUCH, type Tone,
 } from "./kit";
 import { ConnectionsPanel } from "./ConnectionsPanel";
 import { RunLogPanel } from "./RunLogPanel";
@@ -67,77 +68,57 @@ const RESULT_TONE: Record<string, Tone> = {
 
 /** A default worth offering rather than a default worth hiding: eighteen months
  *  gives the detectors a full recent window, a full comparison window and room
- *  above the six-month history floor. The operator can move it either way. */
-function defaultSince(): string {
-  const d = new Date(`${todayISO()}T00:00:00`);
-  d.setMonth(d.getMonth() - 18);
-  d.setDate(1);
-  return d.toLocaleDateString("en-CA");
-}
-
-/** The second line of a grid cell: what the row is, after what it is.
+ *  above the six-month history floor. The operator can move it either way.
  *
- *  `className="fsrc"` inside an AG Grid cell matches nothing — `styles.css`
- *  declares `.fsrc` only inside `.facttable`, `.sync-opts` and `.cx-add` — so
- *  both lines of these rows were rendering at body size in body ink, and the
- *  hierarchy the row height reserves was not being drawn. Theme tokens through
- *  `Typography`, per ui-standards §11. Local, and identical to the one
- *  `SkippedRowsPanel` carries: `kit.tsx` is not this change's to edit, and one
- *  shared component for every `.fsrc` that sits outside a `.facttable` belongs
- *  there rather than copied into a third screen with a third idea of what a
- *  second line looks like. */
-function Meta({ children }: { children: ReactNode }) {
-  return (
-    <Typography variant="caption" component="div" color="text.secondary">
-      {children}
-    </Typography>
-  );
+ *  Calendar arithmetic on the business day's own `YYYY-MM-DD`, never through a
+ *  `Date`. The previous version built one from `todayISO()` — which parses as
+ *  *browser-local* midnight — then read it back out with
+ *  `toLocaleDateString("en-CA")`, which is the browser's zone again and, as
+ *  `when.ts` says of the same call it removed from `todayISO`, produces
+ *  `YYYY-MM-DD` by a coincidence of that locale's conventions rather than by
+ *  asking for it. Two zone assumptions that happen to cancel are still two
+ *  assumptions, and `when.ts` exists so that a screen carries none.
+ *
+ *  It also lost a whole month on the 29th, 30th and 31st: `setMonth(m - 18)`
+ *  from 31 August overflows February into 3 March, and the `setDate(1)` meant
+ *  to floor it then landed on 1 March rather than 1 February. Months are the
+ *  only unit here, so months are the only unit it counts in.
+ *
+ *  This is `routers/connections._default_since`'s arithmetic exactly — the
+ *  same total-months division, against the same 18, which is the server's
+ *  `DEFAULT_HISTORY_MONTHS`. That the figure is written twice is a real
+ *  duplication and it is not closable from here: `DataStatus` carries
+ *  `auto_sync.covers_from` (which this field prefers the moment it arrives) but
+ *  not the server's own default, so a client with no coverage yet has nothing
+ *  to read. Until it does, the two at least compute it the same way. */
+function defaultSince(): string {
+  const [y, m] = todayISO().split("-").map(Number);
+  const months = y * 12 + (m - 1) - 18;
+  const year = Math.floor(months / 12);
+  const month = months % 12 + 1;
+  return `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-01`;
 }
 
 /** One row of a fact panel: a label, the figure, and — where the label is
  *  accurate but incomplete — the tooltip that says what the figure means. */
 type FactRow = { label: string; value: ReactNode; tip?: string; note?: ReactNode };
 
-/** A named group of fact rows, as its own `<tbody>`.
+/** A group's rows in the shape `kit.FactTable` takes: label, value, note.
  *
- *  A `<table>`, still: a label and a value with a row count set by the shape of
- *  the run report rather than by the size of the business is the fact panel
- *  ui-standards §3 keeps out of `DataGrid`, and a paginator over a column of
- *  counters would be the mistake in the other direction.
- *
- *  What it did need is a hierarchy. One undifferentiated column of counters is
- *  a list nobody reads to the bottom of, and the bottom is where the platform
- *  says what it *made* of the pull — signals, decisions, the rows it had to
- *  skip. Three groups, each headed, so "did anything come out of this?" is not
- *  four scroll-lengths under "how many customers landed". */
-function FactGroup({ title, rows }: { title: string; rows: FactRow[] }) {
-  return (
-    <tbody>
-      <tr>
-        <Box
-          component="th" scope="rowgroup" colSpan={2}
-          sx={{
-            // `px` to line the heading up with the label column: `.facttable`
-            // pads its `td`s and has no rule for a `th`.
-            textAlign: "left", typography: "overline",
-            color: "text.secondary", pt: 1.5, pb: 0.25, px: 0.5,
-          }}
-        >
-          {title}
-        </Box>
-      </tr>
-      {rows.map((r) => (
-        <tr key={r.label}>
-          <td>
-            {r.tip ? <Labelled tip={r.tip}>{r.label}</Labelled> : r.label}
-            {/* `.fsrc` is declared for `.facttable`, so here it applies. */}
-            {r.note ? <div className="fsrc">{r.note}</div> : null}
-          </td>
-          <td className="fv">{r.value}</td>
-        </tr>
-      ))}
-    </tbody>
-  );
+ *  The panel is three `FactTable`s rather than one, because the kit's fact
+ *  panel has no row groups and the grouping is what makes this column of
+ *  counters readable — one undifferentiated list is a list nobody reaches the
+ *  bottom of, and the bottom is where the platform says what it *made* of the
+ *  pull. Each group's name is the table's own `<caption>`, so it is announced
+ *  with the rows it heads rather than merely sitting above them, and it keeps
+ *  the mark rung it had through `PanelMark`. `.facttable` is `width: 100%` and
+ *  its values are right-aligned, so three tables line up on both edges. */
+function factRows(rows: FactRow[]): readonly (readonly [ReactNode, ReactNode, ReactNode?])[] {
+  return rows.map((r): readonly [ReactNode, ReactNode, ReactNode?] => [
+    r.tip ? <Labelled tip={r.tip}>{r.label}</Labelled> : r.label,
+    r.value,
+    r.note,
+  ]);
 }
 
 /** What the last run did: when it ran, what it read, what came of it.
@@ -553,11 +534,19 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                       )}
                     </Alert>
                   )}
-                  <table className="facttable">
+                  {/* The air between groups, which the single table carried on
+                      each group heading's own `pt`. A caption has only the
+                      padding `FactTable` gives it, so the gap belongs between
+                      the tables rather than inside one of them. */}
+                  <Box sx={{ "& table + table": { mt: 1.5 } }}>
                     {factGroups(s).map((g) => (
-                      <FactGroup key={g.title} title={g.title} rows={g.rows} />
+                      <FactTable
+                        key={g.title}
+                        caption={<PanelMark>{g.title}</PanelMark>}
+                        rows={factRows(g.rows)}
+                      />
                     ))}
-                  </table>
+                  </Box>
                 </>
               )}
             </Bp>
@@ -575,16 +564,12 @@ export function DataScreen({ session, onSynced }: { session: PlatformSession; on
                   either way.
                 </Typography>
               ) : (
-                <table className="facttable">
-                  <tbody>
-                    {readModel.map(([k, v]) => (
-                      <tr key={k}>
-                        <td>{k.replace(/_/g, " ").replace(/^\w/, (m) => m.toUpperCase())}</td>
-                        <td className="fv">{count(v)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
+                <FactTable
+                  rows={readModel.map(([k, v]): readonly [ReactNode, ReactNode] => [
+                    k.replace(/_/g, " ").replace(/^\w/, (m) => m.toUpperCase()),
+                    count(v),
+                  ])}
+                />
               )}
             </Bp>
           </Box>

@@ -97,10 +97,16 @@ _APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 #:                    that is not about a tenant. A model that could reach it
 #:                    could be asked to justify a price, and a justification
 #:                    produced by a model is not an audit trail.
+#: ``sso/``          ID-token verification: the security boundary past which
+#:                    the caller *is* whoever the token says. It reaches
+#:                    ``clock`` and ``ingestion.url_safety`` and nothing else
+#:                    in this codebase. Deciding who is signed in from anything
+#:                    a model produced is the whole of what this package must
+#:                    never do.
 DETERMINISTIC = ("attribution", "commercial", "context", "decoding", "domain",
                  "enquiry", "identity", "ingestion", "master_health",
                  "messaging", "monetization", "observability", "retrieval",
-                 "signals", "state", "trust")
+                 "signals", "sso", "state", "trust")
 
 #: The packages deliberately *outside* ``DETERMINISTIC``, each with the reason
 #: it is out. A package silently omitted from an opt-in list is the same defect

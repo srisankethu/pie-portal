@@ -286,8 +286,17 @@ saved on blur. `AdminScreens`' people-and-roles table followed — smaller, but
 the row count is the size of the team, and "who can see cost?" and "who has
 never signed in?" are both sort questions.
 
-Both are `DataGrid` now, which is also how `DataGridProps` grew the things a
-list of *records* needs rather than a list of numbers: `getRowId`, a row class,
+The observability screen's three followed, and they are the case the
+"still arguable" rows above describe: a capped sample rather than an unbounded
+list — ten failed runs, five sync issues, twenty organizations. The cap is what
+decided it the other way. Each is a *server-side truncation* of a set whose size
+is the business's, so the row count is the business's and the screen was
+silently showing a tenth of it as though it were all of it. The panels now say
+which of the two they are showing, which is the honesty a grid does not supply
+on its own.
+
+Both original conversions are `DataGrid` now, which is also how `DataGridProps`
+grew the things a list of *records* needs rather than a list of numbers: `getRowId`, a row class,
 controlled selection, and an editable cell. That growth is the point — the
 second grid needing selection got it for free, and neither had to open
 `AgGridReact` beside the wrapper.

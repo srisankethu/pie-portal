@@ -6,7 +6,21 @@ PIE has a comprehensive observability foundation for monitoring system health, r
 
 ### Access the Dashboard
 
-**Manager/Owner only:**
+**In the app:** *Setup → System health* (`#/system-health`), offered to a manager
+or an owner — the same pair `require_manager_or_owner` admits on every route
+below. `frontend/src/platform/ObservabilityDashboard.tsx` is the screen; it polls
+the one endpoint below every 30 seconds and shows nothing this file does not
+serve.
+
+That screen existed for some time with no route, no nav entry and no importer,
+so nothing in it had ever run. Read its header comment before changing it: the
+list of what that cost is specific, and every item is a case of this module's
+deliberate `null` being drawn as a figure — a null bottleneck crashing the
+render, a null error rate as a green 0%, a null throughput as 0.0 rec/s. **The
+nulls here are the contract.** A screen that renders one as a number undoes the
+reason this module returns them.
+
+**The API, manager/owner only:**
 
 ```
 GET /api/v1/internal/observability/dashboard

@@ -63,6 +63,7 @@ import TimelineOutlined from "@mui/icons-material/TimelineOutlined";
 import StorageOutlined from "@mui/icons-material/StorageOutlined";
 import ManageSearchOutlined from "@mui/icons-material/ManageSearchOutlined";
 import FingerprintOutlined from "@mui/icons-material/FingerprintOutlined";
+import MonitorHeartOutlined from "@mui/icons-material/MonitorHeartOutlined";
 import PsychologyOutlined from "@mui/icons-material/PsychologyOutlined";
 import ScoreboardOutlined from "@mui/icons-material/ScoreboardOutlined";
 import PendingActionsOutlined from "@mui/icons-material/PendingActionsOutlined";
@@ -143,6 +144,9 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   // this is the decode that says which pack and ruleset answered for one.
   decodedCatalog: ManageSearchOutlined,
   identity: FingerprintOutlined,
+  // A trace, not a shield or a gauge: this screen is the platform's own pulse
+  // — is every component answering, and did the last sync finish.
+  observability: MonitorHeartOutlined,
   states: PsychologyOutlined,
   trust: ShieldOutlined,
   settings: TuneOutlined,

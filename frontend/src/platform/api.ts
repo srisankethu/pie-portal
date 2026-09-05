@@ -1,5 +1,5 @@
 import type { MonetizationCalculation, MonetizationScorecard, MonetizationSegments } from "./types";
-import type { BindingChoice, DecoderArtifact, DecoderProposalResponse, AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, PhraseAliases, RetrievalReport, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteFieldSpec, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { BindingChoice, DecoderArtifact, DecoderProposalResponse, AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, PhraseAliases, RetrievalReport, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ObservabilityDashboard, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteFieldSpec, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -1161,6 +1161,18 @@ export const papi = {
 
   /** What the AI has actually cost and how often it degraded. */
   aiMetrics: (t: string) => req<AiMetricsReport>("/api/v1/internal/ai-metrics", {}, t),
+
+  // ── the platform's own vitals (manager or owner) ──────────────────────────
+  /** Health, capacity, load, this organization's runs, and tenant signal
+   *  counts, in one response.
+   *
+   *  Through `req` rather than a bare `fetch`, which is what the screen used
+   *  to do. Two things came with that: a 401 on an expired session reached
+   *  `noteAuthLoss` and signed the reader out instead of drawing "401" inside
+   *  a dashboard that looked live, and a 500 arrived as the server's own
+   *  description rather than as `res.status`. */
+  observability: (t: string) =>
+    req<ObservabilityDashboard>("/api/v1/internal/observability/dashboard", {}, t),
 
   /** The BYOK card: which providers hold an organization key, and which runs.
    *  No response from any of these ever contains a key — only the hint. */

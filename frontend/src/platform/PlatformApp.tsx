@@ -83,6 +83,8 @@ const AttributionScreen = lazy(() =>
   import("./AttributionScreen").then((m) => ({ default: m.AttributionScreen })));
 const RetrospectiveScreen = lazy(() =>
   import("./RetrospectiveScreen").then((m) => ({ default: m.RetrospectiveScreen })));
+const MonetizationScreen = lazy(() =>
+  import("./MonetizationScreen").then((m) => ({ default: m.MonetizationScreen })));
 const DataScreen = lazy(() =>
   import("./DataScreen").then((m) => ({ default: m.DataScreen })));
 const CatalogScreen = lazy(() =>
@@ -453,6 +455,14 @@ export default function PlatformApp() {
   // no approval queue.
   const [pendingApprovals, setPendingApprovals] = useState(0);
 
+  //: Whether this identity is PIE staff, answered by the server rather than
+  //: inferred from a role. There is no tenant role that could mean this — an
+  //: owner who could grant themselves the pricing console would defeat it — so
+  //: the shell asks `/monetization/access`, which always answers 200 and tells
+  //: a tenant `false`. Defaults to false, so a failed probe hides the door
+  //: rather than offering one that 403s.
+  const [isOperator, setIsOperator] = useState(false);
+
   /** A destination named by the insight layer, followed. The naming table is
    *  in `route.ts` next to the paths it produces. */
   const goViz = useCallback((route: string) => {
@@ -649,6 +659,23 @@ export default function PlatformApp() {
       cancelled = true;
     };
   }, [session, screen]);
+
+  // Asked once per session rather than per screen: whether somebody is PIE
+  // staff cannot change while they are signed in, and re-asking on every
+  // navigation would put a request on every click for an answer that never
+  // moves. A failure leaves it false — the door stays hidden, which is the
+  // safe direction for a surface that carries PIE's own cost and take rate.
+  useEffect(() => {
+    if (!session) { setIsOperator(false); return; }
+    let cancelled = false;
+    papi
+      .monetizationAccess(session.token)
+      .then((r) => !cancelled && setIsOperator(r.operator))
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
+  }, [session]);
 
   const signIn = (s: PlatformSession) => {
     setNotice(null);
@@ -1080,6 +1107,14 @@ export default function PlatformApp() {
       ? ([{ key: "trust", label: "Your data", group: "setup" }] as NavItem[])
       : []),
     { key: "settings", label: "Settings", group: "setup" },
+    // PIE's own pricing model, and the only nav item in this list that is not
+    // about the tenant at all. Gated on the server's answer rather than on a
+    // role: `ability` reasons about what somebody may do inside a workspace,
+    // and being PIE is not a fact any workspace holds.
+    ...(isOperator
+      ? ([{ key: "monetization", label: "Pricing model",
+            group: "setup" }] as NavItem[])
+      : []),
   ];
 
 
@@ -1264,6 +1299,14 @@ export default function PlatformApp() {
                 already held when it arrived. Same role gate — a count of margin
                 findings is a count of products whose margin fell. */}
             <Route path={PATH.retrospective} element={<RetrospectiveScreen session={session} />} />
+
+            {/* Only reachable for an operator, and refused by every endpoint
+                behind it for everyone else. Rendered unconditionally here so a
+                signed-in operator following a link lands on the screen rather
+                than being bounced home by a race with the access probe; a
+                tenant who guesses the URL gets a screen whose every fetch
+                fails, which is the same answer the API gives. */}
+            <Route path={PATH.monetization} element={<MonetizationScreen session={session} />} />
 
             {/* ── QUOTES ──
                 The workspace — every draft in the organization — and, under

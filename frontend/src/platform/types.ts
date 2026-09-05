@@ -2490,3 +2490,251 @@ export interface UnrecordedQuotes extends UnrecordedQuoteTotals {
   currency: string;
   thresholds_version: string;
 }
+
+// ── the monetization console ────────────────────────────────────────────────
+//
+// PIE's own pricing model, not a tenant's. Typed loosely on purpose in two
+// places — `waterfall` and the ladder rows carry a deep, evolving shape the
+// server owns entirely, and a hand-mirrored interface for every nested field
+// would be a second schema that drifts. What *is* typed is everything the
+// screen actually reads, so a rename on the server breaks the build.
+
+/** Money and ratios as they arrive: money is a decimal string, never a number,
+ *  so nothing is lost between the server's `Decimal` and the screen. */
+export interface MonetizationFee {
+  strategy: string;
+  label: string;
+  metric: string;
+  annual_fee: string;
+  fixed_component: string;
+  variable_component: string;
+  basis: Record<string, string>;
+  bound_applied: string | null;
+}
+
+export interface MonetizationEvaluation {
+  customer: string;
+  fee: MonetizationFee;
+  economic_value: string;
+  incremental_gross_profit: string;
+  value_multiple: string | null;
+  customer_roi: number | null;
+  retained_value: string;
+  value_capture_pct: number | null;
+  payback_months: number | null;
+  fee_pct_of_incremental_value: number | null;
+  fee_pct_of_gross_profit: number | null;
+  fee_pct_of_gmv: number | null;
+  revenue_per_rfq: string | null;
+  revenue_per_order: string | null;
+  clears_min_roi: boolean;
+  clears_payback: boolean;
+  thresholds_cleared: Record<string, boolean>;
+  /** Why this fee should not be offered. Null when it clears everything — and
+   *  rendered whenever it is not, because a row failing its own threshold that
+   *  looks like every other row is the whole reason a bad price gets quoted. */
+  refusal: string | null;
+}
+
+export interface MonetizationFunnel {
+  rfqs: string; quotes: string; orders: string;
+  revenue: string; cogs: string; gross_profit: string;
+}
+
+export interface MonetizationWaterfall {
+  profile: Record<string, unknown>;
+  baseline: MonetizationFunnel;
+  with_pie: MonetizationFunnel;
+  covered_baseline: MonetizationFunnel;
+  covered_with_pie: MonetizationFunnel;
+  incremental_orders: string;
+  incremental_revenue: string;
+  incremental_gross_profit: string;
+  components: {
+    gp_from_conversion: string;
+    gp_from_order_value: string;
+    gp_from_margin: string;
+    procurement_savings: string;
+    /** Null is UNKNOWN, never ₹0 — the screen must render it as UNKNOWN with
+     *  the reason beside it, exactly as the attribution screens do. */
+    productivity_savings: string | null;
+  };
+  productivity_excluded_reason: string | null;
+  hours_saved: string;
+  total_economic_value: string;
+  bases: Record<string, string>;
+  substitution: { opportunities: string; successful: string };
+}
+
+export interface MonetizationHypothesisReading {
+  annual_fee: string;
+  covers_cost_to_serve: boolean;
+  shortfall_multiple: number | null;
+  value_capture_pct: number | null;
+  customer_roi: number | null;
+}
+
+export interface MonetizationHypothesis {
+  hypothesis_rate: number;
+  cost_floor: string;
+  ladder: Record<string, MonetizationEvaluation[]>;
+  verdict: {
+    viable: boolean;
+    readings: Record<string, MonetizationHypothesisReading>;
+    statement: string;
+  };
+}
+
+export interface MonetizationRecommendation {
+  band: {
+    cost_floor: string;
+    roi_ceiling: string | null;
+    target_at_capture: string;
+    is_empty: boolean;
+    note: string;
+  };
+  recommended_annual_fee: string;
+  /** The recommendation: a flat annual fee, banded by turnover. `variable_rate`
+   *  is 0 by construction — the customer's turnover exists whether or not they
+   *  use PIE, so a fee that moves with it claims credit the platform cannot
+   *  defend at renewal. */
+  structure: {
+    kind: string;
+    metric: string;
+    turnover_band: string;
+    platform_fee: string;
+    variable_rate: number;
+    variable_rate_pct: string;
+    scorecard_key: string;
+    weighted_score: number | null;
+    why: string;
+    expansion: {
+      long_run_uplift: number;
+      long_run_uplift_note: string;
+      years_between_re_ratings: number;
+      band_width_sensitivity: {
+        band_width: string;
+        years_between_re_ratings: number;
+        accounts_re_rating_per_year: number;
+      }[];
+      levers: { lever: string; automatic: boolean; mechanism: string;
+                yields: string }[];
+      note: string;
+    };
+  };
+  /** The metered structure, priced and scored rather than hidden. It collects
+   *  the same money; a buyer who wants a smaller committed cheque can have it,
+   *  and the score says what accepting that costs. */
+  alternative: {
+    kind: string;
+    metric: string;
+    platform_fee: string;
+    variable_base: string;
+    variable_base_measurability: string;
+    variable_base_why: string;
+    variable_rate: number;
+    variable_rate_pct: string;
+    variable_cap: string;
+    weighted_score: number | null;
+    evaluation: MonetizationEvaluation;
+    why_not_chosen: string;
+  };
+  evaluation: MonetizationEvaluation;
+  pie_unit_economics: MonetizationUnitEconomics;
+  design_partner_offer: {
+    annual_fee: string;
+    discount_vs_list: number | null;
+    conditions: string[];
+    evaluation: MonetizationEvaluation;
+  };
+}
+
+export interface MonetizationUnitEconomics {
+  annual_revenue: string;
+  cost: Record<string, string>;
+  gross_profit: string;
+  gross_margin: number | null;
+  contribution: string;
+  contribution_margin: number | null;
+  cac: string;
+  ltv: string;
+  ltv_cac: number | null;
+  cac_payback_months: number | null;
+  revenue_per_rfq: string | null;
+  revenue_per_order: string | null;
+  expected_life_years: number | null;
+  evidence_grade: string;
+  warnings: string[];
+}
+
+export interface MonetizationHybridRow extends MonetizationEvaluation {
+  structure: string;
+  scorecard_key: string;
+  weighted_score: number | null;
+}
+
+/** What a turnover band cannot see: the same turnover at a different
+ *  adoption creates very different value, and PIE cannot measure adoption
+ *  from synced rows to correct for it. */
+export interface MonetizationAdoptionSensitivity {
+  baseline_revenue: string;
+  reference_pie_rfq_share: number;
+  rows: {
+    pie_rfq_share: number;
+    is_reference: boolean;
+    total_economic_value: string;
+    connected_book_revenue: string;
+  }[];
+  value_spread_across_sweep: number | null;
+  connected_book_revenue_spread_across_sweep: number | null;
+  value_sensitivity_relative_to_revenue: number | null;
+  reading: string;
+}
+
+export interface MonetizationCalculation {
+  parameters_version: string;
+  waterfall: MonetizationWaterfall;
+  margin_hypothesis: MonetizationHypothesis;
+  transaction_ladder: {
+    cost_floor: string;
+    ladder: Record<string, MonetizationEvaluation[]>;
+  };
+  subscription_ladder: {
+    rows: MonetizationEvaluation[];
+    capture_band: number[];
+    defensible_range: { low: string | null; high: string | null };
+  };
+  hybrids: {
+    target_fee: string; platform_fee: string; variable_cap: string;
+    rows: MonetizationHybridRow[];
+  };
+  all_strategies: MonetizationEvaluation[];
+  recommendation: MonetizationRecommendation;
+  cost_floor: string;
+  pie_unit_economics: MonetizationUnitEconomics;
+  adoption_sensitivity: MonetizationAdoptionSensitivity;
+}
+
+export interface MonetizationScorecardRow {
+  rank: number;
+  key: string;
+  label: string;
+  weighted_score: number;
+  note: string;
+  scores: Record<string, number>;
+  game_theory: Record<string, unknown> | null;
+}
+
+export interface MonetizationScorecard {
+  evidence_grade: string;
+  evidence_note: string;
+  weights: Record<string, number>;
+  criteria: string[];
+  ranking: MonetizationScorecardRow[];
+}
+
+/** An archetype as the server states it, for seeding the calculator form. */
+export interface MonetizationSegments {
+  archetypes: Record<string, Record<string, unknown>>;
+  impacts: Record<string, Record<string, number>>;
+}

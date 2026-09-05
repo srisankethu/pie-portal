@@ -92,10 +92,15 @@ _APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 #:                    ``ai/`` would carry the whole of ``commercial/`` with it.
 #:                    A neural embedder belongs behind the same protocol,
 #:                    injected from a layer that may reach interpretation.
+#: ``monetization/`` PIE's own pricing model — what the platform charges,
+#:                    priced from rows and versioned. The only package here
+#:                    that is not about a tenant. A model that could reach it
+#:                    could be asked to justify a price, and a justification
+#:                    produced by a model is not an audit trail.
 DETERMINISTIC = ("attribution", "commercial", "context", "decoding", "domain",
                  "enquiry", "identity", "ingestion", "master_health",
-                 "messaging", "observability", "retrieval", "signals", "state",
-                 "trust")
+                 "messaging", "monetization", "observability", "retrieval",
+                 "signals", "state", "trust")
 
 #: The packages deliberately *outside* ``DETERMINISTIC``, each with the reason
 #: it is out. A package silently omitted from an opt-in list is the same defect

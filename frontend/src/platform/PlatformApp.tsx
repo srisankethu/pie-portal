@@ -79,6 +79,8 @@ const IdentityScreen = lazy(() =>
   import("./IdentityScreen").then((m) => ({ default: m.IdentityScreen })));
 const TrustScreen = lazy(() =>
   import("./TrustScreen").then((m) => ({ default: m.TrustScreen })));
+const ObservabilityDashboard = lazy(() =>
+  import("./ObservabilityDashboard").then((m) => ({ default: m.ObservabilityDashboard })));
 const AttributionScreen = lazy(() =>
   import("./AttributionScreen").then((m) => ({ default: m.AttributionScreen })));
 const RetrospectiveScreen = lazy(() =>
@@ -1106,6 +1108,13 @@ export default function PlatformApp() {
     ...(ability.can("read", "trust")
       ? ([{ key: "trust", label: "Your data", group: "setup" }] as NavItem[])
       : []),
+    // Health of the platform, not of the book. Same gate as the endpoint it
+    // reads: `require_manager_or_owner` server-side, economics-readers here,
+    // which is the same set. The screen and the endpoint have both existed for
+    // a while; only the route between them was missing.
+    ...(ability.can("read", "economics")
+      ? ([{ key: "observability", label: "Platform health", group: "setup" }] as NavItem[])
+      : []),
     { key: "settings", label: "Settings", group: "setup" },
     // PIE's own pricing model, and the only nav item in this list that is not
     // about the tenant at all. Gated on the server's answer rather than on a
@@ -1326,6 +1335,11 @@ export default function PlatformApp() {
             <Route path={PATH.approvals} element={<ApprovalsScreen session={session} />} />
             <Route path={PATH.identity} element={<IdentityScreen token={session.token} />} />
             <Route path={PATH.trust} element={<TrustScreen session={session} />} />
+            {/* Whether the platform itself is well. The endpoint behind it is
+                `require_manager_or_owner`, and the nav entry below matches — a
+                salesperson is not offered a screen that would refuse them. */}
+            <Route path={PATH.observability}
+                   element={<ObservabilityDashboard session={session} />} />
             <Route path={PATH.settings} element={
               <SettingsScreen session={session} onToken={adoptToken}
                               onSignedOutEverywhere={forgetSession} />} />

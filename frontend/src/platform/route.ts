@@ -90,6 +90,11 @@ export type Screen =
   /** What leaves for a model, who has opened this tenant, and the two
    *  irreversible things an owner can do with their own data. Owner only. */
   | "trust"
+  /** Whether the platform itself is well: component health, capacity headroom,
+   *  API latency, background jobs and sync runs. The server has served this at
+   *  `/internal/observability/dashboard` for a manager or an owner all along;
+   *  the screen existed too and had no route, so nobody could reach it. */
+  | "observability"
   /** One customer's relationship with one item — needs two ids, so it carries
    *  an extra `itemId` alongside the customer in `id`. */
   | "customerItem";
@@ -114,6 +119,7 @@ export const PATH: Record<Screen, string> = {
   settings: "/settings",
   identity: "/identity",
   trust: "/trust",
+  observability: "/observability",
   weather: "/weather",
   opportunities: "/opportunities",
   lostRevenue: "/lost-revenue",

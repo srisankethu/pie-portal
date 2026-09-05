@@ -74,6 +74,7 @@ import InsightsOutlined from "@mui/icons-material/InsightsOutlined";
 import SellOutlined from "@mui/icons-material/SellOutlined";
 import HistoryOutlined from "@mui/icons-material/HistoryOutlined";
 import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
+import MonitorHeartOutlined from "@mui/icons-material/MonitorHeartOutlined";
 
 import { Link as RouterLink } from "react-router-dom";
 
@@ -144,6 +145,7 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   decodedCatalog: ManageSearchOutlined,
   identity: FingerprintOutlined,
   states: PsychologyOutlined,
+  observability: MonitorHeartOutlined,
   trust: ShieldOutlined,
   settings: TuneOutlined,
 };

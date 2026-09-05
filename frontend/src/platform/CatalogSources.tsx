@@ -46,6 +46,7 @@
 // row of every rebuild.
 
 import { useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -65,11 +66,41 @@ import Typography from "@mui/material/Typography";
 
 import type { ColDef } from "./DataGrid";
 import { DataGrid } from "./DataGrid";
-import { EmptyState, StatusChip } from "./kit";
+import { EmptyState, StatusChip, TOUCH } from "./kit";
 import type { BindingChoice, BindingSuggestion, BuiltFile, CompanyCatalogueEntry,
               CompanySource, DecoderArtifact, DecoderProposalResponse } from "./types";
 import { Tip } from "./ui";
 import { formatDateTime } from "../when";
+
+/** The second thing in a cell or a card: what a value is, after the value.
+ *
+ *  Every one of these was `className="fsrc"`, and `styles.css` declares
+ *  `.fsrc` **only** inside `.facttable`, `.sync-opts` and `.cx-add` — so the
+ *  six of them inside an AG Grid cell and inside the narrow card matched no
+ *  rule at all and rendered at body size in body ink. A file's size read as
+ *  loudly as its name, and "incl. price, cost" read as loudly as the column
+ *  count it qualifies: the hierarchy those spans were reaching for was simply
+ *  not being drawn. Theme tokens through `Typography` per ui-standards §11,
+ *  and one component per §10 rather than the same span six times.
+ *
+ *  Local rather than in `kit.tsx` for the reason `SkippedRowsPanel` gives at
+ *  the same spot: this is the same fix in a second file, so the shared answer
+ *  belongs there — but `kit.tsx` is not this change's to edit, and copying the
+ *  broken span forward would be worse than copying the working one. */
+function Meta({ inline = false, children }: {
+  /** Beside the value rather than under it — a size after a filename. */
+  inline?: boolean;
+  children: ReactNode;
+}) {
+  return (
+    <Typography
+      variant="caption" component="span" color="text.secondary"
+      sx={inline ? { ml: 1 } : { display: "block" }}
+    >
+      {children}
+    </Typography>
+  );
+}
 
 /** A file's size, in the unit that makes it legible.
  *
@@ -90,6 +121,16 @@ export function megabytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+/** How many rows this file can contribute, or null for one nothing has read.
+ *
+ *  Split out of `rowsOf` so the grid can sort on the number while the cell
+ *  shows the phrase — two readings of one fact, not two definitions of it. */
+function rowsKept(source: CompanySource): number | null {
+  const ingest = source.ingest;
+  if (!ingest) return null;
+  return ingest.rows_kept ?? ingest.rows_read ?? 0;
+}
+
 /** What this file contributes, in one phrase.
  *
  *  Rows *kept* rather than rows read: a file whose part-number column is empty
@@ -105,8 +146,8 @@ export function megabytes(bytes: number): string {
  */
 function rowsOf(source: CompanySource, built?: BuiltFile): string {
   const ingest = source.ingest;
-  if (!ingest) return "not read yet";
-  const kept = ingest.rows_kept ?? ingest.rows_read ?? 0;
+  const kept = rowsKept(source);
+  if (!ingest || kept === null) return "not read yet";
   const skipped = ingest.rows_skipped_blank_key ?? 0;
   const emitted = built?.rows_emitted;
   const base = skipped > 0 ? `${kept} (${skipped} skipped)` : `${kept}`;
@@ -144,6 +185,24 @@ function decodedBy(source: CompanySource): string {
   return "—";
 }
 
+/** That state as the one chip both renderings use.
+ *
+ *  The grid cell and the narrow card each built it, and the card built it
+ *  without the tip — so the state word that decides whether a file builds
+ *  could say what it meant on a laptop and not on a phone. One component per
+ *  ui-standards §10, and a `Chip` rather than coloured text per §6. */
+function DecodingStatus({ source }: { source: CompanySource }) {
+  const chip = decodingChip(source);
+  return (
+    <StatusChip
+      label={chip.label} tone={chip.tone}
+      tip={source.decoding.path
+        ? `Decoded through ${decodedBy(source)}.`
+        : "Nothing decodes this file yet, so a build will name it rather than decode it."}
+    />
+  );
+}
+
 /** The evidence a decoding config is chosen on: every shipped rule set over
  *  the first rows of this one file, with the parser's own counts.
  *
@@ -167,13 +226,17 @@ function AnalysisEvidence({ source, busy, onAnalyze }: {
   const analysis = source.decoding.analysis;
   return (
     <Box sx={{ mt: 2.5 }}>
+      {/* `subtitle2`, the same rung `DecoderPanel` heads its half with: the two
+          halves of this dialog answer the same question two ways, and one
+          headed by a `<b>` and the other by a heading read as different kinds
+          of thing (ui-standards §4). */}
       <Stack direction="row" spacing={1}
              sx={{ alignItems: "center", mb: 1, flexWrap: "wrap", rowGap: 1 }}>
-        <b>
+        <Typography variant="subtitle2" component="h3">
           {analysis
             ? `Each rule set over the first ${analysis.sample_rows} rows of this file`
             : "This file has not been analysed"}
-        </b>
+        </Typography>
         <Box sx={{ flex: 1 }} />
         <Button size="small" disabled={busy} onClick={onAnalyze}>Re-analyse</Button>
       </Stack>
@@ -190,8 +253,18 @@ function AnalysisEvidence({ source, busy, onAnalyze }: {
               <tr key={c.rule_set}>
                 <td>
                   {c.rule_set}
+                  {/* The row this file's own evidence chose, and the reason
+                      anybody opens this panel. It was grey 11px text beside
+                      the name, which read as the least important thing here
+                      rather than the most — a chip per ui-standards §6. The
+                      word is unchanged and lower case on purpose: this is a
+                      change of form, not of copy, and the copy is what
+                      `CatalogScreen.test.tsx` reads the panel by. */}
                   {c.rule_set === analysis.proposed && (
-                    <span className="fsrc" style={{ marginLeft: 6 }}>proposed</span>
+                    <Box component="span" sx={{ ml: 1 }}>
+                      <StatusChip label="proposed" tone="info" dense
+                                  tip="What this file's own counts point at. A proposal, never a config — it decodes nothing until this dialog is saved." />
+                    </Box>
                   )}
                 </td>
                 <td className="fv">
@@ -200,9 +273,7 @@ function AnalysisEvidence({ source, busy, onAnalyze }: {
                   ) : (
                     <>
                       {c.classified ?? 0} classified, {c.quarantined ?? 0} quarantined
-                      <span className="fsrc" style={{ marginLeft: 8 }}>
-                        of {c.rows_read ?? 0} rows
-                      </span>
+                      <Meta inline>of {c.rows_read ?? 0} rows</Meta>
                     </>
                   )}
                 </td>
@@ -211,10 +282,11 @@ function AnalysisEvidence({ source, busy, onAnalyze }: {
           </tbody>
         </table>
       )}
-      <p className="st-help" style={{ marginTop: 6 }}>
+      <Typography variant="caption" component="p" color="text.secondary"
+                  sx={{ mt: 1, mb: 0 }}>
         The parser&apos;s own counts, on a sample of this file. Nothing here
         ranks them — which one is right is a reading of these numbers.
-      </p>
+      </Typography>
     </Box>
   );
 }
@@ -464,7 +536,9 @@ function DecoderPanel({ source, busy, proposal, proposing, error, edits,
                    justifyContent: "space-between", flexWrap: "wrap",
                    rowGap: 1 }}>
         <Box>
-          <Typography variant="subtitle2">A decoder built from this file</Typography>
+          <Typography variant="subtitle2" component="h3">
+            A decoder built from this file
+          </Typography>
           <Typography variant="caption" color="text.secondary">
             {saved
               ? `Saved: ${saved.decoder_id}, ${saved.segments.length} shape${saved.segments.length === 1 ? "" : "s"}, reading ${saved.decimal === "either" ? "either decimal separator" : `“${saved.decimal === "dot" ? "." : ","}” as the decimal point`}.`
@@ -631,7 +705,10 @@ function DecodingDialog({ source, ruleSets, busy, onClose, onSave, onAnalyze,
     <Dialog open onClose={onClose} fullWidth
             maxWidth={path === "decoder" ? "lg" : "sm"}>
       <DialogTitle>How is {source.filename} decoded?</DialogTitle>
-      <DialogContent>
+      {/* `dividers` because this content scrolls: with the decoder review open
+          it is a form, a toggle and a 420px grid, and an unbounded scroll into
+          the action bar hides where "Save decoding config" lives. */}
+      <DialogContent dividers>
         {columns.length === 0 ? (
           // A source stored before its columns were read — the seeded corpus,
           // or an upload from before this existed. Its headers are not on
@@ -646,6 +723,13 @@ function DecodingDialog({ source, ruleSets, busy, onClose, onSave, onAnalyze,
           </DialogContentText>
         ) : (
         <>
+        {/* Two named halves rather than one unlabelled field group followed by
+            a labelled toggle: a person answering this dialog is answering two
+            separate questions — which columns are read, and what reads the
+            descriptions — and only the second of them said so. */}
+        <Typography variant="subtitle2" component="h3" sx={{ mb: 1 }}>
+          Which columns are read
+        </Typography>
         <DialogContentText sx={{ mb: 2 }}>
           These three columns are all that is read. Every other column in this
           file — price, cost, stock, anything else — is left out of the
@@ -668,7 +752,7 @@ function DecodingDialog({ source, ruleSets, busy, onClose, onSave, onAnalyze,
             a form that can express only one answer is the honest shape of a
             rule that says only one is allowed. */}
         <Box sx={{ mt: 3 }}>
-          <Typography variant="subtitle2" sx={{ mb: 1 }}>
+          <Typography variant="subtitle2" component="h3" sx={{ mb: 1 }}>
             What decodes the descriptions?
           </Typography>
           <ToggleButtonGroup exclusive size="small" value={path}
@@ -802,36 +886,37 @@ export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
     (catalogue.ingest?.sources ?? []).map((s) => [s.source_key, s]));
   const decoding = catalogue.sources.find((s) => s.source_key === decodingKey) ?? null;
 
+  // Ordered by what a person opens this for: which file, whether it builds,
+  // what it contributes, how it is read, what it leaves out, when it arrived.
+  // "Decoding" used to sit third, behind a row count nobody acts on — and it
+  // is the one column that says whether a rebuild will refuse this file.
   const columns: ColDef<CompanySource>[] = [
     {
       field: "filename", headerName: "File", flex: 2, minWidth: 180,
       cellRenderer: (p: { data: CompanySource }) => (
         <span>
           {p.data.filename}
-          <span className="fsrc" style={{ marginLeft: 8 }}>
-            {fileSize(p.data.size_bytes)}
-          </span>
+          <Meta inline>{fileSize(p.data.size_bytes)}</Meta>
         </span>
       ),
-    },
-    {
-      headerName: "Rows", minWidth: 110, flex: 1,
-      valueGetter: (p: { data?: CompanySource }) =>
-        p.data ? rowsOf(p.data, built.get(p.data.source_key)) : "",
     },
     {
       headerName: "Decoding", minWidth: 130, flex: 1,
       // The one state that decides whether this file builds. A chip rather
       // than coloured text, per ui-standards §6.
-      cellRenderer: (p: { data: CompanySource }) => {
-        const chip = decodingChip(p.data);
-        return <StatusChip label={chip.label} tone={chip.tone}
-                           tip={p.data.decoding.path
-                             ? `Decoded through ${decodedBy(p.data)}.`
-                             : "Nothing decodes this file yet, so a build will name it rather than decode it."} />;
-      },
+      cellRenderer: (p: { data: CompanySource }) => <DecodingStatus source={p.data} />,
       valueGetter: (p: { data?: CompanySource }) =>
         p.data ? decodingChip(p.data).label : "",
+    },
+    {
+      headerName: "Rows", minWidth: 130, flex: 1,
+      // The count sorts, the phrase shows. As a string it sorted "9" above
+      // "1200" — a header offering an ordering it does not deliver, on the
+      // question ("which file is carrying this catalogue?") the column exists
+      // for. `rowsOf` still owns every word of the phrasing.
+      valueGetter: (p: { data?: CompanySource }) => (p.data ? rowsKept(p.data) : null),
+      valueFormatter: (p: { data?: CompanySource }) =>
+        (p.data ? rowsOf(p.data, built.get(p.data.source_key)) : ""),
     },
     {
       headerName: "Reads", flex: 2, minWidth: 190,
@@ -843,21 +928,30 @@ export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
     },
     {
       headerName: "Ignored", flex: 2, minWidth: 190,
+      // Sorted on how many were left out — "which file drops the most?" is the
+      // question, and without a value behind it the header sorted nothing.
+      valueGetter: (p: { data?: CompanySource }) =>
+        (p.data?.ingest ? p.data.ingest.dropped_columns.length : null),
       cellRenderer: (p: { data: CompanySource }) => {
         const ingest = p.data.ingest;
-        if (!ingest) return <span className="fsrc">—</span>;
+        if (!ingest) return <Meta>—</Meta>;
         const money = ingest.commercial_columns_dropped;
         const total = ingest.dropped_columns.length;
-        if (total === 0) return <span className="fsrc">nothing</span>;
+        if (total === 0) return <Meta>nothing</Meta>;
+        // MUI's `Tooltip`, per ui-standards §6, and kept rather than swapped
+        // for the grid's own `tooltipValueGetter`: this grid sets no row click,
+        // so its cells are not focusable and an ag-grid tooltip would be
+        // hover-only here too — at ag-grid's two-second default delay instead
+        // of this one's. The named list is the whole point of the column.
         return (
           <Tooltip title={ingest.dropped_columns.join(", ")}>
             <span>
               {total} column{total === 1 ? "" : "s"}
               {money.length > 0 && (
-                <span className="fsrc" style={{ marginLeft: 6 }}>
+                <Meta inline>
                   incl. {money.slice(0, 2).join(", ")}
                   {money.length > 2 ? " …" : ""}
-                </span>
+                </Meta>
               )}
             </span>
           </Tooltip>
@@ -865,9 +959,19 @@ export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
       },
     },
     {
-      headerName: "Uploaded", flex: 1.4, minWidth: 150,
-      valueGetter: (p: { data?: CompanySource }) =>
-        p.data ? formatDateTime(p.data.uploaded_at) : "",
+      // Sorted on the stored instant rather than on "05 Sep 2026, 9:30 pm",
+      // which orders by the day of the month.
+      //
+      // No column here declares a `context.minGridWidth`, and that is a
+      // decision rather than an omission: between the card breakpoint and
+      // about 1180px this grid scrolls sideways inside its own box, which §3
+      // allows, and the alternative is dropping a column. "Reads" and
+      // "Ignored" are what make the nomenclature-only claim checkable against
+      // somebody's own spreadsheet, "Decoding" is what says a build will
+      // refuse the file, and hiding any of them would ask a person to take on
+      // trust the thing this screen exists to show.
+      field: "uploaded_at", headerName: "Uploaded", flex: 1.4, minWidth: 150,
+      valueFormatter: (p) => formatDateTime(p.value as string | null),
     },
     ...(canManage ? [{
       headerName: "", minWidth: 210, sortable: false, filter: false,
@@ -889,11 +993,19 @@ export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
   ];
 
   return (
-    <div>
+    <Box>
+      {/* `subtitle2`, the rung `CatalogScreen`'s own `Pane` titles sit on, so
+          this list and the fact panels under it read as peers below the
+          catalogue's name. Not `kit.SectionHeader`: it renders a real `<h3>`
+          at 21px, which would be louder than the `h4` catalogue name above it
+          and would claim an outline level this screen deliberately does not
+          have — see the note on `Pane`. */}
       <Stack direction="row" spacing={1} sx={{ mb: 1, alignItems: "center", flexWrap: "wrap", rowGap: 1 }}>
-        <b>Files this catalogue is built from</b>
+        <Typography variant="subtitle2" component="p" color="text.secondary">
+          Files this catalogue is built from
+        </Typography>
         <Tip text="Every file here is merged into one catalogue. Where the same part number appears in two of them, the newest file's row is used and the overlap is counted — it is never quietly dropped, because two exports disagreeing about one product is something somebody has to know about." />
-        <div style={{ flex: 1 }} />
+        <Box sx={{ flex: 1 }} />
         {catalogue.sources.length > 1 && (
           <StatusChip label={`${catalogue.sources.length} FILES`} tone="neutral" />
         )}
@@ -936,30 +1048,58 @@ export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
           reason="Item identity lookups and this company's RFQ line resolution answer UNKNOWN — not zero coverage — until a file is uploaded and decoded. A CSV or an Excel export of the item master is what this reads; price and stock columns in it are ignored."
         />}
         renderNarrow={(r) => (
-          <Stack spacing={0.5} sx={{ p: 1.5 }}>
-            <b>{r.filename}</b>
-            <div>
-              <StatusChip label={decodingChip(r).label} tone={decodingChip(r).tone} />
-            </div>
-            <span className="fsrc">
-              {rowsOf(r, built.get(r.source_key))} rows ·{" "}
-              {fileSize(r.size_bytes)} ·{" "}
-              {formatDateTime(r.uploaded_at)}
-            </span>
+          <Stack spacing={0.75} sx={{ p: 1.5 }}>
+            {/* Name and state on one line, because they are the two things the
+                wide grid puts first and the pair a person scans a phone for. */}
+            <Stack direction="row" spacing={1}
+                   sx={{ alignItems: "center", justifyContent: "space-between" }}>
+              <Typography variant="body2"
+                          sx={{ fontWeight: 600, minWidth: 0,
+                                wordBreak: "break-word" }}>
+                {r.filename}
+              </Typography>
+              {/* Held at its own width: an export named after a manufacturer,
+                  a range and a quarter is long, and a squashed chip is a state
+                  word that no longer reads as one. */}
+              <Box sx={{ flexShrink: 0 }}><DecodingStatus source={r} /></Box>
+            </Stack>
+            {/* Labelled rather than suffixed: `rowsOf` says "not read yet" for
+                a file nothing has analysed, and "not read yet rows" is not a
+                sentence. */}
+            <Meta>
+              Rows: {rowsOf(r, built.get(r.source_key))} · {fileSize(r.size_bytes)}
+              {" · uploaded "}{formatDateTime(r.uploaded_at)}
+            </Meta>
             {/* Named on a phone too. The nomenclature-only claim is checkable
                 only against the columns' own names, and a narrow screen is not
                 a reason to make a person take it on trust. */}
             {r.ingest && r.ingest.dropped_columns.length > 0 && (
-              <span className="fsrc">
+              <Meta>
                 ignored: {r.ingest.dropped_columns.slice(0, 4).join(", ")}
                 {r.ingest.dropped_columns.length > 4 ? " …" : ""}
-              </span>
+              </Meta>
             )}
             {canManage && (
-              <Stack direction="row" spacing={0.5}>
-                <Button size="small" disabled={busy}
+              // Replace was on the wide row and not on this one, so a file
+              // could be re-uploaded from a laptop and not from a phone. Same
+              // handler and the same hidden input — the card was simply
+              // missing a third button.
+              //
+              // `TOUCH` because this rendering only ever exists on a screen
+              // somebody works with a thumb: a `small` Button is about 30px,
+              // and kit.tsx states 44 once so three screens cannot disagree
+              // about it. Wrapping rather than shrinking, so a third button
+              // does not squeeze the other two below that.
+              <Stack direction="row" spacing={0.5} useFlexGap
+                     sx={{ flexWrap: "wrap", rowGap: 0.5, pt: 0.5 }}>
+                <Button size="small" disabled={busy} sx={TOUCH}
                         onClick={() => setDecodingKey(r.source_key)}>Decoding</Button>
-                <Button size="small" color="error" disabled={busy}
+                <Button size="small" disabled={busy} sx={TOUCH}
+                        onClick={() => {
+                          replacing.current = r.source_key;
+                          replaceInput.current?.click();
+                        }}>Replace</Button>
+                <Button size="small" color="error" disabled={busy} sx={TOUCH}
                         onClick={() => setConfirmRemove(r)}>Remove</Button>
               </Stack>
             )}
@@ -1010,6 +1150,6 @@ export function CatalogSources({ catalogue, label, ruleSets, canManage, busy,
           }}>Remove</Button>
         </DialogActions>
       </Dialog>
-    </div>
+    </Box>
   );
 }

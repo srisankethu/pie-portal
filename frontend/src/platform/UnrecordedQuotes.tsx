@@ -38,6 +38,7 @@
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
+import Grid from "@mui/material/Grid";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { useSnackbar } from "notistack";
@@ -190,15 +191,10 @@ export function UnrecordedQuotesScreen({ session }: { session: PlatformSession }
         />
       ) : null),
     },
-    {
-      field: "source_status" as never, headerName: "ERP says", width: 130,
-      filter: "agTextColumnFilter",
-      headerTooltip: "The source system's own word for this quote, verbatim. "
-        + "None of these words is a win or a loss, which is why the row is here.",
-      cellRenderer: (p: { data?: UnrecordedQuote }) => (p.data ? (
-        <StatusChip label={p.data.source_status} tone="info" dense />
-      ) : null),
-    },
+    // The two ranking keys sit next to the pile they rank inside, before the
+    // ERP's own word for the quote. The order used to put both chips first and
+    // the age and the value fifth and sixth, so the columns the server sorts on
+    // — the two the headline is about — were the ones a reader met last.
     {
       ...numeric<UnrecordedQuote>("days_past_expiry", "Lapsed for",
                                   (v) => String(v), { width: 150 }),
@@ -216,13 +212,27 @@ export function UnrecordedQuotesScreen({ session }: { session: PlatformSession }
         p.data ? valueLabel(p.data) : null,
     },
     {
+      field: "source_status" as never, headerName: "ERP says", width: 130,
+      filter: "agTextColumnFilter",
+      headerTooltip: "The source system's own word for this quote, verbatim. "
+        + "None of these words is a win or a loss, which is why the row is here.",
+      cellRenderer: (p: { data?: UnrecordedQuote }) => (p.data ? (
+        <StatusChip label={p.data.source_status} tone="info" dense />
+      ) : null),
+    },
+    {
       ...text<UnrecordedQuote>("raised_on", "Raised", { flex: 0.5, minWidth: 120 }),
       valueFormatter: (p: { value?: unknown }) => formatDate(String(p.value ?? "")),
     },
     {
       headerName: "", width: 150, sortable: false, filter: false,
       // The column carries its own control, so clicking it must not also fire a
-      // row handler — `DataGridProps` documents this.
+      // row handler — `DataGridProps` documents this, and `context.noRowClick`
+      // is the flag it documents. This comment claimed the opt-out for a while
+      // without the flag that performs it; the two handlers happened to do the
+      // same thing, so nothing looked wrong and the next control put in this
+      // column would have inherited a silent second press.
+      context: { noRowClick: true },
       cellRenderer: (p: { data?: UnrecordedQuote }) => (p.data ? (
         <Button size="small" onClick={() => setRecording(p.data!)}>
           Record…
@@ -255,8 +265,11 @@ export function UnrecordedQuotesScreen({ session }: { session: PlatformSession }
         actions={<Button size="small" onClick={reload}>Refresh</Button>}
       />
 
-      <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-        <Box sx={{ flex: 1 }}>
+      {/* `Grid`, per §1 and per every other tile row in this app. The four
+          tiles used to be flex-1 boxes that went to a row at `sm`, which put
+          four figures and four explanatory lines across 600px. */}
+      <Grid container spacing={2}>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <MetricCard
             label="Unanswered"
             value={total}
@@ -270,8 +283,8 @@ export function UnrecordedQuotesScreen({ session }: { session: PlatformSession }
             tip="Quotes with no recorded outcome. A quote the customer never
                  answered is not a loss, and nothing here treats it as one."
           />
-        </Box>
-        <Box sx={{ flex: 1 }}>
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <MetricCard
             label="Value at stake"
             value={<CurrencyValue value={data?.value_at_stake ?? null} />}
@@ -282,20 +295,26 @@ export function UnrecordedQuotesScreen({ session }: { session: PlatformSession }
             tip="The sum of the quotes that carry a selling total, and of no
                  others. Their own price to the customer — never cost."
           />
-        </Box>
-        <Box sx={{ flex: 1 }}>
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <MetricCard
             label="Longest lapse"
-            value={data?.longest_lapse_days === null
-              || data?.longest_lapse_days === undefined
+            // `== null` catches the server's null and the not-yet-loaded
+            // undefined in one test, which is the same two-line check the `sub`
+            // below already made. Still an em dash and never a zero: nothing on
+            // the list having an expiry date to have passed is not a lapse of
+            // no days.
+            value={data?.longest_lapse_days == null
               ? "—"
               : `${data.longest_lapse_days} days`}
             sub={data?.longest_lapse_days == null
               ? "Nothing on this list has an expiry date to have passed"
               : "Since the oldest offer on this list ran out"}
+            tip="Measured over the whole pile, not over this page — the counts
+                 above it are too, which is why they can disagree with the rows."
           />
-        </Box>
-        <Box sx={{ flex: 1 }}>
+        </Grid>
+        <Grid size={{ xs: 12, sm: 6, md: 3 }}>
           <MetricCard
             label="Opened by the customer"
             value={data?.opened ?? 0}
@@ -303,8 +322,8 @@ export function UnrecordedQuotesScreen({ session }: { session: PlatformSession }
             tip="An open the ERP saw. No open on record is not the same as the
                  customer never opening it — the quote may never have been sent."
           />
-        </Box>
-      </Stack>
+        </Grid>
+      </Grid>
 
       {total === 0 ? (
         <EmptyState
@@ -374,6 +393,18 @@ export function UnrecordedQuotesScreen({ session }: { session: PlatformSession }
         </>
       )}
 
+      {/* What every age on this page is measured against. "Lapsed for 310 days"
+          is only readable next to the day it was counted from, and the server
+          measures it in the organization's own timezone rather than the
+          browser's — which is the whole argument `when.ts` opens with. */}
+      {data && (
+        <Typography variant="caption" color="text.secondary">
+          Ages measured against {formatDate(data.as_of)}, in this business's own
+          timezone. Silence is never read as a loss: a quote stays on this list
+          until somebody says what happened to it.
+        </Typography>
+      )}
+
       <RecordOutcomeDialog
         open={recording !== null}
         title={recording
@@ -383,11 +414,15 @@ export function UnrecordedQuotesScreen({ session }: { session: PlatformSession }
           <>
             {recording.customer_label} · {valueLabel(recording)} · raised{" "}
             {formatDate(recording.raised_on)} · {agePhrase(recording)} ·{" "}
-            {openedLabel(recording).toLowerCase()}. Recording an outcome is
-            final: a decided quote cannot be reopened, because the analysis that
-            reads it has already counted it.
+            {openedLabel(recording).toLowerCase()}.
           </>
         ) : undefined}
+        // Lifted out of the end of that sentence, where it was the sixth clause
+        // of a line somebody reads to identify the row. It is the one fact here
+        // that cannot be taken back.
+        caution="Recording an outcome is final: a decided quote cannot be
+                 reopened, because the analysis that reads it has already
+                 counted it."
         onClose={() => setRecording(null)}
         onRecord={async (status, lossReason, note) => {
           if (!recording) return;

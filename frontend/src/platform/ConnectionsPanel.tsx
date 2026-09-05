@@ -1,13 +1,21 @@
+import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Checkbox from "@mui/material/Checkbox";
 import Chip from "@mui/material/Chip";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import MenuItem from "@mui/material/MenuItem";
+import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
+import ToggleButton from "@mui/material/ToggleButton";
+import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
+import Typography from "@mui/material/Typography";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import Alert from "@mui/material/Alert";
 import { formatDate, since, todayISO } from "../when";
 import { papi } from "./api";
-import { ErrorState, LoadingState } from "./kit";
+import {
+  EmptyState, ErrorState, LoadingState, SectionHeader, StatusChip, type Tone,
+} from "./kit";
 import type {
   ConnectionCheck,
   ConnectionCredential,
@@ -97,15 +105,134 @@ function when(iso: string | null | undefined): string {
 // the one thing that is demonstrably fine. A live check knows which it was and
 // says so; the stored row only knows that something failed, and the detail line
 // under the chip carries the specifics either way.
+//
+// Two fields where there was one, because they answer to different readers.
+// `tone` is `StatusChip`'s, which is what a person reads — a word and a shape,
+// never a hue on its own (ui-standards §6; the `.cx-badge` span this replaces
+// was hue and nothing else, and is named in §10's table as StatusChip's
+// predecessor). `band` is the `.cx-card` modifier that tints the card's left
+// edge, which is a second cue for scanning three cards at once and carries no
+// meaning the chip does not already state in words. `tip` is new and is the
+// point of using a chip at all: a badge reading "Check failed" that cannot say
+// what tends to cause it is decoration.
 function health(c: ZohoConnection, check?: ConnectionCheck | null):
-  { tone: "ok" | "bad" | "unknown" | "off"; label: string } {
-  if (!c.enabled) return { tone: "off", label: "Paused" };
-  if (check?.missing_required_scopes?.length) {
-    return { tone: "bad", label: "Missing permissions" };
+  { tone: Tone; band: string; label: string; tip: string } {
+  if (!c.enabled) {
+    return {
+      tone: "neutral", band: "off", label: "Paused",
+      tip: "Not pulled, and not feeding the analysis. Nothing already synced "
+         + "was removed, so resuming brings its rows back with it.",
+    };
   }
-  if (c.last_check_ok === true) return { tone: "ok", label: "Reachable" };
-  if (c.last_check_ok === false) return { tone: "bad", label: "Check failed" };
-  return { tone: "unknown", label: "Not checked" };
+  if (check?.missing_required_scopes?.length) {
+    return {
+      tone: "bad", band: "bad", label: "Missing permissions",
+      tip: "The sign-in itself works. A grant the pull needs was refused, so "
+         + "no sync can run until it is granted.",
+    };
+  }
+  if (c.last_check_ok === true) {
+    return {
+      tone: "good", band: "ok", label: "Reachable",
+      tip: "The last check reached this company, and every grant it was able "
+         + "to probe answered.",
+    };
+  }
+  if (c.last_check_ok === false) {
+    return {
+      tone: "bad", band: "bad", label: "Check failed",
+      tip: "Either the stored sign-in no longer works, or a grant the pull "
+         + "needs was never made. The line underneath says which.",
+    };
+  }
+  // No band: never-checked is not a problem, and dimming it like a paused
+  // company would say it was one.
+  return {
+    tone: "neutral", band: "", label: "Not checked",
+    tip: "This connection has never been asked whether it still works, which "
+       + "is not the same as it being broken.",
+  };
+}
+
+/** One set of books offered by a sign-in: its name, its id in that system, and
+ *  whatever is already true of it.
+ *
+ *  Three copies of this markup existed — the ERP discovery list, the Zoho
+ *  company picker, and the check result on a connection card — and they had
+ *  drifted apart: two were `<button class="cred-org">` and the third a `<span>`
+ *  carrying an inline `display: block`. All three wrote the state word
+ *  ("already added", "this one") as an `<em>` whose only distinguishing mark
+ *  was the accent colour `.cred-org em` gave it, which is exactly the coloured
+ *  text ui-standards §6 rules out. One component, per §10, and the state word
+ *  is a `StatusChip`.
+ *
+ *  `onPick` is absent where the row is being *reported* rather than offered —
+ *  the card's check result lists what a sign-in reaches and there is nothing to
+ *  choose. A row nobody can act on must not look like a button.
+ *
+ *  `Button`, and deliberately not `ListItemButton`, which is the obvious
+ *  choice for a row you pick and is wrong here. `ListItemButton` renders a
+ *  `<div role="button">`, so `disabled` reaches the DOM as `aria-disabled`
+ *  and the press still fires — and the one row that is disabled is the
+ *  company already connected, which is precisely the one where filling the
+ *  form in would produce an add the server can only refuse. A native
+ *  `<button disabled>` cannot be pressed at all. */
+function CompanyChoice({
+  name, id, note, disabled = false, onPick,
+}: {
+  name: string;
+  id: string;
+  /** A state word about this row — "already added", "this one". */
+  note?: string;
+  disabled?: boolean;
+  onPick?: () => void;
+}) {
+  const body = (
+    <Stack direction="row" spacing={1}
+           sx={{ alignItems: "center", flexWrap: "wrap", rowGap: 0.5 }}>
+      <Typography variant="body2" component="span">{name}</Typography>
+      <Typography variant="caption" component="span" className="mono"
+                  color="text.secondary">
+        {id}
+      </Typography>
+      {note && <StatusChip label={note} tone="info" dense />}
+    </Stack>
+  );
+  if (!onPick) return <Box sx={{ px: 1, py: 0.5 }}>{body}</Box>;
+  return (
+    <Button
+      type="button"
+      variant="outlined"
+      color="inherit"
+      size="small"
+      disabled={disabled}
+      onClick={onPick}
+      // `typography: "body2"` rather than a font size: these are company
+      // names, not button labels, and the ramp already has the rung.
+      sx={{
+        width: "100%",
+        justifyContent: "flex-start",
+        borderColor: "divider",
+        typography: "body2",
+        px: 1.25,
+        py: 0.75,
+      }}
+    >
+      {body}
+    </Button>
+  );
+}
+
+/** The `<ul>` those rows sit in. Unstyled, because the row carries its own
+ *  frame — and a list, rather than a stack of divs, so a screen reader
+ *  announces how many companies a sign-in reaches before reading them out. */
+function ChoiceList({ children }: { children: React.ReactNode }) {
+  return (
+    <Stack component="ul" spacing={0.5}
+           sx={{ listStyle: "none", m: 0, mt: 1, p: 0 }}>
+      {children}
+    </Stack>
+  );
 }
 
 /* ── one connection ───────────────────────────────────────────────────────── */
@@ -196,17 +323,18 @@ function ConnectionCard({
   }
 
   return (
-    <Bp className={`cx-card ${h.tone}`}>
+    <Bp className={`cx-card ${h.band}`.trim()}>
       <div className="cx-head">
         <div className="cx-name">
           {renaming ? (
             <>
-              <input
-                className="input"
-                value={label}
-                aria-label="Connection name"
+              <TextField
+                size="small"
+                label="Connection name"
                 autoFocus
+                value={label}
                 onChange={(e) => setLabel(e.target.value)}
+                sx={{ maxWidth: 260 }}
               />
               <Button
                 variant="contained" size="small"
@@ -239,9 +367,63 @@ function ConnectionCard({
               distinction is managed, so here it is information. */}
           <Chip size="small" variant="outlined"
                 label={conn.connector_label ?? "Zoho Books"} />
-          <span className={`cx-badge ${h.tone}`}>{h.label}</span>
+          <StatusChip label={h.label} tone={h.tone} tip={h.tip} />
         </div>
       </div>
+
+      {/* The check's answer, immediately under the chip that summarises it.
+          Both of these used to sit below the four fact columns *and* below the
+          rotate panel, so on a broken connection the words "Check failed" and
+          the sentence saying what failed were separated by everything else on
+          the card — and the scope gaps, which are the actionable half, were
+          further down still. A diagnosis belongs next to the claim it
+          explains. */}
+      {(check?.detail ?? conn.last_check_detail) && (
+        h.tone === "bad" ? (
+          <Alert severity="error" sx={{ mt: 1 }}>
+            {check?.detail ?? conn.last_check_detail}
+          </Alert>
+        ) : (
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+            {check?.detail ?? conn.last_check_detail}
+          </Typography>
+        )
+      )}
+
+      {/* Only the gaps. A list of ten green ticks is noise on a healthy
+          connection, and it buries the one line that needs acting on.
+
+          The verdict was `li.bad` — red text and nothing else — for the
+          refused scopes, which left a reader in greyscale unable to tell a
+          refusal from a probe that could not reach an answer. Those are
+          different facts and one of them is not a problem, so each row now
+          leads with the word for its own state. */}
+      {check?.scopes && check.scopes.some((s) => s.granted !== true) && (
+        <Stack component="ul" spacing={0.5}
+               sx={{ listStyle: "none", m: 0, mt: 1, p: 0 }}>
+          {check.scopes.filter((s) => s.granted !== true).map((s) => {
+            const blocking = check.missing_required_scopes?.includes(s.scope);
+            return (
+              <Stack component="li" key={s.scope} direction="row" spacing={1}
+                     sx={{ alignItems: "center", flexWrap: "wrap", rowGap: 0.5 }}>
+                <StatusChip
+                  dense
+                  label={s.granted === false ? "refused" : "untested"}
+                  tone={s.granted === false ? (blocking ? "bad" : "warn") : "neutral"}
+                />
+                <Typography variant="caption" component="code">{s.scope}</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {s.granted === false
+                    ? (blocking
+                        ? "no sync can run until this is granted"
+                        : "what it reads stays empty")
+                    : "could not be tested, so this says nothing either way"}
+                </Typography>
+              </Stack>
+            );
+          })}
+        </Stack>
+      )}
 
       <dl className="cx-facts">
         <div>
@@ -266,12 +448,12 @@ function ConnectionCard({
           <dd>
             {conn.credential_label}
             {conn.credential_rotated_at && (
-              <div className="st-help">
+              <Typography variant="caption" component="div" color="text.secondary">
                 rotated {formatDate(conn.credential_rotated_at)}
-              </div>
+              </Typography>
             )}
             {canManage && !rotating && (
-              <Button variant="text" size="small" className="cx-rotate-open"
+              <Button variant="text" size="small" sx={{ mt: 0.5, pl: 0 }}
                       onClick={() => { setRotating(true); setRotateNote(null); }}>
                 {isZoho ? "Replace the token" : "Replace the sign-in"}
               </Button>
@@ -331,19 +513,23 @@ function ConnectionCard({
 
       {rotating && isZoho && (
         <div className="cx-rotate">
-          <label htmlFor={`cx-token-${conn.connection_id}`}>
-            <Labelled tip="Generate a fresh refresh token in the Zoho API console for the same client, then paste it here. The client id and secret are left alone by default, because re-typing a secret that is already correct is how a working connection gets broken — but if the token came from a different app, replace them too or Zoho refuses the pair.">
-              New refresh token
-            </Labelled>
-          </label>
-          <input
+          {/* The explanation is the field's `helperText` rather than a tooltip
+              on its label. A rotation is done once, under pressure, by
+              somebody who has just been told a connection is broken — the two
+              sentences that decide whether they also replace the client pair
+              should not be behind a "?" at that moment. */}
+          <TextField
             id={`cx-token-${conn.connection_id}`}
-            className="input"
+            label="New refresh token"
+            size="small"
+            fullWidth
             value={newToken}
-            autoComplete="off"
-            spellCheck={false}
-            placeholder="1000.xxxxxxxx.xxxxxxxx"
             onChange={(e) => setNewToken(e.target.value)}
+            autoComplete="off"
+            placeholder="1000.xxxxxxxx.xxxxxxxx"
+            helperText="Generate a fresh refresh token in the Zoho API console for the same client, then paste it here. The client id and secret are left alone by default, because re-typing a secret that is already correct is how a working connection gets broken — but if the token came from a different app, replace them too or Zoho refuses the pair."
+            slotProps={{ htmlInput: { spellCheck: false } }}
+            sx={{ maxWidth: 420 }}
           />
           {/* Reachable, not open. A token generated under a *different* Zoho
               app is the one failure a token-only rotation produces, and Zoho
@@ -352,29 +538,28 @@ function ConnectionCard({
               one setting that was right. */}
           {replacingClient ? (
             <>
-              <label htmlFor={`cx-rcid-${conn.connection_id}`} style={{ marginTop: 10 }}>
-                <Labelled tip="Only when the token came from a different app in the Zoho API console. A client keeps one id across data centres but has a separate secret in each, so copy both from the console for this connection's data centre.">
-                  Client ID
-                </Labelled>
-              </label>
-              <input
+              <TextField
                 id={`cx-rcid-${conn.connection_id}`}
-                className="input"
-                autoComplete="off"
-                spellCheck={false}
+                label="Client ID"
+                size="small"
+                fullWidth
                 value={newClient.client_id}
                 onChange={(e) => setNewClient({ ...newClient, client_id: e.target.value })}
-              />
-              <label htmlFor={`cx-rcs-${conn.connection_id}`} style={{ marginTop: 10 }}>
-                Client secret
-              </label>
-              <input
-                id={`cx-rcs-${conn.connection_id}`}
-                type="password"
-                className="input"
                 autoComplete="off"
+                helperText="Only when the token came from a different app in the Zoho API console. A client keeps one id across data centres but has a separate secret in each, so copy both from the console for this connection's data centre."
+                slotProps={{ htmlInput: { spellCheck: false } }}
+                sx={{ maxWidth: 420 }}
+              />
+              <TextField
+                id={`cx-rcs-${conn.connection_id}`}
+                label="Client secret"
+                type="password"
+                size="small"
+                fullWidth
                 value={newClient.client_secret}
                 onChange={(e) => setNewClient({ ...newClient, client_secret: e.target.value })}
+                autoComplete="off"
+                sx={{ maxWidth: 420 }}
               />
             </>
           ) : (
@@ -385,12 +570,16 @@ function ConnectionCard({
           )}
           {/* Said before it happens, not after. One Zoho grant usually reaches
               every company its user can see, so rotating from here rotates
-              those too — which is the point, and a surprise if unstated. */}
-          <p className="st-help">
+              those too — which is the point, and a surprise if unstated.
+
+              An `Alert`, not the 11.5px grey `.st-help` it was: this is the
+              most consequential sentence in the panel and it was set as the
+              least prominent thing in it. */}
+          <Alert severity="info">
             This replaces the sign-in for every company using{" "}
             <strong>{conn.credential_label}</strong>, not only this one. The
             connection is re-checked immediately afterwards.
-          </p>
+          </Alert>
           <div className="cx-rotate-actions">
             <Button variant="contained" size="small"
                     disabled={busy || !newToken.trim() || (replacingClient
@@ -425,47 +614,31 @@ function ConnectionCard({
           </div>
         </div>
       )}
-      {rotateNote && <p className="cx-detail">{rotateNote}</p>}
-
-      {(check?.detail ?? conn.last_check_detail) && (
-        <p className={`cx-detail ${h.tone === "bad" ? "bad" : ""}`}>
-          {check?.detail ?? conn.last_check_detail}
-        </p>
-      )}
-
-      {/* Only the gaps. A list of ten green ticks is noise on a healthy
-          connection, and it buries the one line that needs acting on. */}
-      {check?.scopes && check.scopes.some((s) => s.granted !== true) && (
-        <ul className="cx-scopegaps">
-          {check.scopes.filter((s) => s.granted !== true).map((s) => (
-            <li key={s.scope} className={s.granted === false ? "bad" : ""}>
-              <code>{s.scope}</code>{" "}
-              {s.granted === false
-                ? (check.missing_required_scopes?.includes(s.scope)
-                    ? "refused — no sync can run until this is granted"
-                    : "refused — what it reads stays empty")
-                : "could not be tested, so this says nothing either way"}
-            </li>
-          ))}
-        </ul>
+      {/* The server's own sentence about what else changed underneath. A
+          success surface rather than grey prose: rotating one connection can
+          move two others, and that is the part worth not missing. */}
+      {rotateNote && (
+        <Alert severity="success" sx={{ mt: 1 }}>{rotateNote}</Alert>
       )}
 
       {check?.visible_organizations && check.visible_organizations.length > 0 && (
         <>
-          <p className="cx-detail">
+          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
             This sign-in also reaches{" "}
             {check.visible_organizations.length === 1 ? "this company only" : "these companies"}:
-          </p>
-          <ul className="cred-orgs">
+          </Typography>
+          <ChoiceList>
             {check.visible_organizations.map((o) => (
-              <li key={o.organization_id}>
-                <span className="cred-org" style={{ display: "block" }}>
-                  {o.name} <span className="mono">{o.organization_id}</span>
-                  {o.organization_id === conn.zoho_organization_id && <em> this one</em>}
-                </span>
-              </li>
+              <Box component="li" key={o.organization_id}>
+                <CompanyChoice
+                  name={o.name}
+                  id={o.organization_id}
+                  note={o.organization_id === conn.zoho_organization_id
+                    ? "this one" : undefined}
+                />
+              </Box>
             ))}
-          </ul>
+          </ChoiceList>
         </>
       )}
 
@@ -481,73 +654,111 @@ function ConnectionCard({
               whether to resume it. */}
           {conn.enabled && (
             <>
-          <label htmlFor={`cx-since-${conn.connection_id}`}>
-            <Labelled
-              tip={
-                <>
-                  Every invoice and bill dated after this is fetched individually, so an
-                  earlier date means a longer pull. The detectors compare the last 90 days
-                  against the 90 before that and need six months of history before they
-                  will call a decline.
-                  {conn.covered_from && (
-                    <> This company has been read from {conn.covered_from}{" "}
-                      onwards. An earlier date reads the months in between for
-                      the first time.</>
-                  )}
-                </>
-              }
-            >
-              Read this company's books from
-            </Labelled>
-          </label>
-          <input
-            id={`cx-since-${conn.connection_id}`}
-            type="date"
-            className="input"
-            value={since}
-            max={todayISO()}
-            onChange={(e) => setSince(e.target.value)}
-          />
-          {/* What this company actually holds, and what the chosen date will
-              cost. "Last pulled from 2025-01-01" answers neither: a nightly
-              pull can run for a year and still cover only the window the first
-              run asked for.
+              {/* The one field on this screen whose explanation stays behind a
+                  `Tip` rather than becoming `helperText`. The setup and
+                  rotation fields are filled in once, under pressure, so their
+                  prose is worth having permanently open; this one is on every
+                  card and is read every time somebody pulls, and three copies
+                  of a four-line paragraph standing open on three cards would
+                  cost more than they explain. */}
+              <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+                <TextField
+                  id={`cx-since-${conn.connection_id}`}
+                  type="date"
+                  size="small"
+                  label="Read this company's books from"
+                  value={since}
+                  onChange={(e) => setSince(e.target.value)}
+                  slotProps={{
+                    inputLabel: { shrink: true },
+                    htmlInput: { max: todayISO() },
+                  }}
+                  sx={{ width: 260 }}
+                />
+                <Tip
+                  text={
+                    <>
+                      Every invoice and bill dated after this is fetched individually, so an
+                      earlier date means a longer pull. The detectors compare the last 90 days
+                      against the 90 before that and need six months of history before they
+                      will call a decline.
+                      {conn.covered_from && (
+                        <> This company has been read from {conn.covered_from}{" "}
+                          onwards. An earlier date reads the months in between for
+                          the first time.</>
+                      )}
+                    </>
+                  }
+                />
+              </Stack>
+              {/* What this company actually holds, and what the chosen date will
+                  cost. "Last pulled from 2025-01-01" answers neither: a nightly
+                  pull can run for a year and still cover only the window the first
+                  run asked for.
 
-              The second line is the one that matters. Widening the window used
-              to be a silent no-op — the run went green and fetched nothing —
-              so the screen now says, before the button is pressed, which of the
-              two pulls is about to happen. */}
-          <p className="cx-detail">
-            {conn.covered_from ? (
-              <>Read from <strong>{formatDate(conn.covered_from)}</strong> onwards
-                so far.{" "}
-                {since < conn.covered_from
-                  ? <>This date reaches further back, so those extra months are
-                      listed in full — slower than a repeat pull.</>
-                  : <>This date is inside that, so the pull only picks up what
-                      has changed.</>}
-              </>
-            ) : (
-              <>Nothing has been read from this company yet, so this first pull
-                lists everything from the date above.</>
-            )}
-          </p>
-          <label className="sync-check">
-            <input type="checkbox" checked={full} onChange={(e) => setFull(e.target.checked)} />
-            Re-read documents already held
-            <Tip text="A repeat pull normally skips documents it already holds, which is what makes it fast. Tick this after granting a scope that was missing — the documents are there, but the fields that scope unlocks are not." />
-          </label>
+                  The second line is the one that matters. Widening the window used
+                  to be a silent no-op — the run went green and fetched nothing —
+                  so the screen now says, before the button is pressed, which of the
+                  two pulls is about to happen. It is `body2` rather than the
+                  caption the rest of this block uses for that reason. */}
+              <Typography variant="body2" color="text.secondary">
+                {conn.covered_from ? (
+                  <>Read from <strong>{formatDate(conn.covered_from)}</strong> onwards
+                    so far.{" "}
+                    {since < conn.covered_from
+                      ? <>This date reaches further back, so those extra months are
+                          listed in full — slower than a repeat pull.</>
+                      : <>This date is inside that, so the pull only picks up what
+                          has changed.</>}
+                  </>
+                ) : (
+                  <>Nothing has been read from this company yet, so this first pull
+                    lists everything from the date above.</>
+                )}
+              </Typography>
+              <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+                <FormControlLabel
+                  control={
+                    <Checkbox
+                      size="small"
+                      checked={full}
+                      onChange={(e) => setFull(e.target.checked)}
+                    />
+                  }
+                  label="Re-read documents already held"
+                  slotProps={{ typography: { variant: "body2" } }}
+                />
+                <Tip text="A repeat pull normally skips documents it already holds, which is what makes it fast. Tick this after granting a scope that was missing — the documents are there, but the fields that scope unlocks are not." />
+              </Stack>
             </>
           )}
           {conn.last_sync ? (
-            <div className="cx-lastpull">
-              Last pulled {when(conn.last_sync.started_at)} from {conn.last_sync.since ?? "a rolling window"} ·{" "}
-              {conn.last_sync.sales_txns} sales lines, {conn.last_sync.cost_records} cost records
-              {conn.last_sync.status !== "OK" && <> · {conn.last_sync.status.toLowerCase()}</>}
-              {conn.last_sync.error && <div className="cx-detail bad">{conn.last_sync.error}</div>}
-            </div>
+            <Box>
+              <Typography variant="caption" component="div" color="text.secondary">
+                Last pulled {when(conn.last_sync.started_at)} from {conn.last_sync.since ?? "a rolling window"} ·{" "}
+                {conn.last_sync.sales_txns} sales lines, {conn.last_sync.cost_records} cost records
+                {/* The outcome word was rendered lower-cased in the same grey
+                    as the counts beside it, which made "failed" read as another
+                    statistic. It is a state, so it is a chip. */}
+                {conn.last_sync.status !== "OK" && (
+                  <>
+                    {" · "}
+                    <StatusChip
+                      dense
+                      label={conn.last_sync.status}
+                      tone={conn.last_sync.status === "FAILED" ? "bad" : "warn"}
+                    />
+                  </>
+                )}
+              </Typography>
+              {conn.last_sync.error && (
+                <Alert severity="error" sx={{ mt: 1 }}>{conn.last_sync.error}</Alert>
+              )}
+            </Box>
           ) : (
-            <div className="cx-lastpull">This company has never been pulled on its own.</div>
+            <Typography variant="caption" color="text.secondary">
+              This company has never been pulled on its own.
+            </Typography>
           )}
         </div>
       )}
@@ -571,7 +782,7 @@ function ConnectionCard({
             {syncing ? "Pulling this one…" : syncBusy ? "Starting…" : "Pull from this company"}
           </Button>
         )}
-        <span className="spacer" />
+        <Box sx={{ flex: 1 }} />
         {canManage && (
           <>
             <Button
@@ -622,26 +833,28 @@ function FieldInput({
   onChange: (v: string) => void;
 }) {
   const id = `${idPrefix}-${field.name}`;
+  // The connector declares its own label, help and optionality, so all three
+  // land where MUI already has a slot for them rather than in a hand-built
+  // label / `.st-help` / `<input>` triple. `help` becomes permanent helper
+  // text rather than a tooltip: it is the only documentation these fields
+  // have, and a NetSuite consumer key entered wrongly fails at the next
+  // screen rather than at this one.
   return (
-    <>
-      <label htmlFor={id} style={{ marginTop: 10 }}>
-        {field.help
-          ? <Labelled tip={field.help}>{field.label}</Labelled>
-          : field.label}
-        {!field.required && <span className="st-help"> (optional)</span>}
-      </label>
-      <input
-        id={id}
-        className="input"
-        type={field.secret ? "password" : "text"}
-        autoComplete="off"
-        spellCheck={false}
-        required={field.required}
-        placeholder={field.placeholder || undefined}
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-      />
-    </>
+    <TextField
+      id={id}
+      label={field.required ? field.label : `${field.label} (optional)`}
+      size="small"
+      fullWidth
+      type={field.secret ? "password" : "text"}
+      autoComplete="off"
+      required={field.required}
+      placeholder={field.placeholder || undefined}
+      helperText={field.help || undefined}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      slotProps={{ htmlInput: { spellCheck: false } }}
+      sx={{ mt: 1.5, maxWidth: 520 }}
+    />
   );
 }
 
@@ -663,20 +876,23 @@ function ErpRotateForm({
     (f) => !f.required || (values[f.name] ?? "").trim() !== "");
   return (
     <div className="cx-rotate">
-      <p className="st-help">
+      <Typography variant="body2">
         Enter the fresh sign-in for {entry.label}. All of it — a half-replaced
         credential is how a working connection gets broken.
-      </p>
+      </Typography>
       {entry.credential_fields.map((f) => (
         <FieldInput key={f.name} field={f} idPrefix="cx-erp-rotate"
                     value={values[f.name] ?? ""}
                     onChange={(v) => setValues((s) => ({ ...s, [f.name]: v }))} />
       ))}
-      <p className="st-help">
+      {/* The same disclosure, on the same surface, as the Zoho rotation above:
+          one sign-in reaches several companies in every connector, so both
+          halves of this file say so the same way. */}
+      <Alert severity="info" sx={{ mt: 1.5 }}>
         This replaces the sign-in for every company using{" "}
         <strong>{credentialLabel}</strong>, not only this one. The connection
         is re-checked immediately afterwards.
-      </p>
+      </Alert>
       <div className="cx-rotate-actions">
         <Button variant="contained" size="small" disabled={busy || !ready}
                 onClick={() => onSubmit(values)}>
@@ -764,34 +980,35 @@ function ErpConnectForm({
       ))}
 
       {entry.can_discover && (
-        <div style={{ marginTop: 8 }}>
+        <Box sx={{ mt: 1 }}>
           <Button type="button" variant="text" size="small"
                   disabled={busy || !credentialReady}
                   onClick={discover}>
             List the {entry.company_term} choices this sign-in can see
           </Button>
           {companies && (
-            <ul className="cred-orgs">
+            <ChoiceList>
               {companies.length === 0 && (
-                <li className="st-help">
+                <Typography component="li" variant="caption" color="text.secondary">
                   {entry.label} returned nothing for this sign-in.
-                </li>
+                </Typography>
               )}
               {companies.map((c) => (
-                <li key={c.id}>
-                  <button type="button" className="cred-org"
-                          onClick={() => {
-                            setValues((s) => ({
-                              ...s, [entry.external_id_field]: c.id }));
-                            setLabel((l) => l || c.name);
-                          }}>
-                    {c.name} <span className="mono">{c.id}</span>
-                  </button>
-                </li>
+                <Box component="li" key={c.id}>
+                  <CompanyChoice
+                    name={c.name}
+                    id={c.id}
+                    onPick={() => {
+                      setValues((s) => ({
+                        ...s, [entry.external_id_field]: c.id }));
+                      setLabel((l) => l || c.name);
+                    }}
+                  />
+                </Box>
               ))}
-            </ul>
+            </ChoiceList>
           )}
-        </div>
+        </Box>
       )}
 
       {entry.connection_fields.map((f) => (
@@ -800,34 +1017,34 @@ function ErpConnectForm({
                     onChange={(v) => setValues((s) => ({ ...s, [f.name]: v }))} />
       ))}
 
-      <label htmlFor={`cx-erp-${entry.key}-label`} style={{ marginTop: 10 }}>
-        Name it
-        <span className="fsrc">
-          What you call this entity — a name, not an id. A list of three ids
-          is unreadable at the moment you need it.
-        </span>
-      </label>
-      <input
+      <TextField
         id={`cx-erp-${entry.key}-label`}
-        className="input"
+        label="Name it"
+        size="small"
+        fullWidth
         value={label}
         onChange={(e) => setLabel(e.target.value)}
+        helperText="What you call this entity — a name, not an id. A list of three ids is unreadable at the moment you need it."
+        sx={{ mt: 1.5, maxWidth: 520 }}
       />
 
-      {error && <p className="cx-detail bad">{error}</p>}
+      {error && <Alert severity="error" sx={{ mt: 1.5 }}>{error}</Alert>}
       {result && (
-        <p className={`cx-detail ${result.ok ? "" : "bad"}`}>
+        // `warning`, not `error`, when the check fails: the company *was*
+        // added and the sentence says so. Rendering that in red sends somebody
+        // back to add it a second time.
+        <Alert severity={result.ok ? "success" : "warning"} sx={{ mt: 1.5 }}>
           {result.ok
             ? `Connected. ${result.detail ?? ""}`
             : `Added, but the check failed: ${result.detail ?? "no detail"}. ` +
               "Fix the values and use Replace the sign-in on its card."}
-        </p>
+        </Alert>
       )}
-      <div style={{ marginTop: 12 }}>
+      <Box sx={{ mt: 1.5 }}>
         <Button type="submit" variant="contained" size="small" disabled={busy}>
           {busy ? "Adding…" : `Add ${entry.company_term}`}
         </Button>
-      </div>
+      </Box>
     </form>
   );
 }
@@ -1043,20 +1260,34 @@ function AddConnection({
 
       {/* One strip, every system, Zoho included — it is a row in the catalog
           now rather than a button written out here, so the tab and the access
-          list below it cannot describe different systems. */}
+          list below it cannot describe different systems.
+
+          A `ToggleButtonGroup`, per ui-standards §5: these were `<button>`s
+          with a hand-rolled `.cx-tab` pill, an `aria-pressed` written out by
+          hand and a selected state that existed only as an attribute selector
+          in the stylesheet. The MUI control is the same semantics with the
+          focus ring, the hit target and the selected ink coming from the
+          theme. */}
       {catalog.length > 1 && (
-        <div className="cx-tabs" role="group" aria-label="Which system">
+        <ToggleButtonGroup
+          exclusive
+          size="small"
+          value={connector}
+          onChange={(_e, v) => { if (v) setConnector(v as string); }}
+          aria-label="Which system"
+          sx={{ mb: 1.5, flexWrap: "wrap" }}
+        >
           {catalog.map((c) => (
-            <button key={c.key} type="button" className="cx-tab"
-                    aria-pressed={connector === c.key}
-                    onClick={() => setConnector(c.key)}>
-              {c.label}
-            </button>
+            <ToggleButton key={c.key} value={c.key}>{c.label}</ToggleButton>
           ))}
-        </div>
+        </ToggleButtonGroup>
       )}
 
-      {entry && <p className="st-help">{entry.setup_note}</p>}
+      {entry?.setup_note && (
+        <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+          {entry.setup_note}
+        </Typography>
+      )}
 
       {connector !== "zoho" && entry && (
         <ErpConnectForm entry={entry} token={token} onAdded={onAdded} />
@@ -1064,44 +1295,35 @@ function AddConnection({
 
       {connector === "zoho" && (
       <>
-      <div className="cx-tabs">
+      {/* The second strip, and it never carried the `aria-label` the first one
+          did — so a screen reader announced three unrelated pressed buttons
+          with nothing saying what they were three ways of doing. */}
+      <ToggleButtonGroup
+        exclusive
+        size="small"
+        value={mode}
+        onChange={(_e, v) => {
+          if (v) setMode(v as "existing" | "new" | "oauth");
+        }}
+        aria-label="How to sign in to Zoho"
+        sx={{ mb: 1.5, flexWrap: "wrap" }}
+      >
         {hasCredentials && (
-          <button
-            type="button"
-            className="cx-tab"
-            aria-pressed={mode === "existing"}
-            onClick={() => setMode("existing")}
-          >
-            Use a sign-in already on file
-          </button>
+          <ToggleButton value="existing">Use a sign-in already on file</ToggleButton>
         )}
-        <button
-          type="button"
-          className="cx-tab"
-          aria-pressed={mode === "new"}
-          onClick={() => setMode("new")}
-        >
-          Enter credentials manually
-        </button>
+        <ToggleButton value="new">Enter credentials manually</ToggleButton>
         {entry?.can_authorize && (
-          <button
-            type="button"
-            className="cx-tab"
-            aria-pressed={mode === "oauth"}
-            onClick={() => setMode("oauth")}
-          >
-            Sign in with Zoho
-          </button>
+          <ToggleButton value="oauth">Sign in with Zoho</ToggleButton>
         )}
-      </div>
+      </ToggleButtonGroup>
 
       {mode === "oauth" ? (
         <div>
-          <p className="st-help">
+          <Typography variant="body2" color="text.secondary">
             Sign in at Zoho and grant access — nothing to generate, and no secret
             to paste. It produces a sign-in on this screen, exactly like a
             manually-entered one; you then choose which company to connect.
-          </p>
+          </Typography>
           <TextField
             id="cx-oauth-dc"
             select
@@ -1121,7 +1343,7 @@ function AddConnection({
               <MenuItem key={d.code} value={d.code}>{d.label}</MenuItem>
             ))}
           </TextField>
-          {error && <p className="st-bad" role="alert">{error}</p>}
+          {error && <Alert severity="error" sx={{ mt: 1.5 }}>{error}</Alert>}
           <div className="cx-actions">
             <Button
               type="button" variant="contained" size="small"
@@ -1136,11 +1358,11 @@ function AddConnection({
       <form onSubmit={submit}>
         {mode === "existing" ? (
           <>
-            <p className="st-help">
+            <Typography variant="body2" color="text.secondary">
               The normal path for a second or third company. One Zoho sign-in already
               reaches every company that user can see, so re-entering the same secret
               would only create a copy for a future rotation to miss.
-            </p>
+            </Typography>
             <TextField
               id="cx-cred"
               select
@@ -1165,54 +1387,63 @@ function AddConnection({
             <Button
               type="button"
               variant="text" size="small"
-              style={{ marginTop: 8 }}
+              sx={{ mt: 1 }}
               disabled={!credentialId}
               onClick={listCompanies}
             >
               Show the companies this reaches
             </Button>
             {orgs && (
-              <ul className="cred-orgs">
-                {orgs.length === 0 && <li className="st-help">Zoho returned no companies for this sign-in.</li>}
+              <ChoiceList>
+                {orgs.length === 0 && (
+                  <Typography component="li" variant="caption" color="text.secondary">
+                    Zoho returned no companies for this sign-in.
+                  </Typography>
+                )}
                 {orgs.map((o) => (
-                  <li key={o.organization_id}>
-                    <button
-                      type="button"
-                      className="cred-org"
+                  <Box component="li" key={o.organization_id}>
+                    <CompanyChoice
+                      name={o.name}
+                      id={o.organization_id}
                       disabled={o.already_connected}
-                      onClick={() =>
+                      note={o.already_connected ? "already added" : undefined}
+                      onPick={() =>
                         setForm((f) => ({
                           ...f,
                           zoho_organization_id: o.organization_id,
                           label: f.label || o.name,
                         }))
                       }
-                    >
-                      {o.name} <span className="mono">{o.organization_id}</span>
-                      {o.already_connected && <em> already added</em>}
-                    </button>
-                  </li>
+                    />
+                  </Box>
                 ))}
-              </ul>
+              </ChoiceList>
             )}
           </>
         ) : (
           <>
-            <label htmlFor="cx-dc">
-              <Labelled tip="Must match the account the token was issued from. A token from accounts.zoho.in is rejected by accounts.zoho.com with an error that reads like a bad secret.">
-                Data centre
-              </Labelled>
-            </label>
+            {/* The same fact as the OAuth tab's data-centre field, said the
+                same way. It was a `<label>` + `Labelled` tooltip here and a
+                `helperText` three hundred lines up — two answers to one
+                question, in one file, about the single most common setup
+                failure this screen has. */}
             <TextField
               id="cx-dc"
               select
               fullWidth
               size="small"
+              label="Data centre"
+              sx={{ mt: 1.5, maxWidth: 520 }}
               value={form.accounts_base}
               onChange={(e) => {
                 const p = DC_PRESETS.find((d) => d.accounts_base === e.target.value);
                 if (p) setForm({ ...form, accounts_base: p.accounts_base, api_base: p.api_base });
               }}
+              helperText={
+                "Must match the account the token was issued from. A token from "
+                + "accounts.zoho.in is rejected by accounts.zoho.com with an error "
+                + "that reads like a bad secret."
+              }
             >
               {DC_PRESETS.map((p) => (
                 <MenuItem key={p.accounts_base} value={p.accounts_base}>
@@ -1221,74 +1452,73 @@ function AddConnection({
               ))}
             </TextField>
 
-            <label htmlFor="cx-client-id" style={{ marginTop: 10 }}>Client ID</label>
-            <input
+            <TextField
               id="cx-client-id"
-              className="input"
+              label="Client ID"
+              size="small"
+              fullWidth
               required
               value={form.client_id}
               onChange={(e) => setForm({ ...form, client_id: e.target.value })}
+              sx={{ mt: 1.5, maxWidth: 520 }}
             />
 
-            <label htmlFor="cx-client-secret" style={{ marginTop: 10 }}>Client secret</label>
-            <input
+            <TextField
               id="cx-client-secret"
+              label="Client secret"
               type="password"
-              className="input"
+              size="small"
+              fullWidth
               required
               value={form.client_secret}
               onChange={(e) => setForm({ ...form, client_secret: e.target.value })}
+              sx={{ mt: 1.5, maxWidth: 520 }}
             />
 
-            <label htmlFor="cx-refresh" style={{ marginTop: 10 }}>
-              <Labelled tip="Encrypted before it is stored and never shown again. Generate it in the Zoho API console with the scopes listed below — a token missing one of them authenticates and then returns nothing.">
-                Refresh token
-              </Labelled>
-            </label>
-            <input
+            <TextField
               id="cx-refresh"
+              label="Refresh token"
               type="password"
-              className="input"
+              size="small"
+              fullWidth
               required
               value={form.refresh_token}
               onChange={(e) => setForm({ ...form, refresh_token: e.target.value })}
+              helperText="Encrypted before it is stored and never shown again. Generate it in the Zoho API console with the scopes listed below — a token missing one of them authenticates and then returns nothing."
+              sx={{ mt: 1.5, maxWidth: 520 }}
             />
           </>
         )}
 
-        <label htmlFor="cx-zoho-org" style={{ marginTop: 10 }}>
-          <Labelled tip="Settings → Organization Profile in Zoho Books, or the id in its URL. Not the same as this platform's organization.">
-            Zoho Books organization id
-          </Labelled>
-        </label>
-        <input
+        <TextField
           id="cx-zoho-org"
-          className="input"
+          label="Zoho Books organization id"
+          size="small"
+          fullWidth
           required
           value={form.zoho_organization_id}
           onChange={(e) => setForm({ ...form, zoho_organization_id: e.target.value })}
+          helperText="Settings → Organization Profile in Zoho Books, or the id in its URL. Not the same as this platform's organization."
+          sx={{ mt: 1.5, maxWidth: 520 }}
         />
 
-        <label htmlFor="cx-label" style={{ marginTop: 10 }}>
-          Name it
-          <span className="fsrc">
-            What you call this entity — "4U Precision", not "60036630626". A list of three
-            numbers is unreadable at the moment you need it.
-          </span>
-        </label>
-        <input
+        <TextField
           id="cx-label"
-          className="input"
+          label="Name it"
+          size="small"
+          fullWidth
           value={form.label}
           onChange={(e) => setForm({ ...form, label: e.target.value })}
+          helperText={'What you call this entity — "4U Precision", not "60036630626". A list of three numbers is unreadable at the moment you need it.'}
+          sx={{ mt: 1.5, maxWidth: 520 }}
         />
 
-        {error && <p className="cx-detail bad">{error}</p>}
-        <div style={{ marginTop: 12 }}>
+        {error && <Alert severity="error" sx={{ mt: 1.5 }}>{error}</Alert>}
+        <Box sx={{ mt: 1.5 }}>
           <Button type="submit" variant="contained" size="small" disabled={busy}>
             {busy ? "Adding…" : "Add company"}
           </Button>
-        </div>
+        </Box>
       </form>
       )}
       </>
@@ -1304,18 +1534,23 @@ function AddConnection({
           in half, and the rule above it read as the end of a section that had
           not ended. */}
       {unusedSignIns.length > 0 && (
-        <div className="cx-unused">
-          <p className="st-help">
+        <Box className="cx-unused">
+          <Typography variant="body2" color="text.secondary">
             {unusedSignIns.length === 1
               ? "One sign-in on file reaches no company."
               : `${unusedSignIns.length} sign-ins on file reach no company.`}{" "}
             Removing a company leaves its sign-in behind so that reconnecting
             does not mean re-entering a secret. One you are finished with can go.
-          </p>
-          <ul className="cred-orgs">
+          </Typography>
+          <Stack component="ul" spacing={0.5}
+                 sx={{ listStyle: "none", m: 0, mt: 1, p: 0 }}>
             {unusedSignIns.map((c) => (
-              <li key={c.credential_id}>
-                <span className="mono">{c.client_id.slice(0, 18)}…</span>
+              <Stack component="li" key={c.credential_id} direction="row" spacing={1}
+                     sx={{ alignItems: "center", flexWrap: "wrap", rowGap: 0.5 }}>
+                <Typography variant="caption" component="span" className="mono"
+                            color="text.secondary">
+                  {c.client_id.slice(0, 18)}…
+                </Typography>
                 <Button
                   type="button"
                   variant="text" size="small"
@@ -1325,10 +1560,10 @@ function AddConnection({
                   Remove
                 </Button>
                 <Tip text="Deletes the stored secret. Nothing is connected through this sign-in, so no company stops being pulled and nothing already synced is affected." />
-              </li>
+              </Stack>
             ))}
-          </ul>
-        </div>
+          </Stack>
+        </Box>
       )}
 
       {entry && <Access entry={entry} />}
@@ -1375,7 +1610,9 @@ function ScopeString({
   if (!value) return null;
   return (
     <div className="cx-scopestring">
-      <span className="st-help">{label}</span>
+      <Typography variant="caption" component="span" color="text.secondary">
+        {label}
+      </Typography>
       <code>{value}</code>
       <Button
         variant="text" size="small"
@@ -1395,10 +1632,20 @@ function Access({ entry }: { entry: ConnectorCatalogEntry }) {
   if (entry.permissions.length === 0) return null;
   return (
     <div className="cx-access">
-      <div className="section-h">
-        <Labelled tip="Access is granted per grant, and a sign-in missing one still authenticates — the endpoint it needed refuses, and the sync reports zero rows of that kind with nothing obviously wrong. Granting fewer does not fail loudly; it fails quietly, later.">
+      {/* `subtitle2` on a real `<h3>`, which is what `.section-h` was drawing by
+          hand — the theme already has that rung (12px, uppercase, heading face)
+          and now it comes from there rather than from a stylesheet rule that
+          has to be kept in step with it. Deliberately *not* `kit.SectionHeader`:
+          that renders `variant="h3"` at 21px, which would be louder than the
+          "Add a company" heading this section sits underneath. Same reasoning
+          as the note on `Pane` in CatalogSources. */}
+      <Stack direction="row" spacing={1}
+             sx={{ mt: 1.75, mb: 1, alignItems: "center", flexWrap: "wrap", rowGap: 1 }}>
+        <Typography variant="subtitle2" component="h3" color="text.secondary">
           What {entry.label} must let it {entry.can_write_quotes ? "read and write" : "read"}
-        </Labelled>
+        </Typography>
+        <Tip text="Access is granted per grant, and a sign-in missing one still authenticates — the endpoint it needed refuses, and the sync reports zero rows of that kind with nothing obviously wrong. Granting fewer does not fail loudly; it fails quietly, later." />
+        <Box sx={{ flex: 1 }} />
         {/* Stated on the screen where access is granted, because this is the
             moment an owner decides how much to hand over — and "we can create
             records in your ledger" is the part of that decision they should
@@ -1412,8 +1659,12 @@ function Access({ entry }: { entry: ConnectorCatalogEntry }) {
             ? "Can create quotes here"
             : "Read-only — quotes cannot be sent here"}
         />
-      </div>
-      {entry.permission_note && <p className="st-help">{entry.permission_note}</p>}
+      </Stack>
+      {entry.permission_note && (
+        <Typography variant="body2" color="text.secondary">
+          {entry.permission_note}
+        </Typography>
+      )}
       <Box sx={{ overflowX: "auto" }}>
         {/* A fact list, not a business table: its length is set by this
             connector, not by the size of the business. */}
@@ -1586,33 +1837,50 @@ export function ConnectionsPanel({
 
   return (
     <>
-      <div className="dp-screen-head">
-        <div>
-          <h2>
-            <Labelled tip="One company here is one Zoho Books organization. Add as many as the business keeps books for — the rows land together in this organization's analysis.">
-              Companies
-            </Labelled>
-          </h2>
-          <p className="text-muted">
-            {[
-              view.connections.length === 0
-                ? "None connected yet"
-                : `${view.connections.length} connected · ${enabled} feeding the analysis`,
-              view.source_mode !== "api" ? "running against the offline sample source" : null,
-            ]
-              .filter(Boolean)
-              .join(" · ")}
-          </p>
-        </div>
-      </div>
+      {/* `kit.SectionHeader`, per §10 — this was a `<div className=
+          "dp-screen-head">` wrapping a hand-written `<h2>`/`<p>` pair, and
+          `.dp-screen-head` has no rule in the stylesheet at all, so the layout
+          it appeared to carry was doing nothing. `level="section"` because the
+          page title above this one belongs to `DataScreen`. */}
+      <SectionHeader
+        level="section"
+        title="Companies"
+        tip="One company here is one Zoho Books organization. Add as many as the business keeps books for — the rows land together in this organization's analysis."
+        sub={[
+          view.connections.length === 0
+            ? "None connected yet"
+            : `${view.connections.length} connected · ${enabled} feeding the analysis`,
+          view.source_mode !== "api" ? "running against the offline sample source" : null,
+        ]
+          .filter(Boolean)
+          .join(" · ")}
+      />
 
-      {view.connections.length > 1 && <div className="cx-pool">{view.pooling_note}</div>}
+      {/* `warning`, which is the severity `.cx-pool` was already drawing with
+          `--caution-bg`/`--warn` by hand. Pooling is not an error and not a
+          neutral note: it is the consequence somebody has to accept before
+          connecting a second book. */}
+      {view.connections.length > 1 && (
+        <Alert severity="warning" sx={{ mb: 2 }}>{view.pooling_note}</Alert>
+      )}
       {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
       {note && (
-        <div className="cx-pool" style={{ background: "var(--color-accent-100)", color: "var(--color-accent-800)", borderLeftColor: "var(--color-accent)" }}>
+        // The removal receipt. It was the caution panel above with three
+        // colours overridden inline to make it green — which is a severity,
+        // and severity is what `Alert` is for. "Dismiss" is kept as its own
+        // button rather than becoming MUI's ✕, because the word is what says
+        // the note can be let go without doing anything else.
+        <Alert
+          severity="success"
+          sx={{ mb: 2 }}
+          action={
+            <Button color="inherit" size="small" onClick={() => setNote(null)}>
+              Dismiss
+            </Button>
+          }
+        >
           {note}
-          <Button variant="text" size="small" onClick={() => setNote(null)}>Dismiss</Button>
-        </div>
+        </Alert>
       )}
 
       <div className="cx-list">
@@ -1637,12 +1905,16 @@ export function ConnectionsPanel({
             syncBusy={starting}
           />
         ))}
+        {/* `kit.EmptyState`, which separates the fact from the consequence —
+            the two used to run together in one sentence on a bare panel, and
+            the consequence is the half that decides whether somebody acts. */}
         {view.connections.length === 0 && (
-          <Bp className="cx-empty">
-            {view.can_manage
-              ? "No company is connected, so every screen is showing sample data or nothing at all. Add one below."
-              : "No company is connected. Ask an owner to add one."}
-          </Bp>
+          <EmptyState
+            title="No company is connected"
+            reason={view.can_manage
+              ? "Every screen is showing sample data, or nothing at all, until one is connected. The form below adds the first."
+              : "Ask an owner to add one."}
+          />
         )}
       </div>
 

@@ -1,8 +1,10 @@
 import { useRef, useState } from "react";
+import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
+import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
@@ -10,6 +12,7 @@ import TextField from "@mui/material/TextField";
 import MenuItem from "@mui/material/MenuItem";
 import Typography from "@mui/material/Typography";
 import { StatusChip } from "../platform/kit";
+import { tokens } from "../theme";
 
 const SAMPLE = `2001174, 20
 CNMG 120408 KCP25  50
@@ -30,12 +33,26 @@ const CHANNELS: [string, string][] = [
   ["PHONE_NOTE", "Phone — my note of it"],
 ];
 
+/** One dialog of this kind is open at a time, so one id is enough to point the
+ *  dialog at its own title. MUI does not wire the two together on its own, and
+ *  without it a screen reader announces "dialog" and nothing else. */
+const TITLE_ID = "intake-title";
+
 /** Paste an RFQ and resolve it into quote lines.
  *
  * A `Dialog` rather than the hand-rolled overlay it replaces. The old one had
  * no Escape key at all — the only way out was to hit Cancel with a mouse — and
  * nothing kept focus inside it, so tabbing walked into the quote grid behind
- * while the dialog was still covering it. */
+ * while the dialog was still covering it.
+ *
+ * **Three inputs and one paragraph of help, in that order of weight.** The
+ * guidance used to be two outlined panels below the fields — "Accepted
+ * formats" as a bulleted list and "What happens next" beside it — which put
+ * more boxes on this dialog than it has controls, and put the formats a
+ * person needs *while typing* below the box they were typing in. The formats
+ * are now the text field's own helper text, where they are read, and the
+ * sample button sits under the field it fills rather than under both panels.
+ */
 export function IntakeModal({
   onClose,
   onSubmit,
@@ -59,116 +76,117 @@ export function IntakeModal({
   // be filed under a route nobody chose.
   const [channel, setChannel] = useState("");
   return (
-    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle sx={{ pb: 1 }}>
-        Paste RFQ
-        <Typography component="div" variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-          One request per line. The engine resolves each line into a quote-ready product.
-        </Typography>
-      </DialogTitle>
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth aria-labelledby={TITLE_ID}>
+      <DialogTitle id={TITLE_ID}>Paste RFQ</DialogTitle>
 
-      <DialogContent sx={{ pt: 2 }}>
-        <TextField
-          label="RFQ text"
-          placeholder={SAMPLE}
-          multiline
-          minRows={6}
-          fullWidth
-          autoFocus
-          value={text}
-          onChange={(e) => setText(e.target.value)}
-          slotProps={{ input: { sx: { fontFamily: "ui-monospace, monospace", fontSize: 13 } } }}
-        />
+      {/* `dividers` rather than padding alone: three fields and an attachment
+          outgrow a short window, and the rules are what say the title and the
+          two buttons stay put while the middle scrolls. */}
+      <DialogContent dividers>
+        <Stack spacing={2}>
+          <DialogContentText>
+            One request per line. The engine resolves each line into a quote-ready product.
+          </DialogContentText>
 
-        <TextField
-          select
-          label="How did this reach you?"
-          value={channel}
-          onChange={(e) => setChannel(e.target.value)}
-          fullWidth
-          sx={{ mt: 2 }}
-          helperText={channel
-            ? "Kept as you pasted it — spelling, casing and all — so the "
-              + "resolver can be measured against what customers actually write."
-            : "Optional. Say how it arrived and the wording is kept for "
-              + "measuring the resolver; leave it and only the resolved lines "
-              + "are stored."}
-        >
-          {CHANNELS.map(([value, label]) => (
-            <MenuItem key={value} value={value}>{label}</MenuItem>
-          ))}
-        </TextField>
-
-        {/* The document it arrived as. "A PDF they sent" has been a channel on
-            this form since before there was anywhere to put the PDF, so the
-            desk stated the route and then retyped the contents. The file is
-            stored and linked to the enquiry; nothing reads it yet, and the
-            helper text says so rather than implying the lines below were
-            extracted from it. */}
-        <Paper variant="outlined" sx={{ p: 1.5, mt: 2 }}>
-          <Stack
-            direction="row"
-            spacing={1.5}
-            sx={{ alignItems: "center", flexWrap: "wrap" }}
-          >
-            <Button
-              size="small"
-              variant="outlined"
-              onClick={() => picker.current?.click()}
-            >
-              {file ? "Choose a different file" : "Attach the document"}
+          <Box>
+            <TextField
+              label="RFQ text"
+              placeholder={SAMPLE}
+              multiline
+              minRows={6}
+              fullWidth
+              autoFocus
+              value={text}
+              onChange={(e) => setText(e.target.value)}
+              helperText={<>
+                A manufacturer code or a loose description, with the quantity
+                as <code>code, qty</code> or <code>code xNN</code>.
+              </>}
+              // Monospace so a code lines up with the one under it, at the
+              // theme's own body size and from the theme's own mono token —
+              // §11: a literal here is a value that will not follow.
+              slotProps={{ input: {
+                sx: { typography: "body2", fontFamily: tokens.fontMono },
+              } }}
+            />
+            {/* Under the field it fills. It used to sit below both help
+                panels, four elements away from the box it writes into. */}
+            <Button size="small" onClick={() => setText(SAMPLE)}>
+              Use sample RFQ
             </Button>
-            {file && (
-              <>
-                <StatusChip label={file.name} tone="info" />
-                <Button size="small" color="inherit" onClick={() => setFile(null)}>
-                  Remove
-                </Button>
-              </>
-            )}
-          </Stack>
-          <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-            Optional. The file is kept with this enquiry so anyone can open what
-            the customer actually sent. It is <strong>not</strong> read — the
-            lines still come from the text above.
+          </Box>
+
+          <TextField
+            select
+            label="How did this reach you?"
+            value={channel}
+            onChange={(e) => setChannel(e.target.value)}
+            fullWidth
+            helperText={channel
+              ? "Kept as you pasted it — spelling, casing and all — so the "
+                + "resolver can be measured against what customers actually write."
+              : "Optional. Say how it arrived and the wording is kept for "
+                + "measuring the resolver; leave it and only the resolved lines "
+                + "are stored."}
+          >
+            {CHANNELS.map(([value, label]) => (
+              <MenuItem key={value} value={value}>{label}</MenuItem>
+            ))}
+          </TextField>
+
+          {/* The document it arrived as. "A PDF they sent" has been a channel on
+              this form since before there was anywhere to put the PDF, so the
+              desk stated the route and then retyped the contents. The file is
+              stored and linked to the enquiry; nothing reads it yet, and the
+              helper text says so rather than implying the lines below were
+              extracted from it.
+
+              A `Paper` and not bare text because it holds controls of its own:
+              a picker, the name of what was picked, and the way to take it
+              back. */}
+          <Paper variant="outlined" sx={{ p: 1.5 }}>
+            <Stack
+              direction="row"
+              spacing={1.5}
+              sx={{ alignItems: "center", flexWrap: "wrap" }}
+            >
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => picker.current?.click()}
+              >
+                {file ? "Choose a different file" : "Attach the document"}
+              </Button>
+              {file && (
+                <>
+                  <StatusChip label={file.name} tone="info" />
+                  <Button size="small" color="inherit" onClick={() => setFile(null)}>
+                    Remove
+                  </Button>
+                </>
+              )}
+            </Stack>
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Optional. The file is kept with this enquiry so anyone can open what
+              the customer actually sent. It is <strong>not</strong> read — the
+              lines still come from the text above.
+            </Typography>
+            <input
+              ref={picker}
+              type="file"
+              hidden
+              accept=".pdf,.png,.jpg,.jpeg,.xlsx,.xls,.docx,.csv,.txt"
+              onChange={(e) => setFile(e.target.files?.[0] ?? null)}
+            />
+          </Paper>
+
+          {/* What pressing the button does, said next to the button rather
+              than in a panel of its own. */}
+          <Typography variant="body2" color="text.secondary">
+            Next: the quote grid shows the matching supply products, availability
+            and the next best action for each line.
           </Typography>
-          <input
-            ref={picker}
-            type="file"
-            hidden
-            accept=".pdf,.png,.jpg,.jpeg,.xlsx,.xls,.docx,.csv,.txt"
-            onChange={(e) => setFile(e.target.files?.[0] ?? null)}
-          />
-        </Paper>
-
-        <Stack
-          direction={{ xs: "column", sm: "row" }}
-          spacing={1.5}
-          sx={{ mt: 2 }}
-        >
-          <Paper variant="outlined" sx={{ p: 1.5, flex: 1 }}>
-            <Typography variant="subtitle2" sx={{ mb: 0.5 }}>Accepted formats</Typography>
-            <Typography component="ul" variant="body2" color="text.secondary" sx={{ m: 0, pl: 2.2 }}>
-              <li>Manufacturer code</li>
-              <li>Loose description</li>
-              <li>Quantity as <code>code, qty</code> or <code>code xNN</code></li>
-            </Typography>
-          </Paper>
-          <Paper variant="outlined" sx={{ p: 1.5, flex: 1 }}>
-            <Typography variant="subtitle2" sx={{ mb: 0.5 }}>What happens next</Typography>
-            <Typography variant="body2" color="text.secondary">
-              The quote grid will show matching supply products, availability, and the next best action.
-            </Typography>
-          </Paper>
         </Stack>
-
-        <Button
-          size="small"
-          sx={{ mt: 1.5 }}
-          onClick={() => setText(SAMPLE)}
-        >
-          Use sample RFQ
-        </Button>
       </DialogContent>
 
       <DialogActions>

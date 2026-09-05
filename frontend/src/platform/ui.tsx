@@ -1,4 +1,35 @@
 // Small shared presentation pieces for the Decision Platform.
+//
+// **Where the line is drawn in this file.** `docs/ui-standards.md` §2 makes
+// `Paper` the surface for anything on a dashboard, and §10 lists the kit
+// components that replace a hand-rolled pattern by name. So the *surfaces* here
+// — the interpretation panel, the impact panel, the ranking box — are `Paper`
+// now, built from theme tokens rather than from bespoke `.interp` / `.impact` /
+// `.ranking` rules that had to be kept in step with the theme by hand. That is
+// the move `Bp` already made below, applied to its three siblings.
+//
+// What deliberately did *not* move: the marks and lists with no kit equivalent
+// (`.factchip`, `.actions-list`, `.facttable`) and the `.dcard*` classes, which
+// `styles.css` styles from outside — `.dp-cards.tight .dcard` is a parent
+// screen's rule and dropping the class would silently un-tighten the compact
+// queue. Those classes read `var(--color-*)`, which `theme.ts` emits, so they
+// already follow the palette; converting them would be churn, not alignment.
+//
+// **Money here is a decimal string, so `money()` stays.** §10 lists kit's
+// `CurrencyValue` as the replacement for a bare `money()` in JSX, and it cannot
+// be used on this screen: `DecisionImpact.financial`, `DecisionRanking.financial`
+// and `rupees_per_point` are serialized as decimal *strings* so the server's
+// `Decimal` never round-trips through a float, and `CurrencyValue` is typed
+// `number` only. `money()` accepts both shapes. This is a deliberate exception,
+// not a missed conversion — widening the kit prop is the fix, and that file is
+// not this one's to edit.
+//
+// The `<table className="facttable">` in `WhyPanel` stays a `<table>` on
+// purpose. It is a fact panel — a label and a value, one row per state field on
+// one decision — and its row count is the shape of the decision type, never the
+// size of the business. `ui-standards.md` names `facttable` as correct by
+// construction; §3's test is the row count, and this one does not grow with the
+// book.
 import Button from "@mui/material/Button";
 import type { ReactNode } from "react";
 import type { DecisionDetail, Fact } from "./types";
@@ -15,7 +46,10 @@ import Alert from "@mui/material/Alert";
 import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
 import Paper from "@mui/material/Paper";
-import { PriorityChip, StatusChip, TOUCH } from "./kit";
+import Stack from "@mui/material/Stack";
+import Typography from "@mui/material/Typography";
+import type { SxProps, Theme } from "@mui/material/styles";
+import { PriorityChip, SectionHeader, StatusChip, TOUCH } from "./kit";
 export { Tip, Labelled } from "../Tip";
 
 type BpProps = {
@@ -85,7 +119,20 @@ export function Conf({ level, aiStatus }: { level?: string; aiStatus?: string })
       />
     );
   }
-  const label = (level && CONF_LABEL[level]) || "—";
+  const label = level ? CONF_LABEL[level] : undefined;
+  // An unknown sufficiency used to render as "— evidence", which reads as a
+  // low score rather than as a missing one. Absence of evidence is not a pass:
+  // say the level is not stated and let the reader treat it as unknown.
+  if (!label) {
+    return (
+      <StatusChip
+        label="Evidence not stated"
+        tone="neutral"
+        tip="This decision arrived without an evidence level. That is a gap in
+             the record, not a low score — read it as unknown."
+      />
+    );
+  }
   return (
     <StatusChip
       label={`${label} evidence`}
@@ -133,7 +180,7 @@ export function Interpretation({ d }: { d: DecisionDetail }) {
         {d.interpretation.explanation ||
           "The evidence does not support a confident recommendation. The movement is shown; a judgement is withheld rather than manufactured."}
         {d.confidence?.reasons?.length ? (
-          <Box component="ul" sx={{ m: "8px 0 0", pl: 2.5 }}>
+          <Box component="ul" sx={{ mt: 1, mb: 0, pl: 2.5 }}>
             {d.confidence.reasons.map((r, i) => (
               <li key={i}>{r}</li>
             ))}
@@ -156,15 +203,61 @@ export function Interpretation({ d }: { d: DecisionDetail }) {
       </Alert>
     );
   }
+  // The reading itself. A `Paper` and not an `Alert`: the three branches above
+  // are *states* of the interpretation, and this one is the interpretation —
+  // content, on the default dashboard surface (§2).
+  //
+  // The steel tint and the accent edge are kept, and they are load-bearing
+  // rather than decorative: `styles.css` recorded that this tint means "a model
+  // wrote this", which is why the impact panel below is deliberately uncoloured.
+  // Both halves of that distinction now read their colours from the theme.
   return (
-    <div className="interp">
-      <div className="interp-mark">AI recommendation</div>
-      {d.interpretation.explanation && <p style={{ marginBottom: 8 }}>{d.interpretation.explanation}</p>}
-      {d.interpretation.recommendation && <p className="rec">{d.interpretation.recommendation}</p>}
-      {d.interpretation.caveat && (
-        <p style={{ marginTop: 8, fontSize: 12.5, color: "var(--color-accent-800)" }}>{d.interpretation.caveat}</p>
+    <Paper
+      variant="outlined"
+      sx={{
+        p: 2,
+        bgcolor: "info.light",
+        borderColor: "var(--color-accent-300)",
+        borderLeftWidth: "2px",
+        borderLeftColor: "primary.main",
+      }}
+    >
+      <Stack direction="row" spacing={0.75} sx={{ alignItems: "center", mb: 1 }}>
+        <Box aria-hidden sx={{ width: 7, height: 7, flex: "0 0 auto", bgcolor: "primary.main" }} />
+        <Typography variant="overline" sx={{ color: "var(--color-accent-800)" }}>
+          AI recommendation
+        </Typography>
+      </Stack>
+      {d.interpretation.explanation && (
+        <Typography variant="body2" sx={{ maxWidth: "68ch" }}>
+          {d.interpretation.explanation}
+        </Typography>
       )}
-    </div>
+      {/* The recommendation is the sentence somebody acts on, so it carries the
+          weight. Same size as the explanation above it — a bigger recommendation
+          would read as a stronger claim than the evidence behind it supports. */}
+      {d.interpretation.recommendation && (
+        <Typography variant="body2" sx={{ mt: 1, maxWidth: "68ch", fontWeight: 600 }}>
+          {d.interpretation.recommendation}
+        </Typography>
+      )}
+      {/* Named, not merely tinted. The caveat used to be accent-coloured small
+          print and nothing else, so a reader in greyscale — or one who simply
+          does not know the tint — could not tell it qualified the sentence
+          above. The word carries it now, and the type matches the degraded
+          branch's small print, which says the same kind of thing. */}
+      {d.interpretation.caveat && (
+        <Typography
+          variant="caption"
+          color="text.secondary"
+          sx={{ display: "block", mt: 1, maxWidth: "68ch" }}
+        >
+          <Box component="strong" sx={{ fontWeight: 600 }}>Caveat</Box>
+          {" · "}
+          {d.interpretation.caveat}
+        </Typography>
+      )}
+    </Paper>
   );
 }
 
@@ -182,7 +275,20 @@ export function typeLabel(t: string): string {
  *
  * Nothing here is a recommendation. The actions are what the situation
  * *permits*; choosing between them is the reason a person is paid.
+ *
+ * These panels are deliberately NOT given the accent tint the interpretation
+ * panel above uses. That tint means "a model wrote this"; these numbers are
+ * arithmetic, and colouring them the same way would teach the reader the wrong
+ * thing about both. The rule down the left edge is `text.primary` — ink, not
+ * accent — for exactly that reason.
  */
+
+/** A label written to be read as the tail of a clause — "1,000 on hand", not
+ *  "1,000 On hand". The same labels are sentence-cased in the evidence table,
+ *  where they are row headings rather than the end of a sentence. */
+function lowerFirst(s: string): string {
+  return s.charAt(0).toLowerCase() + s.slice(1);
+}
 
 /** What the situation is worth, and what that number is. */
 export function ImpactPanel({ impact }: { impact: DecisionImpact }) {
@@ -190,32 +296,61 @@ export function ImpactPanel({ impact }: { impact: DecisionImpact }) {
   const operational = Object.entries(impact.operational || {})
     .filter(([, v]) => v !== null && v !== undefined && v !== "");
   return (
-    <div className="impact">
-      <div className="impact-mark">Business impact</div>
-      <div className="impact-figure">{money(impact.financial)}</div>
+    <Paper
+      variant="outlined"
+      sx={{ p: 2, mb: 2, borderLeftWidth: "2px", borderLeftColor: "text.primary" }}
+    >
+      <Typography variant="overline" color="text.secondary" sx={{ display: "block" }}>
+        Business impact
+      </Typography>
+      {/* `component="div"`: this is the largest thing on the panel and it is a
+          number, not a heading. Rendered as an `<h2>` it would join the page's
+          heading outline, and a screen reader would announce "₹4,00,000" as a
+          section. `h2` is the size rung; the element is a div. */}
+      <Typography variant="h2" component="div" sx={{ fontVariantNumeric: "tabular-nums" }}>
+        {money(impact.financial)}
+      </Typography>
       {/* The sentence matters as much as the figure: capital locked and annual
           holding cost can be the same number and are not the same claim. */}
-      {impact.basis && <div className="impact-basis">{impact.basis}</div>}
+      {impact.basis && (
+        <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5, maxWidth: "46ch" }}>
+          {impact.basis}
+        </Typography>
+      )}
       {impact.monthly && (
-        <div className="impact-monthly">
-          {money(impact.monthly)} <span>a month while it sits</span>
-        </div>
+        <Typography
+          variant="body1"
+          sx={{ mt: 1, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}
+        >
+          {money(impact.monthly)}{" "}
+          <Box
+            component="span"
+            sx={{ typography: "caption", fontWeight: 400, color: "text.secondary" }}
+          >
+            a month while it sits
+          </Box>
+        </Typography>
       )}
       {operational.length > 0 && (
-        <div className="impact-ops">
-          {/* Lower-cased because these read as a phrase after the number —
-              "1,000 on hand", not "1,000 On hand". The same labels are
-              sentence-cased in the evidence table, where they are row headings
-              rather than the tail of a clause. */}
+        <Stack
+          direction="row"
+          useFlexGap
+          sx={{ flexWrap: "wrap", columnGap: 2, rowGap: 0.5, mt: 1.5 }}
+        >
           {operational.map(([k, v]) => (
-            <span key={k}>
-              <b>{stateFieldValue(k, v)}</b>{" "}
-              {(() => { const l = stateFieldLabel(k); return l.charAt(0).toLowerCase() + l.slice(1); })()}
-            </span>
+            <Typography key={k} variant="caption" color="text.secondary">
+              <Box
+                component="b"
+                sx={{ color: "text.primary", fontVariantNumeric: "tabular-nums" }}
+              >
+                {stateFieldValue(k, v)}
+              </Box>{" "}
+              {lowerFirst(stateFieldLabel(k))}
+            </Typography>
           ))}
-        </div>
+        </Stack>
       )}
-    </div>
+    </Paper>
   );
 }
 
@@ -227,14 +362,23 @@ export function WhyPanel({ rationale, evidence }:
                         && k !== "state" && k !== "key");
   return (
     <>
-      <div className="section-h">
-        <Labelled tip="Assembled from the numbers that triggered this, not written by a model. Every figure in it appears in the state below, so the sentence can be checked rather than believed.">
-          Why this exists
-        </Labelled>
-      </div>
-      {rationale && <p className="why-text">{rationale}</p>}
+      {/* `SectionHeader`, not the `.section-h` div this used to be: §10 names it
+          as the replacement, and `HumanLog` — the next block down this same
+          column — is already on it. Three sibling headings on three rungs was
+          the thing making the column hard to read. */}
+      <SectionHeader
+        level="widget"
+        title="Why this exists"
+        tip="Assembled from the numbers that triggered this, not written by a model. Every figure in it appears in the state below, so the sentence can be checked rather than believed."
+      />
+      {rationale && (
+        <Typography variant="body2" sx={{ mb: 1.5, maxWidth: "62ch" }}>{rationale}</Typography>
+      )}
       {rows.length > 0 && (
-        <Bp style={{ padding: "8px 14px" }}>
+        <Bp sx={{ px: 2, py: 1 }}>
+          {/* A fact panel: one row per state field on one decision. The row
+              count is the shape of the decision type, not the size of the book,
+              which is the test §3 sets — so a `<table>`, not a `DataGrid`. */}
           <table className="facttable">
             <tbody>
               {rows.map(([k, v]) => (
@@ -251,35 +395,60 @@ export function WhyPanel({ rationale, evidence }:
   );
 }
 
+/** The two figure rungs inside the ranking sum. Sizes come from the theme's
+ *  ramp (`body1`, `h4`) rather than from px, so a change to the ramp reaches
+ *  them — §4 and §11. */
+const FIGURE: SxProps<Theme> = {
+  typography: "body1", fontWeight: 600, fontVariantNumeric: "tabular-nums",
+};
+const TOTAL_FIGURE: SxProps<Theme> = {
+  typography: "h4", fontVariantNumeric: "tabular-nums",
+};
+
 /** The ranking, shown working. A queue position nobody can check is a queue
  *  position nobody argues with, and one nobody argues with is one nobody
  *  reads. */
 export function RankingPanel({ ranking }: { ranking: DecisionRanking }) {
   if (!ranking?.score && ranking?.score !== 0) return null;
+  // The dashed edge is the point of this surface: it says "working", where the
+  // solid panels above say "figure". Kept, and now taken from the theme's own
+  // divider rather than from a `.ranking` rule.
   return (
-    <div className="ranking">
-      <div className="ranking-mark">
+    <Paper variant="outlined" sx={{ p: 1.5, mt: 2, borderStyle: "dashed" }}>
+      <Typography variant="overline" color="text.secondary" sx={{ display: "block", mb: 0.75 }}>
         <Labelled tip="Money first, lateness second, both capped. The rupee scale is a versioned setting, so re-tuning the queue does not make last quarter's ordering unexplainable.">
           Why it sits here
         </Labelled>
-      </div>
-      <div className="ranking-sum">
-        <span><b>{ranking.money_points}</b> from {money(ranking.financial)}</span>
-        <span className="op">+</span>
-        <span>
-          <b>{ranking.urgency_points}</b>{" "}
+      </Typography>
+      <Stack
+        direction="row"
+        spacing={0.75}
+        useFlexGap
+        sx={{ flexWrap: "wrap", alignItems: "baseline" }}
+      >
+        <Typography variant="body2">
+          <Box component="b" sx={FIGURE}>{ranking.money_points}</Box>{" "}
+          from {money(ranking.financial)}
+        </Typography>
+        <Typography variant="body2" color="text.secondary">+</Typography>
+        <Typography variant="body2">
+          <Box component="b" sx={FIGURE}>{ranking.urgency_points}</Box>{" "}
           {ranking.days_past_due
             ? `from ${ranking.days_past_due} days past due`
             : "— nothing was promised"}
-        </span>
-        <span className="op">=</span>
-        <span className="total"><b>{ranking.score}</b>/100</span>
-      </div>
-      <div className="ranking-scale">
+        </Typography>
+        <Typography variant="body2" color="text.secondary">=</Typography>
+        {/* The total is the one figure somebody carries away, so it is a rung
+            above its own operands rather than the same size in bold. */}
+        <Typography variant="body2">
+          <Box component="b" sx={TOTAL_FIGURE}>{ranking.score}</Box>/100
+        </Typography>
+      </Stack>
+      <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 1 }}>
         one point per {money(ranking.rupees_per_point)} · money caps at{" "}
         {ranking.money_cap}, lateness at {ranking.urgency_cap}
-      </div>
-    </div>
+      </Typography>
+    </Paper>
   );
 }
 
@@ -289,11 +458,14 @@ export function ActionsPanel({ actions }: { actions: DecisionAction[] }) {
   if (!actions?.length) return null;
   return (
     <>
-      <div className="section-h">
-        <Labelled tip="What this situation permits. The platform lists them and does not pick one — which of these is right depends on the customer, the supplier and the month, and none of that is in the data.">
-          Available actions
-        </Labelled>
-      </div>
+      <SectionHeader
+        level="widget"
+        title="Available actions"
+        tip="What this situation permits. The platform lists them and does not pick one — which of these is right depends on the customer, the supplier and the month, and none of that is in the data."
+      />
+      {/* `.actions-list` stays: its rule carries the "equals, not a primary and
+          some alternatives" reasoning in `styles.css`, it reads the theme's own
+          divider, and no kit component covers a list of inert options. */}
       <ul className="actions-list">
         {actions.map((a) => <li key={a.key}>{a.label}</li>)}
       </ul>
@@ -302,6 +474,15 @@ export function ActionsPanel({ actions }: { actions: DecisionAction[] }) {
 }
 
 /* ── the decision card ────────────────────────────────────────────────────── */
+
+/** How many fact chips fit on a card before it stops being scannable. Beyond
+ *  this the card says how many it is holding back rather than silently showing
+ *  a quarter of them — the same honesty the observability panels had to learn.
+ *
+ *  Safe to count: `facts` is already filtered to what this reader may see, so
+ *  the number never discloses that a restricted fact exists, and it does not
+ *  move with a price. */
+const CARD_FACTS = 4;
 
 /** One decision, at a glance, wherever a list of them is shown.
  *
@@ -318,6 +499,10 @@ export function ActionsPanel({ actions }: { actions: DecisionAction[] }) {
  * numbers that triggered it, and never the interpretation, because there is no
  * model in that path at all. Read from `origin` rather than sniffed from which
  * fields happen to be populated.
+ *
+ * A `Paper` (through `Bp`), not a `Card`, and the `.dcard*` classes stay on it:
+ * `.dp-cards.tight .dcard` is the queue screen's own rule, so the class is how
+ * the compact variant gets its tighter padding from outside.
  */
 export function DecisionCard({
   d, onOpen, compact = false,
@@ -330,6 +515,7 @@ export function DecisionCard({
 }) {
   const fromState = d.origin === "STATE";
   const facts = d.facts.filter((f) => !f.restricted && isPrimaryFact(f.label));
+  const held = facts.length - CARD_FACTS;
   return (
     <Bp className="dcard">
       <div className="dcard-top">
@@ -375,7 +561,12 @@ export function DecisionCard({
           )}
           {facts.length > 0 && (
             <div className={`dcard-chips${compact ? " tight" : ""}`}>
-              {facts.slice(0, 4).map((f) => <FactChip key={f.label} f={f} />)}
+              {facts.slice(0, CARD_FACTS).map((f) => <FactChip key={f.label} f={f} />)}
+              {held > 0 && (
+                <Typography variant="caption" color="text.secondary" sx={{ alignSelf: "center" }}>
+                  +{held} more facts
+                </Typography>
+              )}
             </div>
           )}
         </>

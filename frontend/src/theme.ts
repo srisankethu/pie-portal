@@ -135,6 +135,11 @@ export const CSS_VARS: Record<string, string> = {
   "--font-heading": tokens.fontHeading,
   "--font-heading-weight": String(tokens.headingWeight),
   "--font-body": tokens.fontBody,
+  /* Emitted because `styles.css` reads `var(--font-mono, monospace)` and, with
+     no variable declared, silently took the bare fallback — so the one place
+     that asked for the token got the browser's default monospace instead.
+     Four screens found this independently and each worked around it locally. */
+  "--font-mono": tokens.fontMono,
 
   ...Object.fromEntries(
     tokens.space.map((v, i) => [`--space-${i}`, `${v}px`]),
@@ -299,6 +304,12 @@ export const theme = createTheme({
         // Long numbers in a column only line up with tabular figures, and
         // "₹1,11,111" against "₹2,40,961" is the whole point of the screen.
         ".num, td.num, .mono": { fontVariantNumeric: "tabular-nums" },
+        // `.mono` asked for a monospace face at 14 call sites and was never
+        // given one — it only ever set tabular figures above, so an id or a
+        // scope string rendered in the body font. The face belongs here and
+        // not on `.num`: an amount wants tabular figures in the body font,
+        // which is what makes "₹1,11,111" line up under "₹2,40,961".
+        ".mono": { fontFamily: tokens.fontMono },
         "::selection": { background: "rgba(89, 128, 166, 0.3)" },
       },
     },

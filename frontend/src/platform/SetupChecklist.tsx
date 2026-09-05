@@ -22,6 +22,9 @@
  * floors are owner actions. A salesperson whose company has connected nothing
  * still sees the panel — it is the honest reason every screen is empty — but
  * reads it rather than being sent to a screen that will refuse them.
+ *
+ * A `Paper`, not a `Card`, per `docs/ui-standards.md` §2: setup is a state of
+ * the workspace, not a business entity with an identity somebody could open.
  */
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
@@ -37,21 +40,39 @@ import { useQuery } from "@tanstack/react-query";
 
 import { papi } from "./api";
 import type { OnboardingStep, PlatformSession } from "./types";
-import { StatusChip } from "./kit";
+import { SectionHeader, StatusChip } from "./kit";
 
 function StepRow({ step, canAct }: { step: OnboardingStep; canAct: boolean }) {
   return (
     <Stack direction="row" spacing={1.5} sx={{ alignItems: "flex-start" }}>
-      {/* An icon *and* a chip, never colour alone — ui-standards §6. */}
+      {/* A shape as well as a colour — ui-standards §6 — and `titleAccess` so
+          that shape reaches somebody who cannot see it. A filled tick and an
+          empty ring are the same silence to a screen reader without it, and
+          "which of these have I done" is the only question this panel asks. */}
       {step.done ? (
-        <CheckCircleIcon fontSize="small" color="success" sx={{ mt: 0.3 }} />
+        <CheckCircleIcon
+          fontSize="small" color="success" titleAccess="Done" sx={{ mt: 0.25 }}
+        />
       ) : (
-        <RadioButtonUncheckedIcon fontSize="small" color="disabled" sx={{ mt: 0.3 }} />
+        <RadioButtonUncheckedIcon
+          fontSize="small" color="disabled" titleAccess="Still to do" sx={{ mt: 0.25 }}
+        />
       )}
       <Box sx={{ flex: 1, minWidth: 0 }}>
         <Stack direction="row" spacing={1} useFlexGap
                sx={{ alignItems: "center", flexWrap: "wrap" }}>
-          <Typography variant="subtitle2">{step.title}</Typography>
+          {/* The widget-title rung of §4's ramp, not the label rung. This was
+              `subtitle2`, which in this theme is 12px uppercase — smaller than
+              the sentence explaining it, so every row read title-last. A
+              finished step then recedes to secondary ink, which is emphasis
+              only: the icon beside it is what carries the state. */}
+          <Typography
+            variant="h5"
+            component="div"
+            color={step.done ? "text.secondary" : "text.primary"}
+          >
+            {step.title}
+          </Typography>
           {!step.required && (
             <StatusChip tone="neutral" label="Recommended" />
           )}
@@ -61,7 +82,17 @@ function StepRow({ step, canAct }: { step: OnboardingStep; canAct: boolean }) {
         </Typography>
       </Box>
       {!step.done && canAct && (
-        <Button component={RouterLink} to={step.route} size="small" sx={{ flexShrink: 0 }}>
+        <Button
+          component={RouterLink}
+          to={step.route}
+          size="small"
+          // Four rows, four buttons, and a screen reader listing the controls
+          // on this page hears "Open" four times with nothing to tell them
+          // apart. The visible word stays short because the row it sits in is
+          // what supplies the context on screen.
+          aria-label={`Open: ${step.title}`}
+          sx={{ flexShrink: 0 }}
+        >
           Open
         </Button>
       )}
@@ -78,25 +109,39 @@ export function SetupChecklist({ session }: { session: PlatformSession }) {
   // Silent on failure, and this is the one place in the app where that is the
   // right answer: this panel is scaffolding for a tenant that has not finished
   // setting up, so "the setup checklist did not load" at the top of the first
-  // screen is noise for the several hundred days after it stops applying.
+  // screen is noise for the several hundred days after it stops applying. The
+  // same goes for the moment before it arrives — no skeleton, because the
+  // panel's own absence is the normal state and reserving height for it would
+  // make every established workspace's home page jump.
   if (isError || !data || data.complete) return null;
 
+  const total = data.steps.length;
   const done = data.steps.filter((s) => s.done).length;
   const canAct = session.role === "OWNER";
 
   return (
     <Paper variant="outlined" sx={{ p: 3, mb: 3 }}>
-      <Typography variant="h3" sx={{ mb: 0.5 }}>Finish setting up</Typography>
-      <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
-        The screens stay empty until your books are in. This takes about ten
-        minutes and only has to happen once.
-      </Typography>
+      <SectionHeader
+        level="widget"
+        title="Finish setting up"
+        sub={"The screens stay empty until your books are in. This takes about "
+             + "ten minutes and only has to happen once."}
+        // The tally the progress bar was carrying in its label and nowhere a
+        // sighted reader could see it. Every step in it is listed below, so it
+        // counts the recommended ones too — a figure measuring a different set
+        // from the list under it would be worse than no figure.
+        actions={
+          <Typography variant="caption" color="text.secondary">
+            {done} of {total} done
+          </Typography>
+        }
+      />
 
       <LinearProgress
         variant="determinate"
-        value={(done / data.steps.length) * 100}
-        sx={{ mb: 2.5, height: 6, borderRadius: 3 }}
-        aria-label={`${done} of ${data.steps.length} setup steps done`}
+        value={(done / total) * 100}
+        sx={{ mb: 2.5 }}
+        aria-label="Setup progress"
       />
 
       <Stack spacing={2}>

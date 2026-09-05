@@ -43,6 +43,11 @@
  * **Managers and owners only.** A salesperson cannot act on it, and the screens
  * they lose are already the ones their role does not open. Telling them a
  * licence is expiring is a worry with no lever attached.
+ *
+ * An `Alert` and nothing else, per `docs/ui-standards.md` §6: this is a state
+ * the organization is in, so it is a status surface rather than a panel of its
+ * own. It is deliberately not a `Paper` and emphatically not a `Card` — a
+ * licence is not a business entity somebody opens.
  */
 import { useState } from "react";
 
@@ -134,9 +139,16 @@ export function TrialNotice({ session }: { session: PlatformSession }) {
   const losing = (ended ? data.locked : data.loses_on_expiry)
     .map((k) => LOSS_LABEL[k] ?? k)
     .join(" and ");
+  const owner = session.role === "OWNER";
 
   return (
     <Alert severity={urgent ? "warning" : "info"} sx={{ mb: 3 }}>
+      {/* The date, the deadline and the loss, in that order of size. `endsOn`
+          is printed exactly as the server wrote it and deliberately not put
+          through `formatDate`: it is a date without a time, so parsing it here
+          would place it at UTC midnight and then render it in the business's
+          zone — which is the previous day for every organization west of
+          Greenwich. The server already resolved it in that zone. */}
       <AlertTitle>
         {ended
           ? `Your Commercial Intelligence trial ended${endsOn ? ` on ${endsOn}` : ""}`
@@ -148,30 +160,34 @@ export function TrialNotice({ session }: { session: PlatformSession }) {
           difference between a deadline and a threat. The past tense matters
           just as much — an owner reading this after the fact needs to know
           their data is where they left it before they need to know the price. */}
-      {ended ? (
-        <>
-          {endedReason ? `${endedReason} ` : ""}
-          {losing || "The decision layer"} {losing ? "are" : "is"} locked until
-          you subscribe. Quoting, margin floors and approvals carry on as they
-          are, and everything you have synced is exactly where you left it —
-          nothing was deleted and nothing needs setting up again.
-        </>
-      ) : (
-        <>
-          After that you lose {losing || "the trial features"}. Quoting, margin
-          floors and approvals carry on as they are, and nothing you have synced
-          is deleted.
-        </>
-      )}
-      {session.role === "OWNER" ? null : ended
-        ? " Your owner can subscribe to bring it back."
-        : " Your owner can arrange to keep it."}
-      {session.role === "OWNER" && (
+      <Typography variant="body2">
+        {ended ? (
+          <>
+            {endedReason ? `${endedReason} ` : ""}
+            {losing || "The decision layer"} {losing ? "are" : "is"} locked until
+            you subscribe. Quoting, margin floors and approvals carry on as they
+            are, and everything you have synced is exactly where you left it —
+            nothing was deleted and nothing needs setting up again.
+          </>
+        ) : (
+          <>
+            After that you lose {losing || "the trial features"}. Quoting, margin
+            floors and approvals carry on as they are, and nothing you have synced
+            is deleted.
+          </>
+        )}
+        {/* A manager reads this and cannot act on it, so the last thing they
+            are told is who can. */}
+        {!owner && (ended
+          ? " Your owner can subscribe to bring it back."
+          : " Your owner can arrange to keep it.")}
+      </Typography>
+      {owner && (
         <Box sx={{ mt: 1.5 }}>
           {data.pending_request ? (
             <Typography variant="body2">
               You asked to move to{" "}
-              <b>{data.pending_request.requested_plan_label}</b> on{" "}
+              <strong>{data.pending_request.requested_plan_label}</strong> on{" "}
               {formatDate(data.pending_request.requested_at)}. Whoever runs this
               deployment will be in touch — nothing is charged from these
               screens.
@@ -184,11 +200,20 @@ export function TrialNotice({ session }: { session: PlatformSession }) {
                   : ended ? "Ask for Commercial Intelligence"
                   : "Ask to keep Commercial Intelligence"}
               </Button>
-              {error && (
-                <Typography variant="body2" color="error" sx={{ mt: 1 }}>
-                  {error}
-                </Typography>
-              )}
+              {/* The region is rendered whether or not it has anything in it,
+                  because a live region that appears at the same moment as its
+                  text is one a screen reader does not announce — and a failed
+                  ask that is only visible is one the person who pressed the
+                  button never hears about. Polite rather than an `Alert`: a
+                  second alert inside this one would be read as a second
+                  notice, and this is the outcome of a press. */}
+              <Box aria-live="polite">
+                {error && (
+                  <Typography variant="body2" color="error" sx={{ mt: 1 }}>
+                    {error}
+                  </Typography>
+                )}
+              </Box>
             </>
           )}
         </Box>

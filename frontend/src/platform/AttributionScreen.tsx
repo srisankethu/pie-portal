@@ -21,7 +21,9 @@
  * detection run is on record — it is *not* ₹0, and the two are shown as
  * different sentences because they mean opposite things. ROI with no cost
  * supplied is UNKNOWN, never "0x". No figure on this screen falls back to a
- * dash that could be read as a zero.
+ * dash that could be read as a zero, and the sentence saying which of the two
+ * a reader is looking at sits *above* the tiles rather than under them —
+ * reading order is the only thing deciding which one they end up believing.
  *
  * **The evidence gaps are the product, not the fine print.** They sit directly
  * under the headline, spelled out, before anything favourable. Two of the five
@@ -40,6 +42,7 @@ import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
 import InputAdornment from "@mui/material/InputAdornment";
@@ -47,8 +50,10 @@ import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
+import type { SxProps, Theme } from "@mui/material/styles";
 
 import { money, moneySymbol, count as counted } from "../money";
+import { tokens } from "../theme";
 import { formatDate, formatDateTime } from "../when";
 import { abilityFor } from "./ability";
 import { papi } from "./api";
@@ -148,6 +153,14 @@ const GAP_TONE: Record<string, "warning" | "info"> = {
 
 /* ── money, and the difference between nothing and zero ───────────────────── */
 
+/** The measure this screen holds prose to.
+ *
+ *  Four blocks of explanation set it independently, which is three chances to
+ *  disagree. A screen that makes its argument in sentences rather than in
+ *  figures needs a line length somebody can read, and needs the same one in
+ *  every place it argues. */
+const PROSE = "80ch";
+
 /** A serialized `Decimal` as a number, or `null` for "no figure".
  *
  *  Amounts arrive as strings ("12500.0000") because money is `Decimal` on the
@@ -159,24 +172,33 @@ function amountOf(raw: string | null | undefined): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+/** UNKNOWN, in the value slot of a tile, at a size that does not pretend to be
+ *  a figure. A word rather than a dash, for the reason `Amount` gives. */
+function UnknownValue({ children }: { children: React.ReactNode }) {
+  return (
+    <Box component="span" sx={{ color: "text.secondary", fontSize: "0.6em" }}>
+      {children}
+    </Box>
+  );
+}
+
 /** An amount, or the reason there is not one — in words.
  *
  *  Deliberately not `CurrencyValue`, which renders an em dash for `null`. On
  *  every other screen that is right; here it is the one mistake this screen
  *  exists to avoid, because a dash next to a rupee figure reads as zero and a
- *  missing measurement and a measured zero mean opposite things. */
+ *  missing measurement and a measured zero mean opposite things.
+ *
+ *  The absent branch is `UnknownValue` rather than a second copy of it. They
+ *  were the same three lines written twice, eleven hundred lines apart, and
+ *  the one thing this screen cannot afford two answers to is "how a missing
+ *  figure is drawn". */
 function Amount({ value, unknown = "Not measured" }: {
   value: string | null | undefined;
   unknown?: string;
 }) {
   const n = amountOf(value);
-  if (n === null) {
-    return (
-      <Box component="span" sx={{ color: "text.secondary", fontSize: "0.6em" }}>
-        {unknown}
-      </Box>
-    );
-  }
+  if (n === null) return <UnknownValue>{unknown}</UnknownValue>;
   return <Box component="span" sx={{ fontVariantNumeric: "tabular-nums" }}>{money(n)}</Box>;
 }
 
@@ -188,14 +210,21 @@ function Amount({ value, unknown = "Not measured" }: {
  *  event type's label where there is one — "Lost sale recovered — no evidence
  *  links a lost quote to a later recovered order" is a sentence somebody can
  *  act on, and `LOST_SALE_RECOVERED` is not. */
-function EvidenceGaps({ gaps, title }: { gaps: EvidenceGap[]; title: string }) {
+function EvidenceGaps({ gaps, title, mb = 3 }: {
+  gaps: EvidenceGap[];
+  title: string;
+  /** In one of its three places this alert is a direct child of a spaced
+   *  `Stack`, where its own margin doubled the gap — 48px of nothing between
+   *  the headline and the thing the headline has to be read against. */
+  mb?: number;
+}) {
   if (!gaps.length) return null;
   const severity = gaps.some((g) => GAP_TONE[g.reason] === "warning")
     ? "warning" : "info";
   return (
-    <Alert severity={severity} icon={false} sx={{ mb: 3 }}>
+    <Alert severity={severity} icon={false} sx={{ mb }}>
       <AlertTitle>{title}</AlertTitle>
-      <Typography variant="body2" sx={{ mb: 1, maxWidth: "80ch" }}>
+      <Typography variant="body2" sx={{ mb: 1, maxWidth: PROSE }}>
         Each line below is something this window could not measure, and why. A
         figure with a gap behind it is not a smaller figure — it is a figure
         that does not cover the thing named here.
@@ -210,6 +239,137 @@ function EvidenceGaps({ gaps, title }: { gaps: EvidenceGap[]; title: string }) {
     </Alert>
   );
 }
+
+/* ── the shapes this screen is built out of ───────────────────────────────── */
+
+/** One tile in a row of them, at the width below which the row wraps rather
+ *  than squeezing a figure into a column too narrow to read.
+ *
+ *  Eighteen copies of this `Box` differed in one number and nothing else. It
+ *  is a `MetricCard`'s *layout*, which is why it is here and not a second
+ *  metric component beside `kit`'s. */
+function Tile({ basis = 240, children }: {
+  basis?: number;
+  children: React.ReactNode;
+}) {
+  return <Box sx={{ flex: `1 1 ${basis}px`, minWidth: basis }}>{children}</Box>;
+}
+
+/** A row of tiles that wraps instead of shrinking. */
+function TileRow({ mb, children }: {
+  mb?: number;
+  children: React.ReactNode;
+}) {
+  return (
+    <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: "wrap", mb }}>
+      {children}
+    </Stack>
+  );
+}
+
+/** A label, a value, a fixed handful of rows — the shape `DataGrid.tsx` names
+ *  as the one that stays a `<table>`.
+ *
+ *  Five of them on this screen: the two class breakdowns, the two panels of
+ *  the owner's report, and the operands behind one ledger row. Every one is
+ *  sized by what the code measures — five event types, three margin figures,
+ *  four window counts, the operands of one formula — and none of them by the
+ *  size of the business, which is the test §3 states and the only test that
+ *  decides this.
+ *
+ *  Written once because the boilerplate was written five times, and because
+ *  `styles.css` gives `.facttable` a rule for `td` and none for `th`: the one
+ *  panel here with a header row fell through to the browser's own, centred and
+ *  unpadded above left-aligned padded cells. That header ramp is the theme's
+ *  overline rung rather than a copy of `.dp-table th`'s literals, per §11. */
+function FactTable({ ariaLabel, columns, children }: {
+  ariaLabel: string;
+  /** Column headings, for a panel carrying more than a label and a value. The
+   *  first is the label column; the rest are values and align with them. */
+  columns?: string[];
+  children: React.ReactNode;
+}) {
+  return (
+    <Box
+      component="table"
+      className="facttable"
+      aria-label={ariaLabel}
+      sx={{
+        "& th": {
+          typography: "overline",
+          color: "text.secondary",
+          textAlign: "left",
+          verticalAlign: "bottom",
+          py: 0.75,
+          px: 0.5,
+          borderBottom: 1,
+          borderColor: "divider",
+        },
+        "& th.fv": { textAlign: "right" },
+        // Top, so a figure sits level with the first line of the label it
+        // answers rather than floating against the middle of a three-line one.
+        "& td": { verticalAlign: "top" },
+      }}
+    >
+      {columns && (
+        <thead>
+          <tr>
+            {columns.map((c, i) => (
+              <th key={c} scope="col" className={i === 0 ? undefined : "fv"}>
+                {c}
+              </th>
+            ))}
+          </tr>
+        </thead>
+      )}
+      <tbody>{children}</tbody>
+    </Box>
+  );
+}
+
+/** Prose where a figure would be, inside a fact cell.
+ *
+ *  `.facttable .fv` sets `white-space: nowrap`, `font-weight: 600` and tabular
+ *  figures: right for a number, wrong for the sentence a value cell carries
+ *  when there is no number — which on this screen is the common case, not the
+ *  edge one. Nowrap does not wrap a sentence, it pushes the panel sideways.
+ *  Set on a child rather than on the cell because the stylesheet's rule is the
+ *  more specific of the two and wins on the cell itself. */
+function FactNote({ children }: { children: React.ReactNode }) {
+  return (
+    <Box
+      component="span"
+      sx={{
+        display: "block",
+        color: "text.secondary",
+        fontWeight: 400,
+        whiteSpace: "normal",
+      }}
+    >
+      {children}
+    </Box>
+  );
+}
+
+/** An operand or a record id, as it was stored.
+ *
+ *  Monospace, because these are the values somebody compares character by
+ *  character — and read from `tokens.fontMono` rather than written out, per
+ *  §11. The `mono` class these cells carried is styled nowhere: `theme.ts`
+ *  gives `.mono` tabular figures and `CSS_VARS` never emits `--font-mono`, so
+ *  every one of them rendered in the body face. `CatalogScreen` found the same
+ *  hole and closed it the same way.
+ *
+ *  Not `.fv` either, for the reason `FactNote` gives: a record id is exactly
+ *  the value that outgrows a `maxWidth="sm"` dialog, and the
+ *  `word-break: break-all` that sat beside it could never take effect because
+ *  nowrap suppresses the wrap break-all would have relaxed. */
+const OPERAND: SxProps<Theme> = {
+  fontFamily: tokens.fontMono,
+  textAlign: "right",
+  whiteSpace: "normal",
+  overflowWrap: "anywhere",
+};
 
 /* ── the headline ─────────────────────────────────────────────────────────── */
 
@@ -226,7 +386,7 @@ function Verdict({ attributed, events }: {
   const value = amountOf(attributed);
   if (value === null) {
     return (
-      <Alert severity="warning" sx={{ mt: 2 }}>
+      <Alert severity="warning" sx={{ mb: 2 }}>
         <AlertTitle>Nothing has been measured in this window</AlertTitle>
         No value events are recorded, so there is no attributed figure — and
         this is not a measured zero. It means no detection run is on record,
@@ -237,18 +397,18 @@ function Verdict({ attributed, events }: {
   }
   if (value <= 0) {
     return (
-      <Alert severity="warning" sx={{ mt: 2 }}>
+      <Alert severity="warning" sx={{ mb: 2 }}>
         <AlertTitle>This evaluation has not demonstrated value yet</AlertTitle>
         Events were recorded in this window and none of them are attributed, so
         the measured attributed value is {money(value)} — a real zero, not a
         missing figure. It is deliberately not topped up from the potential and
-        estimated figures below, which describe opportunities and models rather
-        than money earned.
+        realized figures below, which describe opportunities identified and
+        money the evidence cannot credit to this platform.
       </Alert>
     );
   }
   return (
-    <Alert severity="success" sx={{ mt: 2 }}>
+    <Alert severity="success" sx={{ mb: 2 }}>
       <AlertTitle>{money(value)} attributed, from {counted(events ?? 0)} event(s)</AlertTitle>
       Every rupee here comes from a line where the money moved <em>and</em> an
       intervention is on record as preceding it. Open any row in the ledger
@@ -269,24 +429,31 @@ function Verdict({ attributed, events }: {
  *  because a count and an amount are different measurements. A type nothing
  *  can measure at all (two of the five have no detector, and the server says
  *  which in `evidence_gaps`) shows neither: it is named as unmeasurable, so it
- *  cannot be read as a zero somebody went looking for. */
-function ClassBreakdown({ rows, types, valueClass, unmeasurable }: {
+ *  cannot be read as a zero somebody went looking for.
+ *
+ *  That third state used to put an em dash in the count column, which is the
+ *  one thing this screen tells every other figure never to do — a dash beside
+ *  a rupee column reads as nought, and this row is the one place on the screen
+ *  where nought is the wrong answer by the widest margin. It states the
+ *  sentence across both value cells now, so the row says what it is instead of
+ *  leaving a mark to be interpreted.
+ *
+ *  The caption and the "is there anything to caption" guard live here too.
+ *  Both call sites wrote them, identically, either side of two hundred lines. */
+function ClassBreakdown({ rows, types, valueClass, title, unmeasurable }: {
   rows: ValueClassBreakdown[];
   types: string[];
   valueClass: string;
+  title: string;
   /** Event types the server named as not measurable, by their own code. */
   unmeasurable: Set<string>;
 }) {
+  if (!types.length) return null;
   return (
-    <Box component="table" className="facttable" sx={{ width: "100%" }}>
-      <thead>
-        <tr>
-          <th>What was measured</th>
-          <th className="fv">Events</th>
-          <th className="fv">Amount</th>
-        </tr>
-      </thead>
-      <tbody>
+    <Box sx={{ mt: 3 }}>
+      <Typography variant="subtitle2" sx={{ mb: 1 }}>{title}</Typography>
+      <FactTable ariaLabel={title}
+                 columns={["What was measured", "Events", "Amount"]}>
         {types.map((type) => {
           // A lookup, never a sum: two classes of the same event type can
           // describe one quote line, so adding down this column would double
@@ -301,22 +468,27 @@ function ClassBreakdown({ rows, types, valueClass, unmeasurable }: {
                   <div className="fsrc">{EVENT_TYPE[type].what}</div>
                 )}
               </td>
-              <td className="fv">
-                {row ? counted(row.events)
-                  : unmeasurable.has(type) ? "—" : counted(0)}
-              </td>
-              <td className="fv">
-                {row ? <Amount value={row.amount} unknown="no amount" />
-                  : unmeasurable.has(type)
-                    ? <span className="text-muted">
-                        nothing measures this — see the gaps above
-                      </span>
-                    : <span className="text-muted">no events recorded</span>}
-              </td>
+              {row ? (
+                <>
+                  <td className="fv">{counted(row.events)}</td>
+                  <td className="fv">
+                    <Amount value={row.amount} unknown="no amount" />
+                  </td>
+                </>
+              ) : unmeasurable.has(type) ? (
+                <td colSpan={2}>
+                  <FactNote>nothing measures this — see the gaps above</FactNote>
+                </td>
+              ) : (
+                <>
+                  <td className="fv">{counted(0)}</td>
+                  <td className="fv"><FactNote>no events recorded</FactNote></td>
+                </>
+              )}
             </tr>
           );
         })}
-      </tbody>
+      </FactTable>
     </Box>
   );
 }
@@ -338,8 +510,9 @@ function EventDrilldown({ row, onClose }: {
   const cls = classOf(row.value_class);
   const basis = Object.entries(row.basis ?? {});
   return (
-    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
-      <DialogTitle>
+    <Dialog open onClose={onClose} maxWidth="sm" fullWidth
+            aria-labelledby="value-event-title">
+      <DialogTitle id="value-event-title">
         <Stack direction="row" spacing={1} sx={{ alignItems: "center", flexWrap: "wrap" }}>
           <span>{eventTypeLabel(row.event_type)}</span>
           <StatusChip label={cls.label} tone={cls.tone} tip={cls.tip} />
@@ -361,18 +534,16 @@ function EventDrilldown({ row, onClose }: {
             This row carries no basis. Treat the amount as unsupported.
           </Typography>
         ) : (
-          <Box component="table" className="facttable" sx={{ width: "100%" }}>
-            <tbody>
-              {basis.map(([key, value]) => (
-                <tr key={key}>
-                  <td>{key.replace(/_/g, " ")}</td>
-                  <td className="fv mono">
-                    {Array.isArray(value) ? value.join(", ") : String(value)}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </Box>
+          <FactTable ariaLabel="The operands this amount was computed from">
+            {basis.map(([key, value]) => (
+              <tr key={key}>
+                <td>{key.replace(/_/g, " ")}</td>
+                <Box component="td" sx={OPERAND}>
+                  {Array.isArray(value) ? value.join(", ") : String(value)}
+                </Box>
+              </tr>
+            ))}
+          </FactTable>
         )}
 
         <Typography variant="subtitle2" sx={{ mt: 3, mb: 1 }}>
@@ -386,18 +557,16 @@ function EventDrilldown({ row, onClose }: {
             seeing this is a fault worth reporting.
           </Alert>
         ) : (
-          <Box component="table" className="facttable" sx={{ width: "100%" }}>
-            <tbody>
-              {row.evidence_refs.map((ref, i) => (
-                <tr key={i}>
-                  <td>{String(ref.record_type ?? "record").replace(/_/g, " ")}</td>
-                  <td className="fv mono" style={{ wordBreak: "break-all" }}>
-                    {String(ref.record_id ?? "—")}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </Box>
+          <FactTable ariaLabel="The records this event was computed over">
+            {row.evidence_refs.map((ref, i) => (
+              <tr key={i}>
+                <td>{String(ref.record_type ?? "record").replace(/_/g, " ")}</td>
+                <Box component="td" sx={OPERAND}>
+                  {String(ref.record_id ?? "—")}
+                </Box>
+              </tr>
+            ))}
+          </FactTable>
         )}
 
         <Typography variant="caption" color="text.secondary"
@@ -408,6 +577,13 @@ function EventDrilldown({ row, onClose }: {
           two policies.
         </Typography>
       </DialogContent>
+      <DialogActions>
+        {/* Named, rather than only the backdrop and Escape. A dialog whose one
+            way out is a keystroke or a click on nothing is a dialog somebody
+            on a touch screen has to guess at, and this one opens from a row
+            they tapped. */}
+        <Button onClick={onClose}>Close</Button>
+      </DialogActions>
     </Dialog>
   );
 }
@@ -571,7 +747,8 @@ function ValueLedger({ session }: { session: PlatformSession }) {
 
           {/* Above the figures, deliberately. If the evidence is thin this
               screen says so before it says anything favourable. */}
-          <EvidenceGaps gaps={gaps} title="What this window could not measure" />
+          <EvidenceGaps gaps={gaps} mb={0}
+                        title="What this window could not measure" />
 
           {/* Gated on the *window*, not on the trial. It was the trial, and
               that turned an organization an operator provisioned — no trial
@@ -595,34 +772,42 @@ function ValueLedger({ session }: { session: PlatformSession }) {
               title="Attributed value"
               sub="The money moved and an intervention is on record as preceding it. This is the only figure on the screen that may be called what the platform was worth." />
 
-            <Stack direction="row" spacing={2} useFlexGap
-                   sx={{ flexWrap: "wrap", mb: 1 }}>
-              <Box sx={{ flex: "1 1 240px", minWidth: 240 }}>
+            {/* The sentence first, then the figures it governs. It sat under
+                five tiles, which is the wrong way round in exactly the two
+                cases this screen was written for: a window with nothing
+                measured and a window measured at zero both draw a row of tiles
+                a reader has already interpreted by the time the correction
+                arrives, and reading order is the only thing deciding which of
+                the two they end up believing. */}
+            <Verdict attributed={data.attributed_value}
+                     events={data.attributed_events} />
+
+            <TileRow mb={1}>
+              <Tile>
                 <MetricCard
                   label="Attributed value"
                   value={<Amount value={data.attributed_value} />}
                   sub={`${counted(data.attributed_events ?? 0)} attributed event(s) · ${data.currency ?? "INR"}`}
                   tip="ATTRIBUTED events only. Potential and estimated figures are never added into this." />
-              </Box>
-              <Box sx={{ flex: "1 1 240px", minWidth: 240 }}>
+              </Tile>
+              <Tile>
                 <MetricCard
                   label="Opportunities identified"
                   value={counted(data.potential_events ?? 0)}
                   sub="flagged during a live quote; nothing has happened yet"
                   tip="POTENTIAL events. An identified opportunity is not money, and the count is shown beside the realized one rather than as a share of it — the same line can appear in both." />
-              </Box>
-              <Box sx={{ flex: "1 1 240px", minWidth: 240 }}>
+              </Tile>
+              <Tile>
                 <MetricCard
                   label="Opportunities realized"
                   value={counted(data.attributed_events ?? 0)}
                   sub="the money moved, with the intervention on record first"
                   tip="ATTRIBUTED events. Deliberately not expressed as a percentage of the identified count: the two sets overlap rather than nest, so a ratio would be a number the evidence does not support." />
-              </Box>
-            </Stack>
+              </Tile>
+            </TileRow>
 
-            <Stack direction="row" spacing={2} useFlexGap
-                   sx={{ flexWrap: "wrap", mb: 2 }}>
-              <Box sx={{ flex: "1 1 240px", minWidth: 240 }}>
+            <TileRow>
+              <Tile>
                 <MetricCard
                   label="Margin protected"
                   value={
@@ -632,8 +817,8 @@ function ValueLedger({ session }: { session: PlatformSession }) {
                   }
                   sub="below-floor lines flagged, repriced above the floor, and won"
                   tip={EVENT_TYPE.MARGIN_PROTECTED.what} />
-              </Box>
-              <Box sx={{ flex: "1 1 240px", minWidth: 240 }}>
+              </Tile>
+              <Tile>
                 <MetricCard
                   label="Discount recovered"
                   value={
@@ -643,22 +828,13 @@ function ValueLedger({ session }: { session: PlatformSession }) {
                   }
                   sub="price a flagged line regained between snapshots"
                   tip={EVENT_TYPE.DISCOUNT_LEAKAGE_PREVENTED.what} />
-              </Box>
-            </Stack>
+              </Tile>
+            </TileRow>
 
-            <Verdict attributed={data.attributed_value}
-                     events={data.attributed_events} />
-
-            {types.length > 0 && (
-              <Box sx={{ mt: 3 }}>
-                <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                  Attributed, by what was measured
-                </Typography>
-                <ClassBreakdown rows={breakdown} types={types}
-                                unmeasurable={unmeasurable}
-                                valueClass="ATTRIBUTED" />
-              </Box>
-            )}
+            <ClassBreakdown rows={breakdown} types={types}
+                            unmeasurable={unmeasurable}
+                            valueClass="ATTRIBUTED"
+                            title="Attributed, by what was measured" />
           </Paper>
 
           {/* ── everything that is NOT money earned ── */}
@@ -674,38 +850,31 @@ function ValueLedger({ session }: { session: PlatformSession }) {
                  + "lines and must never be added together."}
             </Alert>
 
-            <Stack direction="row" spacing={2} useFlexGap
-                   sx={{ flexWrap: "wrap", mb: 3 }}>
-              <Box sx={{ flex: "1 1 240px", minWidth: 240 }}>
+            <TileRow>
+              <Tile>
                 <MetricCard
                   label="Potential"
                   value={<Amount value={data.potential_value} unknown="None recorded" />}
                   sub={`${counted(data.potential_events ?? 0)} opportunity event(s)`}
                   tip={VALUE_CLASS.POTENTIAL.tip} />
-              </Box>
-              <Box sx={{ flex: "1 1 240px", minWidth: 240 }}>
+              </Tile>
+              <Tile>
                 <MetricCard
                   label="Realized, not attributed"
                   value={<Amount value={data.realized_value} unknown="None recorded" />}
                   sub={`${counted(data.realized_events ?? 0)} event(s)`}
                   tip={VALUE_CLASS.REALIZED.tip} />
-              </Box>
+              </Tile>
               {/* No "Estimated" tile. Nothing in the evidence produces that
                   class today, and a card reading "Estimated — None recorded"
                   states a measurement that was never attempted. The server
                   stopped sending the field for the same reason. */}
-            </Stack>
+            </TileRow>
 
-            {types.length > 0 && (
-              <>
-                <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                  Identified, by what was measured
-                </Typography>
-                <ClassBreakdown rows={breakdown} types={types}
-                                unmeasurable={unmeasurable}
-                                valueClass="POTENTIAL" />
-              </>
-            )}
+            <ClassBreakdown rows={breakdown} types={types}
+                            unmeasurable={unmeasurable}
+                            valueClass="POTENTIAL"
+                            title="Identified, by what was measured" />
           </Paper>
 
           {/* ── work done, counted and never valued ── */}
@@ -715,20 +884,20 @@ function ValueLedger({ session }: { session: PlatformSession }) {
                 level="section"
                 title="Work the platform did"
                 sub={data.productivity.note} />
-              <Stack direction="row" spacing={2} useFlexGap sx={{ flexWrap: "wrap" }}>
-                <Box sx={{ flex: "1 1 200px", minWidth: 200 }}>
+              <TileRow>
+                <Tile basis={200}>
                   <MetricCard label="Quotes priced"
                               value={counted(data.productivity.quotes_priced)} />
-                </Box>
-                <Box sx={{ flex: "1 1 200px", minWidth: 200 }}>
+                </Tile>
+                <Tile basis={200}>
                   <MetricCard label="Lines priced"
                               value={counted(data.productivity.lines_priced)} />
-                </Box>
-                <Box sx={{ flex: "1 1 200px", minWidth: 200 }}>
+                </Tile>
+                <Tile basis={200}>
                   <MetricCard label="Approvals turned round"
                               value={counted(data.productivity.approvals_turned_round)} />
-                </Box>
-              </Stack>
+                </Tile>
+              </TileRow>
             </Paper>
           )}
           </>
@@ -838,7 +1007,7 @@ function ValueLedger({ session }: { session: PlatformSession }) {
             level="section"
             title="The 30-day report"
             sub="What the platform was worth against what it costs, set beside how the business ran before it." />
-          <Typography variant="body2" color="text.secondary" sx={{ maxWidth: "80ch" }}>
+          <Typography variant="body2" color="text.secondary" sx={{ maxWidth: PROSE }}>
             Shown to the owner only. It compares one book&rsquo;s performance
             before the platform against its performance during, and the cost
             side of it is a figure only the owner holds — so the server answers
@@ -861,6 +1030,91 @@ function cellOf(rows: ValueClassBreakdown[], type: string, valueClass: string) {
 
 /* ── the owner's report ───────────────────────────────────────────────────── */
 
+/** The cost the reader is typing, and the cost the server has been asked
+ *  about. */
+interface AppliedCost {
+  cost: string;
+  setCost: (v: string) => void;
+  /** What the last submit sent, and a dependency of the request. `null` until
+   *  one is entered — never `"0"`, which would be a return nobody supplied. */
+  applied: string | null;
+  invalid: boolean;
+  submit: (e: React.FormEvent) => void;
+}
+
+/** Both owner panels ask the reader what PIE costs, and both wrote the same
+ *  three pieces: the trimmed value, the guard, and the submit that moves it
+ *  into `applied` so a refetch happens on submit rather than on every
+ *  keystroke. Written twice, they were one edit from disagreeing about what a
+ *  valid cost is.
+ *
+ *  The guard is the server's own rule (`ge=0`) applied before the request.
+ *  Not defensive tidiness: an unparseable cost comes back as a 422 and puts
+ *  "this could not be read" where a mistyped figure belongs, which reads as
+ *  the panel being unavailable rather than as a typo. */
+function useAppliedCost(): AppliedCost {
+  const [cost, setCost] = useState("");
+  const [applied, setApplied] = useState<string | null>(null);
+
+  const typed = cost.trim();
+  const invalid = typed !== ""
+    && !(Number.isFinite(Number(typed)) && Number(typed) >= 0);
+
+  const submit = useCallback((e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = cost.trim();
+    if (trimmed !== ""
+        && !(Number.isFinite(Number(trimmed)) && Number(trimmed) >= 0)) return;
+    setApplied(trimmed === "" ? null : trimmed);
+  }, [cost]);
+
+  return { cost, setCost, applied, invalid, submit };
+}
+
+/** The controls that decide what the panel below is a report on.
+ *
+ *  A form, so Enter submits and the button is the same press. `children` is
+ *  whatever else narrows the question — the roll-up's span — and comes first,
+ *  because the span decides what a monthly rate is multiplied by. */
+function CostForm({ cost, label, helper, children }: {
+  cost: AppliedCost;
+  label: string;
+  /** What this figure means here: one window's total, or a monthly rate. */
+  helper: string;
+  children?: React.ReactNode;
+}) {
+  return (
+    <Box component="form" onSubmit={cost.submit} sx={{ mb: 3 }}>
+      <Stack direction="row" spacing={1.5} useFlexGap
+             sx={{ flexWrap: "wrap", alignItems: "flex-start" }}>
+        {children}
+        <TextField
+          size="small"
+          label={label}
+          value={cost.cost}
+          onChange={(e) => cost.setCost(e.target.value)}
+          inputMode="decimal"
+          error={cost.invalid}
+          sx={{ minWidth: 300 }}
+          slotProps={{
+            input: {
+              startAdornment: (
+                <InputAdornment position="start">{moneySymbol()}</InputAdornment>
+              ),
+            },
+          }}
+          helperText={cost.invalid
+            ? "A number, and not a negative one."
+            : helper} />
+        <Button type="submit" variant="outlined" disabled={cost.invalid}
+                sx={{ mt: 0.25 }}>
+          {cost.applied === null ? "Show the return" : "Update"}
+        </Button>
+      </Stack>
+    </Box>
+  );
+}
+
 /**
  * Trial progress against the pre-trial baseline, and the return on what the
  * platform costs.
@@ -872,34 +1126,15 @@ function cellOf(rows: ValueClassBreakdown[], type: string, valueClass: string) {
  * that could be read as "no return".
  */
 function EvaluationPanel({ session }: { session: PlatformSession }) {
-  // What has been asked of the server, and what is in the field. Separate, so
-  // a refetch happens when the owner submits rather than on every keystroke.
-  const [cost, setCost] = useState("");
-  const [applied, setApplied] = useState<string | null>(null);
+  const cost = useAppliedCost();
 
   const { data: report, loading, error, reload } = useInsight<AttributionEvaluation>(
     "attribution-evaluation",
-    () => papi.attributionEvaluation(session.token, applied),
-    [session.token, applied]);
-
-  // Checked before it is sent, and against the server's own rule (`ge=0`).
-  // Not defensive tidiness: an unparseable cost would come back as a 422 and
-  // put "the report could not be read" where a mistyped figure belongs, which
-  // reads as the report being unavailable rather than as a typo.
-  const typed = cost.trim();
-  const costInvalid = typed !== ""
-    && !(Number.isFinite(Number(typed)) && Number(typed) >= 0);
-
-  const submit = useCallback((e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = cost.trim();
-    if (trimmed !== ""
-        && !(Number.isFinite(Number(trimmed)) && Number(trimmed) >= 0)) return;
-    setApplied(trimmed === "" ? null : trimmed);
-  }, [cost]);
+    () => papi.attributionEvaluation(session.token, cost.applied),
+    [session.token, cost.applied]);
 
   const attributed = amountOf(report?.attributed_value ?? null);
-  const costValue = amountOf(applied);
+  const costValue = amountOf(cost.applied);
   // The only arithmetic on this screen, and it is here rather than on the
   // server for a reason worth stating: the platform holds no price for its own
   // plans, so there is no server-side operand to compute against — the cost is
@@ -916,33 +1151,10 @@ function EvaluationPanel({ session }: { session: PlatformSession }) {
         title="The 30-day report"
         sub="What the platform was worth against what it costs, and how this book ran in the 90 days before the trial started." />
 
-      <Box component="form" onSubmit={submit} sx={{ mb: 3 }}>
-        <Stack direction="row" spacing={1.5} useFlexGap
-               sx={{ flexWrap: "wrap", alignItems: "flex-start" }}>
-          <TextField
-            size="small"
-            label="What PIE costs you for this window"
-            value={cost}
-            onChange={(e) => setCost(e.target.value)}
-            inputMode="decimal"
-            error={costInvalid}
-            sx={{ minWidth: 280 }}
-            slotProps={{
-              input: {
-                startAdornment: (
-                  <InputAdornment position="start">{moneySymbol()}</InputAdornment>
-                ),
-              },
-            }}
-            helperText={costInvalid
-              ? "A number, and not a negative one."
-              : "This platform holds no price for its own plans, so the return is UNKNOWN until you enter one. Nothing is stored."} />
-          <Button type="submit" variant="outlined" disabled={costInvalid}
-                  sx={{ mt: 0.25 }}>
-            {applied === null ? "Show the return" : "Update"}
-          </Button>
-        </Stack>
-      </Box>
+      <CostForm
+        cost={cost}
+        label="What PIE costs you for this window"
+        helper="This platform holds no price for its own plans, so the return is UNKNOWN until you enter one. Nothing is stored." />
 
       {error ? (
         <ErrorState title="The report could not be read" error={error}
@@ -951,23 +1163,22 @@ function EvaluationPanel({ session }: { session: PlatformSession }) {
         <LoadingState rows={2} height={110} label="Building the report…" />
       ) : (
         <>
-          <Stack direction="row" spacing={2} useFlexGap
-                 sx={{ flexWrap: "wrap", mb: 3 }}>
-            <Box sx={{ flex: "1 1 220px", minWidth: 220 }}>
+          <TileRow>
+            <Tile basis={220}>
               <MetricCard
                 label="Attributed value"
                 value={<Amount value={report.attributed_value} />}
                 sub="ATTRIBUTED events only" />
-            </Box>
-            <Box sx={{ flex: "1 1 220px", minWidth: 220 }}>
+            </Tile>
+            <Tile basis={220}>
               <MetricCard
                 label="What PIE costs you"
                 value={costValue === null
                   ? <UnknownValue>Not supplied</UnknownValue>
                   : money(costValue)}
                 sub="your figure, for this window" />
-            </Box>
-            <Box sx={{ flex: "1 1 220px", minWidth: 220 }}>
+            </Tile>
+            <Tile basis={220}>
               <MetricCard
                 label="Net value"
                 value={net === null
@@ -977,8 +1188,8 @@ function EvaluationPanel({ session }: { session: PlatformSession }) {
                   ? "needs both an attributed figure and a cost"
                   : "attributed value less the cost you entered"}
                 tip="Attributed value minus the cost above. Unknown while either side is unknown — a missing cost does not make the net equal to the value." />
-            </Box>
-            <Box sx={{ flex: "1 1 220px", minWidth: 220 }}>
+            </Tile>
+            <Tile basis={220}>
               <MetricCard
                 label="Value per rupee of cost"
                 value={report.roi_is_unknown || report.roi === null
@@ -988,8 +1199,8 @@ function EvaluationPanel({ session }: { session: PlatformSession }) {
                   ? "no cost supplied, or no attributed value is measurable"
                   : "attributed value ÷ the cost you entered"}
                 tip="Computed on the server from the cost you supplied. Unknown is rendered as unknown — a return of 0x would be a claim, and nobody has supplied the evidence for one." />
-            </Box>
-          </Stack>
+            </Tile>
+          </TileRow>
 
           {/* The honest verdict on the value itself is stated once, at the
               headline, and deliberately not repeated here: two alerts saying
@@ -1018,40 +1229,38 @@ function EvaluationPanel({ session }: { session: PlatformSession }) {
                 figure is not an improvement.
               </Alert>
             ) : (
-              <Box component="table" className="facttable" sx={{ width: "100%" }}>
-                <tbody>
-                  <tr>
-                    <td>
-                      Quoted margin before
-                      <div className="fsrc">
-                        {formatDate(report.baseline.window_start)} –{" "}
-                        {formatDate(report.baseline.window_end)}
-                      </div>
-                    </td>
-                    <td className="fv">{pct(report.comparison.quoted_margin_before)}</td>
-                  </tr>
-                  <tr>
-                    <td>Quoted margin during the trial</td>
-                    <td className="fv">{pct(report.comparison.quoted_margin_after)}</td>
-                  </tr>
-                  <tr>
-                    <td>
-                      Movement
-                      <div className="fsrc">
-                        Percentage points, not percent — 24% to 20% is −4 pp.
-                      </div>
-                    </td>
-                    <td className="fv">
-                      {/* The server sends this already in percentage points;
-                          `pp` takes a ratio, so it is divided back. The shared
-                          formatter rather than a fourth private one — three
-                          copies of it existed before it was moved to
-                          `useInsight`, and they had drifted. */}
-                      {pp(report.comparison.quoted_margin_movement_pp / 100)}
-                    </td>
-                  </tr>
-                </tbody>
-              </Box>
+              <FactTable ariaLabel="Quoted margin before the trial and during it">
+                <tr>
+                  <td>
+                    Quoted margin before
+                    <div className="fsrc">
+                      {formatDate(report.baseline.window_start)} –{" "}
+                      {formatDate(report.baseline.window_end)}
+                    </div>
+                  </td>
+                  <td className="fv">{pct(report.comparison.quoted_margin_before)}</td>
+                </tr>
+                <tr>
+                  <td>Quoted margin during the trial</td>
+                  <td className="fv">{pct(report.comparison.quoted_margin_after)}</td>
+                </tr>
+                <tr>
+                  <td>
+                    Movement
+                    <div className="fsrc">
+                      Percentage points, not percent — 24% to 20% is −4 pp.
+                    </div>
+                  </td>
+                  <td className="fv">
+                    {/* The server sends this already in percentage points;
+                        `pp` takes a ratio, so it is divided back. The shared
+                        formatter rather than a fourth private one — three
+                        copies of it existed before it was moved to
+                        `useInsight`, and they had drifted. */}
+                    {pp(report.comparison.quoted_margin_movement_pp / 100)}
+                  </td>
+                </tr>
+              </FactTable>
             )}
           </Box>
 
@@ -1060,53 +1269,51 @@ function EvaluationPanel({ session }: { session: PlatformSession }) {
               <Typography variant="subtitle2" sx={{ mb: 1 }}>
                 The window itself
               </Typography>
-              <Box component="table" className="facttable" sx={{ width: "100%" }}>
-                <tbody>
-                  <tr>
-                    <td>Lines priced through the platform</td>
-                    <td className="fv">{counted(report.during.priced_lines)}</td>
-                  </tr>
-                  <tr>
-                    <td>
-                      Of those, carrying a purchase cost
-                      <div className="fsrc">
-                        A line with no cost is excluded from the margin above
-                        rather than counted as a zero-margin one.
-                      </div>
-                    </td>
-                    <td className="fv">
-                      {counted(report.during.costed_lines)}
-                      {report.during.uncostable_lines > 0
-                        && ` · ${counted(report.during.uncostable_lines)} without`}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>Lines that needed approval</td>
-                    <td className="fv">
-                      {counted(report.during.approval_required_lines)}
-                      {report.during.approval_required_rate !== null
-                        && ` · ${pct(report.during.approval_required_rate)} of costed lines`}
-                    </td>
-                  </tr>
-                  <tr>
-                    <td>Quotes decided</td>
-                    <td className="fv">
-                      {report.during.quotes_decided === 0
-                        ? "none decided in this window"
-                        : `${counted(report.during.quotes_won)} won · `
-                          + `${counted(report.during.quotes_lost)} lost · `
-                          + `${pct(report.during.quote_win_rate)} won`}
-                    </td>
-                  </tr>
-                </tbody>
-              </Box>
+              <FactTable ariaLabel="What the trial window itself held">
+                <tr>
+                  <td>Lines priced through the platform</td>
+                  <td className="fv">{counted(report.during.priced_lines)}</td>
+                </tr>
+                <tr>
+                  <td>
+                    Of those, carrying a purchase cost
+                    <div className="fsrc">
+                      A line with no cost is excluded from the margin above
+                      rather than counted as a zero-margin one.
+                    </div>
+                  </td>
+                  <td className="fv">
+                    {counted(report.during.costed_lines)}
+                    {report.during.uncostable_lines > 0
+                      && ` · ${counted(report.during.uncostable_lines)} without`}
+                  </td>
+                </tr>
+                <tr>
+                  <td>Lines that needed approval</td>
+                  <td className="fv">
+                    {counted(report.during.approval_required_lines)}
+                    {report.during.approval_required_rate !== null
+                      && ` · ${pct(report.during.approval_required_rate)} of costed lines`}
+                  </td>
+                </tr>
+                <tr>
+                  <td>Quotes decided</td>
+                  <td className="fv">
+                    {report.during.quotes_decided === 0
+                      ? <FactNote>none decided in this window</FactNote>
+                      : `${counted(report.during.quotes_won)} won · `
+                        + `${counted(report.during.quotes_lost)} lost · `
+                        + `${pct(report.during.quote_win_rate)} won`}
+                  </td>
+                </tr>
+              </FactTable>
             </Box>
           )}
 
           {report.baseline && report.baseline.evidence_gaps.length > 0 && (
             <Box sx={{ mt: 3 }}>
               <EvidenceGaps
-                gaps={report.baseline.evidence_gaps}
+                gaps={report.baseline.evidence_gaps} mb={0}
                 title="What the pre-trial baseline could not measure" />
             </Box>
           )}
@@ -1130,10 +1337,8 @@ const ROLLUP_SPANS = [3, 6, 12, 24] as const;
  *  against, and it is a one-line temptation in a table renderer.
  */
 function PeriodAmount({ row }: { row: AttributionPeriod }) {
-  if (!row.measured) {
-    return <UnknownValue>Not measured</UnknownValue>;
-  }
-  return <>{<Amount value={row.attributed_value} />}</>;
+  if (!row.measured) return <UnknownValue>Not measured</UnknownValue>;
+  return <Amount value={row.attributed_value} />;
 }
 
 /** Value month by month, and the return over the span. Owner only.
@@ -1154,35 +1359,26 @@ function PeriodAmount({ row }: { row: AttributionPeriod }) {
  */
 function RollupPanel({ session }: { session: PlatformSession }) {
   const [months, setMonths] = useState<number>(12);
-  const [cost, setCost] = useState("");
-  const [applied, setApplied] = useState<string | null>(null);
+  const cost = useAppliedCost();
 
   const { data, loading, error, reload } = useInsight<AttributionRollup>(
     "attribution-rollup",
     () => papi.attributionRollup(session.token,
-                                 { months, monthlyCost: applied }),
-    [session.token, months, applied]);
-
-  // The same guard `EvaluationPanel` applies, and for the same reason: a
-  // mistyped cost would come back a 422 and put "the roll-up could not be read"
-  // where a typo belongs.
-  const typed = cost.trim();
-  const costInvalid = typed !== ""
-    && !(Number.isFinite(Number(typed)) && Number(typed) >= 0);
-
-  const submit = useCallback((e: React.FormEvent) => {
-    e.preventDefault();
-    const trimmed = cost.trim();
-    if (trimmed !== ""
-        && !(Number.isFinite(Number(trimmed)) && Number(trimmed) >= 0)) return;
-    setApplied(trimmed === "" ? null : trimmed);
-  }, [cost]);
+                                 { months, monthlyCost: cost.applied }),
+    [session.token, months, cost.applied]);
 
   const columns = useMemo<ColDef<AttributionPeriod>[]>(() => [
     { field: "label", headerName: "Month", width: 140, flex: 0 },
     {
       field: "attributed_value", headerName: "Attributed", width: 170, flex: 0,
       type: "rightAligned",
+      // Sorted on the parsed number, rendered by `PeriodAmount`. The field
+      // holds a serialized `Decimal`, so without this the column sorted the
+      // string "9" above "12500.0000" — the same trap the ledger's Amount
+      // column names, and the reason that one takes a `valueGetter` too.
+      // Which month was worth most is a sort question, and it was answering
+      // it wrongly while looking like it worked.
+      valueGetter: (p) => amountOf(p.data?.attributed_value),
       cellRenderer: (p: { data?: AttributionPeriod }) =>
         p.data ? <PeriodAmount row={p.data} /> : null,
     },
@@ -1214,46 +1410,24 @@ function RollupPanel({ session }: { session: PlatformSession }) {
         title="Month by month"
         sub="What the platform has been worth over a longer span, and the return on it — the figure the 30-day report stops giving once a trial ends." />
 
-      <Box component="form" onSubmit={submit} sx={{ mb: 3 }}>
-        <Stack direction="row" spacing={1.5} useFlexGap
-               sx={{ flexWrap: "wrap", alignItems: "flex-start" }}>
-          <TextField
-            select
-            size="small"
-            label="Span"
-            value={String(months)}
-            onChange={(e) => setMonths(Number(e.target.value))}
-            sx={{ minWidth: 160 }}
-            slotProps={{ select: { native: true } }}
-            helperText="Complete calendar months only.">
-            {ROLLUP_SPANS.map((n) => (
-              <option key={n} value={n}>{n} months</option>
-            ))}
-          </TextField>
-          <TextField
-            size="small"
-            label="What PIE costs you per month"
-            value={cost}
-            onChange={(e) => setCost(e.target.value)}
-            inputMode="decimal"
-            error={costInvalid}
-            sx={{ minWidth: 300 }}
-            slotProps={{
-              input: {
-                startAdornment: (
-                  <InputAdornment position="start">{moneySymbol()}</InputAdornment>
-                ),
-              },
-            }}
-            helperText={costInvalid
-              ? "A number, and not a negative one."
-              : "A monthly rate, not a total — the span is many months. Nothing is stored."} />
-          <Button type="submit" variant="outlined" disabled={costInvalid}
-                  sx={{ mt: 0.25 }}>
-            {applied === null ? "Show the return" : "Update"}
-          </Button>
-        </Stack>
-      </Box>
+      <CostForm
+        cost={cost}
+        label="What PIE costs you per month"
+        helper="A monthly rate, not a total — the span is many months. Nothing is stored.">
+        <TextField
+          select
+          size="small"
+          label="Span"
+          value={String(months)}
+          onChange={(e) => setMonths(Number(e.target.value))}
+          sx={{ minWidth: 160 }}
+          slotProps={{ select: { native: true } }}
+          helperText="Complete calendar months only.">
+          {ROLLUP_SPANS.map((n) => (
+            <option key={n} value={n}>{n} months</option>
+          ))}
+        </TextField>
+      </CostForm>
 
       {error ? (
         <ErrorState title="The roll-up could not be read" error={error}
@@ -1262,17 +1436,16 @@ function RollupPanel({ session }: { session: PlatformSession }) {
         <LoadingState rows={2} height={110} label="Rolling up the months…" />
       ) : (
         <>
-          <Stack direction="row" spacing={2} useFlexGap
-                 sx={{ flexWrap: "wrap", mb: 3 }}>
-            <Box sx={{ flex: "1 1 220px", minWidth: 220 }}>
+          <TileRow mb={3}>
+            <Tile basis={220}>
               <MetricCard
                 label="Attributed value"
                 value={<Amount value={data.attributed_value} />}
                 sub={data.span.label
                   ? `${data.span.label} · complete months only`
                   : "no complete month in this span"} />
-            </Box>
-            <Box sx={{ flex: "1 1 220px", minWidth: 220 }}>
+            </Tile>
+            <Tile basis={220}>
               <MetricCard
                 label="What PIE cost you"
                 value={data.platform_cost === null
@@ -1281,8 +1454,8 @@ function RollupPanel({ session }: { session: PlatformSession }) {
                 sub={data.monthly_cost === null
                   ? "your monthly figure, for this span"
                   : `your rate × ${counted(data.span.complete_months)} complete month(s)`} />
-            </Box>
-            <Box sx={{ flex: "1 1 220px", minWidth: 220 }}>
+            </Tile>
+            <Tile basis={220}>
               <MetricCard
                 label="Value per rupee of cost"
                 value={data.roi_is_unknown || data.roi === null
@@ -1292,17 +1465,18 @@ function RollupPanel({ session }: { session: PlatformSession }) {
                   ? "no monthly cost supplied, or a month in this span was never measured"
                   : "attributed value ÷ the cost above"}
                 tip="Refused outright where any complete month in the span has nothing on record. The value would cover fewer months than the cost does, and the ratio would read low — which is still a number nobody measured." />
-            </Box>
-            <Box sx={{ flex: "1 1 220px", minWidth: 220 }}>
+            </Tile>
+            <Tile basis={220}>
               <MetricCard
                 label="Months measured"
                 value={`${counted(data.span.measured_months)} of ${counted(data.span.complete_months)}`}
                 sub="complete months with any event on record"
                 tip="A month with no event is not a month worth nothing. It is a month this platform cannot speak for, and the return is withheld while one is in the span." />
-            </Box>
-          </Stack>
+            </Tile>
+          </TileRow>
 
-          <EvidenceGaps gaps={data.evidence_gaps} title="What is not measured" />
+          <EvidenceGaps gaps={data.evidence_gaps} mb={2}
+                        title="What is not measured" />
 
           {data.span.frozen_at ? (
             <Alert severity="info" sx={{ mb: 2 }}>
@@ -1336,7 +1510,7 @@ function RollupPanel({ session }: { session: PlatformSession }) {
                 {data.in_progress.label} — still running
               </Typography>
               <Typography variant="body2" color="text.secondary"
-                          sx={{ maxWidth: "80ch" }}>
+                          sx={{ maxWidth: PROSE }}>
                 <PeriodAmount row={data.in_progress} /> attributed so far, from{" "}
                 {counted(data.in_progress.attributed_events)} event(s). This
                 month is <strong>not</strong> in the total or the return above.
@@ -1349,16 +1523,5 @@ function RollupPanel({ session }: { session: PlatformSession }) {
         </>
       )}
     </Paper>
-  );
-}
-
-
-/** UNKNOWN, in the value slot of a tile, at a size that does not pretend to be
- *  a figure. A word rather than a dash, for the reason `Amount` gives. */
-function UnknownValue({ children }: { children: React.ReactNode }) {
-  return (
-    <Box component="span" sx={{ color: "text.secondary", fontSize: "0.6em" }}>
-      {children}
-    </Box>
   );
 }

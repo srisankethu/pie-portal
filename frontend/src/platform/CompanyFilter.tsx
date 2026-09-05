@@ -21,8 +21,10 @@
 // control that does nothing.
 
 import { useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
+import Typography from "@mui/material/Typography";
 
 import { connectorMark } from "./EntityName";
 import { TOUCH } from "./kit";
@@ -96,6 +98,92 @@ export function useCompanyFilter<T extends Sourced>(rows: T[]) {
   return { company: active, setCompany, options, filtered, apply, show };
 }
 
+/** The select both of the controls in this file render.
+ *
+ *  Private, and not in `kit.tsx`: nothing outside this file wants it, and the
+ *  point of putting it here is that the *pair* below stays one control with two
+ *  meanings rather than two controls that slowly stop looking alike. They had
+ *  already started — the row filter carried the 44px touch floor and the scope
+ *  select did not, so two selects doing the same job in the same app were 4px
+ *  apart and one of them was under the floor `kit.TOUCH` sets.
+ *
+ *  `displayEmpty` because without it the control renders *blank* while showing
+ *  every row: MUI treats an empty value as "nothing selected" and hides the
+ *  option that represents it. A filter whose resting state looks unset is one
+ *  people set twice and then wonder why nothing changed.
+ *
+ *  `shrink` because the two settings disagree otherwise. The label floats when
+ *  MUI thinks the field is filled, and "filled" means a non-empty value — but
+ *  "All companies" *is* the empty value, so the label stayed in its resting
+ *  position and sat on top of the text the select was already showing. Opening
+ *  the menu focused the field and floated it, which is why it looked correct
+ *  only while open. `displayEmpty` means there is always content to clear, so
+ *  the label should always be clear of it. This also notches the outlined
+ *  fieldset, since the notch follows the label. */
+function CompanySelect({
+  label, value, onChange, minWidth, mb, children,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  minWidth: number;
+  /** Space below, where the caller's layout expects the control to carry it.
+   *  Only `CompanyScope` does; a control that sets its own margin fights the
+   *  `Stack` it is dropped into, and this is the one place it is already
+   *  depended on. */
+  mb?: number;
+  children: ReactNode;
+}) {
+  return (
+    <TextField
+      select
+      size="small"
+      label={label}
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
+      // `TOUCH` because these sit in a row of filter chips and are the same
+      // kind of control: a 40px select beside 44px chips is both harder to hit
+      // and visibly out of line. It is applied here rather than at either call
+      // site precisely so it cannot be applied to only one of them again.
+      sx={{ minWidth, mb, "& .MuiInputBase-root": TOUCH }}
+    >
+      {children}
+    </TextField>
+  );
+}
+
+/** The quiet half of an option: which system the company syncs through, and
+ *  how many rows choosing it leaves.
+ *
+ *  The count travels with the name — "4U Precision" alone does not say whether
+ *  choosing it leaves eighty rows or two — but it is not the name, and at one
+ *  weight the eye has to read the whole line to find the part that varies.
+ *  Muted and one step down the ramp, so the names scan as a column.
+ *
+ *  **The name goes first, and that is not a preference.** MUI's own type-ahead
+ *  matches a keypress against the option's `innerText` with `startsWith`, so
+ *  while the connector mark led the line, pressing "s" in an open company menu
+ *  jumped to nothing — every option began with "◇". Keyboard reach is the
+ *  whole point of this control on a busy desk. It also happens to be the order
+ *  `sourceLabel` already argues for: somebody working three books thinks in
+ *  companies, and only needs the connector once two of them come from
+ *  different systems. */
+function Meta({ mark, children }: { mark?: string; children: ReactNode }) {
+  return (
+    <Typography
+      component="span" variant="caption" color="text.secondary"
+      sx={{ ml: 0.75 }}
+    >
+      {/* Hidden from a screen reader for the reason `EntitySource` hides it:
+          it is a picture of the word beside it, and "diamond SLS Engineers"
+          read aloud is worse than "SLS Engineers". */}
+      {mark && <span aria-hidden="true">{mark} </span>}
+      · {children}
+    </Typography>
+  );
+}
+
 export function CompanyFilter({
   options, value, onChange, show, label = "Company",
 }: {
@@ -108,41 +196,16 @@ export function CompanyFilter({
   if (!show) return null;
   const total = options.reduce((n, o) => n + o.count, 0);
   return (
-    <TextField
-      select
-      size="small"
-      label={label}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      // `displayEmpty` because without it the control renders *blank* while
-      // showing every row: MUI treats an empty value as "nothing selected" and
-      // hides the option that represents it. A filter whose resting state looks
-      // unset is one people set twice and then wonder why nothing changed.
-      //
-      // `shrink` because the two settings disagree otherwise. The label floats
-      // when MUI thinks the field is filled, and "filled" means a non-empty
-      // value — but "All companies" *is* the empty value, so the label stayed
-      // in its resting position and sat on top of the text the select was
-      // already showing. Opening the menu focused the field and floated it,
-      // which is why it looked correct only while open. `displayEmpty` means
-      // there is always content to clear, so the label should always be clear
-      // of it. This also notches the outlined fieldset, since the notch follows
-      // the label.
-      slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
-      // `TOUCH` because this sits in the same row as the filter chips and is
-      // the same kind of control: a 40px select beside 44px chips is both
-      // harder to hit and visibly out of line.
-      sx={{ minWidth: 210, "& .MuiInputBase-root": TOUCH }}
-    >
-      {/* The counts travel with the names. "4U Precision" alone does not say
-          whether choosing it leaves eighty rows or two. */}
-      <MenuItem value={ALL}>All companies · {total}</MenuItem>
+    <CompanySelect label={label} value={value} onChange={onChange} minWidth={210}>
+      <MenuItem value={ALL}>
+        All companies<Meta>{total}</Meta>
+      </MenuItem>
       {options.map((o) => (
         <MenuItem key={o.connectionId} value={o.connectionId}>
-          {o.icon} {o.label} · {o.count}
+          {o.label}<Meta mark={o.icon}>{o.count}</Meta>
         </MenuItem>
       ))}
-    </TextField>
+    </CompanySelect>
   );
 }
 
@@ -192,21 +255,22 @@ export function CompanyScope({
 }) {
   if (options.length < 2) return null;
   return (
-    <TextField
-      select size="small" label="Company" value={value}
-      onChange={(e) => onChange(e.target.value)}
-      slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
-      sx={{ minWidth: 240, mb: 2 }}
+    <CompanySelect
+      label="Company" value={value} onChange={onChange} minWidth={240} mb={2}
     >
+      {/* No total beside this one, unlike the row filter above. That count is
+          of rows the client is already holding; a total here would be this
+          component adding up figures the server computed per company, which is
+          arithmetic a screen does not get to do. */}
       <MenuItem value={ALL}>All companies</MenuItem>
       {options.map((o) => (
         <MenuItem key={o.connection_id} value={o.connection_id}>
           {o.label}
           {o.customers != null && (
-            <> · {o.customers} {unit}{o.customers === 1 ? "" : "s"}</>
+            <Meta>{o.customers} {unit}{o.customers === 1 ? "" : "s"}</Meta>
           )}
         </MenuItem>
       ))}
-    </TextField>
+    </CompanySelect>
   );
 }

@@ -24,8 +24,19 @@
  * one reassuring sentence, and only one of them is fixed by typing. `kit.tsx`
  * states the rule this broke — a screen that repeats one generic sentence for
  * every reason is a screen nobody trusts.
+ *
+ * **It is answered from the keyboard.** This dialog opens on the way into
+ * every quote, which makes it the highest-traffic control in the product and
+ * the one where a wasted gesture is paid for most often. So the field takes
+ * focus when the dialog opens, and Enter takes the match once typing has left
+ * exactly one — never while several are on screen, because the directory comes
+ * back alphabetical rather than ranked and "first" would not mean "best".
+ * Neither is decoration: the `autoFocus` that was here before sat on
+ * `Autocomplete` rather than on its input, where React puts it on a `div` that
+ * cannot hold focus — it type-checked, read as done, and every quote still
+ * started with a click into the box.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useState } from "react";
 import Autocomplete from "@mui/material/Autocomplete";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
@@ -39,7 +50,7 @@ import TextField from "@mui/material/TextField";
 import { useNavigate } from "react-router-dom";
 
 import { papi } from "../platform/api";
-import { optionLabel } from "../platform/EntityName";
+import { EntityName, optionLabel } from "../platform/EntityName";
 import { abilityFor } from "../platform/ability";
 import { EmptyState, ErrorState } from "../platform/kit";
 import { PATH } from "../platform/route";
@@ -141,6 +152,23 @@ export function CustomerPicker({
   // one looking at "could not load customers".
   const [reloads, setReloads] = useState(0);
 
+  // The `note` — why this is being asked — as the dialog's description. MUI
+  // already wires `aria-labelledby` to the `DialogTitle` itself, so only this
+  // half is missing, and it is the half that carries the consequence: on a
+  // quote that already has lines the note says they are resolved again for
+  // whoever is chosen. Generated rather than written out, so two of these in
+  // one document cannot collide.
+  const noteId = useId();
+  // Whether the suggestion list is showing. Controlled, which MUI does not
+  // require and this dialog does: the field is hidden — not unmounted — the
+  // moment the directory turns out to be empty or the load fails, and the
+  // popup is portalled, so an uncontrolled one stays on screen anchored to a
+  // `display: none` box. Typing a name and losing the connection left
+  // "Searching the directory…" floating over the error panel that had already
+  // given up. `open` below closes it as part of the same condition that hides
+  // the field, so the two cannot disagree.
+  const [popupOpen, setPopupOpen] = useState(false);
+
   useEffect(() => {
     // Only `open`. Guarding on the token as well is what stopped this dialog
     // ever loading: the session moved into an httpOnly cookie, so
@@ -187,13 +215,19 @@ export function CustomerPicker({
 
   // What this dialog is entitled to offer: the rows, once they answer the
   // question currently in the box. While a search is in flight there is no
-  // answer yet, and the honest output is the one `loading` already draws —
+  // answer yet, and the honest output is the one `searching` already draws —
   // "Searching the directory…" — not the previous query's names. Offering
   // those is the benign default `kit.tsx` and the platform's own absence rule
   // both refuse: a stale list is not a weaker answer, it is a wrong one, and
   // it is indistinguishable on screen from a correct one.
   const settled = answered === query;
   const options = settled ? rows : [];
+  // One name for the whole outstanding window, because it is read three times
+  // and the three used to disagree. `loading` alone misses the frame between
+  // the keystroke and the effect that sets it — React paints first — which is
+  // exactly when MUI would draw `noOptionsText`. So the popup, the spinner and
+  // the field all take the same answer to the same question.
+  const searching = loading || !settled;
 
   // Whether to print the company beside each name. With one connected book
   // every line would say the same thing, which is width spent saying nothing.
@@ -210,22 +244,44 @@ export function CustomerPicker({
   const nothingToSearch = Boolean(failed) || Boolean(emptyReason);
 
   return (
-    <Dialog open={open} onClose={onCancel} maxWidth="sm" fullWidth>
+    <Dialog
+      open={open} onClose={onCancel} maxWidth="sm" fullWidth
+      aria-describedby={note ? noteId : undefined}
+    >
       <DialogTitle>{title}</DialogTitle>
       <DialogContent>
         {note && (
-          <DialogContentText sx={{ mb: 2 }}>{note}</DialogContentText>
+          <DialogContentText id={noteId} sx={{ mb: 2 }}>{note}</DialogContentText>
         )}
         <Autocomplete<Account>
-          autoFocus
           options={options}
           value={choice}
-          // `!settled` and not just `loading`: `setLoading(true)` happens in an
+          // `searching`, not `loading`: `setLoading(true)` happens in an
           // effect, which React runs *after* the paint that already showed the
           // new text. That one frame had an empty list and a false `loading`,
           // which is precisely when MUI draws `noOptionsText` — a flash of "No
           // customer matches that." before the search had been sent.
-          loading={loading || !settled}
+          loading={searching}
+          // Controlled, and closed by the same condition that hides the field.
+          // See `popupOpen`.
+          open={popupOpen && !nothingToSearch}
+          onOpen={() => setPopupOpen(true)}
+          onClose={() => setPopupOpen(false)}
+          // Enter takes the answer — but only once there is one answer to
+          // take. This is the app's highest-traffic search and typing until a
+          // name is unique is how it is used, so having to press Down before
+          // Enter is a keystroke paid on the way into every quote.
+          //
+          // Not a plain `autoHighlight`, and the reason is what the ordering
+          // actually is. `routers/accounts` substring-matches and returns
+          // `order_by(Customer.name)` — alphabetical, not ranked; `EntityName`
+          // has a `rankMatches` but nothing on this path calls it. So with
+          // four matches on screen the first row is not the best one, it is
+          // the one whose name starts earliest in the alphabet, and
+          // highlighting it would invite an Enter onto an answer chosen by
+          // sorting. One option cannot be the wrong one; several can, and then
+          // this dialog asks rather than leans.
+          autoHighlight={options.length === 1}
           // Shown in place of `noOptionsText` while `options` is empty and a
           // request is out — which is exactly the window above. "No customer
           // matches that." would be the same wrong answer in the other
@@ -237,8 +293,26 @@ export function CustomerPicker({
           // The server already ranked and filtered; re-filtering here would
           // hide rows it deliberately returned.
           filterOptions={(x) => x}
+          // What the *input* shows once a customer is chosen, and what MUI's
+          // own filtering and equality fall back to. `optionLabel` is the
+          // one-line degradation — its docstring says so — kept here because
+          // a text input is exactly the place that cannot hold two lines.
           getOptionLabel={(o) => optionLabel(o.name, o.origin, showSource)}
           isOptionEqualToValue={(a, b) => a.customer_id === b.customer_id}
+          // The list itself can hold two, so it gets the real thing.
+          // `EntityName` is where this codebase decided once how an imported
+          // record shows where it came from — "every dropdown, grid cell,
+          // search result and detail heading" — and this dropdown was reading
+          // the native-select fallback instead: name and company run together
+          // in one weight, on the one screen whose entire job is telling three
+          // identically-named customers apart. Name at full weight, source
+          // underneath and quieter, and nothing at all when there is only one
+          // book to be from.
+          renderOption={({ key, ...props }, o) => (
+            <li key={key} {...props}>
+              <EntityName name={o.name} origin={o.origin} show={showSource} />
+            </li>
+          )}
           // No failure branch: a load that failed hides this field and says so
           // underneath, and the same sentence in two places is one to keep in
           // step. What is left is the one thing this text can answer.
@@ -247,6 +321,13 @@ export function CustomerPicker({
           renderInput={(params) => (
             <TextField
               {...params}
+              // On the field, not on `Autocomplete`. It used to sit on the
+              // Autocomplete, where `AutocompleteProps` accepts it — the type
+              // extends the root `div`'s attributes — and React puts it on
+              // that div, which is not focusable. It type-checked, read as
+              // done, and focused nothing: every quote started with a click
+              // into the box.
+              autoFocus
               label="Customer"
               placeholder="Search by name"
               // MUI v9 moved these under `slotProps.input`; the v6-era
@@ -257,7 +338,7 @@ export function CustomerPicker({
                   ...params.slotProps.input,
                   endAdornment: (
                     <>
-                      {loading && <CircularProgress size={16} />}
+                      {searching && <CircularProgress size={16} />}
                       {params.slotProps.input.endAdornment}
                     </>
                   ),

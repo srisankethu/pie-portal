@@ -78,10 +78,10 @@ const SettingsScreen = lazy(() =>
   import("./AdminScreens").then((m) => ({ default: m.SettingsScreen })));
 const IdentityScreen = lazy(() =>
   import("./IdentityScreen").then((m) => ({ default: m.IdentityScreen })));
-const TrustScreen = lazy(() =>
-  import("./TrustScreen").then((m) => ({ default: m.TrustScreen })));
 const ObservabilityDashboard = lazy(() =>
   import("./ObservabilityDashboard").then((m) => ({ default: m.ObservabilityDashboard })));
+const TrustScreen = lazy(() =>
+  import("./TrustScreen").then((m) => ({ default: m.TrustScreen })));
 const AttributionScreen = lazy(() =>
   import("./AttributionScreen").then((m) => ({ default: m.AttributionScreen })));
 const RetrospectiveScreen = lazy(() =>
@@ -1102,19 +1102,19 @@ export default function PlatformApp() {
     ...(ability.can("read", "policy")
       ? ([{ key: "identity", label: "Identities", group: "setup" }] as NavItem[])
       : []),
+    // The platform's own health, not the book's. Same `read policy` gate as the
+    // item above, and for the same reason: every `/internal/observability/*`
+    // route is `require_manager_or_owner`, so offering this to a salesperson
+    // would be a nav item where nothing on the page works.
+    ...(ability.can("read", "policy")
+      ? ([{ key: "observability", label: "System health", group: "setup" }] as NavItem[])
+      : []),
     { key: "states", label: "AI states", group: "setup" },
     // Owner only, mirroring `require_owner` on every `/trust/*` route. Named for
     // the question rather than for the mechanism: an owner looks for "my data",
     // not for "disclosure and break-glass".
     ...(ability.can("read", "trust")
       ? ([{ key: "trust", label: "Your data", group: "setup" }] as NavItem[])
-      : []),
-    // Health of the platform, not of the book. Same gate as the endpoint it
-    // reads: `require_manager_or_owner` server-side, economics-readers here,
-    // which is the same set. The screen and the endpoint have both existed for
-    // a while; only the route between them was missing.
-    ...(ability.can("read", "economics")
-      ? ([{ key: "observability", label: "Platform health", group: "setup" }] as NavItem[])
       : []),
     { key: "settings", label: "Settings", group: "setup" },
     // PIE's own pricing model, and the only nav item in this list that is not
@@ -1335,12 +1335,14 @@ export default function PlatformApp() {
             <Route path={PATH.decodedCatalog} element={<CatalogScreen session={session} />} />
             <Route path={PATH.approvals} element={<ApprovalsScreen session={session} />} />
             <Route path={PATH.identity} element={<IdentityScreen token={session.token} />} />
-            <Route path={PATH.trust} element={<TrustScreen session={session} />} />
-            {/* Whether the platform itself is well. The endpoint behind it is
-                `require_manager_or_owner`, and the nav entry below matches — a
-                salesperson is not offered a screen that would refuse them. */}
+            {/* Every call behind this is `require_manager_or_owner`, and the
+                nav item is gated to match. Routed unconditionally all the same,
+                for the reason the monetization route gives: a salesperson who
+                follows a link lands on a screen whose fetch fails with the
+                server's own answer, rather than being bounced home. */}
             <Route path={PATH.observability}
                    element={<ObservabilityDashboard session={session} />} />
+            <Route path={PATH.trust} element={<TrustScreen session={session} />} />
             <Route path={PATH.settings} element={
               <SettingsScreen session={session} onToken={adoptToken}
                               onSignedOutEverywhere={forgetSession} />} />

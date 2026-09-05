@@ -83,6 +83,12 @@ export type Screen =
    *  all: the endpoints behind it sit on an allowlist outside every workspace,
    *  and the nav item exists only for an identity the server has confirmed. */
   | "monetization"
+  /** The platform's own vitals rather than the book's: component health,
+   *  capacity headroom, and whether the last sync finished. Manager and owner,
+   *  mirroring `require_manager_or_owner` on every `/internal/observability/*`
+   *  route — a stalled sync is the first thing a desk asks about when the
+   *  numbers stop moving, and it is a question about the platform. */
+  | "observability"
   /** The approval queue, and organization settings (owner is super admin). */
   | "approvals" | "settings"
   /** Which connector records describe the same customer or item. */
@@ -90,11 +96,6 @@ export type Screen =
   /** What leaves for a model, who has opened this tenant, and the two
    *  irreversible things an owner can do with their own data. Owner only. */
   | "trust"
-  /** Whether the platform itself is well: component health, capacity headroom,
-   *  API latency, background jobs and sync runs. The server has served this at
-   *  `/internal/observability/dashboard` for a manager or an owner all along;
-   *  the screen existed too and had no route, so nobody could reach it. */
-  | "observability"
   /** One customer's relationship with one item — needs two ids, so it carries
    *  an extra `itemId` alongside the customer in `id`. */
   | "customerItem";
@@ -118,8 +119,8 @@ export const PATH: Record<Screen, string> = {
   approvals: "/approvals",
   settings: "/settings",
   identity: "/identity",
+  observability: "/system-health",
   trust: "/trust",
-  observability: "/observability",
   weather: "/weather",
   opportunities: "/opportunities",
   lostRevenue: "/lost-revenue",

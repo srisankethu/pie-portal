@@ -63,7 +63,9 @@ import TimelineOutlined from "@mui/icons-material/TimelineOutlined";
 import StorageOutlined from "@mui/icons-material/StorageOutlined";
 import ManageSearchOutlined from "@mui/icons-material/ManageSearchOutlined";
 import FingerprintOutlined from "@mui/icons-material/FingerprintOutlined";
+import MonitorHeartOutlined from "@mui/icons-material/MonitorHeartOutlined";
 import PsychologyOutlined from "@mui/icons-material/PsychologyOutlined";
+import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
 import ScoreboardOutlined from "@mui/icons-material/ScoreboardOutlined";
 import PendingActionsOutlined from "@mui/icons-material/PendingActionsOutlined";
 import CurrencyExchangeOutlined from "@mui/icons-material/CurrencyExchangeOutlined";
@@ -73,8 +75,6 @@ import TuneOutlined from "@mui/icons-material/TuneOutlined";
 import InsightsOutlined from "@mui/icons-material/InsightsOutlined";
 import SellOutlined from "@mui/icons-material/SellOutlined";
 import HistoryOutlined from "@mui/icons-material/HistoryOutlined";
-import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
-import MonitorHeartOutlined from "@mui/icons-material/MonitorHeartOutlined";
 
 import { Link as RouterLink } from "react-router-dom";
 
@@ -144,8 +144,10 @@ const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
   // this is the decode that says which pack and ruleset answered for one.
   decodedCatalog: ManageSearchOutlined,
   identity: FingerprintOutlined,
-  states: PsychologyOutlined,
+  // A trace, not a shield or a gauge: this screen is the platform's own pulse
+  // — is every component answering, and did the last sync finish.
   observability: MonitorHeartOutlined,
+  states: PsychologyOutlined,
   trust: ShieldOutlined,
   settings: TuneOutlined,
 };

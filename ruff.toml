@@ -27,7 +27,13 @@ line-length = 100
 # Lint everything the gate can reach, not just backend/app. The old gate checked
 # one directory, so the tests and the deploy script — the two places a mistake is
 # least likely to be noticed by a human reader — were never linted at all.
-extend-exclude = ["frontend", "pie-parser", "backend/data"]
+# `.claude/skills` holds vendored third-party agent skills (installed by
+# `npx skills add`, pinned in skills-lock.json). It is somebody else's code held
+# at somebody else's standard: ui-ux-pro-max alone lands 33 findings under the
+# rule set below, none of them ours to fix and none of them reachable by the
+# application. Linting it would make the gate red for a reason no reader could
+# act on — the exact failure mode the header of this file is about.
+extend-exclude = ["frontend", "pie-parser", "backend/data", ".claude/skills"]
 
 [lint]
 # The rules this codebase satisfies today. The first four are ruff's

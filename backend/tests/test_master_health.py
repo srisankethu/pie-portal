@@ -599,7 +599,7 @@ def test_a_real_decode_keeps_every_fact_the_pack_found_not_only_the_gated_three(
     rows = [MasterRow(2, "A", "CNMG 120408-49 - TN2000", "KMT",
                       Decimal("1"), Decimal("1"), "H", "pcs"),
             MasterRow(3, "B", "M3X11 SCREW", "", Decimal("1"), Decimal("1"), "H", "pcs")]
-    run = decode_names(rows)
+    run = decode_names(rows, settings.PIE_PACK)
     assert run.available, run.unavailable_reason
 
     insert = run.outcomes[2].slots

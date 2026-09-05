@@ -26,14 +26,18 @@ from app import sellable_catalog as sellable
 from app.attributes import CATALOGUE_LINK, DECODED_NAME
 from app.attributes import decorate_products as _decorate_products
 from app.config import settings as _settings
+from app.domain import models
+from app.pie_service import Bands, pie_service
 
+pytestmark = pytest.mark.requires_pie
 
-# See the note in test_product_attributes.py: `decode_names` has no default
-# rule set, so the caller names one. Every caller here names the organization
-# layer, which is what these fixtures' product names are written in.
-#: A company's ruleset checksum. Any non-empty value will do — these tests are
-#: about the pool half of the key — but it must be non-empty, because an
-#: unreadable checksum is deliberately never cached.
+ORG = "org_book"
+OTHER = "org_rival"
+
+#: A company's ruleset checksum, for the tests that call ``_cache_key``
+#: directly. Any non-empty value will do — they are about the pool half of the
+#: key — but it must be non-empty, because an unreadable checksum is
+#: deliberately never cached.
 VERSION = "rs-test"
 
 #: The company these tests resolve for. A catalogue belongs to a company now —
@@ -50,15 +54,12 @@ def _company_catalogue():
 
 
 def decorate_products(session, organization_id, **kw):
+    """``decode_names`` has no default rule set — the caller names one, so that
+    a diagnostic cannot decode one export through another's grammars. Every
+    caller here names the organization layer, which is what these fixtures'
+    product names are written in."""
     kw.setdefault("rule_set", _settings.PIE_PACK)
     return _decorate_products(session, organization_id, **kw)
-from app.domain import models
-from app.pie_service import Bands, pie_service
-
-pytestmark = pytest.mark.requires_pie
-
-ORG = "org_book"
-OTHER = "org_rival"
 
 #: An item name in the master's own notation whose geometry decodes out of the
 #: name alone — the case this whole change is for: an item the catalogue link

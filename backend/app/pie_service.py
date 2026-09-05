@@ -1178,7 +1178,7 @@ class PieService:
         rows = getattr(mapping_store, "aliases", None)
         if not callable(rows):
             return None
-        fingerprint = self._mapping_fingerprint(mapping_store)
+        fingerprint = self._input_fingerprint(mapping_store, "mapping store")
         key = (fingerprint, str(view.path)) if fingerprint is not None else None
         if key is not None and key in self._vocabularies:
             self._vocabularies.move_to_end(key)
@@ -1224,7 +1224,7 @@ class PieService:
         rows = getattr(mapping_store, "aliases", None)
         if not callable(rows):
             return None
-        key = self._mapping_fingerprint(mapping_store)
+        key = self._input_fingerprint(mapping_store, "mapping store")
         if key is not None and key in self._alias_indexes:
             self._alias_indexes.move_to_end(key)
             return self._alias_indexes[key]

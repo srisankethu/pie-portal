@@ -133,18 +133,26 @@ def api(monkeypatch):
     recorder = _Recorder()
     pools = _PoolSource()
 
-    # A catalogue belongs to a company now, so these three take one. Patched as
-    # plain methods rather than properties for that reason, and `company_for`
-    # answers with a company so the router gets past the refusal it raises when
-    # an organization has several and named none — which is not what is under
-    # test here.
-    monkeypatch.setattr(type(svc), "catalog_available",
-                        lambda self, connection_id=None: True)
-    monkeypatch.setattr(type(svc), "catalog_version",
-                        lambda self, connection_id=None: "abc123")
+    # A catalogue belongs to a company now, so these two take one and are
+    # methods rather than the properties they used to be. `company_for` answers
+    # with a company so the router gets past the refusal it raises when an
+    # organization has several and named none, which is not what is under test
+    # here.
+    #
+    # Patched on the INSTANCE, not on `type(svc)`, and that is load-bearing
+    # rather than style. `pie_service` is a process-wide singleton and
+    # test_resolution_api.py patches these same names on it; monkeypatch reads
+    # the old value with `getattr` for a non-class target, so its undo writes
+    # the original *bound method* into `svc.__dict__` instead of deleting the
+    # attribute. From then on the instance attribute shadows the class, a
+    # later `setattr(type(svc), ...)` is invisible, and this fixture's
+    # catalogue would silently be the real one — a 503 in a test whose subject
+    # is the pool. Instance beats class either way, so patch where the other
+    # module patches.
+    monkeypatch.setattr(svc, "catalog_available", lambda *a, **k: True)
+    monkeypatch.setattr(svc, "catalog_version", lambda *a, **k: "abc123")
     monkeypatch.setattr(svc, "resolve", recorder)
-    monkeypatch.setattr(svc, "lookup_record",
-                        lambda code, connection_id=None: None)
+    monkeypatch.setattr(svc, "lookup_record", lambda *a, **k: None)
     monkeypatch.setattr(resolution, "company_for", lambda *a, **k: COMPANY)
     monkeypatch.setattr(resolution, "customer_scope_for", lambda *a, **k: None)
     monkeypatch.setattr(resolution, "bands_for", lambda *a, **k: None)

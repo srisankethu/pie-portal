@@ -19,6 +19,16 @@ venv/
 # its own repository is a wound that takes a while to notice.
 .claude/worktrees/
 
+# Agent skills and other per-developer Claude Code state. The four files this
+# repo genuinely shares — .claude/commands, .claude/hooks, .claude/settings.json
+# — were committed before this rule and stay tracked; git keeps tracking a file
+# it already knows about, so this only stops NEW state being swept in.
+#
+# The skills themselves are vendored third-party packs (~6 MB, 131 files)
+# reinstallable from skills-lock.json with `npx skills add`, so the lockfile is
+# the half worth versioning and the payload is not.
+.claude/
+
 # Generated PIE catalog (built from pie-parser corpus via scripts/build_catalog.py)
 backend/data/products.jsonl
 backend/data/*.jsonl

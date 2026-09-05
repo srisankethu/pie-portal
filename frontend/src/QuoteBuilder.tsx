@@ -643,6 +643,12 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           a duplicate scan named this strip and the header strip above it as one
           clone. The header strip is not this — it identifies the quote — so
           only this one moves. */}
+      {/* Nothing to narrow yet. On an empty quote this rendered eight chips all
+          reading 0, a search box over nothing, and two disabled buttons —
+          above an empty state whose whole message is "paste an RFQ". Controls
+          for a list that does not exist are the loudest thing on the screen at
+          the one moment there is exactly one thing to do. */}
+      {hasLines && (
       <FilterPanel>
         {filters.map(([key, label]) => (
           <FilterChip
@@ -695,6 +701,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           Clear selection
         </Button>
       </FilterPanel>
+      )}
 
       {/* An `Alert`, not a hand-coloured banner: the severity carries an icon
           and a role as well as a hue, which is the standard everywhere else in

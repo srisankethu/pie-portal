@@ -33,7 +33,7 @@ import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { useSnackbar } from "notistack";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 
 import { CompanyRequired, api, forgetLegacyDraft } from "./api";
 import type { QuoteCompany } from "./api";
@@ -136,6 +136,10 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
   /** The organization reads several companies' books and the server refused
    *  to choose one for the new draft. Asked, then retried with the answer. */
   const [companyChoice, setCompanyChoice] = useState<QuoteCompany[] | null>(null);
+  /** Held across the company question, so an answer to "which book?" does not
+   *  lose the customer the caller arrived with. */
+  const [pendingCustomer, setPendingCustomer] =
+    useState<{ id: string; name: string } | null>(null);
   const [toDelete, setToDelete] = useState<QuoteDraftSummary | null>(null);
 
   const load = useCallback(() => {
@@ -150,6 +154,21 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
     void load();
   }, [load]);
 
+  /* Arriving from an account page: `?customer=<id>&name=<label>` means "start
+   * one for them". The parameters are cleared before the draft is asked for,
+   * so a refresh of the resulting URL — or a Back into this screen — does not
+   * open a second empty quote against the same customer. */
+  const [params, setParams] = useSearchParams();
+  const askedFor = params.get("customer");
+  const askedName = params.get("name");
+  useEffect(() => {
+    if (!askedFor) return;
+    setParams({}, { replace: true });
+    void startQuote(undefined, { id: askedFor, name: askedName ?? "" });
+    // Once, on arrival. `startQuote` is rebuilt every render and would loop.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [askedFor, askedName]);
+
   async function guard<T>(fn: () => Promise<T>): Promise<T | undefined> {
     setBusy(true);
     try {
@@ -161,22 +180,35 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
     }
   }
 
-  /** Start a draft with no customer and open it. The customer is chosen in
-   *  the builder — after the RFQ is pasted, if that is the order it arrived
-   *  in — rather than demanded here as the price of getting a number. */
-  const startQuote = (connectionId?: string) =>
+  /** Start a draft and open it.
+   *
+   *  Normally with no customer: it is chosen in the builder — after the RFQ is
+   *  pasted, if that is the order it arrived in — rather than demanded here as
+   *  the price of getting a number.
+   *
+   *  With one when the caller named it. An account page links here carrying the
+   *  customer it was showing, because "quote this account" is the action that
+   *  page prepares somebody for and it used to mean finding the same name again
+   *  in a dialog. The creating stays here rather than there: this screen already
+   *  owns the company chooser for an organization reading more than one set of
+   *  books, and that answer has to survive being asked. */
+  const startQuote = (connectionId?: string, forCustomer?: { id: string; name: string }) =>
     guard(async () => {
       let q;
       try {
-        q = await api.createQuote(t, "", undefined, connectionId);
+        q = await api.createQuote(
+          t, forCustomer?.name ?? "", forCustomer?.id, connectionId,
+        );
       } catch (e) {
         if (e instanceof CompanyRequired) {
           setCompanyChoice(e.companies);
+          setPendingCustomer(forCustomer ?? null);
           return;
         }
         throw e;
       }
       setCompanyChoice(null);
+      setPendingCustomer(null);
       navigate(pathFor("quotes", q.id));
     });
 
@@ -360,8 +392,8 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
           busy={busy}
           companies={companyChoice}
           customer=""
-          onPick={(id) => startQuote(id)}
-          onCancel={() => setCompanyChoice(null)}
+          onPick={(id) => startQuote(id, pendingCustomer ?? undefined)}
+          onCancel={() => { setCompanyChoice(null); setPendingCustomer(null); }}
         />
       )}
 

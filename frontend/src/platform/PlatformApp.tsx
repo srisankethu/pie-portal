@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
-import { EmptyState, ErrorState, FilterChip, HumanLog, LoadingState, SectionHeader, StatusChip } from "./kit";
+import { EmptyState, ErrorState, FilterChip, HumanLog, LoadingState, SectionHeader, StatusChip, TOUCH } from "./kit";
 import { formatDate } from "../when";
 import {
   clearPlatformSession,
@@ -33,7 +33,7 @@ import { useSnackbar } from "notistack";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
-import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Link as RouterLink, Navigate, Route, Routes, useLocation, useNavigate, useParams } from "react-router-dom";
 import {
   LEGACY_ACCOUNTS, PATH, PATTERN, pathFor, screenAt, vizPath, type Screen,
 } from "./route";
@@ -2346,11 +2346,37 @@ function CustomerScreen({
       <Button variant="text" size="small" onClick={() => setCustomerId(null)} style={{ marginBottom: 10 }}>
         ← All accounts
       </Button>
-      <div className="dp-head">
-        <h1 style={{ marginBottom: 2 }}>{name}</h1>
-        <EntitySource origin={account?.origin} show={Boolean(account?.sources_differ)} />
-        <p>Trading facts and what we read from them.</p>
-      </div>
+      <Stack direction="row" sx={{ alignItems: "flex-start", justifyContent: "space-between", gap: 2 }}>
+        <div className="dp-head">
+          <h1 style={{ marginBottom: 2 }}>{name}</h1>
+          <EntitySource origin={account?.origin} show={Boolean(account?.sources_differ)} />
+          <p>Trading facts and what we read from them.</p>
+        </div>
+        {/* The thing this screen prepares somebody to do.
+          *
+          * Reading an account and then quoting it used to mean leaving for
+          * Quotes, starting a draft, and finding the same customer again in a
+          * dialog — five presses and the name typed twice, to do the one thing
+          * the page you were on is background for.
+          *
+          * A link, not a button (§9): it goes somewhere, so it opens in a new
+          * tab like anything else, and the customer travels in the query rather
+          * than in component state so the destination is the whole instruction.
+          * The workspace does the creating — it already owns the company
+          * chooser for an organization with more than one set of books, and a
+          * second copy of that here is how two screens start disagreeing about
+          * which book a quote belongs to. */}
+        <Button
+          component={RouterLink}
+          to={`${PATH.quotes}?customer=${encodeURIComponent(customerId)}`
+              + `&name=${encodeURIComponent(name)}`}
+          variant="outlined"
+          size="small"
+          sx={{ ...TOUCH, flexShrink: 0 }}
+        >
+          Start a quote
+        </Button>
+      </Stack>
       {/* How this account has behaved over time. Every role gets this: the
           server omits the margin field for a salesperson rather than blanking
           it, so revenue and order cadence still land. It leads because

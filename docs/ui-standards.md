@@ -147,6 +147,12 @@ These live in `frontend/src/platform/kit.tsx`:
 | `PercentageValue` | a ratio as a percentage | bare `pct()` in JSX |
 | `VarianceIndicator` | a movement, as an arrow **and** a word | `.wf-row-value.pos/.neg`, `.story-hero-value.up/.down` |
 | `HumanLog` | the trail of what a person did to a decision, and who | the inline `human_action` block in `PlatformApp` |
+| `Section` | an outlined surface with its own heading | `<Paper variant="outlined" sx={{p:3}}>` + `SectionHeader`, written out 12+ times |
+| `TileGrid` | a row of metric tiles that wraps at real breakpoints | six hand-written `Grid container` rows, and flex `Box`es with no minimum basis |
+| `FactTable` | a label and a value, a handful of fixed rows | `<Box component="table" className="facttable">` boilerplate in five screens |
+| `Meta` | the muted second line — a code, a source, a timestamp | `className="fsrc"`, and three local `Meta` copies |
+| `FieldLabel` | a field's label with the optional why beside it | the `overline` + `Tip` pair, written out twice |
+| `PanelMark` | a panel's own micro-heading, below the ramp's smallest rung | `variant="overline"` built by hand four times, `.facts-mark` |
 
 Two rows of this table used to name components that were never written —
 `ChartContainer` and `AuditTimeline`. A standard that lists a component nobody
@@ -155,6 +161,13 @@ pattern, is told it already exists, cannot import it, and writes it by hand
 anyway. A standard that cannot be trusted on its easy claims does not get read on
 the hard ones. `kit.contract.test.ts` now parses this table and asserts every row
 against `kit.tsx`, so adding a row before the export fails the gate.
+
+`PanelMark` is deliberately not a fourth `SectionHeader` level. The ramp's
+levels emit real headings and belong to the document outline; a panel's mark is
+a label on a surface, and promoting every one of them to an `<h4>` would put a
+dozen entries into the outline that answer nothing. The gap it fills is real
+though — the ramp's smallest heading is 21px, so a screen wanting an 11px
+uppercase label had nowhere to go and four of them invented one.
 
 The chart surface stays `viz/Panel.tsx`'s `Panel` + `Figure`, which is where it
 belongs — a titled surface with an accessible fallback is a visualization

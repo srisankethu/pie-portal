@@ -248,6 +248,32 @@ export function text<T>(
   };
 }
 
+/** A trailing column holding a control rather than a value.
+ *
+ *  Three settings always travel together — no sort, no filter, and
+ *  `context.noRowClick` so pressing the control does not also fire the row
+ *  click. `UnrecordedQuotes` had two of the three and a comment claiming the
+ *  third; both handlers happened to do the same thing, so the missing flag was
+ *  invisible until somebody put a *different* control there. A helper makes the
+ *  trio impossible to half-remember.
+ */
+export function actionColumn<T>(
+  render: NonNullable<ColDef<T>["cellRenderer"]>,
+  extra: Partial<ColDef<T>> = {},
+): ColDef<T> {
+  return {
+    headerName: "",
+    sortable: false,
+    filter: false,
+    cellRenderer: render,
+    ...extra,
+    // After `...extra`, and merged rather than replaced: a caller passing its
+    // own `context` would otherwise overwrite `noRowClick` and silently undo
+    // the one guarantee this helper exists to make.
+    context: { noRowClick: true, ...(extra.context as object | undefined) },
+  };
+}
+
 export function useGridOptions<T>(o: Partial<GridOptions<T>>): GridOptions<T> {
   return useMemo(() => o, [o]);
 }

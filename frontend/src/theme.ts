@@ -91,6 +91,13 @@ export const tokens = {
   space: [0, 3.4, 6.8, 10.2, 13.6, 17, 20.4, 23.8, 27.2],
 
   radius: { sm: 2, md: 4, lg: 7 },
+  /* Border widths. `rule` is the 2px left edge that separates "a model wrote
+     this" (accent) from "this is arithmetic" (ink) — the whole visual grammar
+     of the decision panels, and until now a literal in two places. `mark` is
+     the accent square on an interpretation mark, which has to match
+     `.facts-mark::before` in styles.css. */
+  rule: 2,
+  mark: 7,
 
   shadow: {
     sm: "0 1px 2px rgba(43, 43, 45, 0.14)",
@@ -148,6 +155,8 @@ export const CSS_VARS: Record<string, string> = {
   "--radius-sm": `${tokens.radius.sm}px`,
   "--radius-md": `${tokens.radius.md}px`,
   "--radius-lg": `${tokens.radius.lg}px`,
+  "--rule": `${tokens.rule}px`,
+  "--mark": `${tokens.mark}px`,
 
   "--shadow-sm": tokens.shadow.sm,
   "--shadow-md": tokens.shadow.md,
@@ -359,7 +368,15 @@ export const theme = createTheme({
     },
 
     MuiTextField: { defaultProps: { size: "small", variant: "outlined" } },
-    MuiSelect: { defaultProps: { size: "small" } },
+    /* The 44px touch floor, as a default. `kit.TOUCH` is spread by hand at
+       every call site, which is exactly how it went missing from `CompanyScope`
+       while `CompanyFilter` beside it had it. A floor somebody has to remember
+       is not a floor. `minHeight`, never a fixed height, so a control whose
+       content is already taller is left alone. */
+    MuiSelect: {
+      defaultProps: { size: "small" },
+      styleOverrides: { root: { minHeight: 44 } },
+    },
 
     MuiOutlinedInput: {
       styleOverrides: {
@@ -485,9 +502,28 @@ export const theme = createTheme({
 
     MuiLink: { defaultProps: { underline: "hover" } },
 
+    /* MUI's own is sized for a settings list — 48px line-height and 16px
+       gutters — which in a menu leaves a section label floating in its own
+       band. The account menu overrode both at the call site; the next menu
+       with a section label would have done the same. */
+    MuiListSubheader: {
+      styleOverrides: {
+        root: {
+          lineHeight: 2,
+          paddingInline: 12,
+          fontSize: 11,
+          letterSpacing: "0.06em",
+          textTransform: "uppercase",
+          color: tokens.neutral[700],
+          background: "transparent",
+        },
+      },
+    },
+
     MuiListItemButton: {
       styleOverrides: {
         root: {
+          minHeight: 44,
           borderRadius: tokens.radius.md,
           "&.Mui-selected": {
             background: tokens.accents[100],

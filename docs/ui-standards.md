@@ -103,7 +103,17 @@ validates on blur next to one that validates on submit teaches nothing.
 
 ## 9. Navigation
 
-`Drawer`, `AppBar`, `Breadcrumbs`, `Tabs`. Consistent throughout.
+`AppBar`, `Tabs`, `Breadcrumbs`, and a `Drawer` on a phone. Consistent
+throughout.
+
+**Five destinations, and one table behind them.** The shell is a top bar of
+Today / Quotes / Accounts / Money / Setup; a destination holding several
+screens shows them as `Tabs` with an overflow, and everything else is reached
+from the Evidence library or from a decision that links to it.
+`platform/destinations.ts` is the single table the shell, the tab strips, the
+Evidence index and the ⌘K palette all read, so a screen that moves is one edit
+and cannot fall out of one surface. Role scoping sits on the tab and the
+evidence card — beside the endpoint gate it mirrors — never on the five.
 
 **Anything that goes somewhere is a link, and its destination comes from
 `route.ts`.** A `<button onClick={() => navigate(…)}>` looks identical on screen

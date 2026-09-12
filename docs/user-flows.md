@@ -56,7 +56,9 @@ SALES_MANAGER + OWNER.
 |---|---|---|---|
 | *(signed out)* | Landing → SignIn / SignUp cards | visitor | The front door |
 | *(gate)* | ForcedPasswordChange | any with an issued password | Change it before anything else |
-| `#/` | Home: SetupChecklist + Daily (mgmt) + decision head + Storyboard + Waterfall | all | What needs deciding today, and why |
+| `#/` | **Today**: SetupChecklist + the triage console — approvals, decisions and three outcome questions as one ranked queue, worked in place | all (items role-scoped) | What needs me, and what do I do about it |
+| `#/morning-read` | Daily (mgmt) + Storyboard + Waterfall — what this used to sit above | all | What moved in the book, and why |
+| `#/evidence` | Evidence library: every analysis view, indexed by its question | all (cards role-scoped) | Where do I look for the pattern behind a decision |
 | `#/decisions` | Decision queue (list) | all (scoped) | Everything raised, open and closed |
 | `#/decision/:id` | Decision detail + trace + action modal | all (visibility-checked) | One decision: act on it, trace it to the ERP record |
 | `#/customers` | Account directory + journey + migration | all (scoped) | Pick an account |
@@ -98,11 +100,20 @@ SALES_MANAGER + OWNER.
 | `#/states` | Reference: unknown-states | all | How the product behaves when it does not know |
 | `*` | redirect → `#/` | all | Unknown paths land home |
 
-Navigation is four groups — **Decide / Understand / The book / Setup** — every
-item a real link (ctrl/middle-click work), with count badges only on open
-decisions and pending approvals. `vizPath()` in `route.ts` is the single table
-that turns server-named destinations (storyboard beats, weather drills, daily
-tiles) into these routes; unknown names land on home.
+Navigation is **five destinations — Today / Quotes / Accounts / Money / Setup**
+— along the top, every item a real link (ctrl/middle-click work), with a count
+badge only on Today. It was thirty-four items in four groups named after the
+data (Decide / Understand / The book / Setup). No route was removed:
+`platform/destinations.ts` is the map from each screen to the door it is now
+behind — the analysis screens are the Evidence library, the book screens are
+Money tabs, the setup screens are Setup tabs with an overflow, and
+`#/decisions`, `#/approvals` and `#/unanswered-quotes` are still themselves for
+anybody who wants the whole pile rather than this morning's head of it.
+
+`vizPath()` in `route.ts` is the single table that turns server-named
+destinations (storyboard beats, weather drills, daily tiles) into these routes;
+unknown names land on home. ⌘K opens an intent palette over the same tables —
+verbs first, then everywhere this reader may go.
 ---
 
 ## 3. Entry, session and account lifecycle

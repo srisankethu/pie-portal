@@ -40,6 +40,7 @@ import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
+import ToggleButton from "@mui/material/ToggleButton";
 import Typography from "@mui/material/Typography";
 import { useSnackbar } from "notistack";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -656,18 +657,31 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
             </Button>
             {/* Cost and margin, for the reader who has them. Offered only to
                 that reader: a salesperson's response carries no cost at all, so
-                a toggle here would be a control over two empty columns. */}
+                a toggle here would be a control over two empty columns.
+
+                A `ToggleButton`, which is what ui-standards §5 asks for where
+                a control genuinely toggles — and this one does: it shows and
+                hides two grid columns, and it stays where it was left. It was
+                a `Button` wearing a toggle's clothes, with a hand-written
+                `aria-pressed` beside a `variant` swapped by the same
+                condition, and that cost twice. The pressed state was
+                `contained primary`, the same weight as "Paste RFQ" beside it,
+                so a remembered preference sat as loud as the screen's one
+                action; and the attribute a screen reader announces was ours to
+                keep in step with the paint nobody reads it against.
+                `ToggleButton` derives the attribute from `selected`, so the
+                two cannot disagree, and the theme's selected treatment
+                (`MuiToggleButton`) reads as set rather than as next. */}
             {mgmt && (
-              <Button
-                variant={econ ? "contained" : "outlined"}
-                color={econ ? "primary" : "inherit"}
+              <ToggleButton
+                value="economics"
+                selected={econ}
                 size="small"
                 sx={TOUCH}
-                aria-pressed={econ}
-                onClick={() => setEcon((on) => { saveEcon(!on); return !on; })}
+                onChange={() => setEcon((on) => { saveEcon(!on); return !on; })}
               >
                 Economics
-              </Button>
+              </ToggleButton>
             )}
             <Button variant="contained" size="small" sx={TOUCH}
                     onClick={() => setIntakeOpen(true)} disabled={readOnly}>

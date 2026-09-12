@@ -3,6 +3,10 @@ import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Checkbox from "@mui/material/Checkbox";
 import Chip from "@mui/material/Chip";
+import Dialog from "@mui/material/Dialog";
+import DialogActions from "@mui/material/DialogActions";
+import DialogContent from "@mui/material/DialogContent";
+import DialogTitle from "@mui/material/DialogTitle";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
@@ -10,6 +14,9 @@ import TextField from "@mui/material/TextField";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
+import useMediaQuery from "@mui/material/useMediaQuery";
+import { useTheme } from "@mui/material/styles";
+import AddOutlined from "@mui/icons-material/AddOutlined";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatDate, since, todayISO } from "../when";
 import { papi } from "./api";
@@ -136,7 +143,14 @@ function ZohoSecretField({
 }) {
   const isCode = kind === "grant_code";
   return (
-    <Box sx={{ mt: 1.5 }}>
+    // A column, explicitly. Both children are inline-level — MUI's
+    // `ToggleButtonGroup` and `TextField` are each `inline-flex` — so in a
+    // plain block they flow onto one line wherever the width allows it, and
+    // the chooser ended up *beside* the field it labels on a desktop and above
+    // it on a phone. The cap moves to the wrapper so the field can just fill
+    // it.
+    <Box sx={{ mt: 1.5, maxWidth, display: "flex", flexDirection: "column",
+               alignItems: "flex-start" }}>
       <ToggleButtonGroup
         exclusive
         size="small"
@@ -171,7 +185,7 @@ function ZohoSecretField({
             : "The value an exchange already produced, not the code from Generate Code. Encrypted before it is stored and never shown again."
         }
         slotProps={{ htmlInput: { spellCheck: false } }}
-        sx={{ maxWidth }}
+        sx={{ alignSelf: "stretch" }}
       />
     </Box>
   );
@@ -1172,17 +1186,43 @@ function ErpConnectForm({
 
 /* ── adding one ───────────────────────────────────────────────────────────── */
 
+/**
+ * Everything it takes to add a company, in a dialog behind one button.
+ *
+ * It was an always-open panel under the list, and it is the tallest thing on
+ * this screen by a wide margin: seven systems in a tab strip, three ways to
+ * sign in, a form per way, the housekeeping list of sign-ins that reach
+ * nothing, and the full access list with its two copyable scope strings. On a
+ * phone that is several screens of setup standing permanently between the
+ * companies and everything below them — read once, when a company is added,
+ * and scrolled past every other time.
+ *
+ * **Mounted whether or not it is open, and that is deliberate.** The
+ * authorized path leaves for Zoho and comes back to a fresh page load carrying
+ * `?oauth=…&handoff=…` in the hash; the effect that spends that handoff is
+ * here, so a component that only existed while the dialog was open would
+ * return from Zoho to nobody listening. It opens itself instead — which is
+ * also the better screen, because what that effect leaves behind is a picker
+ * asking which company the new sign-in should connect.
+ */
 function AddConnection({
   view,
   catalog,
   token,
   onAdded,
+  open,
+  onOpenChange,
 }: {
   view: ConnectionsView;
   catalog: ConnectorCatalogEntry[];
   token: string;
   onAdded: () => Promise<void>;
+  open: boolean;
+  /** Two-way, because this component opens itself on return from Zoho. */
+  onOpenChange: (open: boolean) => void;
 }) {
+  const theme = useTheme();
+  const narrow = useMediaQuery(theme.breakpoints.down("sm"));
   // Which system the company lives in. Zoho first — it is the platform's
   // richest flow and the incumbent — then every registered connector.
   const [connector, setConnector] = useState("zoho");
@@ -1261,6 +1301,7 @@ function AddConnection({
 
     if (outcome !== "ok" || !handoff) {
       setError(reason || "The authorization did not complete.");
+      onOpenChange(true);   // the only surface this error has
       return;
     }
     let cancelled = false;
@@ -1274,8 +1315,13 @@ function AddConnection({
         setMode("existing");
         setError(null);
         await onAdded();
+        // The authorization produced a sign-in and nothing else. Somebody has
+        // to say which company it should connect, so the dialog opens itself
+        // on that question rather than leaving a finished round trip looking
+        // like nothing happened.
+        onOpenChange(true);
       } catch (e) {
-        if (!cancelled) setError((e as Error).message);
+        if (!cancelled) { setError((e as Error).message); onOpenChange(true); }
       }
     })();
     return () => { cancelled = true; };
@@ -1372,6 +1418,10 @@ function AddConnection({
       setSecretKind("grant_code");
       setOrgs(null);
       await onAdded();
+      // Closed only once the list behind it has been reloaded, so what the
+      // dialog uncovers is the company that was just added rather than the
+      // empty state it replaced.
+      onOpenChange(false);
     } catch (err) {
       setError((err as Error).message);
     } finally {
@@ -1380,12 +1430,30 @@ function AddConnection({
   }
 
   return (
-    <Bp className="st-section cx-add">
-      <h3>
-        <Labelled tip="Each company you add is one set of books in its own system — a Zoho Books organization, a NetSuite account, a Business Central company. Adding a second does not create a second tenant here: the rows land together in this organization's analysis.">
-          Add a company
-        </Labelled>
-      </h3>
+    <Dialog
+      open={open}
+      // Not dismissable mid-request: a click on the backdrop while the add is
+      // in flight would hide the only place its error can be read.
+      onClose={() => { if (!busy) onOpenChange(false); }}
+      fullWidth
+      maxWidth="md"
+      // Full screen on a phone. This is the longest form in the product — seven
+      // systems, three ways to sign in, and the whole access list — and a
+      // centred dialog at 390px wide is a letterbox with its own scrollbar
+      // inside the page's.
+      fullScreen={narrow}
+      aria-labelledby="cx-add-title"
+    >
+      <DialogTitle id="cx-add-title">
+        Add a company{" "}
+        <Tip text="Each company you add is one set of books in its own system — a Zoho Books organization, a NetSuite account, a Business Central company. Adding a second does not create a second tenant here: the rows land together in this organization's analysis." />
+      </DialogTitle>
+      <DialogContent dividers>
+      {/* At the top, and once. It used to sit immediately above each mode's
+          own button, which is the bottom of a long scroll — so a refusal
+          arrived off-screen, under content the reader had already passed. The
+          button is in `DialogActions` now and cannot carry it. */}
+      {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
 
       {/* One strip, every system, Zoho included — it is a row in the catalog
           now rather than a button written out here, so the tab and the access
@@ -1472,19 +1540,13 @@ function AddConnection({
               <MenuItem key={d.code} value={d.code}>{d.label}</MenuItem>
             ))}
           </TextField>
-          {error && <Alert severity="error" sx={{ mt: 1.5 }}>{error}</Alert>}
-          <div className="cx-actions">
-            <Button
-              type="button" variant="contained" size="small"
-              disabled={busy}
-              onClick={startAuthorization}
-            >
-              {busy ? "Redirecting…" : "Continue to Zoho"}
-            </Button>
-          </div>
         </div>
       ) : (
-      <form onSubmit={submit}>
+      // Named, because the button that submits it is outside it — in
+      // `DialogActions`, where a dialog's primary action belongs. `form=` on
+      // the button is what still makes it a submit, so native validation and
+      // the Enter key behave exactly as they did inline.
+      <form id="cx-add-form" onSubmit={submit}>
         {mode === "existing" ? (
           <>
             <Typography variant="body2" color="text.secondary">
@@ -1646,12 +1708,6 @@ function AddConnection({
           sx={{ mt: 1.5, maxWidth: 520 }}
         />
 
-        {error && <Alert severity="error" sx={{ mt: 1.5 }}>{error}</Alert>}
-        <Box sx={{ mt: 1.5 }}>
-          <Button type="submit" variant="contained" size="small" disabled={busy}>
-            {busy ? "Adding…" : "Add company"}
-          </Button>
-        </Box>
       </form>
       )}
       </>
@@ -1700,7 +1756,27 @@ function AddConnection({
       )}
 
       {entry && <Access entry={entry} />}
-    </Bp>
+      </DialogContent>
+      <DialogActions>
+        <Button type="button" onClick={() => onOpenChange(false)} disabled={busy}>
+          Cancel
+        </Button>
+        {/* One primary action, and which one it is depends on the mode — the
+            authorized path leaves for Zoho rather than submitting anything, so
+            it cannot be the same button wearing a different word. */}
+        {mode === "oauth" ? (
+          <Button type="button" variant="contained" disabled={busy}
+                  onClick={startAuthorization}>
+            {busy ? "Redirecting…" : "Continue to Zoho"}
+          </Button>
+        ) : (
+          <Button type="submit" form="cx-add-form" variant="contained"
+                  disabled={busy}>
+            {busy ? "Adding…" : "Add company"}
+          </Button>
+        )}
+      </DialogActions>
+    </Dialog>
   );
 }
 
@@ -1859,6 +1935,10 @@ export function ConnectionsPanel({
   const [catalog, setCatalog] = useState<ConnectorCatalogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState<string | null>(null);
+  // Whether the add-a-company dialog is showing. Here rather than inside it,
+  // because the button that opens it is in this screen's header and the
+  // dialog closes itself once the list behind it has reloaded.
+  const [adding, setAdding] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -1987,6 +2067,16 @@ export function ConnectionsPanel({
         ]
           .filter(Boolean)
           .join(" · ")}
+        actions={view.can_manage ? (
+          // The whole of adding a company is behind this now. It carries its
+          // words as well as the `+`: a bare icon button beside a heading is a
+          // guess about what it adds, and this screen also removes, rotates
+          // and syncs.
+          <Button variant="contained" size="small" startIcon={<AddOutlined />}
+                  onClick={() => setAdding(true)}>
+            Add company
+          </Button>
+        ) : undefined}
       />
 
       {/* `warning`, which is the severity `.cx-pool` was already drawing with
@@ -2045,15 +2135,20 @@ export function ConnectionsPanel({
           <EmptyState
             title="No company is connected"
             reason={view.can_manage
-              ? "Every screen is showing sample data, or nothing at all, until one is connected. The form below adds the first."
+              ? "Every screen is showing sample data, or nothing at all, until one is connected. Add company, above, adds the first."
               : "Ask an owner to add one."}
           />
         )}
       </div>
 
+      {/* Rendered whether or not it is open — see `AddConnection`: the handoff
+          Zoho redirects back with is spent by an effect inside it, and a
+          dialog mounted only while open would come back from an authorization
+          to nobody listening. */}
       {view.can_manage && (
         <AddConnection view={view} catalog={catalog} token={session.token}
-                       onAdded={load} />
+                       onAdded={load}
+                       open={adding} onOpenChange={setAdding} />
       )}
     </>
   );

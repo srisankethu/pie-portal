@@ -84,11 +84,72 @@ function mountPanel() {
     />);
 }
 
+/** Open the add-a-company dialog, which is where all of this now lives.
+ *
+ *  It used to be an always-open panel under the list — several screens of
+ *  setup standing permanently between the companies and everything below
+ *  them, read once and scrolled past for ever after. */
+async function openAdd() {
+  fireEvent.click(await screen.findByRole("button", { name: /Add company/ }));
+}
+
+describe("ConnectionsPanel — the add dialog", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  it("keeps the whole form behind one button until it is asked for", async () => {
+    mountPanel();
+    // The button is the only part of adding a company on the screen.
+    expect(await screen.findByRole("button", { name: /Add company/ }))
+      .toBeInTheDocument();
+    expect(screen.queryByText(/What Zoho Books must let it read/))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Oracle NetSuite" }))
+      .not.toBeInTheDocument();
+
+    await openAdd();
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Oracle NetSuite" }))
+      .toBeInTheDocument();
+  });
+
+  it("closes itself once the company is added", async () => {
+    // Closing is the receipt. Left open over a reloaded list it reads as a
+    // submission that did nothing, and the next click adds a duplicate.
+    vi.spyOn(papi, "addConnection").mockResolvedValue({} as never);
+    mountPanel();
+    await openAdd();
+    fireEvent.change(await screen.findByLabelText(/^Client ID/),
+                     { target: { value: "1000.APP" } });
+    fireEvent.change(screen.getByLabelText(/^Client secret/),
+                     { target: { value: "s3cr3t" } });
+    fireEvent.change(screen.getByLabelText(/^Grant code/),
+                     { target: { value: "1000.code.fresh" } });
+    fireEvent.change(screen.getByLabelText(/organization id/),
+                     { target: { value: "60036630626" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Add / }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+  });
+
+  it("closes on Cancel without adding anything", async () => {
+    const add = vi.spyOn(papi, "addConnection").mockResolvedValue({} as never);
+    mountPanel();
+    await openAdd();
+    fireEvent.click(await screen.findByRole("button", { name: "Cancel" }));
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(add).not.toHaveBeenCalled();
+  });
+});
+
 describe("ConnectionsPanel — the access list", () => {
   beforeEach(() => vi.restoreAllMocks());
 
   it("opens on Zoho and lists Zoho's scopes, with the string to paste", async () => {
     mountPanel();
+    await openAdd();
     expect(await screen.findByText(/What Zoho Books must let it read/))
       .toBeInTheDocument();
     // Three times, deliberately: once in the list with what it buys, and once
@@ -105,6 +166,7 @@ describe("ConnectionsPanel — the access list", () => {
     // stays empty. Until both strings existed, an owner whose policy is to
     // grant the least that works had to assemble it by hand from the table.
     mountPanel();
+    await openAdd();
     expect(await screen.findByText(/Everything this platform reads/))
       .toBeInTheDocument();
     expect(screen.getByText(/The least that still runs a sync/))
@@ -128,6 +190,7 @@ describe("ConnectionsPanel — the access list", () => {
 
   it("swaps the whole list when another system is picked", async () => {
     mountPanel();
+    await openAdd();
     fireEvent.click(await screen.findByRole("button", { name: "Oracle NetSuite" }));
 
     expect(await screen.findByText("Setup → REST Web Services")).toBeInTheDocument();
@@ -142,6 +205,7 @@ describe("ConnectionsPanel — the access list", () => {
 
   it("says required and optional apart, per system", async () => {
     mountPanel();
+    await openAdd();
     fireEvent.click(await screen.findByRole("button", { name: "Oracle NetSuite" }));
     const row = (await screen.findByText("Transactions → Bill (View)")).closest("tr");
     expect(row).toHaveTextContent("optional");
@@ -168,6 +232,7 @@ describe("ConnectionsPanel — grant code or refresh token", () => {
     const add = vi.spyOn(papi, "addConnection")
       .mockResolvedValue({} as never);
     mountPanel();
+    await openAdd();
     fireEvent.change(await screen.findByLabelText(/^Client ID/), {
       target: { value: "1000.APP" },
     });

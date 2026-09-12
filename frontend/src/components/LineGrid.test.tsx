@@ -19,12 +19,13 @@
 // So the fixture below is deliberately *hostile*: a line carrying a real cost
 // and a real margin, of the shape a manager's response has, rendered with
 // `mgmt={false}`. The salesperson's grid must show neither.
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { LineGrid } from "./LineGrid";
 import { NARROW_BREAKPOINT } from "../platform/DataGrid";
 import type { Line, LineIntelligence } from "../types";
+import type { Fix } from "./lineProblems";
 
 /** A line the server would only ever send to a manager: cost and margin present. */
 function lineWithEconomics(): Line {
@@ -131,17 +132,15 @@ function props(mgmt: boolean, intel: Record<string, LineIntelligence> = {},
   return {
     lines, mgmt, intel,
     // The connected system's own words. Named here rather than defaulted in
-    // the component: the whole point of the props is that the grid never
+    // the component: the whole point of the prop is that the grid never
     // decides what to call somebody's ERP.
-    systemLabel: "Zoho Books",
     systemShort: "Zoho",
     selectedIds: [] as string[],
     onSelectionChange: NOOP,
     onOpen: NOOP,
     onSetPrice: NOOP,
     onDeleteLine: NOOP,
-    onCreateItem: NOOP,
-    onConfirmReading: NOOP,
+    onFix: NOOP,
   };
 }
 
@@ -193,9 +192,18 @@ describe("a salesperson's grid", () => {
     // and the wait in `renderGrid` is what rules that out. This pins the other
     // half explicitly: the row is really there, with its own figures.
     const { container } = await renderGrid(false);
-    expect(screen.getByText("CNMG120408")).toBeInTheDocument();
-    expect(screen.getByText("Quoted ₹")).toBeInTheDocument();
+    expect(screen.getByText("2001174")).toBeInTheDocument();   // the supply item
+    expect(screen.getByText("Rate")).toBeInTheDocument();
     expect(container.textContent).toContain("10,000"); // the line total
+  });
+
+  it("offers no economics toggle to a role with no economics", async () => {
+    // `econ` defaults to on, and the column is still absent: the toggle governs
+    // a manager's two columns, never whether a salesperson has them.
+    render(<LineGrid {...props(false, intelWithEconomics())} econ />);
+    await screen.findAllByText("Line total");
+    expect(screen.queryByText("Cost")).not.toBeInTheDocument();
+    expect(screen.queryByText("Margin")).not.toBeInTheDocument();
   });
 });
 
@@ -203,6 +211,15 @@ describe("a manager's grid", () => {
   it("has a margin column", async () => {
     await renderGrid(true);
     expect(screen.getByText("Margin")).toBeInTheDocument();
+  });
+
+  it("puts cost and margin away when the economics are toggled off", async () => {
+    // The toggle is what makes five columns the default and seven the pricing
+    // view. It hides the columns; it does not change what the server sent.
+    render(<LineGrid {...props(true, intelWithEconomics())} econ={false} />);
+    await screen.findAllByText("Line total");
+    expect(screen.queryByText("Cost")).not.toBeInTheDocument();
+    expect(screen.queryByText("Margin")).not.toBeInTheDocument();
   });
 
   it("shows the line's own margin when the platform has no figure", async () => {
@@ -264,17 +281,14 @@ describe("on a phone", () => {
     expect(price).toHaveValue("1000");
   });
 
-  it("shows the six things the line is worked on by", () => {
+  it("shows what the line is worked on by", () => {
     // Synchronous, unlike every test above: the cards are not behind the lazy
     // ag-grid chunk, which is the other half of what this rendering buys — a
     // phone never downloads the 1.16 MB grid at all.
     const { container } = renderNarrowGrid(false);
-    expect(screen.getByText("CNMG120408")).toBeInTheDocument();   // requested
-    expect(screen.getByText("2001174")).toBeInTheDocument();      // supply
-    expect(screen.getByText("Supply product")).toBeInTheDocument();
+    expect(screen.getByText("2001174")).toBeInTheDocument();      // what goes out
+    expect(screen.getByText("asked for CNMG120408")).toBeInTheDocument();
     expect(screen.getByText("Qty")).toBeInTheDocument();
-    expect(screen.getByText("Available")).toBeInTheDocument();
-    expect(screen.getByText("ready")).toBeInTheDocument();        // status
     expect(container.textContent).toContain("10,000");            // line total
   });
 
@@ -334,7 +348,60 @@ describe("a rate nobody has agreed to", () => {
     // `getAllBy`, because MUI draws an outlined field's label twice — once as
     // the `<label>` and once in the fieldset's notch.
     expect(screen.getByLabelText("Quoted rate for CNMG120408")).toBeInTheDocument();
-    expect(screen.getAllByText("Quoted ₹ (list)").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Rate (list)").length).toBeGreaterThan(0);
+  });
+});
+
+// ── the problem, on the row it is about ─────────────────────────────────────
+//
+// The point of the redesign: what is wrong with a line, and what fixes it, sit
+// under that line rather than in a column of chips and a refusal at Send. Two
+// things are worth pinning — that the strip is drawn at all, and that pressing
+// its button asks the screen for the specific fix rather than opening something
+// for the reader to go and find.
+
+/** A line nothing matched, with the two candidates the engine ranked. */
+function unresolved(): Line {
+  const l = lineWithEconomics();
+  return {
+    ...l,
+    supplyCode: null, supplyDesc: "",
+    status: { kind: "technical", label: "UNRESOLVED" },
+    flags: { ...l.flags, unresolved: true, attention: true },
+    candidates: [
+      { code: "63201", desc: "TiAlN 4FL", rel: "TECH", grade: null, brand: null,
+        score: 0.93, reason: "same geometry", attributes: {} },
+      { code: "63204", desc: "AlCrN 4FL", rel: "COMPAT", grade: null, brand: null,
+        score: 0.81, reason: "compatible", attributes: {} },
+    ],
+  };
+}
+
+describe("a line with a problem", () => {
+  it("says so under the row, with the fix on it", async () => {
+    render(<LineGrid {...props(false, {}, [unresolved()])} />);
+    await screen.findByText("Line total");
+    expect(await screen.findByText("Which item is this?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "63201 · tech" })).toBeInTheDocument();
+  });
+
+  it("asks the screen for that fix, naming the line and the candidate", async () => {
+    const onFix = vi.fn<(line: Line, fix: Fix) => void>();
+    render(<LineGrid {...props(false, {}, [unresolved()])} onFix={onFix} />);
+    await screen.findByText("Line total");
+
+    fireEvent.click(await screen.findByRole("button", { name: "63201 · tech" }));
+    expect(onFix).toHaveBeenCalledTimes(1);
+    const [line, fix] = onFix.mock.calls[0];
+    expect(line.id).toBe("l1");
+    expect(fix).toEqual({ kind: "choose-candidate", code: "63201" });
+  });
+
+  it("draws the same problem on a phone", () => {
+    pretendViewportIs(412);
+    render(<LineGrid {...props(false, {}, [unresolved()])} />);
+    expect(screen.getByText("Which item is this?")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "63201 · tech" })).toBeInTheDocument();
   });
 });
 
@@ -367,22 +434,16 @@ describe("naming the system the books are in", () => {
   }
 
   it("names the connected system on a line the ledger does not hold", async () => {
-    render(<LineGrid {...props(false, {}, [notInBooks()])}
-                     systemLabel="Dynamics 365 Business Central"
-                     systemShort="D365 BC" />);
+    render(<LineGrid {...props(false, {}, [notInBooks()])} systemShort="D365 BC" />);
     await screen.findByText("Line total");
     expect(screen.getByText("not in D365 BC")).toBeInTheDocument();
     expect(screen.queryByText(/zoho/i)).toBeNull();
   });
 
-  it("names it on the create-item control too, in full where there is room", () => {
+  it("names it on the strip that offers to create the item", () => {
     pretendViewportIs(412);
-    render(<LineGrid {...props(false, {}, [notInBooks()])}
-                     systemLabel="Epicor Prophet 21"
-                     systemShort="P21" />);
-    // The card has the width for the full name; the grid cell does not, which
-    // is why the two differ and why both are props.
-    expect(screen.getByText("+ Create in Epicor Prophet 21")).toBeInTheDocument();
+    render(<LineGrid {...props(false, {}, [notInBooks()])} systemShort="P21" />);
+    expect(screen.getByRole("button", { name: "Create in P21" })).toBeInTheDocument();
     expect(screen.queryByText(/zoho/i)).toBeNull();
   });
 });

@@ -121,6 +121,24 @@ export interface DataGridProps<T> {
   /** Turns off the per-column filter row for narrow panels where it costs more
    *  vertical space than it earns. Sorting always stays on. */
   filters?: boolean;
+  /** A strip drawn under the row it belongs to, the full width of the grid.
+   *
+   *  For what a row has to say that its columns cannot hold: what is wrong with
+   *  it, and the button that fixes it. The alternative is a column of status
+   *  chips plus a banner elsewhere on the screen counting how many rows are in
+   *  which state — which is how the Quote Builder came to report its problems
+   *  at the moment of sending, a screen away from the row each one was about.
+   *
+   *  Returning nothing leaves the row alone, so a grid where no row has one is
+   *  exactly the grid it was before. **Sorting keeps each strip with its own
+   *  row**; per-column filters do not, because a strip carries no fields to
+   *  filter on — a grid using this passes `filters={false}` and filters above
+   *  itself, which a screen with its own filter chips does anyway. */
+  renderRowDetail?: (row: T) => React.ReactNode;
+  /** How tall that strip is, in pixels — a function where it depends on how
+   *  much the row has to say. Given rather than measured: a height the grid has
+   *  to discover is a strip that jumps on first paint. */
+  rowDetailHeight?: number | ((row: T) => number);
   /** One card per row, for a viewport narrower than `NARROW_BREAKPOINT`.
    *
    *  A grid narrower than its columns scrolls sideways inside its own box,

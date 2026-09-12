@@ -866,13 +866,24 @@ NO PRICE · NOT IN BOOKS · BOOKS OFFLINE · UNRESOLVED · AMBIGUOUS · PIE OFFL
    not have. Search (`/` focuses). Managers additionally get a
    **Below margin floor** chip and warning — the count is *omitted from a
    salesperson's response server-side*, not zeroed.
-2. A proposed line shows CONFIRM READING, the customer's verbatim words in
-   italics beside the interpretation, and an **Accept** button — one line at a
-   time, deliberately no confirm-all (`POST …/confirm-reading`; any role may
-   confirm).
-3. Row delete removes a line (no undo). "+ Create in Zoho" creates a missing
-   supply product in the books (`POST …/create-item`); failure leaves the line
-   CREATE FAILED with the server's reason.
+2. **Five columns, and the problems annotate their own row.** `#`, item, qty,
+   rate, line total — plus cost and margin behind an **Economics** toggle for a
+   role that has them (remembered per browser; absent for a salesperson, whose
+   response carries no cost). Everything that is true of *some* lines is a strip
+   under that line, carrying the fix as a button: a reading to check
+   (**That is right**), an unresolved line (the two candidates the engine
+   ranked, then **Search**), a commercial exception (**Use the recommended
+   rate**, **Ask for approval**), a shortfall (**Supply options**), an item the
+   ledger does not hold (**Create in _<system>_**). `components/lineProblems.ts`
+   decides what a problem is and what would fix it; the grid and the phone cards
+   both draw from it, so the two cannot disagree. A proposed line still confirms
+   one at a time, deliberately without a confirm-all
+   (`POST …/confirm-reading`; any role may confirm).
+3. Row delete removes a line (no undo). The strips' fixes are the screen's
+   existing actions — `select-supply`, `set-price`, `create-item`,
+   `confirm-reading`, `approvals/quote-line` — reached from the row that needs
+   them rather than from the drawer or the end of the journey. A failed
+   create-item leaves the line CREATE FAILED with the server's reason.
 
 **Branches.** No lines → "Paste an RFQ to start" · filter matches nothing →
 reset button · viewport <700 px → cards replace the grid (always-open price
@@ -986,10 +997,15 @@ within-policy · cancelled.
 
 ### 7.8 Send the estimate
 
-**Trigger.** "Create _<system> <document>_" — "Create Zoho Books estimate",
-"Create Dynamics 365 Business Central sales quote" — from the quote's own
-naming fields, never a literal. Disabled while busy, lineless, gate-blocked,
-read-only for this reader, or already sent unchanged. **Every** answer this
+**Trigger.** "Send to _<system>_" — from the quote's own naming fields, never a
+literal. Disabled while busy, lineless, read-only for this reader, already sent
+unchanged, or **while anything is still to settle**: the bar counts the same
+problems the grid draws on the rows (`lineProblems.blockersFor`) and the button
+reads "3 to settle first", naming them beside it. The refusal below is the
+server's, and it still runs — this only means the desk finds out at the rate
+cell instead of after fourteen lines of work. The bar also says what the total
+covers ("Covers 13 of 14 lines… missing from this total rather than counted as
+zero"). **Every** answer this
 endpoint gives carries the naming, refusals included: a screen saying what it
 failed to create still has to name it.
 **Path.** The server works through, in order:

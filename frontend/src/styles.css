@@ -1144,6 +1144,15 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
    exactly the kind of cue that disappears in a screenshot or in print. */
 .ag-shell .ag-row.ag-row-dimmed:not(.ag-row-selected) { opacity: 0.55; }
 
+/* The strip under a row: what is wrong with the line above it, and the button
+ * that fixes it. No top border and no hover, so it reads as part of that row
+ * rather than as a row of its own — it is an annotation, and a list whose
+ * problems look like entries is a list that cannot be counted. */
+.ag-shell .ag-row.ag-row-strip { border-top: 0; }
+.ag-shell .ag-row.ag-row-strip .ag-full-width-row,
+.ag-shell .ag-row.ag-row-strip .ag-cell { padding: 0; }
+.ag-shell .ag-row.ag-row-strip:hover { background: transparent; }
+
 /* A margin below the floor, or a quantity we cannot cover. */
 .ag-shell .qb-thin { color: var(--danger-fg); font-weight: 700; }
 /* The one cell on the screen somebody types into. Marked, because a grid where

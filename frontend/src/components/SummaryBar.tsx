@@ -5,6 +5,7 @@ import Chip from "@mui/material/Chip";
 import Paper from "@mui/material/Paper";
 import Typography from "@mui/material/Typography";
 import type { Quote } from "../types";
+import type { Blocker } from "./lineProblems";
 import { Tip } from "../Tip";
 import { CurrencyValue, TOUCH } from "../platform/kit";
 
@@ -22,7 +23,9 @@ export function SummaryBar({
   onCreateEstimate,
   busy,
   readOnly = false,
-  gateBlockedReason }: {
+  gateBlockedReason,
+  blockers,
+  covers }: {
   quote: Quote;
   /** The reader may not change this quote: the discount and the send are
    *  disabled, and the send says whose quote it is. */
@@ -34,6 +37,16 @@ export function SummaryBar({
   /** Why the quote cannot be sent, from the approval gate. Shown here so the
    *  reason sits next to the button rather than arriving as a failure. */
   gateBlockedReason: string | null;
+  /** Everything still standing between this quote and the customer, counted
+   *  the way the grid shows it — see `lineProblems.blockersFor`.
+   *
+   *  The send used to be a button that looked ready until it was pressed, and
+   *  then a sentence about work done fourteen lines ago. It says how many
+   *  things remain before anybody presses it, and every one of them is marked
+   *  on the row it belongs to. */
+  blockers: Blocker[];
+  /** What the total covers, and what it leaves out. */
+  covers: string | null;
 }) {
   const hasLines = quote.lines.length > 0;
   const sent = quote.estimate !== null && quote.estimate !== undefined;
@@ -96,13 +109,27 @@ export function SummaryBar({
         </Typography>
       )}
 
-      {hasLines && gateBlockedReason && (
-        /* An `Alert`, not red text: the severity carries an icon and a role as
-           well as a hue, and this sentence is the reason the button beside it
-           is disabled. */
+      {/* What the total is the total of. Beside the figures rather than under
+          the subtotal, because it is a sentence about the quote and not about
+          one of the three numbers. */}
+      {hasLines && covers && (
+        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: "44ch" }}>
+          {covers}
+        </Typography>
+      )}
+
+      {hasLines && blockers.length > 0 && (
+        /* Every one of these is marked on its own row. The list here is the
+           count and the map, not the explanation — the explanation is next to
+           the line it is about, which is the whole of this screen's argument
+           with the version that reported them all at Send. */
         <Alert severity="warning" sx={{ py: 0, maxWidth: 460 }}>
-          {gateBlockedReason}
-          <Tip text="The block is enforced when the estimate is created, not merely advised — the request goes nowhere until the approval is answered. An approval covers the price it was granted at, so re-pricing a line lower reopens it." />
+          <b>{blockers.length === 1 ? "One thing" : `${blockers.length} things`} to settle first</b>
+          {" — "}
+          {blockers.map((b) => b.text).join(" · ")}
+          {gateBlockedReason && (
+            <Tip text="The block is enforced when the estimate is created, not merely advised — the request goes nowhere until the approval is answered. An approval covers the price it was granted at, so re-pricing a line lower reopens it." />
+          )}
         </Alert>
       )}
 
@@ -146,7 +173,9 @@ export function SummaryBar({
         title={
           readOnly
             ? `Only ${quote.owner?.name || "the owner"} can send this quote.`
-            : gateBlockedReason ?? (!hasLines
+            : blockers.length
+              ? `${blockers.map((b) => b.text).join(" · ")} — each is marked on its own line above.`
+              : (!hasLines
             ? "Add lines before creating the estimate"
             : sent && quote.estimate!.current
               ? `This quote is already ${document} ${quote.estimate!.number}. `
@@ -156,7 +185,7 @@ export function SummaryBar({
                 : `Send this quote into ${quote.systemLabel}`)
         }
         onClick={onCreateEstimate}
-        disabled={busy || readOnly || !hasLines || !!gateBlockedReason
+        disabled={busy || readOnly || !hasLines || blockers.length > 0
                   || (sent && quote.estimate!.current)}
       >
         {/* "Send", not "Create".
@@ -176,8 +205,8 @@ export function SummaryBar({
           * the reason is on the tooltip either way. */}
         {busy
           ? "Sending…"
-          : gateBlockedReason
-            ? "Awaiting approval"
+          : blockers.length
+            ? `${blockers.length} to settle first`
             : sent && quote.estimate!.current
               ? "Already sent"
               : sent

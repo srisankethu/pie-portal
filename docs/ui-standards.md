@@ -61,6 +61,14 @@ disagreeing about what a selected row looks like.
 
 Wide grids scroll inside their own box; the page never scrolls sideways.
 
+**A column of chips is usually a strip.** Where a state is true of some rows and
+not most — a line with no item, a price that needs signing off, a shortfall —
+`renderRowDetail` draws it under the row it is about, with the fix as a button.
+The quote grid went from eleven columns to five that way: four of them were
+columns describing states, rendered on every row to be read on four. The
+question to ask is whether every row has something to say in that column; if it
+does not, the column is paying width for the rows that do not.
+
 ## 4. Typography
 
 One hierarchy, used consistently:

@@ -79,14 +79,34 @@ const ROW_SELECTION: RowSelectionOptions = {
   checkboxes: true,
   headerCheckbox: true,
   enableClickSelection: false,
+  // A strip is not a row of the list. Without this the header checkbox selects
+  // it too, and "3 selected" over a grid showing two ticked lines is the grid
+  // counting its own annotations.
+  isRowSelectable: (node) => !isDetail(node.data),
 };
+
+/** A strip's row: the row it belongs to, what to draw, and the parent's id.
+ *
+ *  The parent id is carried rather than recomputed because `postSortRows` has
+ *  to re-pair the two after every sort, and asking `getRowId` again there would
+ *  mean this file knowing how to identify a row it was only ever handed. */
+interface DetailRow<T> {
+  __detailFor: T;
+  __parentId: string;
+  __node: React.ReactNode;
+}
+
+function isDetail<T>(data: unknown): data is DetailRow<T> {
+  return Boolean(data && typeof data === "object" && "__detailFor" in data);
+}
 
 export default function DataGridImpl<T>({
   rows, columns, onRowClick, onRowActivate, pageSize = 25, height, filters = true,
   ariaLabel, twoLineRows = false, rowHeight: rowHeightProp, getRowId,
   rowClass: rowClassFor, selection, onCellValueChanged,
+  renderRowDetail, rowDetailHeight = 64,
 }: DataGridProps<T>) {
-  const [api, setApi] = useState<GridApi<T> | null>(null);
+  const [api, setApi] = useState<GridApi<T | DetailRow<T>> | null>(null);
   const gridTheme = useGridTheme();
   const defaultColDef = useMemo<ColDef<T>>(() => ({
     sortable: true,
@@ -135,26 +155,27 @@ export default function DataGridImpl<T>({
   useEffect(() => {
     const id = idOf.current;
     if (!api || !selection || !id) return;
-    const select: IRowNode<T>[] = [];
-    const deselect: IRowNode<T>[] = [];
+    const select: IRowNode<T | DetailRow<T>>[] = [];
+    const deselect: IRowNode<T | DetailRow<T>>[] = [];
     // Every node, not only the rendered ones: a selection made from the toolbar
-    // must not depend on where the paginator happens to be.
+    // must not depend on where the paginator happens to be. A strip is not one
+    // of them — it has no identity of its own to be selected by.
     api.forEachNode((node) => {
-      if (!node.data) return;
-      const should = wanted.has(id(node.data));
+      if (!node.data || isDetail<T>(node.data)) return;
+      const should = wanted.has(id(node.data as T));
       if (should !== node.isSelected()) (should ? select : deselect).push(node);
     });
     if (select.length) api.setNodesSelected({ nodes: select, newValue: true, source: "api" });
     if (deselect.length) api.setNodesSelected({ nodes: deselect, newValue: false, source: "api" });
   }, [api, wanted, selection, rows]);
 
-  const onCellKeyDown = useCallback((e: CellKeyDownEvent<T>) => {
-    if (!onRowActivate || !e.data) return;
+  const onCellKeyDown = useCallback((e: CellKeyDownEvent<T | DetailRow<T>>) => {
+    if (!onRowActivate || !e.data || isDetail<T>(e.data)) return;
     const key = (e.event as KeyboardEvent | undefined)?.key;
     // Not while a cell is being edited: there, Enter commits the value, and
     // opening a drawer on top of it would discard the keystroke that saved it.
     if (key !== "Enter" || e.colDef.editable || e.api.getEditingCells().length) return;
-    onRowActivate(e.data);
+    onRowActivate(e.data as T);
   }, [onRowActivate]);
 
   // Grid height: tall enough for the page it is showing, never taller. A grid
@@ -170,21 +191,95 @@ export default function DataGridImpl<T>({
    * it does something. */
   const paginated = (rows?.length ?? 0) > pageSize;
   const rowHeight = rowHeightProp ?? (twoLineRows ? 50 : 34);
-  const auto = 32 + (filters ? 32 : 0) + rowsThisPage * rowHeight + 48;
+
+  /** The rows, with each strip interleaved after the row it belongs to.
+   *
+   *  The strip is drawn once here rather than on every grid render: ag-grid
+   *  asks its full-width renderer for a node repeatedly, and a `renderRowDetail`
+   *  that builds React elements is cheaper to call per row than per paint. */
+  const data = useMemo<(T | DetailRow<T>)[]>(() => {
+    if (!rows) return [];
+    if (!renderRowDetail || !getRowId) return rows;
+    const out: (T | DetailRow<T>)[] = [];
+    for (const row of rows) {
+      out.push(row);
+      const node = renderRowDetail(row);
+      if (node) out.push({ __detailFor: row, __parentId: getRowId(row), __node: node });
+    }
+    return out;
+  }, [rows, renderRowDetail, getRowId]);
+
+  /** Whether this grid draws strips at all. Everything below keys off it. */
+  const strips = Boolean(renderRowDetail && getRowId);
+
+  const detailHeightOf = useCallback((row: T) =>
+    typeof rowDetailHeight === "function" ? rowDetailHeight(row) : rowDetailHeight,
+  [rowDetailHeight]);
+
+  // Tall enough for the page it is showing, strips included: a grid sized for
+  // its lines alone clips the last one's strip, which is the half of the row
+  // that says what to do about it. A strip is an extra row rather than a taller
+  // one, so its whole height is added — `rowsThisPage` counts only the lines.
+  const stripHeight = data
+    .slice(0, Math.min(data.length, pageSize))
+    .reduce((sum, r) => sum + (isDetail<T>(r) ? detailHeightOf(r.__detailFor) : 0), 0);
+  const auto = 32 + (filters ? 32 : 0) + rowsThisPage * rowHeight + stripHeight + 48;
 
   return (
     <div className="ag-shell" style={{ height: height ?? Math.min(auto, 720) }}>
-      <AgGridReact<T>
+      <AgGridReact<T | DetailRow<T>>
         theme={gridTheme}
-        rowData={rows ?? []}
-        columnDefs={columns}
-        defaultColDef={defaultColDef}
+        rowData={data}
+        // The columns are the caller's, written against its own row type. A
+        // strip renders no cells at all, so the widened type is a fact about
+        // this file's plumbing rather than about anything a column can meet.
+        columnDefs={columns as unknown as ColDef<T | DetailRow<T>>[]}
+        // A strip is one cell the width of the grid, and it is not a row of the
+        // list: it cannot be selected, sorted into somewhere else, or clicked
+        // as though it were the record above it.
+        {...(strips ? {
+          // Only where a caller draws strips. Handed to ag-grid unconditionally
+          // — even returning false for every row — a full-width renderer changes
+          // how it builds rows on grids that have none, and the first symptom is
+          // a button inside a cell that stops firing its click. A grid with no
+          // strips is byte-for-byte the grid it was before.
+          isFullWidthRow: (p: { rowNode: { data?: T | DetailRow<T> } }) =>
+            isDetail<T>(p.rowNode.data),
+          fullWidthCellRenderer: (p: { data?: DetailRow<T> }) => <>{p.data?.__node}</>,
+          getRowHeight: (p: { data?: T | DetailRow<T> }) =>
+            (isDetail<T>(p.data) ? detailHeightOf(p.data.__detailFor) : rowHeight),
+        } : {})}
+        // Sorting moves the rows; this puts each strip back under its own.
+        // Without it a sort by rate leaves every problem attached to whichever
+        // line happens to land above it — the one failure that would make this
+        // worse than the column it replaced.
+        postSortRows={renderRowDetail && getRowId ? (p) => {
+          const strips = new Map<string, IRowNode<T | DetailRow<T>>>();
+          const parents: IRowNode<T | DetailRow<T>>[] = [];
+          for (const node of p.nodes) {
+            if (isDetail<T>(node.data)) strips.set(node.data.__parentId, node);
+            else parents.push(node);
+          }
+          const ordered: IRowNode<T | DetailRow<T>>[] = [];
+          for (const parent of parents) {
+            ordered.push(parent);
+            const strip = parent.data && strips.get(getRowId(parent.data as T));
+            if (strip) ordered.push(strip);
+          }
+          p.nodes.length = 0;
+          p.nodes.push(...ordered);
+        } : undefined}
+        defaultColDef={defaultColDef as unknown as ColDef<T | DetailRow<T>>}
         pagination={paginated}
         rowHeight={rowHeight}
         paginationPageSize={pageSize}
         paginationPageSizeSelector={[10, 25, 50, 100]}
-        getRowId={getRowId ? (p) => getRowId(p.data) : undefined}
-        getRowClass={rowClassFor ? (p) => (p.data ? rowClassFor(p.data) : undefined) : undefined}
+        getRowId={getRowId
+          ? (p) => (isDetail<T>(p.data) ? `${p.data.__parentId}:strip` : getRowId(p.data as T))
+          : undefined}
+        getRowClass={(p) => (isDetail<T>(p.data)
+          ? "ag-row-strip"
+          : (rowClassFor && p.data ? rowClassFor(p.data as T) : undefined))}
         rowSelection={selection ? ROW_SELECTION : undefined}
         // Pinned to its width. `sizeColumnsToFit` shaves whatever it is allowed
         // to, and with nothing holding this column it collapsed to nothing on a
@@ -198,7 +293,8 @@ export default function DataGridImpl<T>({
           selection && getRowId
             ? (e) => {
                 if (e.source === "api") return;   // our own effect, echoing back
-                onChange?.(e.api.getSelectedRows().map(getRowId));
+                onChange?.(e.api.getSelectedRows()
+                  .filter((r): r is T => !isDetail<T>(r)).map(getRowId));
               }
             : undefined
         }
@@ -211,7 +307,7 @@ export default function DataGridImpl<T>({
           onRowClick
             ? (e) => {
                 if (e.column.getColDef().context?.noRowClick) return;
-                if (e.data) onRowClick(e.data);
+                if (e.data && !isDetail<T>(e.data)) onRowClick(e.data as T);
               }
             : undefined
         }
@@ -220,7 +316,9 @@ export default function DataGridImpl<T>({
           onCellValueChanged
             ? (e) => {
                 const field = e.colDef.field ?? e.column.getColId();
-                if (e.data) onCellValueChanged(e.data, field, e.newValue);
+                if (e.data && !isDetail<T>(e.data)) {
+                  onCellValueChanged(e.data as T, field, e.newValue);
+                }
               }
             : undefined
         }

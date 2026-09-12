@@ -149,3 +149,58 @@ describe("ConnectionsPanel — the access list", () => {
       .toHaveTextContent("required");
   });
 });
+
+// ── which stage of the grant the box holds ──────────────────────────────────
+//
+// A Zoho grant code and the refresh token it produces are indistinguishable by
+// sight — both `1000.xxxxxxxx.yyyyyyyy`. A single box labelled "Refresh token"
+// accepts either, and the one it should not accept is the one the API console
+// actually gives you: the connection is created, its first check fails with
+// `invalid_code`, and the message speaks of a *revoked* token on a credential
+// a minute old.
+//
+// So the field asks, and these pin that the answer reaches the server as the
+// field name rather than as a value it has to sniff.
+describe("ConnectionsPanel — grant code or refresh token", () => {
+  beforeEach(() => vi.restoreAllMocks());
+
+  async function fillZohoForm() {
+    const add = vi.spyOn(papi, "addConnection")
+      .mockResolvedValue({} as never);
+    mountPanel();
+    fireEvent.change(await screen.findByLabelText(/^Client ID/), {
+      target: { value: "1000.APP" },
+    });
+    fireEvent.change(screen.getByLabelText(/^Client secret/),
+                     { target: { value: "s3cr3t" } });
+    fireEvent.change(screen.getByLabelText(/organization id/),
+                     { target: { value: "60036630626" } });
+    return add;
+  }
+
+  it("defaults to the grant code, because that is what the console hands you",
+     async () => {
+    const add = await fillZohoForm();
+    // The default is the assertion: a refresh token exists at all only once
+    // somebody has run the exchange by hand, which is the step this removes.
+    fireEvent.change(screen.getByLabelText(/^Grant code/),
+                     { target: { value: "1000.code.fresh" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Add / }));
+
+    await waitFor(() => expect(add).toHaveBeenCalled());
+    expect(add.mock.calls[0][1]).toMatchObject({ grant_code: "1000.code.fresh" });
+    expect(add.mock.calls[0][1]).not.toHaveProperty("refresh_token");
+  });
+
+  it("sends a refresh token as one when that is what was pasted", async () => {
+    const add = await fillZohoForm();
+    fireEvent.click(screen.getByRole("button", { name: "Refresh token" }));
+    fireEvent.change(screen.getByLabelText(/^Refresh token/),
+                     { target: { value: "1000.rt.byhand" } });
+    fireEvent.click(screen.getByRole("button", { name: /^Add / }));
+
+    await waitFor(() => expect(add).toHaveBeenCalled());
+    expect(add.mock.calls[0][1]).toMatchObject({ refresh_token: "1000.rt.byhand" });
+    expect(add.mock.calls[0][1]).not.toHaveProperty("grant_code");
+  });
+});

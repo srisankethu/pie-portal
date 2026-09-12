@@ -1682,9 +1682,21 @@ export interface NewConnectionInput {
   client_id?: string;
   client_secret?: string;
   refresh_token?: string;
+  grant_code?: string;
   accounts_base?: string;
   api_base?: string;
 }
+
+/** A Zoho grant, at whichever of its two stages the owner is holding it.
+ *
+ *  The API console hands out a **grant code**: single-use, alive for minutes,
+ *  and exchanged once for the **refresh token** every later pull runs on. The
+ *  server does that exchange now, so either may be submitted — but they are
+ *  indistinguishable by sight, both `1000.xxxx.yyyy`, which is why this is a
+ *  union rather than one string the server sniffs. A union and not a
+ *  `{ kind, value }` pair because it is also the request body: the field name
+ *  *is* the answer, so there is no second place for the two to disagree. */
+export type ZohoSecret = { grant_code: string } | { refresh_token: string };
 
 /* ── registered ERP connectors (NetSuite, Business Central, Acumatica, P21,
  *    Sage) ──────────────────────────────────────────────────────────────────

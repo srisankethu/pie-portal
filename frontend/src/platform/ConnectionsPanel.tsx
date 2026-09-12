@@ -26,6 +26,7 @@ import type {
   NewConnectionInput,
   PlatformSession,
   ZohoConnection,
+  ZohoSecret,
   ZohoVisibleOrg,
 } from "./types";
 import { Bp, Labelled, Tip } from "./ui";
@@ -87,10 +88,94 @@ const EMPTY_FORM = {
   label: "",
   client_id: "",
   client_secret: "",
-  refresh_token: "",
+  // One field, not two: an owner holds a grant at exactly one of its two
+  // stages, and `secretKind` beside it says which. `ZohoSecretField` has the
+  // reasoning.
+  secret: "",
   accounts_base: DC_PRESETS[0].accounts_base,
   api_base: DC_PRESETS[0].api_base,
 };
+
+type ZohoSecretKind = "grant_code" | "refresh_token";
+
+function zohoSecret(kind: ZohoSecretKind, value: string): ZohoSecret {
+  return kind === "grant_code" ? { grant_code: value } : { refresh_token: value };
+}
+
+/**
+ * The one box an owner pastes a Zoho grant into — in both places they can.
+ *
+ * A grant code and a refresh token are the same credential one step apart: the
+ * API console's **Generate Code** produces the first, and exchanging it once
+ * produces the second. The server runs that exchange now, so either is
+ * accepted here.
+ *
+ * **It asks which, rather than sniffing it.** The two are indistinguishable by
+ * sight — both `1000.xxxxxxxx.xxxxxxxx` — so a box labelled only "Refresh
+ * token" silently accepts the code, and the connection then fails its check
+ * with `invalid_code`: a message about a revoked token, on a credential that
+ * was minted ninety seconds ago. That is the failure this control exists to
+ * remove, and guessing from the value would only move the guess server-side.
+ *
+ * **Grant code is the default** because it is what the console hands you. A
+ * refresh token exists at all only if somebody has already run the exchange by
+ * hand, which was step 3 of the setup doc and is now this server's job.
+ *
+ * One component for two call sites, per the UI digest: the add form and the
+ * rotate box differ in their ids and their surrounding copy, not in this.
+ */
+function ZohoSecretField({
+  idPrefix, kind, onKindChange, value, onChange, maxWidth = 520,
+}: {
+  idPrefix: string;
+  kind: ZohoSecretKind;
+  onKindChange: (kind: ZohoSecretKind) => void;
+  value: string;
+  onChange: (value: string) => void;
+  maxWidth?: number;
+}) {
+  const isCode = kind === "grant_code";
+  return (
+    <Box sx={{ mt: 1.5 }}>
+      <ToggleButtonGroup
+        exclusive
+        size="small"
+        value={kind}
+        onChange={(_e, v) => {
+          if (v) onKindChange(v as ZohoSecretKind);
+        }}
+        aria-label="Which Zoho credential you have"
+        sx={{ mb: 1 }}
+      >
+        <ToggleButton value="grant_code">Grant code</ToggleButton>
+        <ToggleButton value="refresh_token">Refresh token</ToggleButton>
+      </ToggleButtonGroup>
+      <TextField
+        id={`${idPrefix}-secret`}
+        label={isCode ? "Grant code" : "Refresh token"}
+        /* Masked only when it is the long-lived one. A refresh token is a
+           bearer secret that keeps working until it is revoked; a grant code
+           dies in minutes, is pasted once under time pressure, and hiding it
+           buys nothing while costing the glance that catches a short paste. */
+        type={isCode ? "text" : "password"}
+        size="small"
+        fullWidth
+        required
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        autoComplete="off"
+        placeholder="1000.xxxxxxxx.xxxxxxxx"
+        helperText={
+          isCode
+            ? "Zoho API console → your Self Client → Generate Code, with the scopes listed below. It is single-use and expires in minutes, so paste it straight away — this server exchanges it and stores only the refresh token that comes back."
+            : "The value an exchange already produced, not the code from Generate Code. Encrypted before it is stored and never shown again."
+        }
+        slotProps={{ htmlInput: { spellCheck: false } }}
+        sx={{ maxWidth }}
+      />
+    </Box>
+  );
+}
 
 // "never", not "—": a connector that has never been checked is a different
 // state from a missing field, and only one of them is a problem.
@@ -262,7 +347,7 @@ function ConnectionCard({
   onRename: (id: string, label: string) => Promise<void>;
   onToggle: (id: string, enabled: boolean) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
-  onRotate: (id: string, token: string,
+  onRotate: (id: string, secret: ZohoSecret,
              client?: { client_id: string; client_secret: string }) => Promise<string>;
   onErpRotate: (id: string, values: Record<string, string>) => Promise<string>;
   onSync: (id: string, since: string, full: boolean) => Promise<void>;
@@ -297,6 +382,7 @@ function ConnectionCard({
   // invites somebody to paste into it.
   const [rotating, setRotating] = useState(false);
   const [newToken, setNewToken] = useState("");
+  const [tokenKind, setTokenKind] = useState<ZohoSecretKind>("grant_code");
   const [rotateNote, setRotateNote] = useState<string | null>(null);
   // The client pair, and whether it is being replaced too. Closed by default
   // for the reason the token box is: a rotation normally happens under the same
@@ -538,24 +624,31 @@ function ConnectionCard({
 
       {rotating && isZoho && (
         <div className="cx-rotate">
-          {/* The explanation is the field's `helperText` rather than a tooltip
-              on its label. A rotation is done once, under pressure, by
-              somebody who has just been told a connection is broken — the two
-              sentences that decide whether they also replace the client pair
-              should not be behind a "?" at that moment. */}
-          <TextField
-            id={`cx-token-${conn.connection_id}`}
-            label="New refresh token"
-            size="small"
-            fullWidth
+          {/* The explanation is on the field rather than behind a tooltip. A
+              rotation is done once, under pressure, by somebody who has just
+              been told a connection is broken — the sentences that decide what
+              they paste and whether they also replace the client pair should
+              not be behind a "?" at that moment.
+
+              Rotating from a grant code is the common case, not the exotic
+              one: the console's answer to a revoked or expired token is a
+              fresh code, and until this existed the screen asked for the one
+              thing the console does not give you. */}
+          <ZohoSecretField
+            idPrefix={`cx-token-${conn.connection_id}`}
+            kind={tokenKind}
+            onKindChange={setTokenKind}
             value={newToken}
-            onChange={(e) => setNewToken(e.target.value)}
-            autoComplete="off"
-            placeholder="1000.xxxxxxxx.xxxxxxxx"
-            helperText="Generate a fresh refresh token in the Zoho API console for the same client, then paste it here. The client id and secret are left alone by default, because re-typing a secret that is already correct is how a working connection gets broken — but if the token came from a different app, replace them too or Zoho refuses the pair."
-            slotProps={{ htmlInput: { spellCheck: false } }}
-            sx={{ maxWidth: 420 }}
+            onChange={setNewToken}
+            maxWidth={420}
           />
+          <Typography variant="caption" color="text.secondary"
+                      component="p" sx={{ mt: 0.5, maxWidth: 420 }}>
+            The client id and secret are left alone by default, because
+            re-typing a secret that is already correct is how a working
+            connection gets broken — but if this came from a different app,
+            replace them too or Zoho refuses the pair.
+          </Typography>
           {/* Reachable, not open. A token generated under a *different* Zoho
               app is the one failure a token-only rotation produces, and Zoho
               reports it as `invalid_client_secret` — which reads as "your
@@ -614,12 +707,14 @@ function ConnectionCard({
                       // would replace one side of a matched credential and
                       // break a connection that was merely being re-tokened.
                       const note = await onRotate(
-                        conn.connection_id, newToken.trim(),
+                        conn.connection_id,
+                        zohoSecret(tokenKind, newToken.trim()),
                         replacingClient
                           ? { client_id: newClient.client_id.trim(),
                               client_secret: newClient.client_secret.trim() }
                           : undefined);
                       setNewToken("");
+                      setTokenKind("grant_code");
                       setNewClient({ client_id: "", client_secret: "" });
                       setReplacingClient(false);
                       setRotating(false);
@@ -631,6 +726,7 @@ function ConnectionCard({
                     onClick={() => {
                       setRotating(false);
                       setNewToken("");
+                      setTokenKind("grant_code");
                       setNewClient({ client_id: "", client_secret: "" });
                       setReplacingClient(false);
                     }}>
@@ -1112,6 +1208,10 @@ function AddConnection({
   // it is chosen before the redirect rather than guessed after it.
   const [dc, setDc] = useState("in");
   const [form, setForm] = useState(EMPTY_FORM);
+  // Which stage of a Zoho grant the box below holds. Separate from
+  // `form` because it is a question about the value, not one of the
+  // values the server is sent.
+  const [secretKind, setSecretKind] = useState<ZohoSecretKind>("grant_code");
   const [credentialId, setCredentialId] = useState(signIns[0]?.credential_id ?? "");
   const [orgs, setOrgs] = useState<ZohoVisibleOrg[] | null>(null);
   const [busy, setBusy] = useState(false);
@@ -1260,12 +1360,16 @@ function AddConnection({
               label: form.label.trim(),
               client_id: form.client_id.trim(),
               client_secret: form.client_secret.trim(),
-              refresh_token: form.refresh_token.trim(),
+              // `grant_code` or `refresh_token`, never both — the server
+              // refuses a body carrying the pair, because a request that
+              // supplies two credentials has not said which one it means.
+              ...zohoSecret(secretKind, form.secret.trim()),
               accounts_base: form.accounts_base,
               api_base: form.api_base,
             };
       await papi.addConnection(token, body);
       setForm(EMPTY_FORM);
+      setSecretKind("grant_code");
       setOrgs(null);
       await onAdded();
     } catch (err) {
@@ -1500,18 +1604,22 @@ function AddConnection({
               sx={{ mt: 1.5, maxWidth: 520 }}
             />
 
-            <TextField
-              id="cx-refresh"
-              label="Refresh token"
-              type="password"
-              size="small"
-              fullWidth
-              required
-              value={form.refresh_token}
-              onChange={(e) => setForm({ ...form, refresh_token: e.target.value })}
-              helperText="Encrypted before it is stored and never shown again. Generate it in the Zoho API console with the scopes listed below — a token missing one of them authenticates and then returns nothing."
-              sx={{ mt: 1.5, maxWidth: 520 }}
+            <ZohoSecretField
+              idPrefix="cx-refresh"
+              kind={secretKind}
+              onKindChange={setSecretKind}
+              value={form.secret}
+              onChange={(v) => setForm({ ...form, secret: v })}
             />
+            {/* Kept on the screen rather than only in the field's helper: a
+                grant missing a scope authenticates perfectly well and then
+                returns nothing, which is the failure that looks like an empty
+                company rather than a broken sign-in. */}
+            <Typography variant="caption" color="text.secondary"
+                        component="p" sx={{ mt: 0.5, maxWidth: 520 }}>
+              Generate it with the scopes listed below — one missing a scope
+              signs in and then returns nothing.
+            </Typography>
           </>
         )}
 
@@ -1809,11 +1917,11 @@ export function ConnectionsPanel({
    *  looking at when they decide to rotate. The server names every other
    *  company that changed underneath, and that sentence is what comes back. */
   async function rotate(
-    id: string, token: string,
+    id: string, secret: ZohoSecret,
     client?: { client_id: string; client_secret: string },
   ): Promise<string> {
     setError(null);
-    const r = await papi.rotateConnectionToken(session.token, id, token, client);
+    const r = await papi.rotateConnectionToken(session.token, id, secret, client);
     await load();
     return String(r.note ?? "Rotated.");
   }

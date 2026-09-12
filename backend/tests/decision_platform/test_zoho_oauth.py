@@ -314,6 +314,21 @@ def test_an_unconfigured_deployment_says_so_rather_than_offering_the_flow(
         oauth.authorization_url("t", "https://accounts.zoho.in", scope="x")
 
 
+def test_the_authorization_url_is_a_zoho_endpoint(configured):
+    """`/oauth/authorize` is not one, and is where this pointed.
+
+    The module's own docstring says this flow "never completed an
+    authorization end to end" and blames the CSRF state for it. Both halves of
+    the conversation with Zoho were also addressed to paths that do not exist:
+    a consent screen that 404s, and a token exchange that could not have
+    returned a token. `zoho_client._access_token` and docs/zoho-setup.md had
+    `/oauth/v2/token` right throughout, which is the tell — one flow spelled
+    the same host two ways and only the untested spelling was wrong.
+    """
+    url = oauth.authorization_url("t", "https://accounts.zoho.in", scope="x")
+    assert url.startswith("https://accounts.zoho.in/oauth/v2/auth?")
+
+
 def test_the_authorization_url_asks_for_a_refresh_token(configured):
     """Zoho issues one only when asked. Without `access_type=offline` the
     exchange returns an access token that dies in an hour, and the connection

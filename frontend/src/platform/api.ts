@@ -1,5 +1,5 @@
 import type { MonetizationCalculation, MonetizationScorecard, MonetizationSegments } from "./types";
-import type { BindingChoice, DecoderArtifact, DecoderProposalResponse, AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, PhraseAliases, RetrievalReport, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ObservabilityDashboard, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteFieldSpec, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoVisibleOrg } from "./types";
+import type { BindingChoice, DecoderArtifact, DecoderProposalResponse, AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, PhraseAliases, RetrievalReport, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ObservabilityDashboard, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteFieldSpec, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoSecret, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -938,14 +938,18 @@ export const papi = {
    *  replaces the token under the same app. It is accepted because the one
    *  failure a token-only rotation *causes* is a token issued by a different
    *  client, and Zoho answers that with `invalid_client_secret`: without this,
-   *  the fix for the most likely rotation failure is off this screen. */
+   *  the fix for the most likely rotation failure is off this screen.
+   *
+   *  `secret` is a grant code or a refresh token — the console gives out the
+   *  first and the server exchanges it, so a rotation no longer requires
+   *  running that exchange by hand. */
   rotateConnectionToken: (
-    t: string, connectionId: string, refresh_token: string,
+    t: string, connectionId: string, secret: ZohoSecret,
     client?: { client_id: string; client_secret: string },
   ) =>
     req<Record<string, unknown>>(
       `/api/v1/connections/${connectionId}/rotate`,
-      { method: "POST", body: JSON.stringify({ refresh_token, ...client }) }, t),
+      { method: "POST", body: JSON.stringify({ ...secret, ...client }) }, t),
 
   shareCredential: (t: string, credentialId: string, organization_ids: string[]) =>
     req<{ credential: ZohoCredential }>(

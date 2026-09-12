@@ -1,5 +1,13 @@
 """Zoho's authorization-code flow: the redirect out, and the redirect back.
 
+``exchange_code`` — the step that turns a one-time code into the refresh token
+every later pull runs on — serves **two** grants, and only one of them involves
+a redirect. The other is a Self Client an owner registered themselves, whose
+code they paste into the connections screen and whose client pair arrives on
+the request; see ``routers.connections._refresh_token_from_grant_code``. It is
+one function because a code gets exactly one attempt, and two implementations
+of that would be the copy that drifts.
+
 This existed once and was removed as dead code — it never completed an
 authorization end to end. Both reasons were about where the CSRF state lived,
 and ``models.OAuthState`` is the fix for both; that docstring carries the
@@ -40,11 +48,13 @@ from urllib.parse import urlencode
 import httpx
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
+from starlette.concurrency import run_in_threadpool
 
 from . import clock, crypto, tenancy
 from .config import settings
 from .domain import models
-from .ingestion.zoho_client import ZohoAuthError, ZohoError
+from .ingestion.url_safety import require_safe_source_url
+from .ingestion.zoho_client import ZohoAuthError, ZohoError, token_error_help
 
 log = logging.getLogger("pie_portal.oauth")
 
@@ -212,7 +222,13 @@ def authorization_url(token: str, accounts_base: str, *, scope: str) -> str:
         "prompt": "consent",
         "state": token,
     }
-    return f"{accounts_base}/oauth/authorize?{urlencode(params)}"
+    # ``/oauth/v2/auth``, and the token endpoint below is ``/oauth/v2/token``.
+    # Both were written without the version segment, which is not a Zoho
+    # endpoint at all — the authorization would 404 before a consent screen
+    # ever rendered. ``zoho_client._access_token`` and docs/zoho-setup.md had
+    # the right path all along, which is the tell: one flow spelled the same
+    # host two ways.
+    return f"{accounts_base}/oauth/v2/auth?{urlencode(params)}"
 
 
 @dataclass
@@ -222,36 +238,78 @@ class OAuthTokens:
     expires_in: int
 
 
-async def exchange_code_for_tokens(code: str, accounts_base: str) -> OAuthTokens:
-    """Turn the authorization code into a refresh token.
+def exchange_code(code: str, accounts_base: str, *, client_id: str,
+                  client_secret: str, redirect_uri: str = "",
+                  configured_in: str = "this connection") -> OAuthTokens:
+    """Spend a one-time grant code for the refresh token every later pull runs on.
 
-    The code is valid for minutes and once; the refresh token is what every
-    later pull runs on.
+    **One implementation for both grants this platform accepts**, because they
+    differ only in where the client pair comes from: the application this
+    deployment registered (``exchange_code_for_tokens`` below wraps this with
+    those settings) and a Self Client an owner registered themselves, whose id
+    and secret arrive on the request. A Self Client has no redirect URI to send
+    — it is the client type you pick precisely because there is no browser to
+    come back to — so ``redirect_uri`` is omitted rather than sent empty.
+
+    Synchronous, and that wrapper is a thread call into it. The two callers
+    arrive in different colours: a browser redirect lands on an ``async def``
+    endpoint, and an owner pasting a code into a form lands on a ``def`` one
+    that FastAPI already runs in a threadpool. Two implementations of an
+    exchange that gets one shot at a code is the copy that drifts.
+
+    The request is a **form body**, never a query string, for the reason
+    ``zoho_client._access_token`` gives at length: httpx logs request URLs, and
+    a client secret in a URL is written to stdout, to the log file, and from
+    there onto a screen.
     """
-    if not configured():
-        raise OAuthNotConfigured("This deployment has no Zoho application registered.")
+    # This is a server-side POST to a host the caller chose. It is guarded
+    # before the credential exists rather than after: ``create_credential``
+    # validates the same URL, but only once a row is being written, and this
+    # call has already been made by then.
+    require_safe_source_url(accounts_base, field="Accounts URL")
 
     data = {
         "grant_type": "authorization_code",
-        "client_id": settings.ZOHO_OAUTH_CLIENT_ID,
-        "client_secret": settings.ZOHO_OAUTH_CLIENT_SECRET,
-        "redirect_uri": settings.ZOHO_OAUTH_REDIRECT_URI,
+        "client_id": client_id,
+        "client_secret": client_secret,
         "code": code,
     }
+    if redirect_uri:
+        data["redirect_uri"] = redirect_uri
     try:
-        async with httpx.AsyncClient() as client:
-            response = await client.post(f"{accounts_base}/oauth/token", data=data,
-                                         timeout=settings.ZOHO_TIMEOUT_SECONDS)
-            response.raise_for_status()
-            body = response.json()
+        with httpx.Client() as client:
+            response = client.post(f"{accounts_base}/oauth/v2/token", data=data,
+                                   timeout=settings.ZOHO_TIMEOUT_SECONDS)
     except httpx.HTTPError as e:
         log.error("HTTP error during token exchange: %s", e)
         raise ZohoError(f"Network error while authorizing: {e}") from e
 
-    if "error" in body:
-        detail = body.get("error_description") or body.get("error")
-        log.warning("OAuth token exchange refused: %s", detail)
-        raise ZohoAuthError(f"Zoho refused the authorization: {detail}")
+    # **Read the body before the status.** Zoho reports a refused code with a
+    # perfectly good JSON explanation, sometimes under HTTP 200 and sometimes
+    # under 400, and the `raise_for_status()` that used to stand here turned
+    # the 400 case into "Network error while authorizing: Client error '400 Bad
+    # Request'" — a network sentence about a credential, with the one field
+    # naming the actual fault thrown away one line before it would have been
+    # read.
+    try:
+        body = response.json()
+    except ValueError:
+        raise ZohoAuthError(
+            f"Zoho's token endpoint returned something that is not JSON "
+            f"(HTTP {response.status_code}). Check that {accounts_base} is the "
+            f"data centre set in {configured_in}.") from None
+
+    if body.get("error"):
+        error = body["error"]
+        description = str(body.get("error_description") or "").strip()
+        log.warning("OAuth token exchange refused: %s", error)
+        detail = f"Zoho refused the grant code: {error}."
+        if description:
+            detail += f" Zoho said: {description}"
+        detail += " " + token_error_help(
+            error, accounts_base=accounts_base, configured_in=configured_in,
+            grant_type="authorization_code")
+        raise ZohoAuthError(detail)
     if not body.get("refresh_token"):
         # Not a network fault and not a lie about success. Zoho withholds the
         # refresh token when this user has consented to this client before, so
@@ -260,9 +318,25 @@ async def exchange_code_for_tokens(code: str, accounts_base: str) -> OAuthTokens
             "Zoho returned a sign-in with no refresh token, which happens when "
             "this account has already authorized this application. Remove it "
             "under Zoho's connected apps and authorize again.")
-    return OAuthTokens(access_token=body["access_token"],
+    return OAuthTokens(access_token=body.get("access_token") or "",
                        refresh_token=body["refresh_token"],
                        expires_in=int(body.get("expires_in") or 3600))
+
+
+async def exchange_code_for_tokens(code: str, accounts_base: str) -> OAuthTokens:
+    """The redirect flow's half: the same exchange, this deployment's client.
+
+    The code is valid for minutes and once; the refresh token is what every
+    later pull runs on.
+    """
+    if not configured():
+        raise OAuthNotConfigured("This deployment has no Zoho application registered.")
+    return await run_in_threadpool(
+        exchange_code, code, accounts_base,
+        client_id=settings.ZOHO_OAUTH_CLIENT_ID,
+        client_secret=settings.ZOHO_OAUTH_CLIENT_SECRET,
+        redirect_uri=settings.ZOHO_OAUTH_REDIRECT_URI,
+        configured_in="this deployment's Zoho application settings")
 
 
 @dataclass

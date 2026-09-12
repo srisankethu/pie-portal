@@ -40,7 +40,7 @@ from ..domain import models
 from ..domain.enums import Role
 from ..ingestion import connections as conn
 from ..ingestion.url_safety import UnsafeSourceUrl
-from ..ingestion.zoho_client import ZohoApiSource, ZohoAuthError
+from ..ingestion.zoho_client import ZohoApiSource, ZohoAuthError, ZohoError
 
 log = logging.getLogger("pie_portal.connections")
 
@@ -259,7 +259,18 @@ def list_connections(
 
 
 class NewConnection(BaseModel):
-    """Either supply a credential already on file, or a fresh set of secrets."""
+    """Either supply a credential already on file, or a fresh set of secrets.
+
+    ``grant_code`` and ``refresh_token`` are the same credential one step
+    apart, and exactly one is supplied. The grant code is what the Zoho API
+    console actually hands you — ``Generate Code`` on a Self Client — and
+    turning it into a refresh token is a single HTTP call this server can make
+    perfectly well, which is the whole reason it is accepted here: the setup
+    doc's step 3 was a ``curl`` an owner ran by hand, and the value they pasted
+    back was, often enough, the code rather than the token it produces. The two
+    are indistinguishable by sight (both ``1000.xxxx.yyyy``), so the caller
+    says which it is rather than this guessing.
+    """
 
     zoho_organization_id: str = Field(min_length=1, max_length=64)
     label: str = ""
@@ -267,8 +278,33 @@ class NewConnection(BaseModel):
     client_id: Optional[str] = None
     client_secret: Optional[str] = None
     refresh_token: Optional[str] = None
+    grant_code: Optional[str] = None
     accounts_base: str = "https://accounts.zoho.in"
     api_base: str = "https://www.zohoapis.in/books/v3"
+
+
+def _refresh_token_from_grant_code(
+    code: str, *, client_id: str, client_secret: str, accounts_base: str,
+) -> str:
+    """Spend a one-time Zoho grant code, or say why it could not be spent.
+
+    Thin by design — the exchange itself is ``oauth.exchange_code``, shared with
+    the redirect flow. What lives here is only the mapping from its exceptions
+    to status codes, which is a router's job: a refused code is the caller's
+    input (400), an unreachable Zoho is not (502).
+    """
+    from .. import oauth
+
+    try:
+        return oauth.exchange_code(
+            code, accounts_base, client_id=client_id,
+            client_secret=client_secret).refresh_token
+    except UnsafeSourceUrl as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    except ZohoAuthError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    except ZohoError as e:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, str(e)) from e
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
@@ -294,20 +330,39 @@ def add_connection(
                 zoho_organization_id=zoho_org, label=body.label)
         else:
             missing = [n for n, v in (("client_id", body.client_id),
-                                      ("client_secret", body.client_secret),
-                                      ("refresh_token", body.refresh_token))
+                                      ("client_secret", body.client_secret))
                        if not (v or "").strip()]
             if missing:
                 raise HTTPException(
                     status.HTTP_400_BAD_REQUEST,
                     "Choose an existing connection, or supply "
                     + ", ".join(missing) + ".")
+            grant_code = (body.grant_code or "").strip()
+            refresh_token = (body.refresh_token or "").strip()
+            if bool(grant_code) == bool(refresh_token):
+                raise HTTPException(
+                    status.HTTP_400_BAD_REQUEST,
+                    "Supply a grant code or a refresh token — one, not both. "
+                    "The grant code is what the Zoho API console gives you "
+                    "under Generate Code; a refresh token is what exchanging "
+                    "one produces.")
+            accounts_base = body.accounts_base.strip().rstrip("/")
+            if grant_code:
+                # Spent before anything is written. A code lives for minutes
+                # and once, so a credential row created first and tokened
+                # second would leave a dead sign-in on the screen every time
+                # the exchange failed — and the exchange is the step that
+                # fails, because that is where a stale code is found out.
+                refresh_token = _refresh_token_from_grant_code(
+                    grant_code, client_id=body.client_id.strip(),
+                    client_secret=body.client_secret.strip(),
+                    accounts_base=accounts_base)
             row = conn.set_zoho_credentials(
                 session, org, zoho_organization_id=zoho_org,
                 client_id=body.client_id.strip(),
                 client_secret=body.client_secret.strip(),
-                refresh_token=body.refresh_token.strip(),
-                accounts_base=body.accounts_base.strip().rstrip("/"),
+                refresh_token=refresh_token,
+                accounts_base=accounts_base,
                 api_base=body.api_base.strip().rstrip("/"),
                 label=body.label,
                 # The grant is named after itself, not after the first company
@@ -516,9 +571,18 @@ class RotateToken(BaseModel):
     """A fresh Zoho grant. The refresh token is the thing that actually expires
     or gets revoked; the client pair is optional because it usually has not
     changed and re-typing a secret that is already correct is how a working
-    connection gets broken."""
+    connection gets broken.
 
-    refresh_token: str
+    ``grant_code`` is the same credential one step earlier, and rotation is the
+    path that needs it most: the API console's answer to a revoked or
+    expired-out token is a fresh **code**, and every rotation until now asked
+    the owner to run the exchange themselves and paste the result. Exactly one
+    of the two is supplied — they are indistinguishable by sight, so the caller
+    says which it is.
+    """
+
+    refresh_token: Optional[str] = None
+    grant_code: Optional[str] = None
     client_id: Optional[str] = None
     client_secret: Optional[str] = None
 
@@ -549,9 +613,27 @@ def rotate_connection_token(
     ``ingestion.connections.rotate_credential``, which is where the ownership
     rule lives.
     """
-    if not body.refresh_token.strip():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST,
-                            "A refresh token is required")
+    grant_code = (body.grant_code or "").strip()
+    refresh_token = (body.refresh_token or "").strip()
+    if bool(grant_code) == bool(refresh_token):
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "A grant code or a refresh token is required — one, not both.")
+    new_client_id = (body.client_id or "").strip()
+    new_client_secret = (body.client_secret or "").strip()
+    if bool(new_client_id) != bool(new_client_secret):
+        # Half a pair is refused rather than merged with the stored half. A
+        # client keeps one id across data centres but has a *separate secret in
+        # each*, so the merged pair is wrong far more often than it is right —
+        # and Zoho reports it as `invalid_client_secret`, which reads as "your
+        # secret is wrong" and sends people to change the data centre, the one
+        # setting that was correct. The screen sends both or neither; this is
+        # the same rule stated where any caller meets it.
+        raise HTTPException(
+            status.HTTP_400_BAD_REQUEST,
+            "Replace the client id and secret together or not at all — a "
+            "client has a separate secret in each data centre, so half a pair "
+            "is a credential Zoho will refuse.")
     try:
         row = conn.get_connection(session, principal.organization_id, connection_id)
     except conn.ConnectionNotFound as e:
@@ -572,11 +654,27 @@ def rotate_connection_token(
     also = [c for c in conn.connections_using(session, row.credential_id)
             if c.connection_id != row.connection_id]
     try:
+        if grant_code:
+            # Exchanged against the client pair the code was generated under —
+            # the new one where the form supplies it, the stored one otherwise.
+            # Getting that the wrong way round is the failure this screen
+            # already explains at length: a code from a different Self Client,
+            # spent against the old id, comes back `invalid_client_secret` and
+            # reads as "your secret is wrong".
+            #
+            # The stored side is read through `credentials_for`, which is the
+            # one place a connection turns into decrypted Zoho credentials.
+            stored = conn.credentials_for(session, row)
+            refresh_token = _refresh_token_from_grant_code(
+                grant_code,
+                client_id=new_client_id or stored.client_id,
+                client_secret=new_client_secret or stored.client_secret,
+                accounts_base=stored.accounts_base)
         conn.rotate_credential(
             session, principal.organization_id, row.credential_id,
-            refresh_token=body.refresh_token.strip(),
-            client_id=(body.client_id or "").strip() or None,
-            client_secret=(body.client_secret or "").strip() or None)
+            refresh_token=refresh_token,
+            client_id=new_client_id or None,
+            client_secret=new_client_secret or None)
     except conn.CredentialNotUsable as e:
         raise HTTPException(status.HTTP_403_FORBIDDEN, str(e)) from e
 

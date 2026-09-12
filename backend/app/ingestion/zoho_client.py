@@ -139,9 +139,42 @@ _TOKEN_ERROR_HELP[_TOKEN_THROTTLE_ERROR] = (
     "minutes and sync again.")
 
 
-def token_error_help(error: Any, *, accounts_base: str, configured_in: str) -> str:
-    """What to actually go and change, for one Zoho token-endpoint refusal."""
-    template = _TOKEN_ERROR_HELP.get(str(error or "").strip(), _TOKEN_ERROR_FALLBACK)
+#: The same endpoint, the same error strings, a different thing sent — so for
+#: one code the sentence above is wrong rather than merely unhelpful. A
+#: *one-time grant code* is exchanged here too (``oauth.exchange_code``), and
+#: ``invalid_code`` against one means something an owner can actually act on:
+#: a code is single-use and lives for minutes, so it is nearly always spent or
+#: stale, not "revoked". Telling somebody their refresh token was revoked when
+#: they had just pasted a fresh grant code is what sends them to regenerate the
+#: Self Client — replacing a client pair that was correct.
+#:
+#: An *override* map, not a second copy: only ``invalid_code`` reads differently
+#: between the two grants, and ``invalid_client``, ``invalid_client_secret`` and
+#: the throttle say the same thing whichever was sent.
+_CODE_ERROR_HELP: dict[str, str] = {
+    "invalid_code": (
+        "Zoho rejected the grant code. A code is single-use and expires in "
+        "minutes, so this is almost always one that has already been exchanged, "
+        "one that sat too long between Generate Code and here, or one generated "
+        "in a different data centre — the one set in {configured_in} is "
+        "currently {accounts}. Generate a fresh code for the same Self Client "
+        "and paste it straight away."),
+}
+
+
+def token_error_help(error: Any, *, accounts_base: str, configured_in: str,
+                     grant_type: str = "refresh_token") -> str:
+    """What to actually go and change, for one Zoho token-endpoint refusal.
+
+    ``grant_type`` is what was *sent*, spelled as OAuth spells it, because the
+    remedy for a refused credential depends on which one it was.
+    """
+    key = str(error or "").strip()
+    template = None
+    if grant_type == "authorization_code":
+        template = _CODE_ERROR_HELP.get(key)
+    if template is None:
+        template = _TOKEN_ERROR_HELP.get(key, _TOKEN_ERROR_FALLBACK)
     return template.format(accounts=accounts_base, configured_in=configured_in)
 
 

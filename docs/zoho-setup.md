@@ -63,9 +63,32 @@ What each scope is for:
 
 Copy the **grant code**. It expires in minutes, so do step 3 immediately.
 
-## 3. Exchange the grant code for a refresh token
+## 3. The grant code is what you paste — the app does the exchange
 
-Run this once, within the code's lifetime:
+**There is nothing to run here.** The connect form in
+[step 5](#5-turn-on-live-mode-then-connect-the-credentials-in-the-app) takes the
+grant code directly: set its credential type to **Grant code**, and the server
+exchanges it for the `refresh_token` and stores only that. The refresh token is
+the value that does not expire unless revoked; the `access_token` in the same
+response is short-lived and the backend fetches its own.
+
+Go straight there. A grant code is single-use and dies in minutes, so one that
+sat around while you did something else is already stale — the app will say so
+and store nothing. Regenerate it (step 2) and paste the new one.
+
+**Choose the right type.** A grant code and a refresh token are the same
+credential one step apart and look identical — both `1000.xxxxxxxx.yyyyyyyy` —
+so the form asks which you are pasting rather than guessing. Pasting a code
+under "Refresh token" is the mistake this control exists to stop: the
+connection is created, the first check fails with `invalid_code`, and the
+message is about a *revoked token* on a credential a minute old. Following it
+means regenerating a Self Client that was never the problem.
+
+### Doing the exchange yourself
+
+Still supported, and the reason "Refresh token" is on the form at all — an
+existing deployment holds tokens obtained this way, and the HTTP API in step 5
+takes only this form:
 
 ```bash
 curl -X POST "https://accounts.zoho.in/oauth/v2/token" \
@@ -75,9 +98,8 @@ curl -X POST "https://accounts.zoho.in/oauth/v2/token" \
   -d "code=THE_GRANT_CODE"
 ```
 
-The response contains `refresh_token`. **That value is what the platform
-stores** — it does not expire unless revoked. The `access_token` in the same
-response is short-lived and the backend fetches its own.
+Paste the `refresh_token` from the response, with the type set to **Refresh
+token**.
 
 ## 4. Find the organization id
 
@@ -108,9 +130,12 @@ To rotate:
 
 1. Zoho API console → your Self Client → **Revoke** the refresh token. Anything
    still using it stops working immediately, which is the point.
-2. Generate a fresh grant code and exchange it (steps 2 and 3 above).
-3. Update the credential **in the app**, under Data & connection — not in a
-   `.env`. The app encrypts `client_secret` and `refresh_token` at rest.
+2. Generate a fresh grant code (step 2 above).
+3. Paste it **in the app**, under Data & connection → the company's **Rotate**
+   box, with the type set to **Grant code** — not into a `.env`. The exchange
+   happens server-side and `client_secret` and `refresh_token` are encrypted at
+   rest. One grant usually reaches every company its user can see, so rotating
+   from any one of them rotates it for all of them; the app names the others.
 4. If the client *secret* also leaked, regenerate the Self Client itself; the
    secret is not rotatable on its own. The new token then belongs to a new app,
    so rotate it **with** its client id and secret — a token-only rotation would
@@ -154,7 +179,13 @@ interchangeable — each one has already ruled the others out:
 |---|---|---|
 | `invalid_client_secret` | The client id was **recognised** and the secret rejected — so the data centre being asked is the right one | The secret does not match the id, or it came from another data centre's console, or the refresh token was issued by a *different app* — see below |
 | `invalid_client` | No such client id at this accounts host | A typo, or the app is registered in another data centre |
-| `invalid_code` | The refresh token itself is revoked, superseded, or from another data centre | Generate a fresh token — this is the one a DC mismatch usually shows as |
+| `invalid_code` | Whichever credential was sent was refused. For a **refresh token**: revoked, superseded, or from another data centre. For a **grant code**: already spent, expired (they live minutes), or generated in another data centre | Generate a fresh grant code and paste it with the type set to **Grant code**. This is also the one a DC mismatch usually shows as |
+
+**`invalid_code` right after connecting is almost always a grant code entered
+as a refresh token** — the two look identical, so the code goes into the wrong
+box and the message then describes a *revoked* token on a credential a minute
+old. The credential-type control on the connect and rotate forms exists to stop
+exactly this; check it is set to **Grant code** before regenerating anything.
 
 **`invalid_client_secret` right after a rotation is almost always the third
 cause.** Replacing the token leaves the client pair alone by design — re-typing
@@ -222,15 +253,19 @@ right there:
 | Zoho Books organization id | Step 4 above |
 | Data centre | The table above — pick the row matching the account |
 | Client ID / Client secret | Step 1 |
-| Refresh token | Step 3 |
+| Grant code *or* Refresh token | Step 2 for the code; [step 3](#3-the-grant-code-is-what-you-paste--the-app-does-the-exchange) if you exchanged it yourself |
 
-Press **Connect Zoho**. The page re-checks the connection immediately using
+Press **Connect Zoho**. A grant code is exchanged first and nothing is stored
+if Zoho refuses it. The page then re-checks the connection immediately using
 what you just entered, so you find out right away if something doesn't match —
 same states as the table in the next section. The secret and refresh token are
 encrypted before they touch the database and are never echoed back by any
 response.
 
-**Or from the command line**, once signed in as that organization's owner:
+**Or from the command line**, once signed in as that organization's owner.
+This endpoint takes a `refresh_token` only, so do the exchange yourself first
+([step 3](#3-the-grant-code-is-what-you-paste--the-app-does-the-exchange)) — or
+use `POST /api/v1/connections`, which accepts `grant_code` as the screen does:
 
 ```bash
 curl -X PUT localhost:8000/api/v1/data/connection \
@@ -349,7 +384,7 @@ pulling any data**. It separates the three failures that look alike:
 |---|---|
 | `"ok": true` + your org name | Ready to sync |
 | `detail` mentions *no Zoho connection* | This organization hasn't connected one yet — see [step 5](#5-turn-on-live-mode-then-connect-the-credentials-in-the-app) |
-| `detail` carries `invalid_code` | The refresh token is revoked or was issued in a different DC |
+| `detail` carries `invalid_code` | The stored refresh token is revoked, superseded, or was issued in a different DC. If the connection is new, suspect a grant code entered as a refresh token |
 | `detail` carries `invalid_client_secret` | The secret does not belong to the client id — **not** the data centre; see [the table above](#what-a-rejected-sign-in-is-actually-telling-you) |
 | `organization_found: false` | Credentials fine, but the connected organization id is wrong — pick from `visible_organizations` and reconnect |
 | `"source": "fixture"` | `ZOHO_SOURCE=api` is not set |
@@ -510,8 +545,8 @@ ZohoBooks.estimates.CREATE,ZohoBooks.estimates.READ,ZohoBooks.settings.CREATE
 | `ZohoBooks.estimates.READ` | `GET /estimates?reference_number=…` — the duplicate check, and finding out what happened when a write's reply is lost. **Not optional**: without it every send refuses, because an estimate that cannot be looked up cannot be created safely. |
 | `ZohoBooks.settings.CREATE` | `POST /items` — the **Create in books** action on a NOT IN BOOKS line. Leave it out if you would rather items were only ever created by a person in Zoho; everything else still works. |
 
-Then redo steps 3–5 with the new refresh token, or rotate the credential in
-**Data & connection**.
+Then redo steps 2–5 with the new grant code, or rotate the credential in
+**Data & connection** — the rotate box takes a grant code directly.
 
 ### 2. Turn it on
 

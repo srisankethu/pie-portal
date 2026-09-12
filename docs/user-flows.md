@@ -386,9 +386,17 @@ Zoho's consent screen.
 
 ### 4.3 Connect Zoho manually (Self Client)
 
-**Path.** Data centre + client id + secret + refresh token (password fields,
-"never shown again") + Zoho org id + human label; the Access panel lists every
-scope with what it buys and two copyable scope strings (full and minimum).
+**Path.** Data centre + client id + secret + the grant itself + Zoho org id +
+human label; the Access panel lists every scope with what it buys and two
+copyable scope strings (full and minimum). The grant is a **grant code** by
+default — what the console's Generate Code tab hands you — and the server
+exchanges it for a refresh token before anything is stored; a refresh token
+somebody exchanged themselves is the other option on the same control. The two
+are indistinguishable by sight, so the form asks rather than sniffing, which is
+what stops a code entered as a token from failing its first check with
+`invalid_code` on a credential a minute old. A stored refresh token is a
+password field, "never shown again"; a grant code is not masked — it dies in
+minutes, and hiding it only costs the glance that catches a short paste.
 `POST /api/v1/connections` creates, reuses or rotates the credential, connects,
 checks; the card appears. Three outcomes on the credential, keyed on the app
 rather than the secret: identical secrets **attach** to the row on file; a
@@ -397,7 +405,9 @@ a grant for **rotates** that row (Zoho re-issues a refresh token every time a
 Self Client grant is generated, so this is what reconnecting looks like);
 anything else **creates** one. A grant shared *by another organization* is
 never rotated from here — sharing grants use, not the right to change the key.
-**Branches.** Missing secrets → 400 naming them · unsafe base URL → 400 (SSRF
+**Branches.** Missing client pair → 400 naming it · neither grant or both →
+400 · refused grant code → 400 naming the code, with no credential written ·
+unsafe base URL → 400 (SSRF
 guard) · plan refuses a second company → 403 · once one credential exists the
 form auto-switches to "use a sign-in already on file" · base-currency mismatch
 warns but does not flip the check to failed (its documents are refused at sync
@@ -458,16 +468,24 @@ a foreign connection.
 
 **Trigger.** A revoked refresh token surfaces as "Check failed" or a FAILED run
 naming an auth error; the owner opens "Replace the token" (closed by default).
-**Path.** Paste a fresh refresh token for the *same* client (an escape hatch
-opens client id+secret too — Zoho reports a foreign-app token as
-`invalid_client_secret`, which misleads people toward the data centre). The
+**Path.** Paste a fresh **grant code** — what the API console hands you — or a
+refresh token, for the *same* client; the field asks which, because the two are
+indistinguishable by sight and a code entered as a token fails with
+`invalid_code` describing a revoked one. A grant code is exchanged server-side
+against the stored client pair, and nothing is written if Zoho refuses it. An
+escape hatch opens client id+secret too — Zoho reports a foreign-app credential
+as `invalid_client_secret`, which misleads people toward the data centre — and
+a code supplied with a new pair is exchanged against *that* pair. The
 warning is stated before the click: rotation changes the sign-in for **every**
 company on the grant. `POST /api/v1/connections/{id}/rotate` rotates, re-checks
 immediately, and names every other company that changed underneath. Non-Zoho
 connectors rotate via `…/rotate-erp` with the connector's full field list —
 "a half-replaced credential is how a working connection gets broken."
 **Branches.** Wrong endpoint for the connector type → 400 pointing at the right
-one · no stored grant → 409 · blank token → 400 · foreign credential → 403 ·
+one · no stored grant → 409 · neither credential, or both → 400 · half a client
+pair → 400 (the missing half is never filled in from the stored row — a client
+has a separate secret per data centre) · refused grant code → 400 naming the
+code, with the stored token left working · foreign credential → 403 ·
 half-filled client pair → the button stays disabled.
 **Ends.** Rotated + re-check ok · rotated but re-check failed (named) · refused.
 
@@ -1687,7 +1705,7 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/commercial/customers/{customer_id}/portfolio` | manager/owner | Customer's items ranked by economic materiality; thresholds_version(s) the rows carry |
 | POST | `/api/v1/commercial/recompute` | manager/owner | Rebuild derived metrics (optionally one customer; background=true refused 409 when no queue worker) |
 | GET | `/api/v1/connections` | manager/owner | List connections (health, last sync, coverage, suggested since) + usable credentials + can_manage + pooling note |
-| POST | `/api/v1/connections` | owner | Add a Zoho company — reuse a credential_id or supply fresh secrets; checks the connection immediately |
+| POST | `/api/v1/connections` | owner | Add a Zoho company — reuse a credential_id, or supply client id+secret with exactly one of `grant_code` (exchanged server-side before anything is stored) or `refresh_token`; checks the connection immediately |
 | GET | `/api/v1/connections/catalog` | manager/owner | Connector catalog: Zoho entry + registry (netsuite, dynamics365, acumatica, prophet21, sagex3, sage100) with field specs, permissions, scope… |
 | POST | `/api/v1/connections/erp` | owner | Connect one company of a registered ERP; validates values against the spec; checks immediately |
 | POST | `/api/v1/connections/erp/discover` | owner | List companies a candidate ERP credential can see before anything is stored (dynamics365 only; SSRF-guarded) |
@@ -1697,7 +1715,7 @@ shims, are mounted but are not flows and are not listed here.
 | PATCH | `/api/v1/connections/{connection_id}` | owner | Rename or pause/resume (enabled) a connection |
 | DELETE | `/api/v1/connections/{connection_id}` | owner | Remove a connection; already-synced rows deliberately stay |
 | POST | `/api/v1/connections/{connection_id}/check` | owner | Live check: ping + per-scope probe (Zoho) or ping only (ERP); records result; fills org timezone/country and connection base_currency |
-| POST | `/api/v1/connections/{connection_id}/rotate` | owner | Replace the Zoho refresh token (optional client pair); re-checks immediately; names every other company on the same grant |
+| POST | `/api/v1/connections/{connection_id}/rotate` | owner | Replace the Zoho grant: exactly one of `grant_code` (exchanged server-side) or `refresh_token`, optional client pair; re-checks immediately; names every other company on the same grant |
 | POST | `/api/v1/connections/{connection_id}/rotate-erp` | owner | Replace a registered-connector credential (all fields); same shared-grant disclosure as /rotate |
 | PUT | `/api/v1/data/auto-sync` | manager/owner | Set the automatic sync cadence (hours 0–168) on Organization.config |
 | PUT | `/api/v1/data/connection` | owner | Legacy: connect/replace the org's Zoho credentials in one call; response pings, never echoes secrets |

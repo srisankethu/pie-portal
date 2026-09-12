@@ -316,6 +316,22 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   const selection = useMemo(
     () => selectedIds.filter((id) => visibleIds.has(id)), [selectedIds, visibleIds]);
 
+  /** Whether a line already has an approval waiting, so a strip offers to ask
+   *  once rather than every time it is drawn.
+   *
+   *  Up here with the other hooks, and it has to be: it sat below the
+   *  `if (!quote)` return further down, so the render that opened a draft ran
+   *  one hook more than the render before it and React threw "Rendered more
+   *  hooks than during the previous render" the instant the quote landed.
+   *  Nothing in this app catches that, so the whole tree unmounted and the
+   *  Quote Builder was a white page on every device. `quote` is null on the
+   *  first render of every visit, so the fault fired on every visit. */
+  const approvalPendingFor = useCallback(
+    (lineId: string) =>
+      (ci.gate?.requests ?? []).some(
+        (r) => r.subject_line_id === lineId && r.status === "PENDING"),
+    [ci.gate]);
+
   // Keyboard: `/` to search and Escape to close, both of which belong to the
   // page. Everything *inside* the grid — ↑↓, Enter to open a line, Space to
   // select — is ag-grid's now. It used to be re-implemented here over a
@@ -530,14 +546,6 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       // is left reading CREATE FAILED, and the reason is said out loud.
       flash(q.createItemError || `Item created in ${q.systemLabel}`);
     });
-
-  /** Whether a line already has an approval waiting, so a strip offers to ask
-   *  once rather than every time it is drawn. */
-  const approvalPendingFor = useCallback(
-    (lineId: string) =>
-      (ci.gate?.requests ?? []).some(
-        (r) => r.subject_line_id === lineId && r.status === "PENDING"),
-    [ci.gate]);
 
   /** A fix pressed on a line's strip.
    *

@@ -51,9 +51,28 @@ export function QuoteDetails({ quote, definitions, readOnly, onSave }: {
     setProblem({});
   }, [quote.id, quote.fields, definitions]);
 
-  if (definitions.length === 0) return null;
-
   const missing = new Set(quote.missingFields);
+
+  /* Filled last, and it used to sit first.
+   *
+   * These are the details the *document* needs — reference, validity, terms —
+   * not the work. Fully expanded above the grid they took 203px of a 900px
+   * screen, and the first quote line began at 765px: 85% of the viewport was
+   * chrome about the quote and 15% was the quote. So it opens only when it is
+   * the thing to do — something required is still empty — and is a summary row
+   * otherwise, which is the state a finished quote is in.
+   *
+   * Not hidden: the header states what is filled and what is missing without
+   * being opened, and the count is the same one the send gate refuses on.
+   *
+   * Above the "no definitions" return rather than below it, and that is not a
+   * tidying: the definitions are fetched after the quote, so this component
+   * mounted with none, returned `null` before reaching this line, and then ran
+   * one hook more on the render they arrived on. React throws on that, and an
+   * uncaught throw here is a white page where the Quote Builder was. */
+  const [open, setOpen] = useState(missing.size > 0);
+
+  if (definitions.length === 0) return null;
 
   const commit = async (d: QuoteFieldDefinition) => {
     const held = quote.fields[d.key];
@@ -67,18 +86,6 @@ export function QuoteDetails({ quote, definitions, readOnly, onSave }: {
     }
   };
 
-  /* Filled last, and it used to sit first.
-   *
-   * These are the details the *document* needs — reference, validity, terms —
-   * not the work. Fully expanded above the grid they took 203px of a 900px
-   * screen, and the first quote line began at 765px: 85% of the viewport was
-   * chrome about the quote and 15% was the quote. So it opens only when it is
-   * the thing to do — something required is still empty — and is a summary row
-   * otherwise, which is the state a finished quote is in.
-   *
-   * Not hidden: the header states what is filled and what is missing without
-   * being opened, and the count is the same one the send gate refuses on. */
-  const [open, setOpen] = useState(missing.size > 0);
   const filled = definitions.filter((d) => {
     const v = quote.fields[d.key];
     return v !== undefined && v !== null && String(v) !== "";

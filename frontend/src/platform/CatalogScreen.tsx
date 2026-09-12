@@ -96,8 +96,8 @@ import Typography from "@mui/material/Typography";
 
 import { papi } from "./api";
 import { CatalogSources, fileSize, megabytes } from "./CatalogSources";
-import { EmptyState, ErrorState, FactTable, LoadingState, Meta, PanelMark,
-         PercentageValue, SectionHeader, StatusChip, type Tone } from "./kit";
+import { EmptyState, ErrorState, FactTable, FormDialog, LoadingState, Meta,
+         PanelMark, PercentageValue, SectionHeader, StatusChip, type Tone } from "./kit";
 import type { BindingChoice, CatalogueUnion, CompanyCatalogue,
               CompanyCatalogueEntry, CompanyCatalogues as View, DecoderArtifact,
               DecoderProposalResponse, PlatformSession } from "./types";
@@ -230,7 +230,7 @@ function AddCatalogueDialog({ busy, onClose, onAdd }: {
 }) {
   const [name, setName] = useState("");
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="xs">
+    <FormDialog open onClose={onClose} fullWidth maxWidth="xs">
       <DialogTitle>Add a catalogue</DialogTitle>
       <DialogContent>
         <DialogContentText sx={{ mb: 2 }}>
@@ -253,7 +253,7 @@ function AddCatalogueDialog({ busy, onClose, onAdd }: {
           Add
         </Button>
       </DialogActions>
-    </Dialog>
+    </FormDialog>
   );
 }
 
@@ -267,7 +267,7 @@ function RenameDialog({ catalogue, busy, onClose, onRename }: {
   const [name, setName] = useState(catalogue.name);
   const unchanged = name.trim() === catalogue.name;
   return (
-    <Dialog open onClose={onClose} fullWidth maxWidth="xs">
+    <FormDialog open onClose={onClose} fullWidth maxWidth="xs">
       <DialogTitle>Rename {nameOf(catalogue)}</DialogTitle>
       <DialogContent>
         <DialogContentText sx={{ mb: 2 }}>
@@ -286,7 +286,7 @@ function RenameDialog({ catalogue, busy, onClose, onRename }: {
           Save
         </Button>
       </DialogActions>
-    </Dialog>
+    </FormDialog>
   );
 }
 

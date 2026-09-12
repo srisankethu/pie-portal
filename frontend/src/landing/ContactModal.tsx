@@ -54,9 +54,16 @@ export function ContactModal({ onClose }: {
   // Restoring focus matters as much as taking it: a dialog that closes and
   // leaves focus nowhere drops a keyboard visitor back at the top of a long
   // page, several sections above the button they pressed.
+  //
+  // `preventScroll`, because taking focus asks the browser to scroll the
+  // element into view and this element is taller than a phone: at 393x727 the
+  // scroll landed the sheet at top: -14px, with the close button off the top
+  // edge of the screen and nothing on screen suggesting it had moved. The
+  // backdrop is the scroller and it starts at the top, which is where the
+  // heading is.
   useEffect(() => {
     const opener = document.activeElement as HTMLElement | null;
-    dialog.current?.focus();
+    dialog.current?.focus({ preventScroll: true });
     return () => opener?.focus?.();
   }, []);
 

@@ -171,6 +171,7 @@ These live in `frontend/src/platform/kit.tsx`:
 | `Meta` | the muted second line — a code, a source, a timestamp | `className="fsrc"`, and three local `Meta` copies |
 | `FieldLabel` | a field's label with the optional why beside it | the `overline` + `Tip` pair, written out twice |
 | `PanelMark` | a panel's own micro-heading, below the ramp's smallest rung | `variant="overline"` built by hand four times, `.facts-mark` |
+| `FormDialog` | a dialog somebody fills in — full screen on a phone | `Dialog` + a `fullScreen={useMediaQuery(down("sm"))}` that only `ConnectionsPanel` had |
 
 Two rows of this table used to name components that were never written —
 `ChartContainer` and `AuditTimeline`. A standard that lists a component nobody
@@ -220,6 +221,37 @@ value that will not follow.
 
 Every screen works on desktop, laptop and tablet. Avoid fixed widths unless the
 content genuinely requires one (a chart measuring its own container does).
+
+**And on a phone**, which is where this desk quotes from — a machine shop, a
+customer's plant, a stockroom. Four rules, each of which was a defect first:
+
+- **A dialog somebody fills in is `kit.FormDialog`, not `Dialog`.** It is full
+  screen below `sm`; a centred sheet at 390px is a letterbox with its own
+  scrollbar inside the page's. A confirmation you answer yes or no to stays a
+  centred `Dialog` — a two-line "Remove QB-0005?" blown up to a whole screen
+  reads as a page somebody has to find their way back from.
+- **Anything sticky costs what it covers.** The quote's summary bar is one row
+  at a desk and five stacked blocks at 390px — 254px of an 844px screen, sat on
+  top of the rate fields it was summarising. It is `position: { xs: "static",
+  sm: "sticky" }` now. Measure a sticky element at phone width before keeping
+  it there.
+- **Nothing lands on the primary action.** The snackbar is bottom-left at a desk
+  and top on a phone, because at 390px it is the full width of the screen and
+  the bottom is where every form dialog keeps its actions.
+- **A tap target is not a hover target.** WCAG 2.2 §2.5.8 asks 24x24 at AA;
+  `kit.TOUCH` is the AAA 44 and is what a control owning its own row gets. The
+  explanation `?` was 17x13 — sized for a mouse, and on a phone the only way to
+  read the text at all.
+
+`kit.FormDialog` reads `down("sm")`, the theme raises input text to 16px below
+600px (iOS Safari zooms a field under 16px and does not zoom back), and the
+grid draws cards below `DataGrid.NARROW_BREAKPOINT`. Three breakpoints, each
+stated once; a fourth invented at a call site is a fourth place a phone starts.
+
+The check is a browser, not a read: drive the app at 390px and look for a page
+that scrolls sideways, a box whose content is cut off, and a control under
+24px. `e2e/.shots/capture.mjs --device phone` photographs the screens and
+`e2e/.shots/a11y.mjs` reports the first of those three.
 
 ## 13. Accessibility
 

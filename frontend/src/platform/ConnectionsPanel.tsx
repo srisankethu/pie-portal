@@ -3,7 +3,6 @@ import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Checkbox from "@mui/material/Checkbox";
 import Chip from "@mui/material/Chip";
-import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
@@ -14,14 +13,13 @@ import TextField from "@mui/material/TextField";
 import ToggleButton from "@mui/material/ToggleButton";
 import ToggleButtonGroup from "@mui/material/ToggleButtonGroup";
 import Typography from "@mui/material/Typography";
-import useMediaQuery from "@mui/material/useMediaQuery";
-import { useTheme } from "@mui/material/styles";
 import AddOutlined from "@mui/icons-material/AddOutlined";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatDate, since, todayISO } from "../when";
 import { papi } from "./api";
 import {
-  EmptyState, ErrorState, LoadingState, SectionHeader, StatusChip, type Tone,
+  EmptyState, ErrorState, FormDialog, LoadingState, SectionHeader, StatusChip,
+  type Tone,
 } from "./kit";
 import type {
   ConnectionCheck,
@@ -1221,8 +1219,6 @@ function AddConnection({
   /** Two-way, because this component opens itself on return from Zoho. */
   onOpenChange: (open: boolean) => void;
 }) {
-  const theme = useTheme();
-  const narrow = useMediaQuery(theme.breakpoints.down("sm"));
   // Which system the company lives in. Zoho first — it is the platform's
   // richest flow and the incumbent — then every registered connector.
   const [connector, setConnector] = useState("zoho");
@@ -1429,19 +1425,17 @@ function AddConnection({
     }
   }
 
+  // `FormDialog`, not `Dialog`: full screen on a phone. This is the longest
+  // form in the product — seven systems, three ways to sign in, and the whole
+  // access list — and it was the first to need that, so the rule and the
+  // reasoning now live in `kit.tsx` where the other nine forms could find them.
   return (
-    <Dialog
+    <FormDialog
       open={open}
       // Not dismissable mid-request: a click on the backdrop while the add is
       // in flight would hide the only place its error can be read.
       onClose={() => { if (!busy) onOpenChange(false); }}
-      fullWidth
       maxWidth="md"
-      // Full screen on a phone. This is the longest form in the product — seven
-      // systems, three ways to sign in, and the whole access list — and a
-      // centred dialog at 390px wide is a letterbox with its own scrollbar
-      // inside the page's.
-      fullScreen={narrow}
       aria-labelledby="cx-add-title"
     >
       <DialogTitle id="cx-add-title">
@@ -1776,7 +1770,7 @@ function AddConnection({
           </Button>
         )}
       </DialogActions>
-    </Dialog>
+    </FormDialog>
   );
 }
 

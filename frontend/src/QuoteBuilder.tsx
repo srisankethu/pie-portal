@@ -31,7 +31,6 @@ import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
-import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
@@ -58,8 +57,8 @@ import { blockersFor, coverage, type Fix } from "./components/lineProblems";
 import { NARROW_BREAKPOINT } from "./platform/DataGrid";
 import { QuoteOutcomeBar } from "./components/QuoteOutcomeBar";
 import { SummaryBar } from "./components/SummaryBar";
-import { EmptyState, ErrorState, FieldLabel, FilterChip, FilterPanel, LoadingState,
-         SectionHeader, TOUCH } from "./platform/kit";
+import { EmptyState, ErrorState, FieldLabel, FilterChip, FilterPanel, FormDialog,
+         LoadingState, SectionHeader, TOUCH } from "./platform/kit";
 import { abilityFor } from "./platform/ability";
 import { PATH, pathFor } from "./platform/route";
 import type { PlatformSession } from "./platform/types";
@@ -316,6 +315,21 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   const selection = useMemo(
     () => selectedIds.filter((id) => visibleIds.has(id)), [selectedIds, visibleIds]);
 
+  /** Whether a line already has an approval waiting, so a strip offers to ask
+   *  once rather than every time it is drawn.
+   *
+   *  Up here with the other hooks, not down beside the actions it reads like:
+   *  everything below the `if (!quote)` return runs only once the draft has
+   *  landed, so a hook there is called on the second render and not the first.
+   *  React counts hooks per render, and one that appears late crashes the whole
+   *  screen — which is exactly what this did, at every viewport, from the press
+   *  of "New quote" onwards. */
+  const approvalPendingFor = useCallback(
+    (lineId: string) =>
+      (ci.gate?.requests ?? []).some(
+        (r) => r.subject_line_id === lineId && r.status === "PENDING"),
+    [ci.gate]);
+
   // Keyboard: `/` to search and Escape to close, both of which belong to the
   // page. Everything *inside* the grid — ↑↓, Enter to open a line, Space to
   // select — is ag-grid's now. It used to be re-implemented here over a
@@ -530,14 +544,6 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       // is left reading CREATE FAILED, and the reason is said out loud.
       flash(q.createItemError || `Item created in ${q.systemLabel}`);
     });
-
-  /** Whether a line already has an approval waiting, so a strip offers to ask
-   *  once rather than every time it is drawn. */
-  const approvalPendingFor = useCallback(
-    (lineId: string) =>
-      (ci.gate?.requests ?? []).some(
-        (r) => r.subject_line_id === lineId && r.status === "PENDING"),
-    [ci.gate]);
 
   /** A fix pressed on a line's strip.
    *
@@ -1071,7 +1077,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
 
       {/* Handing the quote over. The list is the organization's active
           members, minus the current owner. */}
-      <Dialog open={handover !== null} onClose={() => setHandover(null)} fullWidth maxWidth="xs">
+      <FormDialog open={handover !== null} onClose={() => setHandover(null)} fullWidth maxWidth="xs">
         <DialogTitle>Hand {quote.number} to somebody else</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
@@ -1094,7 +1100,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
             Hand over
           </Button>
         </DialogActions>
-      </Dialog>
+      </FormDialog>
 
       {/* Choosing — or changing — the customer re-resolves the lines already
           on the quote under that customer's identity scope, and the server

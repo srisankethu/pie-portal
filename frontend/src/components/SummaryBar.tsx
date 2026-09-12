@@ -15,6 +15,16 @@ import { CurrencyValue, TOUCH } from "../platform/kit";
  * Fixed was right when the Quote Builder owned the whole window; inside the
  * platform shell it slid underneath the navigation drawer and covered whatever
  * was at the bottom of every other screen's scroll.
+ *
+ * **And not sticky at all on a phone.** Sticky is cheap while this is one row:
+ * at a desk it is about 80px and the grid keeps the rest. At 390px the same
+ * content wraps into five stacked blocks — two figures, what the total covers,
+ * the alert naming what is unsettled, and the send — measured at 254px of an
+ * 844px screen, and it sat on top of the line cards for the whole of the work
+ * it was summarising. A running total is worth a third of a desk; it is not
+ * worth a third of a phone, where the thing underneath it is the rate field
+ * somebody is there to fill in. Below `sm` it is the last block on the page,
+ * which is where you scroll to when you are ready to send.
  */
 export function SummaryBar({
   quote,
@@ -65,7 +75,7 @@ export function SummaryBar({
     <Paper
       variant="outlined"
       sx={{
-        position: "sticky", bottom: 0, zIndex: 2,
+        position: { xs: "static", sm: "sticky" }, bottom: 0, zIndex: 2,
         mt: 3, p: 1.5,
         display: "flex", alignItems: "center", flexWrap: "wrap",
         gap: 3, rowGap: 1.5,

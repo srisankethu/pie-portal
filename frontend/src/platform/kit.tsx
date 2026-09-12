@@ -20,6 +20,7 @@
 import { Children } from "react";
 import type { ElementType, ReactNode } from "react";
 import { Link as RouterLink } from "react-router-dom";
+import { useTheme } from "@mui/material/styles";
 import type { SxProps, Theme } from "@mui/material/styles";
 
 import { formatDateTime } from "../when";
@@ -30,6 +31,8 @@ import Avatar from "@mui/material/Avatar";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
+import Dialog from "@mui/material/Dialog";
+import type { DialogProps } from "@mui/material/Dialog";
 import Grid from "@mui/material/Grid";
 import IconButton from "@mui/material/IconButton";
 import Link from "@mui/material/Link";
@@ -38,6 +41,7 @@ import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
+import useMediaQuery from "@mui/material/useMediaQuery";
 import ArrowUpward from "@mui/icons-material/ArrowUpward";
 import ArrowDownward from "@mui/icons-material/ArrowDownward";
 import RemoveIcon from "@mui/icons-material/Remove";
@@ -552,6 +556,42 @@ const BAND_TONE: Record<string, Tone> = { HIGH: "bad", MEDIUM: "warn", LOW: "neu
  *  that does not answer "what first?", which is what the *sort* is for. */
 export function PriorityChip({ band, tip }: { band: string; tip?: string }) {
   return <StatusChip label={band} tone={BAND_TONE[band] ?? "neutral"} tip={tip} />;
+}
+
+// ── dialogs ─────────────────────────────────────────────────────────────────
+
+/** A dialog somebody fills in, full screen on a phone.
+ *
+ *  A centred dialog is the right shape for a question with two answers. It is
+ *  the wrong shape for a form: at 390px MUI leaves 32px of backdrop down each
+ *  side and caps the sheet at 90% of the height, so the RFQ box, the customer
+ *  search and the outcome fields each arrived as a letterbox with its own
+ *  scrollbar inside the page's, and the action row sat where the snackbar
+ *  lands. `ConnectionsPanel` had already reached for `fullScreen={narrow}` and
+ *  said why in a comment; this is that comment, once, so the twelfth form does
+ *  not have to rediscover it.
+ *
+ *  **The line is what the dialog asks for, not how big it is.** Something you
+ *  fill in — a field, a search, a list you pick from — goes full screen; a
+ *  confirmation you answer yes or no to stays a centred box, because a two-line
+ *  "Remove QB-0005?" blown up to a whole phone screen reads as a page the
+ *  reader has navigated to and has to find their way back from. A sheet
+ *  somebody only reads is the third case and keeps the centred box too: the
+ *  value-event drilldown is a detail popped from a row and dismissed, not work
+ *  somebody is in the middle of.
+ *
+ *  Everything else is `Dialog`'s: this adds `fullWidth` as the default (every
+ *  form dialog in the app already passed it) and decides `fullScreen` from the
+ *  viewport. A caller that passes `fullScreen` itself still wins, so a dialog
+ *  that is always full screen can say so. */
+export function FormDialog({ fullWidth = true, fullScreen, ...rest }: DialogProps) {
+  const theme = useTheme();
+  // `down("sm")` because that is already this app's definition of a phone: the
+  // theme raises input text to 16px below 600px, and `ConnectionsPanel` picked
+  // the same breakpoint for the same question. A third number invented here
+  // would be a third place a phone starts.
+  const narrow = useMediaQuery(theme.breakpoints.down("sm"));
+  return <Dialog fullWidth={fullWidth} fullScreen={fullScreen ?? narrow} {...rest} />;
 }
 
 // ── the four states every view has ───────────────────────────────────────────

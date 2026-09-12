@@ -803,6 +803,22 @@ textarea.input { min-height: 160px; resize: vertical; font-family: ui-monospace,
 .tip-trigger:hover .tip-mark, .tip-trigger:focus-visible .tip-mark {
   background: var(--color-accent); color: #fff;
 }
+/* Bigger where there is no pointer to hover with.
+   `Tip.tsx` makes the trigger a real button precisely so the text is reachable
+   by tap — and then sized it for a mouse: 13px of dot in a 17x13 button, which
+   measured as one of the smallest targets in the app and is the *only* way to
+   read the explanation on a phone. 20px of dot in a 30x28 button, measured,
+   clears the 24x24 minimum WCAG 2.2 §2.5.8 sets at AA.
+   Not the kit's 44 (that is §2.5.5, AAA) and not an invisible expanded hit
+   area: a 44px circle centred on a mark that sits 8px from a date field would
+   take that field's taps with it, and a target you cannot see is a target
+   somebody else's control loses. This grows the button itself, so the layout
+   accounts for it. Coarse pointers only — at a desk 13px beside a label is
+   right, and hover reaches it anyway. */
+@media (pointer: coarse) {
+  .tip-trigger { padding: 4px 4px 4px 6px; margin: -4px 0; }
+  .tip-mark { width: 20px; height: 20px; font-size: 13px; }
+}
 /* Fixed, not absolute: the tables this sits in scroll horizontally, and
    overflow-x clips vertically too — an absolutely positioned bubble on a
    column header would be cut off exactly where it is needed. */

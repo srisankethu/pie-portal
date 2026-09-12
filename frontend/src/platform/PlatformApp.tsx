@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
-import { EmptyState, ErrorState, FilterChip, HumanLog, InlineLink, LoadingState, PanelMark, SectionHeader, StatusChip, TOUCH } from "./kit";
+import { EmptyState, ErrorState, FilterChip, FormDialog, HumanLog, InlineLink, LoadingState, PanelMark, SectionHeader, StatusChip, TOUCH } from "./kit";
 import { formatDate } from "../when";
 import {
   clearPlatformSession,
@@ -23,7 +23,6 @@ import AlertTitle from "@mui/material/AlertTitle";
 import Box from "@mui/material/Box";
 import Paper from "@mui/material/Paper";
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
@@ -349,7 +348,7 @@ function ActionModal({
   const missingNote = !!meta.needsNote && !note.trim();
 
   return (
-    <Dialog open onClose={onClose} maxWidth="sm" fullWidth>
+    <FormDialog open onClose={onClose} maxWidth="sm" fullWidth>
       <DialogTitle sx={{ pb: 1 }}>
         <Typography
           component="div"
@@ -394,7 +393,7 @@ function ActionModal({
           {busy ? "Logging…" : "Log decision"}
         </Button>
       </DialogActions>
-    </Dialog>
+    </FormDialog>
   );
 }
 

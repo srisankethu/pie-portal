@@ -25,6 +25,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { LineGrid } from "./LineGrid";
 import { NARROW_BREAKPOINT } from "../platform/DataGrid";
 import type { Line, LineIntelligence } from "../types";
+import { pretendViewportIs } from "../test/viewport";
 import type { Fix } from "./lineProblems";
 
 /** A line the server would only ever send to a manager: cost and margin present. */
@@ -243,22 +244,6 @@ describe("a manager's grid", () => {
 // exercises the grid: MUI's `useMediaQuery` returns its default — false — when
 // the API is missing, so the wrapper takes the wide path. Installing a stub is
 // therefore not a convenience, it is the only way to reach the other branch.
-
-/** A `matchMedia` that answers one question honestly: is the viewport narrower
- *  than the width the query names? Everything else about it is inert. */
-function pretendViewportIs(width: number) {
-  vi.stubGlobal("matchMedia", (query: string) => {
-    const max = /max-width:\s*([\d.]+)px/.exec(query);
-    return {
-      matches: max ? width <= Number.parseFloat(max[1]) : false,
-      media: query,
-      onchange: null,
-      addListener: () => {}, removeListener: () => {},
-      addEventListener: () => {}, removeEventListener: () => {},
-      dispatchEvent: () => false,
-    };
-  });
-}
 
 afterEach(() => vi.unstubAllGlobals());
 

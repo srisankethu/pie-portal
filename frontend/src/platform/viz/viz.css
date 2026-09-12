@@ -647,9 +647,34 @@
   border: 1px solid currentColor; padding: 1px 5px; white-space: nowrap;
 }
 
-@media (max-width: 520px) {
+/* The row, on a phone. The name keeps the left edge and the figures fall under
+   it rather than being pushed off to the right.
+
+   `white-space: normal` is the half that was missing, and it is what made the
+   Cash collection panel the one screen in the app that scrolled sideways.
+   `.cadence-figures` is `nowrap` so a figure never breaks mid-value, which
+   makes its min-content the width of its longest sentence — "Late, but
+   predictable ±10.5d · paying faster · ₹2,94,000 settled", measured at 444px.
+   In the row's own flex that is a 514px minimum, and `.viz-panel` is a grid
+   whose `auto` track takes its size from exactly that: at 390px the panel was
+   366px wide with 456px of content painted across its own border, and the
+   document scrolled to 490px. Wrapping is the only thing that lowers a
+   min-content, so below `sm` the sentences wrap and nothing else has to change.
+
+   600px rather than the 520 this block used to carry: the row needs about
+   586px of viewport before it fits without wrapping, so a rule at 520 left a
+   band of phones — and every 560px-wide device — still overflowing. */
+@media (max-width: 600px) {
   .cadence-hit { flex-wrap: wrap; gap: 4px 10px; }
-  .cadence-figures { justify-items: start; text-align: left; }
+  /* The name takes the row and the figures start under it. Wrapping alone left
+     it to each row's own length — a short name kept its figures beside it while
+     a long one pushed them under — so the list read as two different layouts
+     interleaved. */
+  .cadence-name { flex-basis: 100%; }
+  .cadence-figures { justify-items: start; text-align: left; white-space: normal; }
+}
+
+@media (max-width: 520px) {
   .quad-legend { grid-template-columns: minmax(0, 1fr); }
 }
 

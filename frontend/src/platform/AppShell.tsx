@@ -1,244 +1,70 @@
-/** The application frame: brand bar, grouped navigation, content column.
+/** The application frame: brand bar, five destinations, content column.
  *
- * Replaces eighteen undifferentiated text buttons in a `flex-wrap` row, where
- * finding "Suppliers" meant reading all eighteen labels and a laptop width
- * pushed the page heading under the fold.
+ * This was a 232px drawer holding thirty-four items in four collapsible groups.
+ * The groups were grouped honestly — the problem was never the length, it was
+ * that the list was a description of the data rather than of the work, so the
+ * product computed exactly what was wrong and then made the reader go and find
+ * it. `destinations.ts` has the full argument and the map of where every one of
+ * those screens now lives.
  *
- * Grouped by the question the screens answer, not by the code that serves them:
+ * What is left is five links along the top, which is short enough to read at a
+ * glance and therefore short enough to be horizontal — and a horizontal bar
+ * gives the width back to the content, which is where the tables that need it
+ * are. Scoping left with the drawer: all five are readable by every role, and
+ * the role rules moved down to the tabs inside Money and Setup, where they
+ * match the gate on the endpoints those screens call.
  *
- *   Decide      the queue, the desk, and the things that block a quote
- *   Understand  where the money moved and why
- *   The book    what is actually held — customers, stock, suppliers, cash
- *   Setup       connections, identity, and the policy that governs the rest
- *
- * Role scoping lives with the caller: `AppShell` renders whatever it is handed,
- * and a screen a role cannot read is omitted upstream rather than 403'd.
- *
- * Every item is an anchor, not a button — the reason the router moved to React
- * Router. A `<button onClick>` cannot be ctrl-clicked into a new tab and shows
- * no destination on hover, so comparing the queue against one account meant
- * losing one of them.
+ * Every item is still an anchor, not a button — ctrl-click, middle-click, open
+ * in a new tab, and a destination on hover. Two screens side by side is the
+ * ordinary way this desk is used.
  */
 import { useState, type ReactNode } from "react";
 import AppBar from "@mui/material/AppBar";
 import Badge from "@mui/material/Badge";
 import Box from "@mui/material/Box";
+import Button from "@mui/material/Button";
 import Divider from "@mui/material/Divider";
 import Drawer from "@mui/material/Drawer";
 import IconButton from "@mui/material/IconButton";
 import List from "@mui/material/List";
 import ListItemButton from "@mui/material/ListItemButton";
-import ListItemIcon from "@mui/material/ListItemIcon";
 import ListItemText from "@mui/material/ListItemText";
-import ListSubheader from "@mui/material/ListSubheader";
 import Toolbar from "@mui/material/Toolbar";
 import Tooltip from "@mui/material/Tooltip";
+import Typography from "@mui/material/Typography";
 import useMediaQuery from "@mui/material/useMediaQuery";
 import { useTheme } from "@mui/material/styles";
 
 import MenuIcon from "@mui/icons-material/Menu";
-import AutoStoriesOutlined from "@mui/icons-material/AutoStoriesOutlined";
-import FlagOutlined from "@mui/icons-material/FlagOutlined";
-import ScienceOutlined from "@mui/icons-material/ScienceOutlined";
-import RequestQuoteOutlined from "@mui/icons-material/RequestQuoteOutlined";
-import FactCheckOutlined from "@mui/icons-material/FactCheckOutlined";
-import CloudOutlined from "@mui/icons-material/CloudOutlined";
-import LightbulbOutlined from "@mui/icons-material/LightbulbOutlined";
-import TrendingDownOutlined from "@mui/icons-material/TrendingDownOutlined";
-import ScatterPlotOutlined from "@mui/icons-material/ScatterPlotOutlined";
-import DonutSmallOutlined from "@mui/icons-material/DonutSmallOutlined";
-import ScheduleOutlined from "@mui/icons-material/ScheduleOutlined";
-import GroupsOutlined from "@mui/icons-material/GroupsOutlined";
-import Inventory2Outlined from "@mui/icons-material/Inventory2Outlined";
-import SavingsOutlined from "@mui/icons-material/SavingsOutlined";
-import LocalShippingOutlined from "@mui/icons-material/LocalShippingOutlined";
-import HubOutlined from "@mui/icons-material/HubOutlined";
-import GridViewOutlined from "@mui/icons-material/GridViewOutlined";
-import AccountTreeOutlined from "@mui/icons-material/AccountTreeOutlined";
-import TrackChangesOutlined from "@mui/icons-material/TrackChangesOutlined";
-import CategoryOutlined from "@mui/icons-material/CategoryOutlined";
-import PaymentsOutlined from "@mui/icons-material/PaymentsOutlined";
-import ReceiptLongOutlined from "@mui/icons-material/ReceiptLongOutlined";
-import TimelineOutlined from "@mui/icons-material/TimelineOutlined";
-import StorageOutlined from "@mui/icons-material/StorageOutlined";
-import ManageSearchOutlined from "@mui/icons-material/ManageSearchOutlined";
-import FingerprintOutlined from "@mui/icons-material/FingerprintOutlined";
-import MonitorHeartOutlined from "@mui/icons-material/MonitorHeartOutlined";
-import PsychologyOutlined from "@mui/icons-material/PsychologyOutlined";
-import ExpandMoreOutlined from "@mui/icons-material/ExpandMoreOutlined";
-import ScoreboardOutlined from "@mui/icons-material/ScoreboardOutlined";
-import PendingActionsOutlined from "@mui/icons-material/PendingActionsOutlined";
-import CurrencyExchangeOutlined from "@mui/icons-material/CurrencyExchangeOutlined";
-import GavelOutlined from "@mui/icons-material/GavelOutlined";
-import ShieldOutlined from "@mui/icons-material/ShieldOutlined";
-import TuneOutlined from "@mui/icons-material/TuneOutlined";
-import InsightsOutlined from "@mui/icons-material/InsightsOutlined";
-import SellOutlined from "@mui/icons-material/SellOutlined";
-import HistoryOutlined from "@mui/icons-material/HistoryOutlined";
+import SearchOutlined from "@mui/icons-material/SearchOutlined";
 
 import { Link as RouterLink } from "react-router-dom";
 
 import AccountMenu from "./AccountMenu";
+import { DESTINATIONS, destinationFor, type Destination } from "./destinations";
 import type { OrganizationMembershipView } from "./types";
 import { pathFor, WIDE_SCREENS, type Screen } from "./route";
 
-export const DRAWER_WIDTH = 232;
-
-/** The four sections, in the order a working day uses them. */
-export type NavGroup = "decide" | "understand" | "book" | "setup";
-
-export const GROUP_LABEL: Record<NavGroup, string> = {
-  decide: "Decide",
-  understand: "Understand",
-  book: "The book",
-  setup: "Setup",
-};
-
-/** One icon per screen. Kept here rather than at the call site so the nav table
- *  upstream stays about role scoping, which is the part with rules in it. */
-const ICON: Partial<Record<Screen, typeof MenuIcon>> = {
-  home: AutoStoriesOutlined,
-  list: FlagOutlined,
-  simulate: ScienceOutlined,
-  quotes: RequestQuoteOutlined,
-  quoteOutcomes: ScoreboardOutlined,
-  // A clipboard still waiting on its clock: these are quotes lapsed without a
-  // win or a loss recorded, not quotes that were lost. The scoreboard above is
-  // the settled half of the same pair.
-  unrecordedQuotes: PendingActionsOutlined,
-  approvals: FactCheckOutlined,
-
-  weather: CloudOutlined,
-  opportunities: LightbulbOutlined,
-  lostRevenue: TrendingDownOutlined,
-  landscape: ScatterPlotOutlined,
-  composition: DonutSmallOutlined,
-  cadence: ScheduleOutlined,
-
-  customer: GroupsOutlined,
-  stock: Inventory2Outlined,
-  gmroi: SavingsOutlined,
-  supply: LocalShippingOutlined,
-  bonds: HubOutlined,
-  mix: GridViewOutlined,
-  dependency: AccountTreeOutlined,
-  targets: TrackChangesOutlined,
-  catalogue: CategoryOutlined,
-  payments: PaymentsOutlined,
-  payables: ReceiptLongOutlined,
-  orderToCash: TimelineOutlined,
-  cashCycle: CurrencyExchangeOutlined,
-  statutory: GavelOutlined,
-
-  // The before-and-after pair, and the icons say which is which: a clock hand
-  // for what the book already held, an upward line for what the platform
-  // changed about it.
-  retrospective: HistoryOutlined,
-  attribution: InsightsOutlined,
-
-  // PIE's own pricing model. A price tag, because that is literally what it is.
-  monetization: SellOutlined,
-
-  data: StorageOutlined,
-  // A lookup, not a second catalogue: `catalogue` above is the book of items,
-  // this is the decode that says which pack and ruleset answered for one.
-  decodedCatalog: ManageSearchOutlined,
-  identity: FingerprintOutlined,
-  // A trace, not a shield or a gauge: this screen is the platform's own pulse
-  // — is every component answering, and did the last sync finish.
-  observability: MonitorHeartOutlined,
-  states: PsychologyOutlined,
-  trust: ShieldOutlined,
-  settings: TuneOutlined,
-};
-
-export interface NavItem {
-  key: Screen;
-  label: string;
-  group: NavGroup;
-  /** Rendered as a badge. Open counts only — a badge that never goes down
-   *  stops being read. */
-  count?: number;
-  /** Marks this item current for a screen that has no nav entry of its own,
-   *  e.g. a decision detail page belongs to the queue it was opened from. */
-  alsoCurrentFor?: Screen[];
-}
-
-const ORDER: NavGroup[] = ["decide", "understand", "book", "setup"];
-
-/** The two groups a reader may fold away, and why nothing is folded for them.
- *
- *  This nav carries thirty-four items and its own grouping admits the shape:
- *  seven ways to act, twenty to read. The first attempt at that treated the
- *  length as the problem and reduced it two ways — collapsing these groups by
- *  default, and withholding them entirely until an organization had synced
- *  books.
- *
- *  Both were wrong, and the withholding was wrong in the way that matters: the
- *  analysis screens are where this product's visualisations live, and they are
- *  the best argument it makes for itself. Hiding them from somebody who has not
- *  seen the product yet removes the case exactly when it would have landed. A
- *  long nav is a much smaller problem than a nav missing the thing worth
- *  looking at.
- *
- *  So nothing folds unless the reader folds it. `Decide` is the working day and
- *  never folds; `Setup` is where you go when something is wrong, so folding it
- *  would hide the exits. The two analysis groups *can* be folded by somebody who
- *  has decided they do not use them, that choice persists, and a group holding
- *  the current screen stays open regardless — a nav that hides the page you are
- *  reading has lost you.
- *
- *  The affordance is for the reader who wants a shorter list. It is not a
- *  judgement about what they should be looking at. */
-const FOLDABLE: ReadonlySet<NavGroup> = new Set<NavGroup>(["understand", "book"]);
-
-//: Which foldable groups this reader has *collapsed*. Stored the way round it
-//: is because the default is open: an empty preference must mean "show me
-//: everything", so the thing worth persisting is the exception.
-//:
-//: A new key rather than reusing the old one. The previous release stored the
-//: opposite list under `pie.nav.open-groups`, and reading that as a collapse
-//: list would fold exactly the groups somebody had chosen to open — the worst
-//: possible misreading of a stored preference.
-const FOLD_KEY = "pie.nav.collapsed-groups";
-
-
-/** Which foldable groups this reader has opened. Persisted so the answer
- *  survives a reload; a failure to read or write it is not worth a broken nav,
- *  so both sides degrade to the default rather than throwing (private-mode
- *  browsers make `localStorage` throw on access, not merely return null). */
-function loadCollapsedGroups(): Set<NavGroup> {
-  try {
-    const raw = window.localStorage.getItem(FOLD_KEY);
-    if (!raw) return new Set();
-    return new Set(JSON.parse(raw) as NavGroup[]);
-  } catch {
-    return new Set();
-  }
-}
-
-function saveCollapsedGroups(groups: Set<NavGroup>): void {
-  try {
-    window.localStorage.setItem(FOLD_KEY, JSON.stringify([...groups]));
-  } catch {
-    /* A nav that cannot remember is still a nav. */
-  }
-}
+/** What a destination has waiting. Only Today carries one today, and only ever
+ *  an open count: a badge that never goes down stops being read. */
+export type NavCounts = Partial<Record<Destination, number>>;
 
 export default function AppShell({
-  items,
   current,
+  counts,
   userName,
   roleLabel,
   organizationName,
   organizations,
   currentOrganizationId,
   onSwitchOrganization,
+  onOpenCommands,
   onSignOut,
+  status,
   children,
 }: {
-  items: NavItem[];
   current: Screen;
+  counts?: NavCounts;
   userName: string;
   roleLabel: string;
   /** Passed straight through to the account menu, which is where the shell
@@ -249,178 +75,104 @@ export default function AppShell({
   organizations?: OrganizationMembershipView[];
   currentOrganizationId?: string;
   onSwitchOrganization?: (organizationId: string) => void;
+  /** Opens the intent search. Optional: a harness that renders the shell
+   *  without the palette gets a shell without the button, rather than one whose
+   *  button does nothing. */
+  onOpenCommands?: () => void;
   onSignOut: () => void;
+  /** When the books were last read, rendered beside the account. The shell is
+   *  where it belongs: a figure's age is true wherever the reader is standing,
+   *  and it is the first thing anybody asks when a number looks wrong. */
+  status?: ReactNode;
   children: ReactNode;
 }) {
   const theme = useTheme();
   const wide = useMediaQuery(theme.breakpoints.up("md"));
   const wideLayout = WIDE_SCREENS.has(current);
   const [open, setOpen] = useState(false);
-  const [collapsedGroups, setCollapsedGroups] =
-    useState<Set<NavGroup>>(loadCollapsedGroups);
+  const here = destinationFor(current);
 
-  const isCurrent = (it: NavItem) =>
-    current === it.key || (it.alsoCurrentFor || []).includes(current);
-
-  const toggleGroup = (group: NavGroup) => {
-    setCollapsedGroups((prev) => {
-      const next = new Set(prev);
-      if (next.has(group)) next.delete(group); else next.add(group);
-      saveCollapsedGroups(next);
-      return next;
-    });
-  };
-
-  const nav = (
-    <Box sx={{ overflowY: "auto", height: "100%", pb: 2 }}>
-      {ORDER.map((group) => {
-        const inGroup = items.filter((i) => i.group === group);
-        if (!inGroup.length) return null;
-        // A group holding the screen you are on is open whatever the stored
-        // preference says — a nav that hides the page you are reading is a nav
-        // that has lost you.
-        const holdsCurrent = inGroup.some(isCurrent);
-        const foldable = FOLDABLE.has(group);
-        const expanded = !foldable || holdsCurrent || !collapsedGroups.has(group);
-        return (
-          <List
-            key={group}
-            dense
-            disablePadding
-            subheader={
-              <ListSubheader
-                disableSticky
-                sx={{
-                  bgcolor: "transparent",
-                  fontFamily: "var(--font-heading)",
-                  fontSize: 11,
-                  fontWeight: 600,
-                  letterSpacing: "0.09em",
-                  textTransform: "uppercase",
-                  color: "text.secondary",
-                  lineHeight: "30px",
-                  mt: 1,
-                }}
-              >
-                {foldable ? (
-                  <Box
-                    component="button"
-                    type="button"
-                    onClick={() => toggleGroup(group)}
-                    aria-expanded={expanded}
-                    aria-label={`${GROUP_LABEL[group]}, ${inGroup.length} screens`}
-                    sx={{
-                      all: "unset",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 0.5,
-                      width: "100%",
-                      font: "inherit",
-                      letterSpacing: "inherit",
-                      "&:focus-visible": {
-                        outline: "2px solid",
-                        outlineColor: "primary.main",
-                        outlineOffset: 2,
-                      },
-                    }}
-                  >
-                    <ExpandMoreOutlined
-                      sx={{
-                        fontSize: 16,
-                        transition: "transform 120ms",
-                        transform: expanded ? "none" : "rotate(-90deg)",
-                      }} />
-                    {GROUP_LABEL[group]}
-                    {/* The count is what makes a folded group legible: a
-                        reader who collapsed this a month ago needs the row to
-                        read as eleven screens put away, not as a heading with
-                        nothing under it. */}
-                    {!expanded && (
-                      <Box component="span" sx={{ opacity: 0.7, ml: 0.25 }}>
-                        ({inGroup.length})
-                      </Box>
-                    )}
-                  </Box>
-                ) : GROUP_LABEL[group]}
-              </ListSubheader>
-            }
-            sx={{ px: 1 }}
-          >
-            {(expanded ? inGroup : []).map((it) => {
-              const Icon = ICON[it.key];
-              const selected = isCurrent(it);
-              return (
-                <ListItemButton
-                  key={it.key}
-                  component={RouterLink}
-                  to={pathFor(it.key)}
-                  selected={selected}
-                  // Closing the drawer is all that is left for the click to do:
-                  // the anchor navigates on its own, which is what makes
-                  // ctrl-click and middle-click work.
-                  onClick={() => setOpen(false)}
-                  sx={{ minHeight: 34, py: 0.25, mb: "1px", color: "inherit" }}
-                >
-                  {/* The slot is always rendered, even with nothing in it. It
-                      used to be omitted when a screen had no icon, which pulled
-                      that one label flush against the edge while every
-                      neighbour stayed indented — so the four screens missing
-                      from ICON did not read as "no icon yet", they read as a
-                      broken list. A gap keeps the column straight, and a
-                      missing icon stays a small omission instead of a layout
-                      fault. */}
-                  <ListItemIcon sx={{ minWidth: 30, color: "inherit" }}>
-                    {Icon ? <Icon sx={{ fontSize: 18 }} /> : null}
-                  </ListItemIcon>
-                  <ListItemText
-                    primary={it.label}
-                    slotProps={{
-                      primary: {
-                        sx: {
-                          fontFamily: "var(--font-heading)",
-                          fontSize: 13.5,
-                          fontWeight: selected ? 600 : 500,
-                        },
-                      },
-                    }}
-                  />
-                  {it.count ? (
-                    <Badge
-                      badgeContent={it.count}
-                      color={it.key === "approvals" ? "error" : "primary"}
-                      sx={{ mr: 1.4 }}
-                    />
-                  ) : null}
-                </ListItemButton>
-              );
-            })}
-          </List>
-        );
-      })}
-    </Box>
-  );
+  const links = DESTINATIONS.map((d) => ({
+    ...d, current: d.key === here, count: counts?.[d.key] ?? 0 }));
 
   return (
-    <Box sx={{ display: "flex", minHeight: "100vh", bgcolor: "background.default" }}>
+    <Box sx={{ display: "flex", flexDirection: "column", minHeight: "100vh",
+               bgcolor: "background.default" }}>
       <AppBar
-        position="fixed"
+        position="sticky"
         elevation={0}
         color="default"
         sx={{
           bgcolor: "var(--color-neutral-100)",
           borderBottom: "1px solid var(--color-divider)",
-          zIndex: (t) => t.zIndex.drawer + 1,
         }}
       >
-        <Toolbar variant="dense" sx={{ gap: 1.5, minHeight: 52 }}>
+        <Toolbar variant="dense" sx={{ gap: 1, minHeight: 56 }}>
           {!wide && (
-            <IconButton edge="start" size="small" onClick={() => setOpen(true)} aria-label="Open navigation">
+            <IconButton edge="start" size="small" onClick={() => setOpen(true)}
+                        aria-label="Open navigation">
               <MenuIcon />
             </IconButton>
           )}
           <PieLogo size={30} />
+          {wide && (
+            <Box component="nav" aria-label="Main" sx={{ display: "flex", gap: 0.25, ml: 1 }}>
+              {links.map((d) => (
+                <Button
+                  key={d.key}
+                  component={RouterLink}
+                  to={pathFor(d.screen)}
+                  aria-current={d.current ? "page" : undefined}
+                  sx={{
+                    minHeight: 34,
+                    px: 1.5,
+                    fontFamily: "var(--font-heading)",
+                    fontSize: 15,
+                    fontWeight: 600,
+                    color: d.current ? "var(--color-accent-800)" : "text.primary",
+                    bgcolor: d.current ? "var(--color-accent-100)" : "transparent",
+                  }}
+                >
+                  {d.count ? (
+                    <Badge badgeContent={d.count} color="error" sx={{ pr: 1.6 }}>
+                      {d.label}
+                    </Badge>
+                  ) : d.label}
+                </Button>
+              ))}
+            </Box>
+          )}
           <Box sx={{ flex: 1 }} />
+          {/* The search says what it is for rather than what it searches.
+              "What do you want to do?" is the one line on this bar addressed to
+              somebody who does not yet know the product's vocabulary, and the
+              palette behind it answers in verbs. */}
+          {onOpenCommands && (
+            <Button
+              onClick={onOpenCommands}
+              startIcon={<SearchOutlined sx={{ fontSize: 18 }} />}
+              sx={{
+                minHeight: 34,
+                px: 1.25,
+                border: "1px solid var(--color-divider)",
+                bgcolor: "var(--color-neutral-200)",
+                color: "text.secondary",
+                fontWeight: 400,
+                textTransform: "none",
+              }}
+            >
+              {wide ? "What do you want to do?" : "Search"}
+              {wide && (
+                <Box component="span" sx={{
+                  ml: 1, px: 0.6, borderRadius: 0.5,
+                  border: "1px solid var(--color-divider)",
+                  fontFamily: "var(--font-heading)", fontSize: 11, fontWeight: 600 }}>
+                  ⌘K
+                </Box>
+              )}
+            </Button>
+          )}
+          {wide && status}
           {/* No role switcher. A user has exactly one role, it comes from their
               account, and a control that swapped it would be a control that lets
               anyone read the cost of every line in the book. The role is shown
@@ -437,37 +189,51 @@ export default function AppShell({
         </Toolbar>
       </AppBar>
 
-      <Box component="nav" sx={{ width: { md: DRAWER_WIDTH }, flexShrink: { md: 0 } }}>
-        <Drawer
-          variant={wide ? "permanent" : "temporary"}
-          open={wide || open}
-          onClose={() => setOpen(false)}
-          ModalProps={{ keepMounted: true }}
-          sx={{
-            "& .MuiDrawer-paper": {
-              width: DRAWER_WIDTH,
-              boxSizing: "border-box",
-              bgcolor: "var(--color-neutral-100)",
-              borderRight: "1px solid var(--color-divider)",
-            },
-          }}
-        >
-          <Toolbar variant="dense" sx={{ minHeight: 52 }} />
-          <Divider />
-          {nav}
-        </Drawer>
-      </Box>
-
-      <Box
-        component="main"
-        sx={{
-          flex: 1,
-          minWidth: 0,          // without this a wide grid stretches the shell
-          display: "flex",
-          flexDirection: "column",
-        }}
+      <Drawer
+        variant="temporary"
+        open={!wide && open}
+        onClose={() => setOpen(false)}
+        ModalProps={{ keepMounted: true }}
+        sx={{ "& .MuiDrawer-paper": { width: 260, bgcolor: "var(--color-neutral-100)" } }}
       >
-        <Toolbar variant="dense" sx={{ minHeight: 52 }} />
+        <Toolbar variant="dense" sx={{ minHeight: 56 }}>
+          <PieLogo size={26} />
+          <Typography sx={{ ml: 1, fontFamily: "var(--font-heading)", fontWeight: 600 }}>
+            {BRAND}
+          </Typography>
+        </Toolbar>
+        <Divider />
+        <List dense component="nav" aria-label="Main">
+          {links.map((d) => (
+            <ListItemButton
+              key={d.key}
+              component={RouterLink}
+              to={pathFor(d.screen)}
+              selected={d.current}
+              // Closing the drawer is all that is left for the click to do: the
+              // anchor navigates on its own, which is what makes ctrl-click and
+              // middle-click work.
+              onClick={() => setOpen(false)}
+              sx={{ minHeight: 44 }}
+            >
+              <ListItemText
+                primary={d.label}
+                slotProps={{ primary: { sx: {
+                  fontFamily: "var(--font-heading)", fontSize: 15,
+                  fontWeight: d.current ? 600 : 500 } } }}
+              />
+              {d.count ? <Badge badgeContent={d.count} color="error" sx={{ mr: 1.4 }} /> : null}
+            </ListItemButton>
+          ))}
+        </List>
+        {status && (
+          <Box sx={{ px: 2, py: 1.5, borderTop: "1px solid var(--color-divider)" }}>
+            {status}
+          </Box>
+        )}
+      </Drawer>
+
+      <Box component="main" sx={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column" }}>
         {/* 1180 is a reading measure and stays the default. A table-first
             screen gets 1560 instead — see `WIDE_SCREENS` in route.ts for why
             the Quote Builder is one, and what the cap was costing it. Still a

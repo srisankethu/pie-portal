@@ -23,8 +23,22 @@
  *
  * Cell *content* is MUI: every state is a `Chip` carrying a word, so none of
  * them is colour alone.
+ *
+ * **Five columns, and the problems annotate their own row.** It had eleven —
+ * requested item, supply product, stock, rate, recommended, line total, margin,
+ * commercial, what-was-read, status, remove — and four of them were columns of
+ * chips describing states. Nine columns of that kind have one cost that does
+ * not show up in a screenshot: cost, margin, availability and shortfall matter
+ * on four rows out of fourteen, and rendering them on all fourteen buys the
+ * reader a wall to scan. For a salesperson the two economics columns were a
+ * column of em-dashes, because the server sends no cost at all.
+ *
+ * So: what every line has is a column (#, item, qty, rate, line total), the
+ * economics are a toggle for whoever has them, and everything that is true of
+ * *some* lines is a strip under the line it is true of, carrying the fix as a
+ * button. `lineProblems.ts` decides what a problem is; this draws it.
  */
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useRef } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
@@ -37,11 +51,11 @@ import Typography from "@mui/material/Typography";
 import DeleteOutlineOutlined from "@mui/icons-material/DeleteOutlineOutlined";
 
 import type { Line, LineIntelligence } from "../types";
-import { relTone, statusTone } from "../rel";
-import { Labelled } from "../Tip";
+import { problemsFor, type Fix, type LineProblem, type ProblemTone } from "./lineProblems";
+import { relTone } from "../rel";
 import { money } from "../money";
 import { DataGrid, numeric, type ColDef } from "../platform/DataGrid";
-import { EmptyState, StatusChip, TOUCH, TOUCH_TARGET, type Tone } from "../platform/kit";
+import { EmptyState, StatusChip, TOUCH, type Tone } from "../platform/kit";
 
 /** One line, joined to its assessment.
  *
@@ -49,7 +63,20 @@ import { EmptyState, StatusChip, TOUCH, TOUCH_TARGET, type Tone } from "../platf
  *  column resolved in a renderer displays correctly and **sorts on nothing** —
  *  and "which lines are thinnest?" is the first thing anybody asks of a priced
  *  quote. */
-type Row = Line & { intel?: LineIntelligence; margin: number | null };
+type Row = Line & {
+  /** The line's place in the RFQ as pasted, counted over the lines alone.
+   *
+   *  Not ag-grid's `rowIndex`: a strip is a row too, so a quote whose second
+   *  line has a problem numbered its lines 1, 2, 4. */
+  n: number;
+  intel?: LineIntelligence;
+  margin: number | null;
+  /** Lifted out of `economics` so the column can sort on it. A value read
+   *  inside a cell renderer displays and sorts on nothing — the same reason
+   *  `margin` is here. Absent for a role the server sends no cost to. */
+  cost: number | null;
+  problems: LineProblem[];
+};
 
 /** The margin to show, and where it came from.
  *
@@ -148,59 +175,6 @@ function Flags({ line, wrap, systemShort }:
   );
 }
 
-/** The worst exception on a line, as a chip. Ordered by severity, so the chip
- *  always shows the thing that most needs a decision rather than the first rule
- *  that happened to fire.
- *
- *  The label is the *category*, not the exception's own sentence. Titles here
- *  run to "First time for this customer and item", which a column wide enough
- *  to print would be a column stealing width from the product codes — and it
- *  elided to "First time for this custome…", which reads as a truncation bug
- *  rather than a state. The sentences are all in the tooltip, in full, and in
- *  the drawer behind the row. */
-function CommercialChip({ intel }: { intel?: LineIntelligence }) {
-  if (!intel) return <Typography variant="caption" color="text.secondary">—</Typography>;
-  const worst = intel.exceptions[0];
-  if (!worst) return <StatusChip label="clear" tone="good" tip="Every deterministic check passed on this line. That is not a claim that the price is optimal." />;
-
-  const tone: Tone =
-    worst.severity === "CRITICAL" ? "bad" : worst.severity === "WARNING" ? "warn" : "info";
-  const others = intel.exceptions.length - 1;
-  const label = intel.requires_approval
-    ? "approval"
-    : worst.severity === "CRITICAL" ? "blocking"
-      : worst.severity === "WARNING" ? "check price"
-        : "context";
-
-  return (
-    <StatusChip
-      tone={tone}
-      label={
-        <Labelled
-          tip={
-            <>
-              {intel.requires_approval && (
-                <div style={{ marginBottom: 4 }}>
-                  <b>This line cannot be sent without an approval.</b>
-                </div>
-              )}
-              <ul style={{ margin: 0, paddingLeft: 16 }}>
-                {intel.exceptions.map((e) => (
-                  <li key={e.code}>{e.title}</li>
-                ))}
-              </ul>
-              <div style={{ marginTop: 4 }}>Open the line for the detail behind each one.</div>
-            </>
-          }
-        >
-          {label}
-          {others > 0 ? ` +${others}` : ""}
-        </Labelled>
-      }
-    />
-  );
-}
-
 /** A column that must keep its width.
  *
  *  `sizeColumnsToFit` shrinks whatever it can when the grid is narrower than
@@ -252,28 +226,28 @@ const CARD_TINT: Record<"blocked" | "attention", string> = {
  *  this is a `TextField`, always open, committing on blur and on Enter.
  */
 function LineCard({
-  line, intel, mgmt, readOnly = false, systemLabel, systemShort,
-  selected, onToggle, onOpen, onSetPrice,
-  onDeleteLine, onCreateItem, onConfirmReading,
+  line, intel, problems, mgmt, econ, readOnly = false, systemShort,
+  selected, onToggle, onOpen, onSetPrice, onDeleteLine, onFix,
 }: {
   line: Line;
   intel?: LineIntelligence;
+  /** The same problems the grid draws under the row, drawn inside the card.
+   *  One model, two renderings — a phone that disagreed with a laptop about
+   *  what is wrong with a line would be the worst of both. */
+  problems: LineProblem[];
   mgmt: boolean;
+  econ: boolean;
   /** The reader may not change this quote — see `Quote.canEdit`. The rate
-   *  field, the remove, create and accept controls are withheld, because a
-   *  control that only ever answers 403 is worse than none. */
+   *  field and the remove control are withheld, because a control that only
+   *  ever answers 403 is worse than none. */
   readOnly?: boolean;
-  /** What this quote's books are called, in their own words — see
-   *  `Quote.systemLabel`. Every sentence here that names the ledger reads it. */
-  systemLabel: string;
   systemShort: string;
   selected: boolean;
   onToggle: (id: string) => void;
   onOpen: (id: string) => void;
   onSetPrice: (id: string, price: number | null) => void;
   onDeleteLine: (id: string) => void;
-  onCreateItem: (id: string) => void;
-  onConfirmReading: (id: string) => void;
+  onFix: (line: Line, fix: Fix) => void;
 }) {
   const margin = marginOf(line, intel);
   const tone = lineTone(line);
@@ -288,10 +262,7 @@ function LineCard({
       variant="outlined"
       role="listitem"
       data-line-card={line.id}
-      sx={{
-        p: 1.5,
-        bgcolor: tone ? CARD_TINT[tone] : undefined,
-      }}
+      sx={{ p: 1.5, bgcolor: tone ? CARD_TINT[tone] : undefined }}
     >
       <Stack direction="row" spacing={1} sx={{ alignItems: "flex-start" }}>
         <Checkbox
@@ -314,10 +285,30 @@ function LineCard({
               background: "none", border: 0, p: 0, cursor: "pointer", font: "inherit",
             }}
           >
-            <CodeCell code={line.reqCode} desc={line.reqDesc} wrap>
-              <Flags line={line} wrap systemShort={systemShort} />
+            <CodeCell
+              code={line.supplyCode ?? line.reqCode}
+              desc={line.supplyCode ? line.supplyDesc : line.reqDesc}
+              accent={line.substituted}
+              wrap
+            >
+              <Stack direction="row" spacing={0.5} useFlexGap
+                     sx={{ flexWrap: "wrap", alignItems: "center", mt: 0.5 }}>
+                {line.supplyCode && line.supplyCode !== line.reqCode && (
+                  <StatusChip label={line.relLabel} tone={relTone(line.rel)} dense />
+                )}
+                {(line.sel === "USER" || line.sel === "MANUAL") && (
+                  <StatusChip label={line.sel === "MANUAL" ? "manual" : "user set"}
+                              tone={line.sel === "MANUAL" ? "warn" : "neutral"} dense />
+                )}
+                <Flags line={line} wrap systemShort={systemShort} />
+              </Stack>
             </CodeCell>
           </Box>
+          {line.supplyCode && line.supplyCode !== line.reqCode && (
+            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
+              asked for {line.reqCode}
+            </Typography>
+          )}
         </Box>
         {!readOnly && (
           <IconButton
@@ -330,53 +321,15 @@ function LineCard({
         )}
       </Stack>
 
-      <Field label="Supply product">
-        {line.supplyCode ? (
-          <CodeCell code={line.supplyCode} desc={line.supplyDesc}
-                    accent={line.substituted} wrap>
-            <Stack direction="row" spacing={0.5} useFlexGap
-                   sx={{ flexWrap: "wrap", alignItems: "center", mt: 0.5 }}>
-              <StatusChip label={line.relLabel} tone={relTone(line.rel)} dense />
-              {(line.sel === "USER" || line.sel === "MANUAL") && (
-                <StatusChip label={line.sel === "MANUAL" ? "manual" : "user set"}
-                            tone={line.sel === "MANUAL" ? "warn" : "neutral"} dense />
-              )}
-              {line.inBooks === false && !readOnly && (
-                <Button size="small" sx={TOUCH} onClick={() => onCreateItem(line.id)}>
-                  + Create in {systemLabel}
-                </Button>
-              )}
-            </Stack>
-          </CodeCell>
-        ) : (
-          <Typography variant="body2" color="text.secondary">
-            {line.rel === "PIE_DOWN" ? "awaiting PIE"
-              : line.rel === "AMBIGUOUS" ? "select product" : "not resolved"}
-          </Typography>
-        )}
-      </Field>
-
-      {/* Qty and availability read together — "twenty asked for, forty on the
-          shelf" is one fact — so they share a row rather than stacking. */}
-      <Stack direction="row" spacing={2} sx={{ mt: 1 }}>
+      <Stack direction="row" spacing={1.5}
+             sx={{ mt: 1.5, alignItems: "flex-end", flexWrap: "wrap", rowGap: 1 }}>
         <Field label="Qty" inline>
           <Typography variant="body2">{line.reqQty}</Typography>
         </Field>
-        <Field label="Available" inline>
-          <Typography variant="body2">
-            {!line.supplyCode ? "—" : line.availUnknown ? "?" : line.avail}
-            {line.shortage !== null && line.shortage > 0
-              ? ` · short ${line.shortage}` : ""}
-          </Typography>
-        </Field>
-      </Stack>
-
-      <Stack direction="row" spacing={1.5}
-             sx={{ mt: 1.5, alignItems: "flex-end", flexWrap: "wrap", rowGap: 1 }}>
         <TextField
           // Says whose number is in the field, in the label, because the card
           // has no header row to carry it and no tooltip a thumb can reach.
-          label={line.priceSource === "LIST" ? "Quoted ₹ (list)" : "Quoted ₹"}
+          label={line.priceSource === "LIST" ? "Rate (list)" : "Rate"}
           size="small"
           defaultValue={line.quoted ?? ""}
           // Remounts when the server sends a different price back, which it does
@@ -405,7 +358,7 @@ function LineCard({
             {money(line.lineTotal)}
           </Typography>
         </Box>
-        {mgmt && margin !== null && (
+        {mgmt && econ && margin !== null && (
           <Box sx={{ pb: 0.75 }}>
             <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
               Margin
@@ -422,31 +375,85 @@ function LineCard({
         )}
       </Stack>
 
-      <Stack direction="row" spacing={0.5} useFlexGap
-             sx={{ mt: 1.5, flexWrap: "wrap", alignItems: "center" }}>
-        <StatusChip label={line.status.label} tone={statusTone(line.status.kind)} />
-        <CommercialChip intel={intel} />
-      </Stack>
-
-      {line.proposed && (
-        <Box sx={{ mt: 1.5 }}>
-          <Typography variant="body2" sx={{ fontStyle: "italic" }}>
-            “{line.raw}”
-          </Typography>
-          {line.reading ? (
-            <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
-              interpreted: {line.reading}
-            </Typography>
-          ) : null}
-          {!readOnly && (
-            <Button size="small" variant="outlined" sx={{ ...TOUCH, mt: 0.5 }}
-                    onClick={() => onConfirmReading(line.id)}>
-              Accept
-            </Button>
-          )}
-        </Box>
+      {/* What is wrong with this line, and what fixes it — the card's copy of
+          the strip the grid draws under the row. Wrapping rather than one
+          line: a phone has the height and not the width. */}
+      {problems.length > 0 && (
+        <Stack spacing={0.5} sx={{ mt: 1.5 }}>
+          {problems.map((problem) => (
+            <ProblemStrip
+              key={problem.key}
+              problem={problem}
+              dense
+              onFix={(fix) => onFix(line, fix)}
+            />
+          ))}
+        </Stack>
       )}
     </Card>
+  );
+}
+
+/** How tall one strip is. Fixed rather than measured — see
+ *  `DataGridProps.rowDetailHeight` — and enough for a title, a sentence and a
+ *  row of buttons at full tap height. */
+const STRIP_HEIGHT = 64;
+
+const STRIP_TINT: Record<ProblemTone, string> = {
+  bad: "var(--danger-bg)",
+  warn: "var(--caution-bg)",
+  info: "var(--color-neutral-200)",
+};
+
+/** One problem, under the line it is about, with what would fix it.
+ *
+ *  The buttons are the whole point: a strip that only said "below cost on 400
+ *  pieces" would be the `Commercial` chip it replaces, moved. The fix is the
+ *  specific thing — take the recommended rate, ask for the approval, choose
+ *  this candidate — and it acts on the line it is drawn under. */
+function ProblemStrip({
+  problem, onFix, dense = false,
+}: {
+  problem: LineProblem;
+  onFix: (fix: Fix) => void;
+  /** Inside a card rather than under a grid row: the strip wraps instead of
+   *  holding one line, because a phone has no width to hold it. */
+  dense?: boolean;
+}) {
+  return (
+    <Box
+      sx={{
+        display: "flex", alignItems: "center", gap: 1.5, rowGap: 0.5,
+        flexWrap: "wrap",
+        height: dense ? "auto" : STRIP_HEIGHT,
+        px: dense ? 1 : 2, py: dense ? 1 : 0,
+        bgcolor: STRIP_TINT[problem.tone],
+        borderLeft: "2px solid",
+        borderColor: problem.tone === "bad" ? "error.main"
+                   : problem.tone === "warn" ? "warning.main" : "divider",
+      }}
+    >
+      <Box sx={{ flex: 1, minWidth: 220 }}>
+        <Typography variant="subtitle2" sx={{ lineHeight: 1.3 }}>{problem.title}</Typography>
+        <Typography variant="caption" color="text.secondary" noWrap={!dense}
+                    sx={{ display: "block" }} title={problem.detail}>
+          {problem.detail}
+        </Typography>
+      </Box>
+      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap" }}>
+        {problem.fixes.map((f) => (
+          <Button
+            key={f.label}
+            size="small"
+            variant={f.primary ? "contained" : "outlined"}
+            sx={{ ...TOUCH, minHeight: 36 }}
+            onClick={() => onFix(f.fix)}
+          >
+            {f.label}
+          </Button>
+        ))}
+      </Stack>
+    </Box>
   );
 }
 
@@ -471,36 +478,42 @@ function Field({
 export function LineGrid({
   lines,
   mgmt,
+  econ = true,
   readOnly = false,
-  systemLabel,
   systemShort,
   intel,
+  approvalPendingFor,
   selectedIds,
   onSelectionChange,
   onOpen,
   onSetPrice,
   onDeleteLine,
-  onCreateItem,
-  onConfirmReading }: {
+  onFix }: {
   lines: Line[];
   mgmt: boolean;
+  /** Whether the two economics columns are showing. Only ever consulted where
+   *  `mgmt` already holds — a salesperson has no cost to toggle. */
+  econ?: boolean;
   /** The reader may not change this quote — see `Quote.canEdit`. The rate
    *  cell stops being editable and the per-line controls are withheld. */
   readOnly?: boolean;
-  /** What this quote's books are called, in their own words, and the same at
-   *  the width a grid cell has for it — see `Quote.systemLabel`. */
-  systemLabel: string;
+  /** What this quote's books are called at the width a grid cell has for it —
+   *  see `Quote.systemShort`. The grid never decides what to call somebody's
+   *  ERP. */
   systemShort: string;
   intel: Record<string, LineIntelligence>;
+  /** Whether an approval has already been asked for on this line, so the strip
+   *  says it is waiting instead of offering to ask a second time. */
+  approvalPendingFor?: (lineId: string) => boolean;
   selectedIds: string[];
   onSelectionChange: (ids: string[]) => void;
   onOpen: (id: string) => void;
   onSetPrice: (id: string, price: number | null) => void;
   onDeleteLine: (id: string) => void;
-  onCreateItem: (id: string) => void;
-  /** Accept one line's reading. One at a time by design — see
-   *  store.confirm_reading. */
-  onConfirmReading: (id: string) => void;
+  /** A fix pressed on one line's strip. The screen owns what each one does —
+   *  see `lineProblems.Fix` — because every one of them is an existing action
+   *  of the builder's, reached from the row instead of from a drawer. */
+  onFix: (line: Line, fix: Fix) => void;
 }) {
   // Toggling one line's selection, for the card rendering. The grid speaks
   // "here is the whole selected set"; a card has one checkbox and knows only
@@ -512,67 +525,85 @@ export function LineGrid({
       : [...selectedIds, id]);
   }, [selectedIds, onSelectionChange]);
 
+  // Read inside the callback rather than closed over — the same treatment
+  // `DataGridImpl` gives `getRowId`, and for a sharper reason here: the strip
+  // renderer is part of the grid's row data, so an identity that changed on
+  // every parent render would rebuild the rows under somebody typing a rate.
+  const fixRef = useRef(onFix);
+  fixRef.current = onFix;
+
+  const renderRowDetail = useCallback((r: Row) => (r.problems.length ? (
+    <Stack>
+      {r.problems.map((problem) => (
+        <ProblemStrip
+          key={problem.key}
+          problem={problem}
+          onFix={(fix) => fixRef.current(r, fix)}
+        />
+      ))}
+    </Stack>
+  ) : null), []);
+
+  const rowDetailHeight = useCallback(
+    (r: Row) => r.problems.length * STRIP_HEIGHT, []);
+
   const rows: Row[] = useMemo(
-    () => lines.map((l) => ({
+    () => lines.map((l, i) => ({
       ...l,
+      n: i + 1,
       intel: intel[l.id],
       margin: marginOf(l, intel[l.id]),
+      cost: intel[l.id]?.economics?.unit_cost ?? l.economics?.cost ?? null,
+      problems: problemsFor(l, intel[l.id], {
+        mgmt, systemShort, readOnly,
+        approvalPending: approvalPendingFor?.(l.id) ?? false,
+      }),
     })),
-    [lines, intel],
+    [lines, intel, mgmt, systemShort, readOnly, approvalPendingFor],
   );
 
   const columns = useMemo<ColDef<Row>[]>(() => [
     {
       // The line's place in the RFQ as pasted. Not sortable: a position that
-      // reorders with the sort is not a position. First to go when the grid is
-      // narrow — it identifies nothing that the code beside it does not.
-      headerName: "#", ...fixed(52), sortable: false, filter: false,
-      context: { minGridWidth: 1280 },
+      // reorders with the sort is not a position.
+      headerName: "#", ...fixed(46), sortable: false, filter: false,
+      context: { minGridWidth: 900 },
       cellClass: "ag-num", cellStyle: { color: "var(--color-neutral-600)" },
-      valueGetter: (p) => (p.node?.rowIndex ?? 0) + 1,
+      field: "n",
     },
     {
-      field: "reqCode", headerName: "Requested item", flex: 1.2, minWidth: 175,
-      cellRenderer: (p: { data?: Row }) =>
-        p.data ? (
-          <CodeCell code={p.data.reqCode} desc={p.data.reqDesc}>
-            <Flags line={p.data} systemShort={systemShort} />
-          </CodeCell>
-        ) : null,
-    },
-    numeric<Row>("reqQty", "Qty", (n) => String(n), {
-      ...fixed(70), filter: false, context: { minGridWidth: 980 },
-    }),
-    {
-      field: "supplyCode", headerName: "Supply product", flex: 1.3, minWidth: 195,
-      // The button inside this cell is the reason: a click that created a Zoho
-      // item should not also open the drawer over the confirmation.
+      /* What is being quoted, and what was asked for.
+       *
+       * Two columns until now — `Requested item` and `Supply product` — side by
+       * side and identical on most rows, because most lines resolve to the
+       * thing the customer named. They are one cell: the product that would go
+       * out, with the request under it where the two differ, and the
+       * relationship chip beside it where it is not an exact match. A reader
+       * scanning for "what am I quoting" reads one column; a reader checking a
+       * substitution still has both codes in front of them. */
+      field: "supplyCode", headerName: "Item", flex: 1.6, minWidth: 240,
       context: { noRowClick: true },
       cellRenderer: (p: { data?: Row }) => {
         const l = p.data;
         if (!l) return null;
-        if (!l.supplyCode) {
-          return (
-            <Typography variant="caption" color="text.secondary">
-              {l.rel === "PIE_DOWN" ? "awaiting PIE"
-                : l.rel === "AMBIGUOUS" ? "select product" : "not resolved"}
-            </Typography>
-          );
-        }
+        const differs = Boolean(l.supplyCode) && l.supplyCode !== l.reqCode;
         return (
-          <CodeCell code={l.supplyCode} desc={l.supplyDesc} accent={l.substituted}>
+          <CodeCell
+            code={l.supplyCode ?? l.reqCode}
+            desc={l.supplyCode ? l.supplyDesc : l.reqDesc}
+            accent={l.substituted}
+          >
             <Stack direction="row" spacing={0.5} useFlexGap
-                   sx={{ flexWrap: "nowrap", alignItems: "center", overflow: "hidden", mt: 0.25 }}>
-              {/* The relationship belongs beside the product it qualifies, not
-                  in a column of its own two cells away — and a column that has
-                  to hide on a laptop is a column that is not there when it
-                  matters. */}
-              <StatusChip
-                label={l.relLabel}
-                tone={relTone(l.rel)}
-                dense
-                tip="How the supply product relates to what the customer asked for — identical, an equivalent from another maker, or a substitute that differs in some dimension. It is not a judgement about whether to offer it."
-              />
+                   sx={{ flexWrap: "nowrap", alignItems: "center",
+                         overflow: "hidden", mt: 0.25 }}>
+              {differs && (
+                <StatusChip
+                  label={l.relLabel}
+                  tone={relTone(l.rel)}
+                  dense
+                  tip={`Asked for ${l.reqCode}. How the supply product relates to it — identical, an equivalent from another maker, or a substitute that differs in some dimension. It is not a judgement about whether to offer it.`}
+                />
+              )}
               {(l.sel === "USER" || l.sel === "MANUAL") && (
                 <StatusChip
                   label={l.sel === "MANUAL" ? "manual" : "user set"}
@@ -583,74 +614,21 @@ export function LineGrid({
                     : "Chosen from the resolved candidates rather than taken automatically."}
                 />
               )}
-              {l.inBooks === false && !readOnly && (
-                <Button
-                  variant="text" size="small"
-                  // The 66px row has the height for a full tap target; the
-                  // width is the scarce thing, so `minWidth` is the one part of
-                  // `TOUCH` this cannot take.
-                  sx={{ minHeight: TOUCH_TARGET, minWidth: 0, px: 0.75, fontSize: 11 }}
-                  title={`Create ${l.reqCode} in ${systemLabel}`}
-                  onClick={() => onCreateItem(l.id)}
-                >
-                  + Create
-                </Button>
-              )}
+              <Flags line={l} systemShort={systemShort} />
             </Stack>
           </CodeCell>
         );
       },
     },
-    /* Stock: what is on hand, and the shortfall against this line's quantity.
-     *
-     * One column where there were two. `Avail.` asked for a 1420px grid and
-     * `Short.` for 1520px, and the grid tops out at **1137px** — the content
-     * column is capped at 1180 and stops growing, so both were measured absent
-     * at 1280, 1440, 1680 and 1920. Two columns nobody has ever seen.
-     *
-     * Restoring them as a pair does not fit either: the other columns' minimum
-     * widths come to ~908px, which leaves 229px, and the two of them want 168
-     * of it on top of `Line total`. But they are two facts about one thing —
-     * shortage is `qty - avail` — so they belong in one cell, and one cell
-     * fits. The shortfall is a chip rather than red-and-bold text, because a
-     * shortage is a state and §6 wants a word for it, not a hue. */
+    numeric<Row>("reqQty", "Qty", (n) => String(n), {
+      ...fixed(70), filter: false,
+    }),
     {
-      field: "avail", headerName: "Stock", ...fixed(96), filter: false,
-      type: "numericColumn", sortable: true,
-      context: { minGridWidth: 1120 },
-      headerTooltip: "Free stock for the supply product, and how far it falls "
-        + "short of this line's quantity. “?” means the book holds no stock "
-        + "figure for it — which is not the same as none.",
-      valueGetter: (p) => (p.data?.supplyCode && !p.data.availUnknown ? p.data.avail : null),
-      cellRenderer: (p: { data?: Row }) => {
-        const d = p.data;
-        if (!d?.supplyCode) return "—";
-        if (d.availUnknown) {
-          return <StatusChip label="?" tone="neutral" dense
-                             tip="No stock figure on record for this product." />;
-        }
-        const short = Number(d.shortage ?? 0);
-        return (
-          <Stack direction="row" spacing={0.5}
-                 sx={{ alignItems: "center", justifyContent: "flex-end" }}>
-            <span>{String(d.avail ?? 0)}</span>
-            {short > 0 && (
-              <StatusChip
-                label={`short ${short}`} tone="bad" dense
-                tip="Free stock does not cover this line. It can still be quoted — this is what has to be bought or promised on a lead time."
-              />
-            )}
-          </Stack>
-        );
-      },
-    },
-    {
-      field: "quoted", headerName: "Quoted ₹", ...fixed(124),
+      field: "quoted", headerName: "Rate", ...fixed(132),
       type: "numericColumn",
       // The one editable cell on the screen, and the whole point of it: the
       // price is the human's to set. Enter commits, Tab moves down the quote,
-      // Escape abandons — none of which the blur-only text input it replaces
-      // could do.
+      // Escape abandons.
       editable: !readOnly,
       cellClass: readOnly ? "ag-num" : "ag-num qb-editable",
       context: { noRowClick: true },
@@ -662,130 +640,73 @@ export function LineGrid({
         const raw = String(p.newValue ?? "").replace(/[^0-9.]/g, "");
         return raw === "" ? null : Number.parseFloat(raw);
       },
-      // A rate nobody has agreed to, marked as such. It reads exactly like a
-      // considered price otherwise, and on a fresh RFQ every line is one: four
-      // lines arrived priced, the summary bar showed a Quotation total, and the
-      // screen's own subtitle said "nothing is priced for you".
       cellRenderer: (p: { data?: Row; value?: number | null }) => {
-        if (p.value == null) return "—";
+        const l = p.data;
+        /* What the platform would price this line at, under the rate rather
+         * than in a column of its own.
+         *
+         * It was a column, and it was the right thing to add — a salesperson
+         * has no floor, no cost and no margin by design, so without it they
+         * price against nothing but this customer's history. It is still the
+         * answer to "am I under on this line", and that question is asked *of
+         * the rate*, so it belongs against the rate and only where the answer
+         * is yes. On the lines that are already at or above it, it is a column
+         * of numbers nobody reads. */
+        const under = l && l.recommended !== null
+          && (p.value == null || Number(p.value) < l.recommended);
         return (
-          <Stack direction="row" spacing={0.5}
-                 sx={{ alignItems: "center", justifyContent: "flex-end" }}>
-            <span>{money(Number(p.value))}</span>
-            {p.data?.priceSource === "LIST" && (
-              <StatusChip
-                label="list" tone="neutral" dense
-                tip="The catalogue rate this line opened at. Nobody has priced it yet."
-              />
-            )}
-          </Stack>
-        );
-      },
-    },
-    /* What the platform would price this line at, for whoever is looking.
-     *
-     * Served to both roles on purpose (`store.py`: "decision support, safe for
-     * both roles") and rendered for neither until now — `Line.recommended` had
-     * no consumer anywhere in the frontend. The cost of that fell on the
-     * salesperson, who has no floor, no cost and no margin by design and was
-     * therefore pricing against nothing but this customer's own history.
-     *
-     * A column rather than only the drawer, because the question it answers is
-     * "which of these forty lines am I under on?", and that is a scan down a
-     * column, not forty drawer visits. Guidance, not a rule: it sits beside the
-     * editable rate without constraining it. */
-    numeric<Row>("recommended", "Recommended", money, {
-      /* 104px, and the narrowest of the money columns on purpose: it is the
-       * one that has to survive a 1280 laptop, where the grid is 1005px and
-       * the columns that were already there account for 904 of it — measured
-       * in the browser, not estimated from the source. */
-      ...fixed(100), filter: false, context: { minGridWidth: 900 },
-      headerTooltip: "What this line would be priced at from this customer's "
-        + "history and the organisation's policy. It is guidance — the rate "
-        + "that goes out is the one you set.",
-    }),
-
-    /* The extension — rate × quantity, the number the customer actually pays
-     * on this line. It asked for a 1180px grid against a measured ceiling of
-     * 1137, so it has never rendered: the desk could see the rate it typed and
-     * not what that rate came to. 980 is the same threshold `Qty` carries,
-     * which is right — they are the two halves of the same arithmetic.
-     *
-     * 1120 rather than `Qty`'s 980, though, because the budget is real: at a
-     * 1280 viewport the grid is 1005px and there is room for `Recommended` or
-     * for this, not both. Recommended wins that tie — it changes what the desk
-     * types, where the extension only restates it — and this appears from 1440
-     * up, where there is room for both. 1240 rather than 1160 because the
-     * budget was measured, not guessed: at 1440 the grid is 1165px and the
-     * other nine columns already come to 1104. */
-    numeric<Row>("lineTotal", "Line total", money, {
-      ...fixed(116), filter: false, context: { minGridWidth: 1240 },
-    }),
-    ...(mgmt
-      ? [numeric<Row>("margin", "Margin", (n) => `${(n * 100).toFixed(1)}%`, {
-          ...fixed(104), filter: false,
-          headerTooltip: "Gross profit ÷ line revenue at the quoted rate. Shown "
-            + "to managers and owners only — a salesperson's response from the "
-            + "server contains no cost and no margin at all.",
-          cellClassRules: {
-            "qb-thin": (p) => Boolean(p.data?.intel?.blocking || p.data?.economics?.below_floor),
-          },
-          tooltipValueGetter: (p) =>
-            p.data && marginIsMeasured(p.data.intel)
-              ? "From this item's recorded purchase cost — bill lines actually synced from the books."
-              : "Derived from the catalogue cost, because no purchase cost has been synced for this item yet. Indicative only.",
-        })] as ColDef<Row>[]
-      : []),
-    {
-      headerName: "Commercial", ...fixed(128), sortable: false, filter: false,
-      headerTooltip: "The most serious thing the deterministic checks found on "
-        + "this line. “clear” means every check passed, not that the price is "
-        + "optimal.",
-      cellRenderer: (p: { data?: Row }) => <CommercialChip intel={p.data?.intel} />,
-    },
-    // Only while something is unconfirmed. A permanently empty column is width
-    // spent on a state the quote is usually not in.
-    ...(lines.some((l) => l.proposed) ? [{
-      headerName: "Read from the message",
-      minWidth: 300, flex: 1, sortable: false, filter: false,
-      context: { noRowClick: true },
-      headerTooltip: "What the customer actually wrote, beside what was read "
-        + "from it. Check the two match — a grade suffix is the difference "
-        + "between two different tools — then accept the line.",
-      cellRenderer: (p: { data?: Row }) => {
-        if (!p.data?.proposed) return null;
-        return (
-          <Stack direction="row" spacing={1} sx={{ alignItems: "center", py: 0.5 }}>
-            <Stack sx={{ minWidth: 0 }}>
-              {/* The customer's words, not the tidied version. Confirming
-                  against the reading would be confirming against itself. */}
-              <Typography variant="body2" sx={{ fontStyle: "italic" }} noWrap
-                          title={p.data.raw}>
-                “{p.data.raw}”
-              </Typography>
-              {p.data.reading ? (
-                <Typography variant="caption" color="text.secondary" noWrap
-                            title={p.data.reading}>
-                  interpreted: {p.data.reading}
-                </Typography>
-              ) : null}
+          <Stack sx={{ alignItems: "flex-end", lineHeight: 1.2 }}>
+            <Stack direction="row" spacing={0.5} sx={{ alignItems: "center" }}>
+              <span>{p.value == null ? "—" : money(Number(p.value))}</span>
+              {l?.priceSource === "LIST" && (
+                <StatusChip
+                  label="list" tone="neutral" dense
+                  tip="The catalogue rate this line opened at. Nobody has priced it yet."
+                />
+              )}
             </Stack>
-            {!readOnly && (
-              <Button size="small" variant="outlined"
-                      onClick={() => onConfirmReading(p.data!.id)}>
-                Accept
-              </Button>
+            {under && (
+              <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.2 }}
+                          title="What this line would be priced at from this customer's history and the organisation's policy. Guidance — the rate that goes out is the one you set.">
+                rec {money(l!.recommended)}
+              </Typography>
             )}
           </Stack>
         );
       },
-    } as ColDef<Row>] : []),
-    {
-      headerName: "Status", ...fixed(116),
-      valueGetter: (p) => p.data?.status.label ?? "",
-      cellRenderer: (p: { data?: Row }) =>
-        p.data ? <StatusChip label={p.data.status.label} tone={statusTone(p.data.status.kind)} /> : null,
     },
+    numeric<Row>("lineTotal", "Line total", money, {
+      ...fixed(120), filter: false,
+    }),
+    /* The economics, for a reader who has them and has asked to see them.
+     *
+     * Behind a toggle rather than always on. They are the two columns a manager
+     * wants while pricing and nobody wants while reading a quote back, and a
+     * salesperson does not have them at all — the server sends no cost, so for
+     * that role these were two columns of em-dashes explaining nothing. */
+    ...(mgmt && econ
+      ? [
+          numeric<Row>("cost", "Cost", money, {
+            ...fixed(104), filter: false,
+            headerTooltip: "The landed cost this line's margin is measured "
+              + "against — the recorded purchase cost where one has synced, the "
+              + "catalogue cost otherwise.",
+          }),
+          numeric<Row>("margin", "Margin", (n) => `${(n * 100).toFixed(1)}%`, {
+            ...fixed(96), filter: false,
+            headerTooltip: "Gross profit ÷ line revenue at the quoted rate. Shown "
+              + "to managers and owners only — a salesperson's response from the "
+              + "server contains no cost and no margin at all.",
+            cellClassRules: {
+              "qb-thin": (p) => Boolean(p.data?.intel?.blocking || p.data?.economics?.below_floor),
+            },
+            tooltipValueGetter: (p) =>
+              p.data && marginIsMeasured(p.data.intel)
+                ? "From this item's recorded purchase cost — bill lines actually synced from the books."
+                : "Derived from the catalogue cost, because no purchase cost has been synced for this item yet. Indicative only.",
+          }),
+        ] as ColDef<Row>[]
+      : []),
     {
       headerName: "", ...fixed(52), sortable: false, filter: false,
       resizable: false, context: { noRowClick: true },
@@ -803,7 +724,7 @@ export function LineGrid({
           </Tooltip>
         ) : null,
     },
-  ], [mgmt, readOnly, systemLabel, systemShort, onCreateItem, onDeleteLine]);
+  ], [mgmt, econ, readOnly, systemShort, onDeleteLine]);
 
   return (
     <DataGrid<Row>
@@ -817,6 +738,11 @@ export function LineGrid({
       // of height on a screen whose whole job is the rows.
       filters={false}
       getRowId={(r) => r.id}
+      /* What is wrong with this line, under this line. See the header: this is
+         the half of the screen that used to be four columns of chips and a
+         refusal at the end of the journey. */
+      renderRowDetail={renderRowDetail}
+      rowDetailHeight={rowDetailHeight}
       // A tint behind the rows that are holding the quote up. Second cue only:
       // the same fact is a chip in the Status column of the same row.
       rowClass={(r) => {
@@ -831,17 +757,17 @@ export function LineGrid({
           key={r.id}
           line={r}
           intel={r.intel}
+          problems={r.problems}
           mgmt={mgmt}
+          econ={econ}
           readOnly={readOnly}
-          systemLabel={systemLabel}
           systemShort={systemShort}
           selected={selectedIds.includes(r.id)}
           onToggle={toggle}
           onOpen={onOpen}
           onSetPrice={onSetPrice}
           onDeleteLine={onDeleteLine}
-          onCreateItem={onCreateItem}
-          onConfirmReading={onConfirmReading}
+          onFix={onFix}
         />
       )}
       onRowClick={(r) => onOpen(r.id)}

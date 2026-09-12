@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
-import { EmptyState, ErrorState, FilterChip, HumanLog, LoadingState, PanelMark, SectionHeader, StatusChip, TOUCH } from "./kit";
+import { EmptyState, ErrorState, FilterChip, HumanLog, InlineLink, LoadingState, PanelMark, SectionHeader, StatusChip, TOUCH } from "./kit";
 import { formatDate } from "../when";
 import {
   clearPlatformSession,
@@ -14,7 +14,7 @@ import {
   savePlatformSession,
   setAuthLossHandler,
 } from "./api";
-import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformSession, Role, SignupOffer, StatusFilter } from "./types";
+import type { Account, DecisionDetail, DecisionSummary, DecisionTrace, PlatformSession, SignupOffer, StatusFilter } from "./types";
 import { aiState, factLabel, factValue, isPrimaryFact, stateFieldLabel, ROLE_LABEL } from "./format";
 import { ActionsPanel, Bp, Conf, DecisionCard, ImpactPanel, Interpretation, Labelled,
          Pri, RankingPanel, Tip, WhyPanel, typeLabel } from "./ui";
@@ -38,7 +38,12 @@ import { Link as RouterLink, Navigate, Route, Routes, useLocation, useNavigate, 
 import {
   LEGACY_ACCOUNTS, PATH, PATTERN, pathFor, screenAt, vizPath, type Screen,
 } from "./route";
-import AppShell, { type NavItem } from "./AppShell";
+import AppShell from "./AppShell";
+import CommandPalette from "./CommandPalette";
+import TodayScreen from "./today/TodayScreen";
+import DestinationLayout from "./DestinationLayout";
+import EvidenceLibrary from "./EvidenceLibrary";
+import { MONEY_TABS, SETUP_TABS } from "./destinations";
 import { SetupChecklist } from "./SetupChecklist";
 import { TrialNotice } from "./TrialNotice";
 import { SignInCard } from "../SignInCard";
@@ -153,21 +158,6 @@ const GmroiScreen = lazy(() =>
   import("./viz/Gmroi").then((m) => ({ default: m.GmroiScreen })));
 const SupplyScreen = lazy(() =>
   import("./viz/TheBook").then((m) => ({ default: m.SupplyScreen })));
-
-const ROLE_HOME: Record<Role, { title: string; sub: string; nav: string }> = {
-  SALESPERSON: { title: "Today", sub: "Decisions that need you, most urgent first", nav: "Today" },
-  SALES_MANAGER: {
-    // Not "Team focus". This page shows the organization's decisions and the
-    // approvals waiting on you; it has never shown a view of the team, and a
-    // title promising one sends a manager looking for a screen that does not
-    // exist. The per-person roll-up is a deliberate omission while there is one
-    // salesperson to roll up — but the title should describe the page as it is.
-    title: "Where to act",
-    sub: "The decisions worth your attention, and what is waiting on your sign-off",
-    nav: "Where to act",
-  },
-  OWNER: { title: "Where to intervene", sub: "The commercial situations that deserve a decision", nav: "Where to intervene" },
-};
 
 // ── sign in ──────────────────────────────────────────────────────────────────
 /** Which door a visitor arriving from outside the application asked for.
@@ -468,6 +458,25 @@ export default function PlatformApp() {
   //: a tenant `false`. Defaults to false, so a failed probe hides the door
   //: rather than offering one that 403s.
   const [isOperator, setIsOperator] = useState(false);
+
+  //: The intent search. Held by the shell rather than by a screen because ⌘K
+  //: has to answer from wherever somebody is standing, which is the whole of
+  //: what it is for.
+  const [commandsOpen, setCommandsOpen] = useState(false);
+
+  // ⌘K, and Ctrl-K where there is no ⌘. Bound on the window rather than on the
+  // button, because the point of the shortcut is that it works while the reader
+  // is looking at a screen and not at the bar above it.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        setCommandsOpen(true);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
 
   /** A destination named by the insight layer, followed. The naming table is
    *  in `route.ts` next to the paths it produces. */
@@ -943,225 +952,40 @@ export default function PlatformApp() {
     );
   }
 
-  const rh = ROLE_HOME[session.role];
   const roleShort = session.role === "SALESPERSON" ? "Salesperson" : session.role === "SALES_MANAGER" ? "Manager" : "Owner";
-  // What this role is offered, from one table rather than a ternary per item.
+  // What a role may open, from one table rather than a ternary per item.
   // `ability.ts` says plainly what this is and is not: the server decides what
   // a role may *read*; this decides what the interface bothers to show, so a
-  // nav item that would always 403 is simply absent.
+  // tab that would always 403 is simply absent.
+  //
+  // The nav itself is no longer scoped. All five destinations are readable by
+  // every role — `payments`, `data`, `quotes` and the account list carry no
+  // cost — so the scoping moved down to the tabs inside Money and Setup and to
+  // the Evidence index, each next to the endpoint gate it mirrors.
   const ability = abilityFor(session);
-  // The insight screens sit next to the briefing they are reached from. The two
-  // that are entirely margin are omitted for a salesperson rather than shown and
-  // then refused — a nav item that always 403s is a nav item that teaches people
-  // the product is broken.
-  const navItems: NavItem[] = [
-    // ── Decide ──
-    // The landing screen leads with what needs deciding, so it takes the role's
-    // own name for that — "Today", "Team focus", "Where to intervene". It used
-    // to be called "Storyboard" and the queue below it carried the role name,
-    // which left two nav items claiming to be the place decisions live.
-    { key: "home", label: rh.nav, group: "decide",
-      // Open, not total: a badge counting closed decisions is a badge that
-      // never goes down, and one that never goes down stops being read.
-      count: openDecisions.length },
-    // The full table, filterable and sortable, as opposed to the landing
-    // screen's prioritised head of the same list.
-    { key: "list", label: "All decisions", group: "decide",
-      // A decision detail page has no nav entry of its own; it belongs to the
-      // queue it was opened from, and the sidebar should say so.
-      alsoCurrentFor: ["detail"] },
-    ...(ability.can("read", "simulation")
-      ? ([{ key: "simulate", label: "Simulator", group: "decide" }] as NavItem[])
-      : []),
-    { key: "quotes", label: "Quotes", group: "decide" },
-    // Every role: a win rate carries no cost, and a salesperson sees their
-    // own accounts. The margin behind the losses is a second request the
-    // server only answers for a manager, so the nav item is not scoped.
-    { key: "quoteOutcomes", label: "Won & lost", group: "decide" },
-    // The other three quarters of the same loop, and the only screen on which a
-    // loss reason can be recorded against a quote the ERP raised. Every role
-    // and unscoped for the reason "Won & lost" is: the list carries each
-    // quote's own selling total and nothing derived from cost, and the server
-    // narrows a salesperson to their own accounts.
-    // No count badge, deliberately. The pile is ~215 and moves only when
-    // somebody records an outcome, so a badge would sit at three digits for
-    // months — and the only way to fill it is a second request on every
-    // navigation, which is a real cost for a number nobody would act on faster
-    // for having seen it in the sidebar. The screen's own headline says how big
-    // the pile is, where it is next to the thing that shrinks it.
-    { key: "unrecordedQuotes", label: "Unanswered", group: "decide" },
-    { key: "approvals", label: "Approvals", group: "decide", count: pendingApprovals },
-
-    // ── Understand ──
-    // The insight screens sit next to the briefing they are reached from. The
-    // two that are entirely margin are omitted for a salesperson rather than
-    // shown and then refused — a nav item that always 403s is a nav item that
-    // teaches people the product is broken.
-    ...(ability.can("read", "economics")
-      ? ([{ key: "weather", label: "Weather", group: "understand" },
-          { key: "opportunities", label: "Opportunities", group: "understand" },
-          { key: "lostRevenue", label: "Lost revenue", group: "understand" },
-          // Margin is on the vertical axis, and the endpoint is manager-scoped
-          // whichever measure is asked for.
-          { key: "landscape", label: "Landscape", group: "understand" }] as NavItem[])
-      : []),
-    // Mix and rhythm are revenue and dates — no cost anywhere in either — so
-    // both are visible to a salesperson.
-    // "Mix shift", not "Mix". It sat two rows from "Product mix" and the two
-    // are unrelated: this one asks whether the mix moved and towards whom,
-    // that one asks which lines a customer does not take. The screen's own
-    // question is "Has the mix shifted, and towards whom", so the label now
-    // agrees with the heading a reader lands on.
-    { key: "composition", label: "Mix shift", group: "understand" },
-    { key: "cadence", label: "Rhythm", group: "understand" },
-    // Visible to everybody, unlike Suppliers: the customer half carries no cost
-    // and no margin, and the server omits the supplier half from a
-    // salesperson's response rather than the nav hiding the whole screen. A
-    // salesperson has a real question here — which of my accounts is drifting —
-    // and 403-ing them out of it to protect the other half would answer it by
-    // removing it.
-    { key: "bonds", label: "Bonds", group: "understand" },
-    // Revenue and dates, no cost — and the conversation it exists for is a
-    // salesperson's, so hiding it from them would be removing the feature to
-    // protect a field it does not contain.
-    { key: "mix", label: "Product mix", group: "understand" },
-    // Both halves on one screen. The customer half is revenue and counts, so a
-    // salesperson sees it; the server omits the supplier half from their
-    // response rather than the nav hiding the whole screen.
-    { key: "dependency", label: "Dependency", group: "understand" },
-    // Manager and above: a principal's target is measured against purchase
-    // spend, which is cost by another name.
-    ...(ability.can("read", "supply")
-      ? ([{ key: "targets", label: "Supplier targets", group: "understand" }] as NavItem[])
-      : []),
-    // Manager and above, mirroring `require_manager_or_owner` on every
-    // attribution route. Every row of that ledger is gross-profit arithmetic —
-    // a margin-protected event names a line priced below its floor, so the
-    // event type *is* the below-floor flag — and there is no version of the
-    // screen with the economics taken out. The owner-only half of it (the
-    // report against the pre-trial baseline) is a panel gate inside the screen,
-    // not a second nav item.
-    // The look-back and the ledger are a before-and-after pair and sit in that
-    // order: what the book already held, then what the platform changed about
-    // it. Same gate — both are margin-shaped, so both are manager and above.
-    ...(ability.can("read", "economics")
-      ? ([{ key: "retrospective", label: "What your books hold",
-            group: "understand" },
-          { key: "attribution", label: "What PIE changed",
-            group: "understand" }] as NavItem[])
-      : []),
-
-    // ── The book ──
-    // One "Customers" door, not two. The account picker, the month-by-month
-    // journey and the period-against-period migration answer the same question
-    // at three zoom levels; splitting them across "Customers" and "Accounts"
-    // meant nobody found the second one, and the two names did not say which
-    // held what.
-    { key: "customer", label: "Customers", group: "book",
-      alsoCurrentFor: ["customerItem", "journey"] },
-    // Neither carries cost: receivables are money in, and stock structure is
-    // counts. The purchase rate is dropped from a salesperson's stock copy.
-    { key: "stock", label: "Stock", group: "book" },
-    ...(ability.can("read", "economics")
-      // Gross profit ÷ what the stock cost, end to end — there is no version of
-      // this screen with the economics taken out, so `require_manager_or_owner`
-      // guards the endpoint and the nav item follows it rather than offering a
-      // door that always 403s. A salesperson is not left wondering: `/stock`
-      // carries the withholding notice in its own `unavailable` list.
-      ? ([{ key: "gmroi", label: "Return on stock", group: "book" }] as NavItem[])
-      : []),
-    ...(ability.can("read", "supply")
-      // Supplier spend is purchase cost by another name, so the endpoint is
-      // manager-scoped and the nav item follows it rather than 403-ing.
-      ? ([{ key: "supply", label: "Suppliers", group: "book" }] as NavItem[])
-      : []),
-    { key: "payments", label: "Cash", group: "book" },
-    // Beside Cash and scoped with it: dates and day counts carry no commercial
-    // position, and the half of the cycle this screen exists to surface is the
-    // half a salesperson can chase.
-    { key: "orderToCash", label: "Order to cash", group: "book" },
-    ...(ability.can("read", "supply")
-      // How long we string a supplier along is a commercial position, not a
-      // call list, so it is scoped like Suppliers rather than like Cash.
-      ? ([{ key: "payables", label: "How we pay", group: "book" }] as NavItem[])
-      : []),
-    ...(ability.can("read", "supply")
-      // Two of its three legs are denominated in what stock cost — the shelf
-      // valued at purchase rate, and what we owe suppliers. Scoped with the
-      // rest of the payable side rather than shown and then refused.
-      ? ([{ key: "cashCycle", label: "Cash cycle", group: "book" }] as NavItem[])
-      : []),
-    ...(ability.can("read", "supply")
-      // Every row is a supplier balance against a date, so it is scoped with
-      // the rest of the payable side rather than shown and then refused.
-      ? ([{ key: "statutory", label: "Statutory deadlines",
-            group: "book" }] as NavItem[])
-      : []),
-
-    // ── Setup ──
-    // Setup, not Understand: placing an item is catalogue maintenance, and it
-    // is where somebody goes when a mix screen says its coverage is thin.
-    // Manager and above, like the policy it is.
-    ...(ability.can("read", "supply")
-      ? ([{ key: "catalogue", label: "Item lines", group: "setup" }] as NavItem[])
-      : []),
-    { key: "data", label: "Data & connection", group: "setup" },
-    // Unconditional, like the item above and for the same reason: every call
-    // this screen makes is readable by any signed-in user. Knowing which
-    // catalogue answered — pack, version, ruleset checksum — is the same
-    // entitlement as knowing when the books last arrived, and a salesperson
-    // whose quote line says "No PIE match" is the person most likely to want
-    // it. Only the rebuild is owner-scoped, and that is enforced server-side
-    // rather than by hiding the item.
-    { key: "decodedCatalog", label: "Decoded catalogue", group: "setup" },
-    // Every call this screen makes is `require_manager_or_owner` — the list, the
-    // pending suggestions, the settings policy — so for a salesperson it was a
-    // nav item where nothing on the page worked. Unconditional here, three lines
-    // below the comment forbidding exactly that. `read policy` is the same
-    // manager-or-owner pair the identity reads carry; reusing it keeps the
-    // vocabulary in `ability.ts` from growing a noun per screen.
-    ...(ability.can("read", "policy")
-      ? ([{ key: "identity", label: "Identities", group: "setup" }] as NavItem[])
-      : []),
-    // The platform's own health, not the book's. Same `read policy` gate as the
-    // item above, and for the same reason: every `/internal/observability/*`
-    // route is `require_manager_or_owner`, so offering this to a salesperson
-    // would be a nav item where nothing on the page works.
-    ...(ability.can("read", "policy")
-      ? ([{ key: "observability", label: "System health", group: "setup" }] as NavItem[])
-      : []),
-    { key: "states", label: "AI states", group: "setup" },
-    // Owner only, mirroring `require_owner` on every `/trust/*` route. Named for
-    // the question rather than for the mechanism: an owner looks for "my data",
-    // not for "disclosure and break-glass".
-    ...(ability.can("read", "trust")
-      ? ([{ key: "trust", label: "Your data", group: "setup" }] as NavItem[])
-      : []),
-    { key: "settings", label: "Settings", group: "setup" },
-    // PIE's own pricing model, and the only nav item in this list that is not
-    // about the tenant at all. Gated on the server's answer rather than on a
-    // role: `ability` reasons about what somebody may do inside a workspace,
-    // and being PIE is not a fact any workspace holds.
-    ...(isOperator
-      ? ([{ key: "monetization", label: "Pricing model",
-            group: "setup" }] as NavItem[])
-      : []),
-  ];
-
-
 
   return (
     <AppShell
-      items={navItems}
       current={screen}
+      // Today's badge is what is still open in this morning's queue — the
+      // decisions and the approvals waiting on this person. Open, never total:
+      // a badge that cannot reach zero stops being read.
+      counts={{ today: openDecisions.length + pendingApprovals }}
       userName={session.name}
       roleLabel={roleShort}
       organizationName={session.organization_name}
       organizations={session.organizations}
       currentOrganizationId={session.organization_id}
       onSwitchOrganization={switchOrganization}
+      onOpenCommands={() => setCommandsOpen(true)}
       onSignOut={signOut}
     >
+      <CommandPalette
+        open={commandsOpen}
+        onClose={() => setCommandsOpen(false)}
+        ability={ability}
+        isOperator={isOperator}
+      />
       <div>
         {/* In the shell rather than on one screen: a licence about to expire is
             true wherever the reader happens to be, and the queue it takes away
@@ -1196,29 +1020,57 @@ export default function PlatformApp() {
              `DataGrid` sizes its own placeholder. */
           <Suspense fallback={<LoadingState rows={3} label="Opening…" />}>
           <Routes>
-            {/* ── HOME: the Commercial Storyboard ──
-                A briefing, not a queue. The decision list it used to show is
-                still one click away at /decisions; what belongs on the first
-                screen is what changed and what to do about it, which the queue
-                alone cannot say — a list of open items answers "what is
-                outstanding", never "what happened". */}
+            {/* ── TODAY: the triage console ──
+                This was the Commercial Storyboard, a briefing whose eight tiles
+                each led into a list, into a card, into a detail page, and then
+                an action. The briefing was not wrong about what belongs on the
+                first screen — what changed, and what to do about it — it was
+                wrong about what a first screen *is*: a place to read, when the
+                only thing anybody opens this product to do is work through what
+                needs them.
+
+                So the queue is the screen, and the briefing's own material —
+                what moved, and the patterns behind it — is one link away in the
+                Evidence library, reached from the decision that makes somebody
+                want it. */}
             <Route
               path={PATH.home}
               element={
-                <HomeScreen
-                  session={session}
-                  title={rh.title}
-                  sub={rh.sub}
-                  open={openDecisions}
-                  details={details}
-                  loading={loading}
-                  openPath={detailPath}
-                  onOpened={recordView}
-                  onSeeAll={() => navigate(PATH.list)}
-                  onNavigate={goViz}
-                />
+                <>
+                  {/* Above the queue, and only until the required steps are
+                      done. A tenant with no connection has no queue and no
+                      morning read, so every panel below it is a correct empty
+                      state — and a stack of correct empty states does not tell
+                      a new owner that the fix is four minutes of setup. It
+                      removes itself; there is no dismiss and no stored flag. */}
+                  <SetupChecklist session={session} />
+                  <TodayScreen
+                    session={session}
+                    decisions={openDecisions
+                      .map((s) => details[s.decision_id])
+                      .filter((d): d is DecisionDetail => Boolean(d))}
+                    loading={loading}
+                    error={null}
+                    onReload={load}
+                    onDecisionAction={(id, kind) => {
+                      // An action that must say why opens the modal that asks;
+                      // the rest are recorded where they were pressed. Same
+                      // vocabulary either way — `ACTION_META` is the one table.
+                      if (ACTION_META[kind]?.needsNote) setModal({ id, kind });
+                      else void doAction(id, kind, "");
+                    }}
+                    onUndoDecision={undoAction}
+                    flash={flash}
+                  />
+                </>
               }
             />
+
+            {/* ── THE MORNING READ ──
+                The briefing this screen used to open with. An Evidence card
+                now, at an address of its own. */}
+            <Route path={PATH.morningRead}
+                   element={<MorningReadScreen session={session} onNavigate={goViz} />} />
 
             {/* ── DECISION LIST ── */}
             <Route
@@ -1305,11 +1157,24 @@ export default function PlatformApp() {
             <Route path={PATH.landscape} element={<LandscapeScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.composition} element={<CompositionScreen session={session} />} />
             <Route path={PATH.cadence} element={<CadenceScreen session={session} onNavigate={goViz} />} />
-            <Route path={PATH.payments} element={<PaymentsScreen session={session} onNavigate={goViz} />} />
-            <Route path={PATH.payables} element={<PayablesScreen session={session} onNavigate={goViz} />} />
-            <Route path={PATH.orderToCash} element={<OrderToCashScreen session={session} />} />
-            <Route path={PATH.cashCycle} element={<CashCycleScreen session={session} />} />
-            <Route path={PATH.statutory} element={<StatutoryScreen session={session} />} />
+            {/* ── MONEY ──
+                One position across three companies, as tabs over the screens
+                that already answered each half. A layout route rather than a
+                new screen: each tab keeps its own address, so a link anybody
+                saved still works and Back still goes back. */}
+            <Route element={
+              <DestinationLayout
+                title="Money"
+                sub="All three companies as one position. Anything here that needs a person today is already in your queue."
+                tabs={MONEY_TABS} current={screen} ability={ability}
+              />
+            }>
+              <Route path={PATH.payments} element={<PaymentsScreen session={session} onNavigate={goViz} />} />
+              <Route path={PATH.payables} element={<PayablesScreen session={session} onNavigate={goViz} />} />
+              <Route path={PATH.orderToCash} element={<OrderToCashScreen session={session} />} />
+              <Route path={PATH.cashCycle} element={<CashCycleScreen session={session} />} />
+              <Route path={PATH.statutory} element={<StatutoryScreen session={session} />} />
+            </Route>
             <Route path={PATH.stock} element={<StockScreen session={session} />} />
             <Route path={PATH.gmroi} element={<GmroiScreen session={session} />} />
             <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
@@ -1317,7 +1182,6 @@ export default function PlatformApp() {
             <Route path={PATH.mix} element={<MixScreen session={session} onNavigate={goViz} />} />
             <Route path={PATH.dependency} element={<DependencyScreen session={session} />} />
             <Route path={PATH.targets} element={<TargetWallScreen session={session} />} />
-            <Route path={PATH.catalogue} element={<CatalogueScreen session={session} />} />
             <Route path={PATH.quoteOutcomes} element={<QuoteOutcomesScreen session={session} />} />
             <Route path={PATH.unrecordedQuotes} element={<UnrecordedQuotesScreen session={session} />} />
 
@@ -1333,14 +1197,6 @@ export default function PlatformApp() {
                 findings is a count of products whose margin fell. */}
             <Route path={PATH.retrospective} element={<RetrospectiveScreen session={session} />} />
 
-            {/* Only reachable for an operator, and refused by every endpoint
-                behind it for everyone else. Rendered unconditionally here so a
-                signed-in operator following a link lands on the screen rather
-                than being bounced home by a race with the access probe; a
-                tenant who guesses the URL gets a screen whose every fetch
-                fails, which is the same answer the API gives. */}
-            <Route path={PATH.monetization} element={<MonetizationScreen session={session} />} />
-
             {/* ── QUOTES ──
                 The workspace — every draft in the organization — and, under
                 an id, the Quote Builder open on one of them. The builder used
@@ -1353,25 +1209,45 @@ export default function PlatformApp() {
             <Route path={PATH.quotes} element={<QuoteWorkspace session={session} />} />
             <Route path={PATTERN.quote} element={<QuoteBuilder session={session} />} />
 
-            {/* ── DATA & CONNECTION ── */}
-            <Route path={PATH.data} element={<DataScreen session={session} onSynced={load} />} />
-            <Route path={PATH.decodedCatalog} element={<CatalogScreen session={session} />} />
-            <Route path={PATH.approvals} element={<ApprovalsScreen session={session} />} />
-            <Route path={PATH.identity} element={<IdentityScreen token={session.token} />} />
-            {/* Every call behind this is `require_manager_or_owner`, and the
-                nav item is gated to match. Routed unconditionally all the same,
-                for the reason the monetization route gives: a salesperson who
-                follows a link lands on a screen whose fetch fails with the
-                server's own answer, rather than being bounced home. */}
-            <Route path={PATH.observability}
-                   element={<ObservabilityDashboard session={session} />} />
-            <Route path={PATH.trust} element={<TrustScreen session={session} />} />
-            <Route path={PATH.settings} element={
-              <SettingsScreen session={session} onToken={adoptToken}
-                              onSignedOutEverywhere={forgetSession} />} />
+            {/* ── SETUP ──
+                Where the figures come from, and the policy the rest of the
+                product obeys. Nine screens, four tabs and an overflow — see
+                `destinations.ts` for why the other five are not tabs.
 
-            {/* ── AI STATES (reference) ── */}
-            <Route path={PATH.states} element={<StatesScreen />} />
+                Every one of these is routed unconditionally, tab or not: a
+                salesperson who follows a link to a manager's screen should land
+                on it and read the server's own refusal, rather than being
+                bounced home by a client-side guess about what they may see. */}
+            <Route element={
+              <DestinationLayout
+                title="Setup"
+                sub="Where the figures come from, and the policy the rest of the product obeys."
+                tabs={SETUP_TABS} current={screen} ability={ability} isOperator={isOperator}
+              />
+            }>
+              <Route path={PATH.data} element={<DataScreen session={session} onSynced={load} />} />
+              <Route path={PATH.decodedCatalog} element={<CatalogScreen session={session} />} />
+              <Route path={PATH.catalogue} element={<CatalogueScreen session={session} />} />
+              <Route path={PATH.identity} element={<IdentityScreen token={session.token} />} />
+              <Route path={PATH.observability}
+                     element={<ObservabilityDashboard session={session} />} />
+              <Route path={PATH.trust} element={<TrustScreen session={session} />} />
+              <Route path={PATH.settings} element={
+                <SettingsScreen session={session} onToken={adoptToken}
+                                onSignedOutEverywhere={forgetSession} />} />
+              <Route path={PATH.states} element={<StatesScreen />} />
+              {/* PIE's own, and refused by every endpoint behind it for a
+                  tenant. It is a Setup tab only for an operator; the route is
+                  unconditional like its neighbours. */}
+              <Route path={PATH.monetization} element={<MonetizationScreen session={session} />} />
+            </Route>
+
+            <Route path={PATH.approvals} element={<ApprovalsScreen session={session} />} />
+
+            {/* ── EVIDENCE ──
+                The one door to the analysis screens, indexed by the question
+                each answers. The screens themselves stay where they were. */}
+            <Route path={PATH.evidence} element={<EvidenceLibrary ability={ability} />} />
 
             {/* A path nobody recognises. Redirected rather than rendered as
                 home, so what the address bar says and what the screen shows do
@@ -1513,48 +1389,20 @@ function LoadFailed({ error, onRetry, busy }: { error: string; onRetry: () => vo
   );
 }
 
-// ── the landing screen ───────────────────────────────────────────────────────
-/** What needs a decision, and then what changed.
+/** The morning read: what moved in the book, and the movement the queue's
+ *  decisions were detected against.
  *
- * This screen used to be the storyboard alone. The storyboard is a good
- * briefing — it is an ordered list of beats, each carrying what changed, why,
- * and where to go — but it answers "what happened to the business" and the
- * product's actual output is "what should someone do today". That output lived
- * one click away, behind a nav item, which made the queue something you had to
- * know to look for.
- *
- * So the order is inverted rather than the storyboard replaced: the decisions
- * first, the movement that produced them underneath as supporting context. The
- * storyboard is unchanged and still reachable on its own terms.
- *
- * **Why there is no total.** The obvious header is "N decisions worth ₹X", and
- * it would be wrong. Dead-stock capital and revenue at risk are different
- * claims, so summing `impact.financial` across types produces a figure that
- * means nothing and invites a decision against it. The count is broken down by
- * priority band instead — which is not a money claim — and each card carries
- * its own figure with the sentence that says what it is.
+ * This was the first screen, and its own comments were already arguing with it
+ * — "the briefing, demoted to what it is". A briefing is worth having and is
+ * not worth being the place a working day starts, so Today is the queue now and
+ * this is one of the questions in the Evidence library: *what changed, and
+ * why*. It keeps the two panels that answered that and has given up the head of
+ * the queue it used to carry, which is the whole of Today's screen.
  */
-const BAND_ORDER = ["HIGH", "MEDIUM", "LOW"] as const;
-
-/** How many cards before the screen stops being a summary. The rest are one
- *  click away, and the link says how many. */
-const HOME_CARDS = 5;
-
-function HomeScreen({
-  session, title, sub, open, details, loading, openPath, onOpened, onSeeAll,
-  onNavigate,
+function MorningReadScreen({
+  session, onNavigate,
 }: {
   session: PlatformSession;
-  title: string;
-  sub: string;
-  open: DecisionSummary[];
-  details: Record<string, DecisionDetail>;
-  loading: boolean;
-  /** Passed straight to `DecisionCard` — see its props for why a card takes a
-   *  destination rather than a handler. */
-  openPath: (id: string) => string;
-  onOpened: (id: string) => void;
-  onSeeAll: () => void;
   onNavigate: (route: string) => void;
 }) {
   // Same subject as `CashProjection`'s gate, and for the same reason: the
@@ -1563,126 +1411,30 @@ function HomeScreen({
   // endpoint — see ability.ts.
   const mayReadDaily = abilityFor(session).can("read", "supply");
 
-  // Already sorted by the server on priority then recency; take the head.
-  const top = open.slice(0, HOME_CARDS);
-  // The morning read sits above the queue rather than replacing it. The queue
-  // answers "what needs deciding"; the bands answer "what is going on" — and
-  // the queue is one tile inside them, so the tile links down to the list
-  // rather than the two competing for the same space.
-  const bands = BAND_ORDER
-    .map((b) => [b, open.filter((s) => s.priority_band === b).length] as const)
-    .filter(([, n]) => n > 0);
-
   return (
     <div>
-      <div className="dp-head">
-        <h1>{title}</h1>
-        <p>{sub}</p>
-      </div>
+      <InlineLink to={PATH.evidence}>← Evidence</InlineLink>
+      <SectionHeader
+        title="The morning read"
+        sub="What moved in the book over the period, and the movement this morning's queue was detected against."
+      />
 
-      {/* Above everything, and only until the required steps are done. A tenant
-          with no connection has no morning read and no queue, so the panels
-          below are all correct empty states — and a stack of correct empty
-          states does not tell a new owner that the fix is four minutes of
-          setup. It removes itself; there is no dismiss and no stored flag. */}
-      <SetupChecklist session={session} />
-
-      {/* The morning read. Above the queue because the first question is "can I
-          trust this and what is going on", and the queue is one tile inside the
-          answer. It loads independently and degrades in place — a landing page
-          that blanks because one endpoint failed is worse than one that says
-          which part is missing.
-
-          Offered only to the roles that can load it. `GET /insight/daily` is
+      {/* Offered only to the roles that can load it. `GET /insight/daily` is
           `require_manager_or_owner`, half of it being what we owe suppliers, so
           rendering it for a salesperson put an amber "The morning read did not
-          load — Manager or owner role required" at the top of the first screen
-          they see every day. Omitted rather than rendered and then 403'd, for
-          the reason `PaymentsScreen` gives about `CashProjection`: a panel that
-          always fails teaches people the product is broken. */}
-      {/* Its own boundary, not the route's: the queue below is the reason
-          somebody opened this page, and holding it behind a chunk that belongs
-          to the panel above it would trade one blank screen for another. */}
+          load — Manager or owner role required" at the top of the screen.
+          Omitted rather than rendered and then 403'd, for the reason
+          `PaymentsScreen` gives about `CashProjection`: a panel that always
+          fails teaches people the product is broken. */}
       {mayReadDaily && (
         <Suspense fallback={<LoadingState rows={2} label="Reading this morning…" />}>
           <DailyScreen session={session} />
         </Suspense>
       )}
 
-      {loading && open.length === 0 ? (
-        <Stack spacing={1.5} sx={{ mb: 4 }}>
-          <Skeleton variant="rounded" height={104} />
-          <Skeleton variant="rounded" height={104} />
-        </Stack>
-      ) : open.length === 0 ? (
-        /* Not "all clear". Nothing is flagged, which is a fact about the
-           evidence and not a verdict on the business. */
-        <div className="empty-state-card compact" style={{ marginBottom: 28 }}>
-          <div className="empty-state-card__eyebrow">Nothing waiting</div>
-          <h3>No decision needs you right now</h3>
-          <p>
-            Nothing in the book currently clears the thresholds that raise a decision. That is a
-            statement about the evidence, not a judgement that everything is well — what changed
-            over the period is below.
-          </p>
-        </div>
-      ) : (
-        <>
-          <div className="dp-count">
-            {open.length} open {open.length === 1 ? "decision" : "decisions"}
-            {bands.length > 0 && (
-              <>
-                {" · "}
-                {bands.map(([b, n], i) => (
-                  <span key={b}>
-                    {i > 0 && " · "}
-                    {n} {b.toLowerCase()}
-                  </span>
-                ))}
-              </>
-            )}
-          </div>
-
-          <div className="dp-cards tight">
-            {top.map((s) => {
-              const d = details[s.decision_id];
-              return d
-                ? (
-                  <DecisionCard
-                    key={s.decision_id}
-                    d={d}
-                    openPath={openPath}
-                    onOpened={onOpened}
-                    compact
-                  />
-                )
-                : <Skeleton key={s.decision_id} variant="rounded" height={104} />;
-            })}
-          </div>
-
-          {open.length > top.length && (
-            <Button onClick={onSeeAll} sx={{ mt: 1.5 }}>
-              See all {open.length} decisions →
-            </Button>
-          )}
-        </>
-      )}
-
-      {/* The briefing, demoted to what it is: the movement these decisions came
-          out of, for whoever wants to check the arithmetic behind them. */}
-      <div className="home-context">
-        <div className="home-context-mark">
-          <Labelled tip="The period movement the decisions above were detected against. Kept on this screen rather than behind a nav item because 'why is this being raised now' is the first question anyone asks of a queue.">
-            The evidence behind them
-          </Labelled>
-        </div>
-        {/* Below the fold and below the queue, so its chunk arrives while
-            somebody is already reading — and never at all for somebody who
-            only came to work the queue. */}
-        <Suspense fallback={<LoadingState rows={3} />}>
-          <Storyboard session={session} onNavigate={onNavigate} />
-        </Suspense>
-      </div>
+      <Suspense fallback={<LoadingState rows={3} />}>
+        <Storyboard session={session} onNavigate={onNavigate} />
+      </Suspense>
     </div>
   );
 }

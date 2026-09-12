@@ -61,6 +61,14 @@ disagreeing about what a selected row looks like.
 
 Wide grids scroll inside their own box; the page never scrolls sideways.
 
+**A column of chips is usually a strip.** Where a state is true of some rows and
+not most — a line with no item, a price that needs signing off, a shortfall —
+`renderRowDetail` draws it under the row it is about, with the fix as a button.
+The quote grid went from eleven columns to five that way: four of them were
+columns describing states, rendered on every row to be read on four. The
+question to ask is whether every row has something to say in that column; if it
+does not, the column is paying width for the rows that do not.
+
 ## 4. Typography
 
 One hierarchy, used consistently:
@@ -103,7 +111,17 @@ validates on blur next to one that validates on submit teaches nothing.
 
 ## 9. Navigation
 
-`Drawer`, `AppBar`, `Breadcrumbs`, `Tabs`. Consistent throughout.
+`AppBar`, `Tabs`, `Breadcrumbs`, and a `Drawer` on a phone. Consistent
+throughout.
+
+**Five destinations, and one table behind them.** The shell is a top bar of
+Today / Quotes / Accounts / Money / Setup; a destination holding several
+screens shows them as `Tabs` with an overflow, and everything else is reached
+from the Evidence library or from a decision that links to it.
+`platform/destinations.ts` is the single table the shell, the tab strips, the
+Evidence index and the ⌘K palette all read, so a screen that moves is one edit
+and cannot fall out of one surface. Role scoping sits on the tab and the
+evidence card — beside the endpoint gate it mirrors — never on the five.
 
 **Anything that goes somewhere is a link, and its destination comes from
 `route.ts`.** A `<button onClick={() => navigate(…)}>` looks identical on screen

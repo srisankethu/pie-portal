@@ -56,7 +56,9 @@ SALES_MANAGER + OWNER.
 |---|---|---|---|
 | *(signed out)* | Landing → SignIn / SignUp cards | visitor | The front door |
 | *(gate)* | ForcedPasswordChange | any with an issued password | Change it before anything else |
-| `#/` | Home: SetupChecklist + Daily (mgmt) + decision head + Storyboard + Waterfall | all | What needs deciding today, and why |
+| `#/` | **Today**: SetupChecklist + the triage console — approvals, decisions and three outcome questions as one ranked queue, worked in place | all (items role-scoped) | What needs me, and what do I do about it |
+| `#/morning-read` | Daily (mgmt) + Storyboard + Waterfall — what this used to sit above | all | What moved in the book, and why |
+| `#/evidence` | Evidence library: every analysis view, indexed by its question | all (cards role-scoped) | Where do I look for the pattern behind a decision |
 | `#/decisions` | Decision queue (list) | all (scoped) | Everything raised, open and closed |
 | `#/decision/:id` | Decision detail + trace + action modal | all (visibility-checked) | One decision: act on it, trace it to the ERP record |
 | `#/customers` | Account directory + journey + migration | all (scoped) | Pick an account |
@@ -98,11 +100,20 @@ SALES_MANAGER + OWNER.
 | `#/states` | Reference: unknown-states | all | How the product behaves when it does not know |
 | `*` | redirect → `#/` | all | Unknown paths land home |
 
-Navigation is four groups — **Decide / Understand / The book / Setup** — every
-item a real link (ctrl/middle-click work), with count badges only on open
-decisions and pending approvals. `vizPath()` in `route.ts` is the single table
-that turns server-named destinations (storyboard beats, weather drills, daily
-tiles) into these routes; unknown names land on home.
+Navigation is **five destinations — Today / Quotes / Accounts / Money / Setup**
+— along the top, every item a real link (ctrl/middle-click work), with a count
+badge only on Today. It was thirty-four items in four groups named after the
+data (Decide / Understand / The book / Setup). No route was removed:
+`platform/destinations.ts` is the map from each screen to the door it is now
+behind — the analysis screens are the Evidence library, the book screens are
+Money tabs, the setup screens are Setup tabs with an overflow, and
+`#/decisions`, `#/approvals` and `#/unanswered-quotes` are still themselves for
+anybody who wants the whole pile rather than this morning's head of it.
+
+`vizPath()` in `route.ts` is the single table that turns server-named
+destinations (storyboard beats, weather drills, daily tiles) into these routes;
+unknown names land on home. ⌘K opens an intent palette over the same tables —
+verbs first, then everywhere this reader may go.
 ---
 
 ## 3. Entry, session and account lifecycle
@@ -855,13 +866,24 @@ NO PRICE · NOT IN BOOKS · BOOKS OFFLINE · UNRESOLVED · AMBIGUOUS · PIE OFFL
    not have. Search (`/` focuses). Managers additionally get a
    **Below margin floor** chip and warning — the count is *omitted from a
    salesperson's response server-side*, not zeroed.
-2. A proposed line shows CONFIRM READING, the customer's verbatim words in
-   italics beside the interpretation, and an **Accept** button — one line at a
-   time, deliberately no confirm-all (`POST …/confirm-reading`; any role may
-   confirm).
-3. Row delete removes a line (no undo). "+ Create in Zoho" creates a missing
-   supply product in the books (`POST …/create-item`); failure leaves the line
-   CREATE FAILED with the server's reason.
+2. **Five columns, and the problems annotate their own row.** `#`, item, qty,
+   rate, line total — plus cost and margin behind an **Economics** toggle for a
+   role that has them (remembered per browser; absent for a salesperson, whose
+   response carries no cost). Everything that is true of *some* lines is a strip
+   under that line, carrying the fix as a button: a reading to check
+   (**That is right**), an unresolved line (the two candidates the engine
+   ranked, then **Search**), a commercial exception (**Use the recommended
+   rate**, **Ask for approval**), a shortfall (**Supply options**), an item the
+   ledger does not hold (**Create in _<system>_**). `components/lineProblems.ts`
+   decides what a problem is and what would fix it; the grid and the phone cards
+   both draw from it, so the two cannot disagree. A proposed line still confirms
+   one at a time, deliberately without a confirm-all
+   (`POST …/confirm-reading`; any role may confirm).
+3. Row delete removes a line (no undo). The strips' fixes are the screen's
+   existing actions — `select-supply`, `set-price`, `create-item`,
+   `confirm-reading`, `approvals/quote-line` — reached from the row that needs
+   them rather than from the drawer or the end of the journey. A failed
+   create-item leaves the line CREATE FAILED with the server's reason.
 
 **Branches.** No lines → "Paste an RFQ to start" · filter matches nothing →
 reset button · viewport <700 px → cards replace the grid (always-open price
@@ -975,10 +997,15 @@ within-policy · cancelled.
 
 ### 7.8 Send the estimate
 
-**Trigger.** "Create _<system> <document>_" — "Create Zoho Books estimate",
-"Create Dynamics 365 Business Central sales quote" — from the quote's own
-naming fields, never a literal. Disabled while busy, lineless, gate-blocked,
-read-only for this reader, or already sent unchanged. **Every** answer this
+**Trigger.** "Send to _<system>_" — from the quote's own naming fields, never a
+literal. Disabled while busy, lineless, read-only for this reader, already sent
+unchanged, or **while anything is still to settle**: the bar counts the same
+problems the grid draws on the rows (`lineProblems.blockersFor`) and the button
+reads "3 to settle first", naming them beside it. The refusal below is the
+server's, and it still runs — this only means the desk finds out at the rate
+cell instead of after fourteen lines of work. The bar also says what the total
+covers ("Covers 13 of 14 lines… missing from this total rather than counted as
+zero"). **Every** answer this
 endpoint gives carries the naming, refusals included: a screen saying what it
 failed to create still has to name it.
 **Path.** The server works through, in order:

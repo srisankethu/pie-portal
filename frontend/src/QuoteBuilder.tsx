@@ -54,6 +54,7 @@ import type { Line, Quote, QuoteFieldDefinition, QuoteOwner } from "./types";
 import { IntakeModal } from "./components/IntakeModal";
 import { SupplyDrawer } from "./components/SupplyDrawer";
 import { LineGrid } from "./components/LineGrid";
+import { blockersFor, coverage, type Fix } from "./components/lineProblems";
 import { NARROW_BREAKPOINT } from "./platform/DataGrid";
 import { QuoteOutcomeBar } from "./components/QuoteOutcomeBar";
 import { SummaryBar } from "./components/SummaryBar";
@@ -105,6 +106,30 @@ const SUB =
   + "Quote context shows this customer's own price history and — for managers — the "
   + "cost and margin. A resolved line opens at the catalogue rate, marked “list” "
   + "until you price it; the number that goes out is yours.";
+
+//: Whether the economics columns were left showing. Stored the way round it is
+//: because the default is *on* for the role that has them: the empty
+//: preference must mean "show me the numbers I am pricing against".
+const ECON_KEY = "pie.quote.hide-economics";
+
+function loadEcon(): boolean {
+  try {
+    return window.localStorage.getItem(ECON_KEY) !== "1";
+  } catch {
+    // A private-mode browser throws on access rather than returning null. A
+    // builder that cannot remember a column preference is still a builder.
+    return true;
+  }
+}
+
+function saveEcon(on: boolean): void {
+  try {
+    if (on) window.localStorage.removeItem(ECON_KEY);
+    else window.localStorage.setItem(ECON_KEY, "1");
+  } catch {
+    /* see above */
+  }
+}
 
 function passesFilter(l: Line, f: string, flagged: Set<string>): boolean {
   switch (f) {
@@ -171,6 +196,15 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   // flashed, and cleared by the next change to the quote — which is exactly
   // when the sentence might stop being true.
   const [sendBlock, setSendBlock] = useState<string | null>(null);
+  /** Whether the cost and margin columns are showing.
+   *
+   *  A toggle rather than always on, and remembered rather than reset on every
+   *  visit: it is the difference between the screen somebody prices a quote on
+   *  and the screen they read one back on, and asking again each morning is the
+   *  kind of small tax that makes a control not worth having. Only ever
+   *  consulted where the role has economics at all — a salesperson's response
+   *  carries no cost, so there is nothing for them to toggle. */
+  const [econ, setEcon] = useState(loadEcon);
 
   // One assessment for the whole quote — see useQuoteIntelligence.
   const ci = useQuoteIntelligence(quote, t);
@@ -497,6 +531,48 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       flash(q.createItemError || `Item created in ${q.systemLabel}`);
     });
 
+  /** Whether a line already has an approval waiting, so a strip offers to ask
+   *  once rather than every time it is drawn. */
+  const approvalPendingFor = useCallback(
+    (lineId: string) =>
+      (ci.gate?.requests ?? []).some(
+        (r) => r.subject_line_id === lineId && r.status === "PENDING"),
+    [ci.gate]);
+
+  /** A fix pressed on a line's strip.
+   *
+   *  Every one of these is an action this screen already had — they were behind
+   *  the supply drawer, a column button, or nowhere at all. What is new is
+   *  *where they are*: on the row whose problem they answer, at the moment it
+   *  is discovered, rather than at the end of the journey.
+   *
+   *  The approval ask carries the exception's own code and title as its reason,
+   *  because the person approving needs to know which boundary was crossed and
+   *  the screen already knows. */
+  const doFix = (line: Line, fix: Fix) => {
+    switch (fix.kind) {
+      case "accept-reading":
+        return void doConfirmReading(line.id);
+      case "choose-candidate":
+        return void guard(async () => {
+          const q = await api.selectSupply(t, quote!.id, line.id, fix.code, false);
+          setQuote(q);
+          flash(q.note ?? `Supply set to ${fix.code}`, q.note ? "success" : "default");
+        });
+      case "open-supply":
+        return setDrawerLineId(line.id);
+      case "set-price":
+        return void doSetPrice(line.id, fix.price);
+      case "ask-approval":
+        return void guard(async () => {
+          await ci.requestApproval(line.id, fix.reasonCode, fix.reason);
+          flash("Asked. The quote stays here until it is answered.", "success");
+        });
+      case "create-item":
+        return void doCreateItem(line.id);
+    }
+  };
+
   const doDiscount = (pct: number) =>
     guard(async () => {
       const q = await api.discount(t, quote!.id, selection, pct);
@@ -537,6 +613,12 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
 
   const selectedCount = selection.length;
   const hasLines = quote.lines.length > 0;
+  const gateBlockedReason = ci.gate && !ci.gate.can_submit ? ci.gate.blocked_reason : null;
+  // Everything still standing between this quote and the customer — the same
+  // problems the grid draws on the rows, counted once per kind. Computed here
+  // rather than inside the bar so the bar cannot disagree with the grid about
+  // what is wrong: one model, two renderings.
+  const blockers = blockersFor(quote, ci.byLineId, gateBlockedReason);
   // Empty is the default, and the header treats it as a question still open.
   const hasCustomer = quote.customer.trim().length > 0;
   // The server's answer to "may this person change it" — the same rule every
@@ -564,6 +646,21 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
                     onClick={() => startNewQuote()} disabled={busy}>
               New quote
             </Button>
+            {/* Cost and margin, for the reader who has them. Offered only to
+                that reader: a salesperson's response carries no cost at all, so
+                a toggle here would be a control over two empty columns. */}
+            {mgmt && (
+              <Button
+                variant={econ ? "contained" : "outlined"}
+                color={econ ? "primary" : "inherit"}
+                size="small"
+                sx={TOUCH}
+                aria-pressed={econ}
+                onClick={() => setEcon((on) => { saveEcon(!on); return !on; })}
+              >
+                Economics
+              </Button>
+            )}
             <Button variant="contained" size="small" sx={TOUCH}
                     onClick={() => setIntakeOpen(true)} disabled={readOnly}>
               Paste RFQ
@@ -873,17 +970,17 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           <LineGrid
             lines={visible}
             mgmt={mgmt}
+            econ={econ}
             readOnly={readOnly}
-            systemLabel={quote.systemLabel}
             systemShort={quote.systemShort}
             intel={ci.byLineId}
+            approvalPendingFor={approvalPendingFor}
             selectedIds={selection}
             onSelectionChange={setSelectedIds}
             onOpen={setDrawerLineId}
             onSetPrice={doSetPrice}
             onDeleteLine={doDeleteLine}
-            onCreateItem={doCreateItem}
-            onConfirmReading={doConfirmReading}
+            onFix={doFix}
           />
           {/* Hidden on the phone rendering. Every hint here is about the grid
               — ↑↓ moves the focused row, F2 opens the rate editor, Enter opens
@@ -928,7 +1025,9 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         selectedCount={selectedCount}
         onDiscount={doDiscount}
         onCreateEstimate={doEstimate}
-        gateBlockedReason={ci.gate && !ci.gate.can_submit ? ci.gate.blocked_reason : null}
+        gateBlockedReason={gateBlockedReason}
+        blockers={blockers}
+        covers={coverage(quote)}
         busy={busy}
       />
 

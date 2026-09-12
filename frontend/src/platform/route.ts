@@ -98,7 +98,20 @@ export type Screen =
   | "trust"
   /** One customer's relationship with one item — needs two ids, so it carries
    *  an extra `itemId` alongside the customer in `id`. */
-  | "customerItem";
+  | "customerItem"
+  /** The analysis screens, indexed by the question each one answers.
+   *
+   *  They used to be twelve nav items in two groups, which made a library of
+   *  evidence look like twelve places to start work — and nobody starts a
+   *  Tuesday on Bonds. The screens are unchanged and keep their own addresses;
+   *  this is the one door to them, reached from a decision that made somebody
+   *  want the pattern behind it. */
+  | "evidence"
+  /** What moved in the book, and what the queue was detected against. This was
+   *  the home screen — the briefing above the queue — and it is an answer to a
+   *  question rather than a place to start a day, so it has an address of its
+   *  own and a card in the library. */
+  | "morningRead";
 
 /** The parameterless URL for each screen.
  *
@@ -148,6 +161,8 @@ export const PATH: Record<Screen, string> = {
   attribution: "/what-pie-changed",
   retrospective: "/what-your-books-hold",
   monetization: "/pricing-model",
+  evidence: "/evidence",
+  morningRead: "/morning-read",
 };
 
 /** The three screens whose URL carries an id, as route patterns.

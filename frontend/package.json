@@ -5,9 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && node scripts/check-forms.mjs && vite build && node scripts/prerender.mjs",
+    "build": "tsc -b && node scripts/check-forms.mjs && node scripts/check-hooks.mjs && vite build && node scripts/prerender.mjs",
     "preview": "vite preview",
     "check:forms": "node scripts/check-forms.mjs",
+    "check:hooks": "node scripts/check-hooks.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "e2e": "playwright test"

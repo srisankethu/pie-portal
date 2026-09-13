@@ -26,6 +26,7 @@ import { ChartTip, InlineLink, StatusChip } from "../kit";
 import { DataGrid, numeric } from "../DataGrid";
 import { EntityName } from "../EntityName";
 import { papi } from "../api";
+import { GroupFilter, useGroupFilter } from "../GroupFilter";
 import type { EntityOrigin, PlatformSession } from "../types";
 import { vizPath } from "../route";
 import { Figure, Panel, ValueAxis, stateOf } from "./Panel";
@@ -372,10 +373,19 @@ export function CompositionScreen({ session }: { session: PlatformSession }) {
   const [dimension, setDimension] = useState("customer");
   const [measure, setMeasure] = useState("revenue");
   const [months, setMonths] = useState(12);
+  // Both kinds, because the interesting questions cross them — "which customers
+  // buy this line" is a customer dimension with an item group. Part of the
+  // request rather than a filter over the rows: every figure here is a share of
+  // a total, and a numerator narrowed against an unmoved denominator is a wrong
+  // percentage with a caption explaining it.
+  const customerGroup = useGroupFilter(session.token, "CUSTOMER");
+  const itemGroup = useGroupFilter(session.token, "PRODUCT");
   const { data, loading, error, reload } = useInsight(
     "composition",
-    () => papi.composition(session.token, dimension, measure, months),
-    [session.token, dimension, measure, months]);
+    () => papi.composition(session.token, dimension, measure, months,
+                           customerGroup.group, itemGroup.group),
+    [session.token, dimension, measure, months,
+     customerGroup.group, itemGroup.group]);
   const [ref, room] = useMeasure<HTMLDivElement>();
 
   const series = (data?.series as Record<string, unknown>[] | undefined) ?? [];
@@ -409,6 +419,17 @@ export function CompositionScreen({ session }: { session: PlatformSession }) {
                options={[["customer", "Customer"], ["product", "Item"]]} />
           <Seg label="Measure" value={measure} onChange={setMeasure}
                options={[["revenue", "Revenue"], ["orders", "Orders"]]} />
+          {/* Two filters, not two dimensions — see the loader above. Labelled
+              for what each one narrows so the pair cannot be read as a repeat
+              of the "By" control beside them. */}
+          <GroupFilter label="Customer group" value={customerGroup.group}
+                       onChange={customerGroup.setGroup}
+                       options={customerGroup.options} show={customerGroup.show}
+                       minWidth={170} />
+          <GroupFilter label="Item group" value={itemGroup.group}
+                       onChange={itemGroup.setGroup}
+                       options={itemGroup.options} show={itemGroup.show}
+                       minWidth={170} />
           <MonthPicker id="comp-months" value={months} onChange={setMonths}
                        options={[6, 12, 24]} />
         </div>
@@ -561,9 +582,13 @@ export function CompositionScreen({ session }: { session: PlatformSession }) {
 export function CadenceScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
+  // Server-side: the wheel's spokes and the overdue list are both counted over
+  // the customers read, so the group has to bound the read rather than hide
+  // rows under an unchanged rim.
+  const group = useGroupFilter(session.token, "CUSTOMER");
   const { data, loading, error, reload } = useInsight(
     "cadence",
-    () => papi.cadence(session.token), [session.token]);
+    () => papi.cadence(session.token, group.group), [session.token, group.group]);
 
   const wheel = (data?.wheel as Record<string, number>[] | undefined) ?? [];
   const customers = (data?.customers as Record<string, unknown>[] | undefined) ?? [];
@@ -582,6 +607,11 @@ export function CadenceScreen({
       question="When do orders land, and who has missed their own cycle"
       state={stateOf(loading, error, data?.empty_reason as string)}
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
+      actions={
+        <GroupFilter label="Customer group" value={group.group}
+                     onChange={group.setGroup} options={group.options}
+                     show={group.show} minWidth={170} />
+      }
     >
       <div className="cadence-grid">
         <Figure

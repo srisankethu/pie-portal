@@ -19,6 +19,7 @@ import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import { useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { money } from "../../money";
 import { formatDate } from "../../when";
@@ -208,12 +209,19 @@ type LedgerSide = {
 };
 
 function SettlementPanel({
-  data, loading, error, reload, side, onNavigate,
+  data, loading, error, reload, side, onNavigate, actions,
 }: {
   data: Record<string, unknown> | null;
   loading: boolean; error: string | null; reload: () => void;
   side: LedgerSide;
   onNavigate: (r: string) => void;
+  /** A control the *screen* owns, rendered in this panel's header.
+   *
+   *  A slot rather than a group filter of its own, because this panel is both
+   *  sides of the ledger: the receivable side takes a customer group and the
+   *  payable side does not take one at all, and a hook in here would have to
+   *  know which side it was on to pick a kind. The screen already knows. */
+  actions?: ReactNode;
 }) {
   const parties = rows(data?.[side.parties]);
   const distribution = rows(data?.distribution);
@@ -235,6 +243,7 @@ function SettlementPanel({
       question={side.question}
       state={stateOf(loading, error, data?.empty_reason as string)}
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
+      actions={actions}
     >
       <p className="viz-headline">
         Half of all {docs} are settled within{" "}
@@ -652,8 +661,12 @@ const STATUS_TONE: Record<string, "neutral" | "good" | "warn" | "bad"> = {
 };
 
 function CreditPanel({ session }: { session: PlatformSession }) {
+  // Server-side: the exposure totals below are computed over the accounts in
+  // scope, so narrowing has to move them rather than hide rows beneath them.
+  const group = useGroupFilter(session.token, "CUSTOMER");
   const { data, loading, error, reload } = useInsight(
-    "credit", () => papi.credit(session.token), [session.token]);
+    "credit", () => papi.credit(session.token, group.group),
+    [session.token, group.group]);
   const [busy, setBusy] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [owner, setOwner] = useState<string>(ANYONE);
@@ -862,6 +875,9 @@ function CreditPanel({ session }: { session: PlatformSession }) {
               <MenuItem value={NOBODY}>Unassigned</MenuItem>
             </TextField>
           )}
+          <GroupFilter label="Customer group" value={group.group}
+                       onChange={group.setGroup} options={group.options}
+                       show={group.show} minWidth={170} />
           <CompanyFilter options={filter.options} value={filter.company}
                          onChange={filter.setCompany} show={filter.show} />
         </Stack>
@@ -908,9 +924,15 @@ function CreditPanel({ session }: { session: PlatformSession }) {
 export function PaymentsScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
+  // Server-side, and this one especially: the headline is a *median* days to
+  // pay and the bands are proportions, both computed over the settlements the
+  // endpoint is handed. Trimming the rows afterwards would leave those two
+  // figures describing the whole book under a chip naming a segment.
+  const group = useGroupFilter(session.token, "CUSTOMER");
   const { data, loading, error, reload } = useInsight(
     "payments",
-    () => papi.payments(session.token), [session.token]);
+    () => papi.payments(session.token, group.group),
+    [session.token, group.group]);
 
   // The projection is manager-and-above because half of it is what we owe
   // suppliers. Omitted rather than rendered and then 403'd — a panel that
@@ -937,7 +959,13 @@ export function PaymentsScreen({
       {mayReadEntityEconomics && <SelfFunding session={session} />}
       <SettlementPanel data={data} loading={loading} error={error}
                        reload={reload} side={RECEIVABLE_SIDE}
-                       onNavigate={onNavigate} />
+                       onNavigate={onNavigate}
+                       actions={
+                         <GroupFilter label="Customer group" value={group.group}
+                                      onChange={group.setGroup}
+                                      options={group.options} show={group.show}
+                                      minWidth={170} />
+                       } />
       {/* The same settlements one level up. It reads the response the panel
           above already fetched — a second request for a second grouping of
           rows the browser is holding would be a second answer waiting to

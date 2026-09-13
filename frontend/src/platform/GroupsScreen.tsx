@@ -237,6 +237,7 @@ function GroupDetailPanel({ session, kind, slug, onClose, onChanged }: {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [picked, setPicked] = useState<Candidate[]>([]);
   const [busy, setBusy] = useState(false);
+  const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -287,7 +288,14 @@ function GroupDetailPanel({ session, kind, slug, onClose, onChanged }: {
       badge={detail.visibility === "RESTRICTED"
         ? <StatusChip label="Management only" tone="warn" />
         : undefined}
-      actions={<Button onClick={onClose}>Close</Button>}
+      actions={
+        <Stack direction="row" spacing={1}>
+          {detail.may_edit && (
+            <Button onClick={() => setEditing(true)} disabled={busy}>Edit</Button>
+          )}
+          <Button onClick={onClose}>Close</Button>
+        </Stack>
+      }
     >
       {/* The version, where the person who needs it is standing: somebody
           holding two figures that disagree. It moves when the roster moves and
@@ -301,6 +309,19 @@ function GroupDetailPanel({ session, kind, slug, onClose, onChanged }: {
       </Meta>
 
       {error && <Alert severity="error" sx={{ mt: 2 }}>{error}</Alert>}
+
+      {editing && (
+        <EditGroupDialog
+          detail={detail}
+          onClose={() => setEditing(false)}
+          onSave={async (body) => {
+            await papi.updateGroup(session.token, kind, slug, body);
+            setEditing(false);
+            await load();
+            onChanged();
+          }}
+        />
+      )}
 
       {detail.may_edit && (
         <Stack direction={{ xs: "column", sm: "row" }} spacing={1.5} sx={{ mt: 2 }}>
@@ -357,6 +378,110 @@ function GroupDetailPanel({ session, kind, slug, onClose, onChanged }: {
         </Stack>
       )}
     </Section>
+  );
+}
+
+/** Rename, re-describe, restrict or archive an existing group.
+ *
+ *  **Everything on this form is deliberately outside the group's definition**,
+ *  which is why none of it moves the version. A rename changes what the pickers
+ *  call the group and no number computed under it; archiving stops it being
+ *  offered and does not change who was in it. Membership is edited on the panel
+ *  behind this dialog, and it is the only thing that restamps — so a rename and
+ *  a roster edit can never be one request that half-succeeds.
+ *
+ *  **An emptied description is sent as `null`, not omitted.** The endpoint reads
+ *  which fields the caller actually sent rather than which came back non-null,
+ *  precisely so a description can be cleared; sending `undefined` here would
+ *  reach that code as "not mentioned" and the field could be set and never
+ *  unset.
+ */
+function EditGroupDialog({ detail, onClose, onSave }: {
+  detail: GroupDetail;
+  onClose: () => void;
+  onSave: (body: { name?: string; description?: string | null;
+                   visibility?: string; archived?: boolean }) => Promise<void>;
+}) {
+  const [name, setName] = useState(detail.name);
+  const [description, setDescription] = useState(detail.description ?? "");
+  const [restricted, setRestricted] = useState(detail.visibility === "RESTRICTED");
+  const [archived, setArchived] = useState(detail.archived);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const trimmed = description.trim();
+  const unchanged =
+    name.trim() === detail.name
+    && trimmed === (detail.description ?? "")
+    && restricted === (detail.visibility === "RESTRICTED")
+    && archived === detail.archived;
+
+  const submit = async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      await onSave({
+        name: name.trim(),
+        // `null` rather than `undefined` when emptied — see the note above.
+        description: trimmed === "" ? null : trimmed,
+        visibility: restricted ? "RESTRICTED" : "OPERATIONAL",
+        archived,
+      });
+    } catch (e) {
+      setError((e as Error).message);
+      setBusy(false);
+    }
+  };
+
+  return (
+    <FormDialog open onClose={onClose} fullWidth maxWidth="xs">
+      <DialogTitle>Edit {detail.name}</DialogTitle>
+      <DialogContent>
+        <DialogContentText sx={{ mb: 2 }}>
+          None of this changes who is in the group, so the figures computed
+          behind it stay exactly as comparable as they were — its version{" "}
+          <span className="mono">{detail.group_version}</span> does not move.
+          Members are added and removed on the panel behind this.
+        </DialogContentText>
+        {error && <Alert severity="error" sx={{ mb: 2 }}>{error}</Alert>}
+        <Stack spacing={2} sx={{ mt: 1 }}>
+          <TextField
+            autoFocus fullWidth size="small" label="Name" value={name}
+            disabled={busy} required
+            onChange={(e) => setName(e.target.value)}
+          />
+          <TextField
+            fullWidth size="small" label="What it is for" value={description}
+            disabled={busy} multiline minRows={2}
+            helperText="Leave it empty to clear the description."
+            onChange={(e) => setDescription(e.target.value)}
+          />
+          <FormControlLabel
+            sx={TOUCH}
+            control={<Switch checked={restricted} size="small" disabled={busy}
+                             onChange={(e) => setRestricted(e.target.checked)} />}
+            label="Management only"
+          />
+          {/* Archive rather than delete, and said plainly: a number was quoted
+              under this group and the version that produced it has to stay
+              resolvable. Archiving takes it out of the pickers and leaves every
+              past answer explainable. */}
+          <FormControlLabel
+            sx={TOUCH}
+            control={<Switch checked={archived} size="small" disabled={busy}
+                             onChange={(e) => setArchived(e.target.checked)} />}
+            label="Archived — hidden from the pickers, never deleted"
+          />
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={busy}>Cancel</Button>
+        <Button variant="contained" disabled={busy || !name.trim() || unchanged}
+                onClick={submit}>
+          Save
+        </Button>
+      </DialogActions>
+    </FormDialog>
   );
 }
 

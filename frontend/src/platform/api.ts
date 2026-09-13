@@ -365,8 +365,11 @@ export const papi = {
   weather: (t: string, months = 3) =>
     req<Record<string, unknown>>(`/api/v1/insight/weather?months=${months}`, {}, t),
 
-  journey: (t: string, months = 12) =>
-    req<Record<string, unknown>>(`/api/v1/insight/journey?months=${months}`, {}, t),
+  journey: (t: string, months = 12, group = "") => {
+    const p = new URLSearchParams({ months: String(months) });
+    if (group) p.set("group", group);
+    return req<Record<string, unknown>>(`/api/v1/insight/journey?${p}`, {}, t);
+  },
 
   migration: (t: string, months = 3) =>
     req<Record<string, unknown>>(`/api/v1/insight/migration?months=${months}`, {}, t),
@@ -374,8 +377,11 @@ export const papi = {
   opportunities: (t: string, limit = 100) =>
     req<Record<string, unknown>>(`/api/v1/insight/opportunities?limit=${limit}`, {}, t),
 
-  lostRevenue: (t: string, months = 3) =>
-    req<Record<string, unknown>>(`/api/v1/insight/lost-revenue?months=${months}`, {}, t),
+  lostRevenue: (t: string, months = 3, group = "") => {
+    const p = new URLSearchParams({ months: String(months) });
+    if (group) p.set("group", group);
+    return req<Record<string, unknown>>(`/api/v1/insight/lost-revenue?${p}`, {}, t);
+  },
 
   customerTimeline: (t: string, customerId: string, months = 18) =>
     req<Record<string, unknown>>(
@@ -387,18 +393,30 @@ export const papi = {
     req<Record<string, unknown>>(
       `/api/v1/insight/landscape?subject=${subject}&measure=${measure}`, {}, t),
 
-  composition: (t: string, dimension = "customer", measure = "revenue", months = 12) =>
-    req<Record<string, unknown>>(
-      `/api/v1/insight/composition?dimension=${dimension}&measure=${measure}&months=${months}`,
-      {}, t),
+  // Two group parameters, and they are not the two dimensions: `group` is a set
+  // of customers and `items` a set of items, either combinable with either
+  // `dimension`. "Which customers buy the Kennametal line" is dimension=customer
+  // with an item group; "what does the aerospace book buy" is dimension=product
+  // with a customer group.
+  composition: (t: string, dimension = "customer", measure = "revenue",
+                months = 12, group = "", items = "") => {
+    const p = new URLSearchParams({ dimension, measure, months: String(months) });
+    if (group) p.set("group", group);
+    if (items) p.set("items", items);
+    return req<Record<string, unknown>>(`/api/v1/insight/composition?${p}`, {}, t);
+  },
 
-  cadence: (t: string) =>
-    req<Record<string, unknown>>("/api/v1/insight/cadence", {}, t),
+  cadence: (t: string, group = "") =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/cadence${group ? `?group=${encodeURIComponent(group)}` : ""}`,
+      {}, t),
 
   // ── The book itself: the shelf, the suppliers and the cash. Three things the book
   // always knew and the platform did not read until now.
-  payments: (t: string) =>
-    req<Record<string, unknown>>("/api/v1/insight/payments", {}, t),
+  payments: (t: string, group = "") =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/payments${group ? `?group=${encodeURIComponent(group)}` : ""}`,
+      {}, t),
 
   // The same measurement from the other end of the ledger. Manager and above,
   // scoped like `supply` rather than like `payments`: which customers pay us
@@ -476,8 +494,10 @@ export const papi = {
   // is in. Every role: a limit and a balance are money already billed, not
   // cost, and chasing your own overdue accounts is the salesperson's job. The
   // response is scoped to that person's book; a manager gets the organization.
-  credit: (t: string) =>
-    req<Record<string, unknown>>("/api/v1/insight/credit", {}, t),
+  credit: (t: string, group = "") =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/credit${group ? `?group=${encodeURIComponent(group)}` : ""}`,
+      {}, t),
 
   /** Record how much credit an account has. Manager and above — reading a
    *  limit is everyone's business, deciding one is a commercial position. */
@@ -1016,8 +1036,13 @@ export const papi = {
   }) => req<EntityGroup>("/api/v1/groups",
     { method: "POST", body: JSON.stringify(body) }, t),
 
+  // `description: null` clears it; omitting the key leaves it alone. The
+  // endpoint reads which fields were actually sent rather than which arrived
+  // non-null, so the two are genuinely different requests — `string | null`
+  // rather than `string` is what makes the clearing case expressible here.
   updateGroup: (t: string, kind: GroupKind, slug: string, body: {
-    name?: string; description?: string; visibility?: string; archived?: boolean;
+    name?: string; description?: string | null; visibility?: string;
+    archived?: boolean;
   }) => req<EntityGroup>(`/api/v1/groups/${kind}/${encodeURIComponent(slug)}`,
     { method: "PATCH", body: JSON.stringify(body) }, t),
 

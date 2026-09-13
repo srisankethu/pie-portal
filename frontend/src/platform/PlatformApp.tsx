@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
+import { GroupFilter, useGroupFilter } from "./GroupFilter";
 import { EmptyState, ErrorState, FilterChip, FormDialog, HumanLog, InlineLink, LoadingState, PanelMark, SectionHeader, StatusChip, TOUCH } from "./kit";
 import { formatDate } from "../when";
 import {
@@ -2041,18 +2042,23 @@ function CustomerScreen({
   // company that vanishes from the dropdown when you type is a company you
   // cannot get back to without clearing the box first.
   const accountCompany = useCompanyFilter(accounts ?? []);
+  // The group filter is a *request* parameter, unlike the company filter above
+  // it: the server narrows the directory to the group's members and resolves
+  // the trade figures for those rows only. Both controls sit in the same strip
+  // and mean different things, which `GroupFilter`'s own header explains.
+  const accountGroup = useGroupFilter(session.token, "CUSTOMER");
 
   useEffect(() => {
     let cancelled = false;
     setAccounts(null);
     papi
-      .listAccounts(session.token, "", status)
+      .listAccounts(session.token, "", status, accountGroup.group)
       .then((a) => !cancelled && setAccounts(a))
       .catch((e) => !cancelled && setAccErr((e as Error).message));
     return () => {
       cancelled = true;
     };
-  }, [session.token, status]);
+  }, [session.token, status, accountGroup.group]);
 
   const openCountFor = (id: string) =>
     all.filter((d) => d.subject_entity_id === id && (d.status === "OPEN" || d.status === "VIEWED")).length;
@@ -2115,6 +2121,9 @@ function CustomerScreen({
           <Seg label="Sort by" value={sort}
                onChange={(v) => setSort(v as "name" | "recent" | "value")}
                options={[["name", "Name"], ["recent", "Last order"], ["value", "12-month value"]]} />
+          <GroupFilter label="Customer group" value={accountGroup.group}
+                       onChange={accountGroup.setGroup}
+                       options={accountGroup.options} show={accountGroup.show} />
           <CompanyFilter options={company.options} value={company.company}
                          onChange={company.setCompany} show={company.show} />
         </div>

@@ -26,11 +26,12 @@
  * arrives as a decision of type `CASH_RECEIVABLE_OVERDUE`, ranked by the same
  * server that ranks the rest. `queue.ts` holds the merge and the order.
  */
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
 import LinearProgress from "@mui/material/LinearProgress";
+import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
@@ -39,8 +40,8 @@ import { Link as RouterLink } from "react-router-dom";
 import { intelligence } from "../../intelligence";
 import { formatDate, todayISO } from "../../when";
 import {
-  EmptyState, ErrorState, FactTable, InlineLink, LoadingState, Meta, MetricCard,
-  PanelMark, SectionHeader, StatusChip, TOUCH,
+  EmptyState, ErrorState, FactTable, FilterSelect, InlineLink, LoadingState, Meta,
+  MetricCard, OptionMeta, PanelMark, SectionHeader, StatusChip, TOUCH,
 } from "../kit";
 import { DEFAULT_LOSS_CHOICES } from "../RecordOutcomeDialog";
 import { papi } from "../api";
@@ -48,7 +49,10 @@ import { PATH } from "../route";
 import type { DecisionDetail, PlatformSession } from "../types";
 import type { QuoteLossReason } from "../../types";
 import { useInsight } from "../viz/useInsight";
-import { buildQueue, OUTCOMES_PER_MORNING, type QueueAction, type QueueItem } from "./queue";
+import { useMeasure } from "../viz/useMeasure";
+import {
+  buildQueue, OUTCOMES_PER_MORNING, queueTypes, type QueueAction, type QueueItem,
+} from "./queue";
 
 /** What happened to an item this morning, and whether it can be taken back.
  *
@@ -61,6 +65,11 @@ interface Settled {
   outcome: string;
   undo?: () => void;
 }
+
+/** The rail's second cap, for a panel taller than the screen: it is stuck 72px
+ *  from the top, and a stuck rail running past the fold is one whose bottom
+ *  half cannot be reached at all. */
+const RAIL_MAX = "calc(100vh - 88px)";
 
 export default function TodayScreen({
   session, decisions, loading, error, onReload, onDecisionAction, onUndoDecision, flash,
@@ -92,6 +101,9 @@ export default function TodayScreen({
   const [cursor, setCursor] = useState(0);
   const [asking, setAsking] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** Which type of thing is being worked. Empty is every type, which is the
+   *  morning as the server ranked it and is what this opens on. */
+  const [type, setType] = useState("");
 
   const items = useMemo(() => buildQueue({
     approvals: approvals.data?.requests ?? [],
@@ -101,13 +113,52 @@ export default function TodayScreen({
 
   const openItems = items.filter((i) => !settled[i.id]);
   const done = Object.values(settled);
-  const current = openItems[Math.min(cursor, openItems.length - 1)] ?? null;
   const total = openItems.length + done.length;
+
+  // The filter narrows what is worked, not what the morning *was*: the counts
+  // above and the progress bar stay whole-morning figures, because a bar that
+  // jumped to 100% on choosing a type would be reporting on the filter rather
+  // than on the work.
+  const openTypes = useMemo(() => queueTypes(openItems), [openItems]);
+  const kept = (i: QueueItem) => !type || i.typeKey === type;
+  const visible = openItems.filter(kept);
+  const doneShown = done.filter((s) => kept(s.item));
+  const current = visible[Math.min(cursor, visible.length - 1)] ?? null;
+
+  // The chosen type stays on the menu after its last item is answered, showing
+  // the zero it has become. Dropping it is what the plain derivation did, and
+  // MUI renders a select holding a value it has no option for as **blank** —
+  // so finishing a type left the filter looking unset while the queue behind it
+  // was still narrowed. Resetting to everything instead would be worse: it
+  // moves somebody who was working one type back to the whole morning without
+  // being asked. The label comes from what was settled, because the item it
+  // came from is no longer in the open list to read it off.
+  const types = useMemo(() => (
+    !type || openTypes.some((t) => t.key === type)
+      ? openTypes
+      : [...openTypes, {
+          key: type,
+          label: done.find((s) => s.item.typeKey === type)?.item.typeLabel ?? type,
+          count: 0,
+        }]
+  ), [openTypes, type, done]);
 
   const move = useCallback((by: number) => {
     setAsking(null);
-    setCursor((c) => Math.max(0, Math.min(openItems.length - 1, c + by)));
-  }, [openItems.length]);
+    setCursor((c) => Math.max(0, Math.min(visible.length - 1, c + by)));
+  }, [visible.length]);
+
+  /** Narrow to a type, and go to the top of what that leaves.
+   *
+   *  The cursor is an index into the visible list, so carrying it across a
+   *  change of filter lands on whatever happens to sit at that position — the
+   *  eleventh cost pass-through when you were on the eleventh item overall.
+   *  Choosing a type is asking to start on its hardest one. */
+  const chooseType = useCallback((next: string) => {
+    setType(next);
+    setCursor(0);
+    setAsking(null);
+  }, []);
 
   /** Mark an item answered and land on the next one.
    *
@@ -183,6 +234,21 @@ export default function TodayScreen({
   }, [busy, session.token, approvals, onDecisionAction, onUndoDecision, settle,
       recordOutcome, flash]);
 
+  // The rail is capped at the height of the panel beside it and scrolls inside
+  // that, so moving the cursor with a key can now move it somewhere off the
+  // rail's own scroll. `nearest` scrolls the least that brings the row back —
+  // it does nothing at all when the row is already in view, which keeps J and
+  // K from nudging the page on every press.
+  //
+  // Optional call because jsdom does not implement `scrollIntoView`, and a
+  // component test of the working loop should not have to stub a browser API
+  // to press a key.
+  const rail = useRef<HTMLOListElement | null>(null);
+  useEffect(() => {
+    rail.current?.querySelector<HTMLElement>('[data-current="true"]')
+      ?.scrollIntoView?.({ block: "nearest" });
+  }, [current?.id]);
+
   // J/K/Enter/U, and only while this screen is the one being read. A key that
   // acts is not bound while focus is in a field, and `Enter` takes the first
   // action because that is the one the item is named after — *Approve*,
@@ -205,6 +271,19 @@ export default function TodayScreen({
     return () => window.removeEventListener("keydown", onKey);
   }, [move, act, current]);
 
+  // How tall the rail is allowed to be: the panel beside it, and never more
+  // than the screen. Measured rather than left to CSS, and that is not for want
+  // of trying — `align-self: stretch` looks like it should do this and does the
+  // opposite on the morning that needs it. An auto grid row is sized by its
+  // *tallest* item, so a hundred-row rail sizes the row and stretching hands it
+  // its own height straight back. There is nothing to feed back on here: the
+  // cap only ever makes the rail shorter than the panel, so it cannot change
+  // the row height that produced it.
+  const [panelRef, panel] = useMeasure<HTMLDivElement>();
+  const railCap = panel.height > 0
+    ? `min(${Math.round(panel.height)}px, ${RAIL_MAX})`
+    : RAIL_MAX;
+
   const day = formatDate(todayISO());
 
   if (error) {
@@ -224,8 +303,14 @@ export default function TodayScreen({
       <SectionHeader
         title={day}
         sub={current
-          ? `${openItems.length} to work through · ${done.length} done`
-          : `All ${total} dealt with. The queue rebuilds after tonight's sync.`}
+          ? (type
+              ? `${visible.length} of ${openItems.length} to work through · `
+                + `${done.length} done`
+              : `${openItems.length} to work through · ${done.length} done`)
+          : openItems.length
+            ? `Nothing of this type is left. ${openItems.length} still to work `
+              + "through under the other types."
+            : `All ${total} dealt with. The queue rebuilds after tonight's sync.`}
         actions={
           <Stack spacing={0.5} sx={{ minWidth: 200 }}>
             <LinearProgress
@@ -256,19 +341,69 @@ export default function TodayScreen({
           {/* On a phone the queue is below the item it is a queue of. The rail
               is orientation — where you are in the morning — and five rows of
               it above the fold would push the thing you are meant to act on off
-              the screen, which is the fault this console exists to fix. */}
-          <Box sx={{ position: { md: "sticky" }, top: { md: 72 },
-                     order: { xs: 2, md: 0 } }}>
+              the screen, which is the fault this console exists to fix.
+
+              **And it is as tall as the panel beside it, never taller.** A
+              hundred and eight items is a rail metres long beside a card half a
+              screen high: the morning's first item — the one this console opens
+              on precisely so it can be acted on — ends up a speck at the top of
+              a page that scrolls for a minute, and the sticky rail never sticks
+              because what the page is scrolling *is* the rail. Capped, the list
+              scrolls inside itself and the two columns start and end together.
+
+              On a phone there is no panel beside it, so the cap is a share of
+              the screen instead: the rail is below the item and above the rest
+              of the page, and a full-height list there is a thing to scroll
+              past rather than a thing to read. */}
+          <Box sx={{
+            position: { md: "sticky" }, top: { md: 72 },
+            order: { xs: 2, md: 0 },
+            display: "flex", flexDirection: "column", minHeight: 0,
+            maxHeight: { xs: "60vh", md: railCap },
+          }}>
             <PanelMark>This morning, hardest first</PanelMark>
-            <Stack component="ol" spacing={0.5} aria-label="Queue"
-                   sx={{ listStyle: "none", p: 0, m: 0, mt: 1 }}>
-              {openItems.map((item, at) => {
+
+            {/* A dropdown rather than the row of `FilterChip`s the decisions
+                list uses, and the difference is room: a dozen types as chips is
+                four lines of a 320px rail, which is the space the queue itself
+                needs. Hidden below two types, for the reason `CompanyFilter`
+                hides itself — a filter with one option filters nothing. */}
+            {types.length > 1 && (
+              <Box sx={{ mt: 1 }}>
+                <FilterSelect label="Type" value={type} onChange={chooseType} fullWidth>
+                  <MenuItem value="">
+                    Everything<OptionMeta>{openItems.length}</OptionMeta>
+                  </MenuItem>
+                  {types.map((t) => (
+                    <MenuItem key={t.key} value={t.key}>
+                      {t.label}<OptionMeta>{t.count}</OptionMeta>
+                    </MenuItem>
+                  ))}
+                </FilterSelect>
+              </Box>
+            )}
+
+            {/* `tabIndex` because a scrollable region has to be reachable by
+                keyboard — WCAG 2.1.1 — and the rows inside it are buttons, so
+                without it there is no way to scroll the part of the list a
+                pointer user can see. */}
+            <Stack component="ol" spacing={0.5} aria-label="Queue" ref={rail}
+                   tabIndex={0}
+                   sx={{
+                     listStyle: "none", p: 0, m: 0, mt: 1,
+                     flex: "0 1 auto", minHeight: 0, overflowY: "auto",
+                     // Room for the focus ring on the rows, which an overflow
+                     // container would otherwise clip to the pixel.
+                     px: 0.25, mx: -0.25,
+                   }}>
+              {visible.map((item, at) => {
                 const isCurrent = current?.id === item.id;
                 return (
                   <li key={item.id}>
                     <Box
                       component="button"
                       type="button"
+                      data-current={isCurrent ? "true" : undefined}
                       onClick={() => { setCursor(at); setAsking(null); }}
                       sx={{
                         all: "unset", boxSizing: "border-box", display: "block", width: "100%",
@@ -293,7 +428,7 @@ export default function TodayScreen({
                   gives no sense of having got anywhere — and the outcome is
                   worth reading back, because it is what the toast said as it
                   went past. */}
-              {done.map((s) => (
+              {doneShown.map((s) => (
                 <li key={s.item.id}>
                   <Box sx={{ p: 1.25, borderRadius: 1, opacity: 0.62,
                              border: "1px solid var(--color-divider)" }}>
@@ -312,7 +447,7 @@ export default function TodayScreen({
             </Meta>
           </Box>
 
-          <Box sx={{ order: { xs: 1, md: 0 } }}>
+          <Box ref={panelRef} sx={{ order: { xs: 1, md: 0 } }}>
             {current ? (
               <ItemPanel
                 item={current}
@@ -321,6 +456,17 @@ export default function TodayScreen({
                 onAct={(a) => void act(current, a)}
                 onReason={(code) => void recordOutcome(current, "LOST", code)}
                 onSkip={() => move(1)}
+              />
+            ) : openItems.length ? (
+              // Answering the last of a type is not the end of the morning, and
+              // the done panel saying it was is the kind of benign default §1
+              // is about: there is work left, and this says how much and gives
+              // the way back to it.
+              <EmptyState
+                title="Nothing of this type is left this morning"
+                reason={`${openItems.length} other ${openItems.length === 1
+                  ? "item is" : "items are"} still waiting under the other types.`}
+                action={<Button onClick={() => chooseType("")}>Show every type</Button>}
               />
             ) : (
               <DonePanel done={done} stillUnanswered={stillUnanswered} />

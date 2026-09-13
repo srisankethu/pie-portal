@@ -21,12 +21,10 @@
 // control that does nothing.
 
 import { useMemo, useState } from "react";
-import type { ReactNode } from "react";
 import MenuItem from "@mui/material/MenuItem";
-import TextField from "@mui/material/TextField";
 
 import { connectorMark } from "./EntityName";
-import { Meta, TOUCH } from "./kit";
+import { FilterSelect, OptionMeta } from "./kit";
 import type { Sourced } from "./types";
 
 /** All companies. Empty string rather than null so it is a valid select value. */
@@ -97,107 +95,18 @@ export function useCompanyFilter<T extends Sourced>(rows: T[]) {
   return { company: active, setCompany, options, filtered, apply, show };
 }
 
-/** The select both of the controls in this file render.
+/** Both controls in this file render `kit.FilterSelect`, and that is the point
+ *  of the note rather than an implementation detail.
  *
- *  Private, and not in `kit.tsx`: nothing outside this file wants it, and the
- *  point of putting it here is that the *pair* below stays one control with two
- *  meanings rather than two controls that slowly stop looking alike. They had
- *  already started — the row filter carried the 44px touch floor and the scope
- *  select did not, so two selects doing the same job in the same app were 4px
- *  apart and one of them was under the floor `kit.TOUCH` sets.
- *
- *  `displayEmpty` because without it the control renders *blank* while showing
- *  every row: MUI treats an empty value as "nothing selected" and hides the
- *  option that represents it. A filter whose resting state looks unset is one
- *  people set twice and then wonder why nothing changed.
- *
- *  `shrink` because the two settings disagree otherwise. The label floats when
- *  MUI thinks the field is filled, and "filled" means a non-empty value — but
- *  "All companies" *is* the empty value, so the label stayed in its resting
- *  position and sat on top of the text the select was already showing. Opening
- *  the menu focused the field and floated it, which is why it looked correct
- *  only while open. `displayEmpty` means there is always content to clear, so
- *  the label should always be clear of it. This also notches the outlined
- *  fieldset, since the notch follows the label. */
-function CompanySelect({
-  label, value, onChange, minWidth, mb, children,
-}: {
-  label: string;
-  value: string;
-  onChange: (v: string) => void;
-  minWidth: number;
-  /** Space below, where the caller's layout expects the control to carry it.
-   *  Only `CompanyScope` does; a control that sets its own margin fights the
-   *  `Stack` it is dropped into, and this is the one place it is already
-   *  depended on. */
-  mb?: number;
-  children: ReactNode;
-}) {
-  return (
-    <TextField
-      select
-      size="small"
-      label={label}
-      value={value}
-      onChange={(e) => onChange(e.target.value)}
-      slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
-      // `TOUCH` because these sit in a row of filter chips and are the same
-      // kind of control: a 40px select beside 44px chips is both harder to hit
-      // and visibly out of line. It is applied here rather than at either call
-      // site precisely so it cannot be applied to only one of them again.
-      //
-      // **And it is not redundant with the theme.** `theme.ts` gives `MuiSelect`
-      // a 44px `minHeight` default, which reaches a bare `<Select>` and not
-      // this: `TextField select` builds its own `OutlinedInput` and hands it to
-      // `Select` as `input`, and `Select` clones that rather than rendering the
-      // `styled(OutlinedInput, { name: "MuiSelect" })` the override is attached
-      // to. The `.MuiSelect-root` class lands on the element and carries no
-      // rule. Verified by rendering both — the bare select computes 44px here
-      // and a `TextField select` computes nothing at all. Delete this spread
-      // and both controls quietly drop to 40.
-      sx={{ minWidth, mb, "& .MuiInputBase-root": TOUCH }}
-    >
-      {children}
-    </TextField>
-  );
-}
-
-/** The quiet half of an option: which system the company syncs through, and
- *  how many rows choosing it leaves.
- *
- *  The count travels with the name — "4U Precision" alone does not say whether
- *  choosing it leaves eighty rows or two — but it is not the name, and at one
- *  weight the eye has to read the whole line to find the part that varies.
- *  Muted and one step down the ramp, so the names scan as a column.
- *
- *  **The name goes first, and that is not a preference.** MUI's own type-ahead
- *  matches a keypress against the option's `innerText` with `startsWith`, so
- *  while the connector mark led the line, pressing "s" in an open company menu
- *  jumped to nothing — every option began with "◇". Keyboard reach is the
- *  whole point of this control on a busy desk. It also happens to be the order
- *  `sourceLabel` already argues for: somebody working three books thinks in
- *  companies, and only needs the connector once two of them come from
- *  different systems.
- *
- *  `kit.Meta` underneath rather than a fourth private answer to "the muted
- *  second line" — this file wrote one of the three local copies that made it a
- *  kit component. What is left here is only the part that is about a *menu
- *  option*: the connector mark and the separator. The one override is
- *  `display: inline`, because the kit's default is a block — a `Meta` usually
- *  sits *under* the value it qualifies, and this one sits beside a name on one
- *  line of a menu. Everything else, the 1.45 line-height included, is what the
- *  local copy was already inheriting from the theme's `caption`. */
-function OptionMeta({ mark, children }: { mark?: string; children: ReactNode }) {
-  return (
-    <Meta sx={{ display: "inline", ml: 0.75 }}>
-      {/* Hidden from a screen reader for the reason `EntitySource` hides it:
-          it is a picture of the word beside it, and "diamond SLS Engineers"
-          read aloud is worse than "SLS Engineers". */}
-      {mark && <span aria-hidden="true">{mark} </span>}
-      · {children}
-    </Meta>
-  );
-}
+ *  This pair was two hand-written selects that had already started drifting —
+ *  the row filter carried the 44px touch floor and the scope select did not, so
+ *  two selects doing the same job in the same app were 4px apart and one of
+ *  them was under the floor `kit.TOUCH` sets. They were pulled together into a
+ *  private component here, and then out into the kit when Today's queue needed
+ *  the third one. Everything that was learned about `TextField select` — why it
+ *  needs `displayEmpty`, why the label has to be told to shrink, why the
+ *  theme's touch floor does not reach it — lives in that component's doc now.
+ *  What stays in this file is only what is about *companies*. */
 
 export function CompanyFilter({
   options, value, onChange, show, label = "Company",
@@ -211,7 +120,7 @@ export function CompanyFilter({
   if (!show) return null;
   const total = options.reduce((n, o) => n + o.count, 0);
   return (
-    <CompanySelect label={label} value={value} onChange={onChange} minWidth={210}>
+    <FilterSelect label={label} value={value} onChange={onChange} minWidth={210}>
       <MenuItem value={ALL}>
         All companies<OptionMeta>{total}</OptionMeta>
       </MenuItem>
@@ -220,7 +129,7 @@ export function CompanyFilter({
           {o.label}<OptionMeta mark={o.icon}>{o.count}</OptionMeta>
         </MenuItem>
       ))}
-    </CompanySelect>
+    </FilterSelect>
   );
 }
 
@@ -270,7 +179,7 @@ export function CompanyScope({
 }) {
   if (options.length < 2) return null;
   return (
-    <CompanySelect
+    <FilterSelect
       label="Company" value={value} onChange={onChange} minWidth={240} mb={2}
     >
       {/* No total beside this one, unlike the row filter above. That count is
@@ -288,6 +197,6 @@ export function CompanyScope({
           )}
         </MenuItem>
       ))}
-    </CompanySelect>
+    </FilterSelect>
   );
 }

@@ -242,6 +242,9 @@ These live in `frontend/src/platform/kit.tsx`:
 | `FieldLabel` | a field's label with the optional why beside it | the `overline` + `Tip` pair, written out twice |
 | `PanelMark` | a panel's own micro-heading, below the ramp's smallest rung | `variant="overline"` built by hand four times, `.facts-mark` |
 | `FormDialog` | a dialog somebody fills in — full screen on a phone | `Dialog` + a `fullScreen={useMediaQuery(down("sm"))}` that only `ConnectionsPanel` had |
+| `FilterChip` | one choice in a row of them, with how many rows it leaves | the quote's line-state and margin-floor chips, the decision queue's type chips |
+| `FilterSelect` | the same filter where a row of chips will not fit | `CompanyFilter`'s private `CompanySelect`, and the `TextField select` it was built from twice |
+| `OptionMeta` | the count, and where relevant the connector, beside an option's name | three copies of an inline `Meta` inside `CompanyFilter` |
 
 Two rows of this table used to name components that were never written —
 `ChartContainer` and `AuditTimeline`. A standard that lists a component nobody
@@ -250,6 +253,15 @@ pattern, is told it already exists, cannot import it, and writes it by hand
 anyway. A standard that cannot be trusted on its easy claims does not get read on
 the hard ones. `kit.contract.test.ts` now parses this table and asserts every row
 against `kit.tsx`, so adding a row before the export fails the gate.
+
+**`FilterChip` or `FilterSelect` is a question of room, not of taste.** Chips
+show every option and what each one leaves without being opened, and they cost a
+line of the screen per three or four of them — right above a full-width list,
+wrong in a 320px rail with a dozen options in it, which is where Today's queue
+filter sits. Both carry the 44px floor, and `FilterSelect` carries the three
+things a `TextField select` needs before it behaves as a filter (`displayEmpty`,
+a shrunk label, and the touch floor the theme's `MuiSelect` override does not
+reach). Its doc says why each one, because each was a defect first.
 
 `PanelMark` is deliberately not a fourth `SectionHeader` level. The ramp's
 levels emit real headings and belong to the document outline; a panel's mark is

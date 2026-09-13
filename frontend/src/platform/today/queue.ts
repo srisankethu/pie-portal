@@ -71,6 +71,15 @@ export interface QueueItem {
   kind: QueueKind;
   /** What kind of thing this is, in the words a reader uses. */
   kindLabel: string;
+  /** What the type filter groups on, and what it calls the group.
+   *
+   *  Not `kindLabel`, and that is the whole reason this pair exists: a
+   *  decision's kind label carries its own type already, but an outcome's
+   *  carries the age of the quote — "One question · 41 days past expiry" — so
+   *  grouping on the label would put one item in each of a hundred groups. The
+   *  key is the thing that repeats; the label is what it is called. */
+  typeKey: string;
+  typeLabel: string;
   tone: Tone;
   /** The rail's one line. */
   short: string;
@@ -153,6 +162,12 @@ export function approvalItem(req: ApprovalRequest): QueueItem {
     kind: "approval",
     kindLabel: req.required_authority === "OWNER"
       ? "Approval · blocking a quote" : "Approval",
+    // One group, whichever authority it needs and whoever can answer it: a
+    // reader narrowing to approvals wants every price waiting on a person,
+    // and their own request sitting under somebody else is the one they most
+    // want the status of.
+    typeKey: "approval",
+    typeLabel: "Approvals",
     tone: "bad",
     short: req.title,
     meta: [`asked by ${req.requested_by}`,
@@ -225,6 +240,8 @@ export function decisionItem(d: DecisionDetail): QueueItem {
     id: `decision:${d.decision_id}`,
     kind: "decision",
     kindLabel: `Decision · ${label.toLowerCase()}`,
+    typeKey: `decision:${d.decision_type}`,
+    typeLabel: label,
     tone: decisionTone(d.priority?.band ?? ""),
     short: d.subject_label,
     meta: [d.subject_origin?.company, d.detected_at ? `found ${since(d.detected_at)}` : null]
@@ -269,6 +286,8 @@ export function outcomeItem(q: UnrecordedQuote): QueueItem {
     kindLabel: age === null
       ? "One question · no outcome recorded"
       : `One question · ${age} days past expiry`,
+    typeKey: "outcome",
+    typeLabel: "Quotes with no outcome",
     tone: "neutral",
     short: `Did ${q.customer_label} answer ${q.number ?? "this quote"}?`,
     meta: [q.number, `raised ${formatDate(q.raised_on)}`,
@@ -309,7 +328,38 @@ export function outcomeItem(q: UnrecordedQuote): QueueItem {
   };
 }
 
-/* ── the order ────────────────────────────────────────────────────────────── */
+/* ── the order, and narrowing it ──────────────────────────────────────────── */
+
+/** One choice in the type filter: what it is called, and how many rows choosing
+ *  it leaves. */
+export interface QueueType {
+  key: string;
+  label: string;
+  count: number;
+}
+
+/** The types actually in this morning's queue, busiest first.
+ *
+ *  Derived from the items rather than listed, for the reason the decisions
+ *  list derives its chips: there are a dozen decision types and a fixed list
+ *  is wrong in both directions at once — it hides the ones somebody added
+ *  since, and it offers ones this book has never raised. Busiest first because
+ *  a filter is reached for when one type has swamped the morning, and that is
+ *  the one at the top.
+ *
+ *  The count travels with the label because "Cost pass-through" alone does not
+ *  say whether choosing it leaves four rows or forty, which is most of what a
+ *  reader wants to know before choosing it. */
+export function queueTypes(items: QueueItem[]): QueueType[] {
+  const found = new Map<string, QueueType>();
+  for (const item of items) {
+    const at = found.get(item.typeKey);
+    if (at) at.count += 1;
+    else found.set(item.typeKey, { key: item.typeKey, label: item.typeLabel, count: 1 });
+  }
+  return [...found.values()].sort(
+    (a, b) => b.count - a.count || a.label.localeCompare(b.label));
+}
 
 /** This morning, hardest first — see the header for why this is a policy and
  *  not a score. */

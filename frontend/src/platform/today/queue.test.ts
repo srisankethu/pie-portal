@@ -10,7 +10,7 @@
 import { describe, expect, it } from "vitest";
 
 import type { ApprovalRequest, DecisionDetail, UnrecordedQuote } from "../types";
-import { buildQueue, OUTCOMES_PER_MORNING } from "./queue";
+import { buildQueue, OUTCOMES_PER_MORNING, queueTypes } from "./queue";
 
 function approval(over: Partial<ApprovalRequest> = {}): ApprovalRequest {
   return {
@@ -138,5 +138,58 @@ describe("what an item says about money", () => {
     });
     expect(item.cost).toBeNull();
     expect(item.costNote).toMatch(/no total/);
+  });
+});
+
+describe("the types a morning holds", () => {
+  it("groups on what repeats, not on the label the rail shows", () => {
+    // The reason `typeKey` exists at all. Two unanswered quotes carry two
+    // different kind labels — the age of each quote is in it — so grouping on
+    // what the rail prints would put one quote in each of a hundred groups and
+    // make the filter useless exactly where the pile is biggest.
+    const types = queueTypes(buildQueue({
+      approvals: [], decisions: [],
+      unanswered: [{ ...quote("QT-1"), days_past_expiry: 4 },
+                   { ...quote("QT-2"), days_past_expiry: 91 }],
+    }));
+    expect(types).toEqual([
+      { key: "outcome", label: "Quotes with no outcome", count: 2 },
+    ]);
+  });
+
+  it("separates decisions by their own type and leaves approvals as one", () => {
+    const types = queueTypes(buildQueue({
+      approvals: [approval({ approval_request_id: "a1" }),
+                  approval({ approval_request_id: "a2",
+                             required_authority: "MANAGER" })],
+      decisions: [decision({ decision_id: "d1" }),
+                  decision({ decision_id: "d2", decision_type: "COST_PASS_THROUGH" })],
+      unanswered: [],
+    }));
+    expect(types.map((t) => [t.key, t.count])).toEqual([
+      ["approval", 2],
+      ["decision:COST_PASS_THROUGH", 1],
+      ["decision:MARGIN_DETERIORATION", 1],
+    ]);
+    // Named for the reader, not for the wire — the same words the decisions
+    // list puts on its chips.
+    expect(types[1].label).toBe("Cost pass-through");
+  });
+
+  it("puts the type that swamped the morning at the top", () => {
+    // A filter is reached for when one type has taken the morning over, so
+    // that one is the one under the cursor when the menu opens.
+    const types = queueTypes(buildQueue({
+      approvals: [approval()],
+      decisions: Array.from({ length: 5 }, (_, i) =>
+        decision({ decision_id: `d${i}`, decision_type: "COST_PASS_THROUGH" })),
+      unanswered: [],
+    }));
+    expect(types[0]).toEqual({ key: "decision:COST_PASS_THROUGH",
+                               label: "Cost pass-through", count: 5 });
+  });
+
+  it("counts nothing when nothing is left", () => {
+    expect(queueTypes([])).toEqual([]);
   });
 });

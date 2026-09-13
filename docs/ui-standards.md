@@ -88,6 +88,22 @@ Few primary buttons. A screen with six contained buttons has no primary action,
 because the eye cannot pick one. The primary action should be obvious without
 being read.
 
+**`ToggleButton` is still button-shaped, so read the line above as being about
+one of several, not about on and off.** It draws a rectangular bordered control
+with a label whose only state cue is its fill, which is right for an exclusive
+pick — the record kinds on the identity screen, the credential kinds on
+connections — where the row of them is the thing that says a choice is being
+made. On a lone on/off it is not: there is no row, so an on one and an off one
+differ by a tint and it reads as an action whose last press happened to stick.
+
+The Quote Builder's economics control is the case that settled this. It went
+`Button` with a hand-written `aria-pressed`, then `ToggleButton` on the strength
+of the sentence above, and was reported as "a button, not a toggle" both times
+by the person using it. That report is correct and this paragraph exists so the
+next person does not spend the same round on it. A standalone on/off is a
+`Switch` — §8 — whatever row it sits in; the API being named `ToggleButton` is
+not an argument about what a reader sees.
+
 ## 6. Status
 
 Standardised on `Chip`, `Alert`, `Badge` and `Tooltip`.
@@ -108,6 +124,15 @@ keep in step with the theme, and it is the one that gets forgotten.
 `TextField`, `Select`, `Autocomplete`, `Checkbox`, `Switch`, date pickers.
 Consistent spacing, and consistent validation behaviour — a field that
 validates on blur next to one that validates on submit teaches nothing.
+
+**`Switch` is listed here but is not confined to a form.** It is the control for
+any standalone on/off that holds a state rather than performing an action,
+including one sitting in a header among buttons — the run log's "Problems only"
+and the Quote Builder's "Economics" are both that, and both are right. Pair it
+with `FormControlLabel` and spread `kit.TOUCH`: a bare switch is about 20px of
+hit target, and these screens are used standing up next to a machine. Reach for
+`Checkbox` instead when the thing is one of a list being ticked rather than a
+mode being left on.
 
 ## 9. Navigation
 

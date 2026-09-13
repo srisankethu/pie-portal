@@ -15,7 +15,7 @@ import type { PlatformSession, Role } from "./platform/types";
 import type { QuoteDraftSummary } from "./types";
 
 const listQuotes = vi.fn();
-const createQuote = vi.fn();
+const createQuoteForm = vi.fn();
 const createEstimate = vi.fn();
 const navigate = vi.fn();
 
@@ -26,7 +26,7 @@ vi.mock("./api", async () => {
     forgetLegacyDraft: () => {},
     api: {
       listQuotes: (...a: unknown[]) => listQuotes(...a),
-      createQuote: (...a: unknown[]) => createQuote(...a),
+      createQuoteForm: (...a: unknown[]) => createQuoteForm(...a),
       createEstimate: (...a: unknown[]) => createEstimate(...a),
       deleteQuote: vi.fn(),
     },
@@ -40,7 +40,7 @@ vi.mock("react-router-dom", async () => {
 
 afterEach(() => {
   listQuotes.mockReset();
-  createQuote.mockReset();
+  createQuoteForm.mockReset();
   createEstimate.mockReset();
   navigate.mockReset();
 });
@@ -82,18 +82,23 @@ describe("customerLabel", () => {
 });
 
 describe("QuoteWorkspace", () => {
-  it("starts a draft with no customer and opens it", async () => {
+  // "New quote" opens a form and creates nothing. It used to write the row
+  // and mint the number on the press, so opening the builder and changing your
+  // mind left an empty quote on this shared list for good. What is pinned here
+  // is which call it makes: `createQuote` still exists and still creates a
+  // quote outright, and this button must not be the thing that reaches it.
+  it("opens a blank form with no customer, creating no quote", async () => {
     listQuotes.mockResolvedValue([]);
-    createQuote.mockResolvedValue({ id: "q9", number: "QB-0009" });
+    createQuoteForm.mockResolvedValue({ id: "f9", number: "", saved: false });
     mount();
 
     expect(await screen.findByText("No quotes yet")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /Start the first quote/ }));
 
-    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/quotes/q9"));
-    // Created empty: the customer is the builder's question, not this
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/quotes/f9"));
+    // Opened empty: the customer is the builder's question, not this
     // screen's price of admission.
-    expect(createQuote).toHaveBeenCalledWith("tok", "", undefined, undefined);
+    expect(createQuoteForm).toHaveBeenCalledWith("tok", "", undefined, undefined);
   });
 
   it("offers to send exactly the rows the server reported ready", async () => {

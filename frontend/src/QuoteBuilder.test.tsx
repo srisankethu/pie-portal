@@ -23,6 +23,10 @@ import type { Line, Quote, QuoteFieldDefinition } from "./types";
 
 const getQuote = vi.fn();
 const fieldDefinitions = vi.fn();
+const saveQuote = vi.fn();
+const discardQuoteForm = vi.fn();
+const createQuoteForm = vi.fn();
+const navigate = vi.fn();
 
 vi.mock("./api", async () => {
   const actual = await vi.importActual<typeof import("./api")>("./api");
@@ -31,6 +35,9 @@ vi.mock("./api", async () => {
     api: {
       getQuote: (...a: unknown[]) => getQuote(...a),
       fieldDefinitions: (...a: unknown[]) => fieldDefinitions(...a),
+      saveQuote: (...a: unknown[]) => saveQuote(...a),
+      discardQuoteForm: (...a: unknown[]) => discardQuoteForm(...a),
+      createQuoteForm: (...a: unknown[]) => createQuoteForm(...a),
     },
   };
 });
@@ -50,9 +57,18 @@ vi.mock("./intelligence", async () => {
   };
 });
 
+vi.mock("react-router-dom", async () => {
+  const actual = await vi.importActual<typeof import("react-router-dom")>("react-router-dom");
+  return { ...actual, useNavigate: () => navigate };
+});
+
 afterEach(() => {
   getQuote.mockReset();
   fieldDefinitions.mockReset();
+  saveQuote.mockReset();
+  discardQuoteForm.mockReset();
+  createQuoteForm.mockReset();
+  navigate.mockReset();
   vi.unstubAllGlobals();
   // The economics toggle is remembered in `localStorage`, which jsdom keeps for
   // the whole file. Left alone, the test that switches it off decides what the
@@ -72,7 +88,8 @@ function session(role: Role = "OWNER"): PlatformSession {
 function quote(over: Partial<Quote> = {}): Quote {
   return {
     id: "q1", customer: "", customerId: null, connectionId: null,
-    number: "QB-0001", reference: "QB-0001", savedAt: "2026-09-02T08:00:00Z",
+    number: "QB-0001", saved: true, reference: "QB-0001",
+    savedAt: "2026-09-02T08:00:00Z",
     system: "", systemLabel: "your books", systemShort: "books",
     documentTerm: "quote", booksLive: false,
     ownerId: "u1", owner: { id: "u1", name: "R. Nair" }, canEdit: true,
@@ -209,16 +226,161 @@ describe("opening a quote", () => {
   });
 });
 
+// Pressing "New quote" creates nothing now: the builder opens on a form, and
+// Save is the only thing on the screen that makes a quote. What is pinned here
+// is the screen's half of that — the server's half is
+// `backend/tests/test_quote_form.py`, which counts rows rather than pixels.
+describe("a quote that has not been saved", () => {
+  const form = (over: Partial<Quote> = {}) =>
+    quote({ saved: false, number: "", savedAt: null, ...over });
+
+  it("says so, and offers Save rather than a number", async () => {
+    getQuote.mockResolvedValue(form());
+    fieldDefinitions.mockResolvedValue([]);
+
+    mount();
+
+    await waitFor(() =>
+      expect(screen.getByText("This quote has not been saved yet")).toBeInTheDocument());
+    // No number is printed, because none has been minted. One somebody could
+    // write down and then fail to find is worse than none.
+    expect(screen.getByText("Not saved yet")).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /Save quote/ }).length)
+      .toBeGreaterThan(0);
+  });
+
+  it("creates the quote on Save and moves to it", async () => {
+    getQuote.mockResolvedValue(form({ id: "f1" }));
+    fieldDefinitions.mockResolvedValue([]);
+    saveQuote.mockResolvedValue(quote({ id: "q1", number: "QB-0007" }));
+
+    mount();
+    await waitFor(() => expect(screen.getByText("Not saved yet")).toBeInTheDocument());
+
+    fireEvent.click(screen.getAllByRole("button", { name: /Save quote/ })[0]);
+
+    await waitFor(() => expect(saveQuote).toHaveBeenCalledWith("tok", "f1"));
+    // The saved quote has its own id, so the URL is replaced rather than
+    // pushed: Back must not return to a form id that no longer resolves.
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith("/quotes/q1", { replace: true }));
+    expect(await screen.findByText("QB-0007")).toBeInTheDocument();
+  });
+
+  it("will not send until it has been saved", async () => {
+    // Everything else about this quote is ready — a priced line and a customer
+    // — so being unsaved is the only thing left, and the bar has to say it.
+    getQuote.mockResolvedValue(form({
+      customer: "Bharat Forge", customerId: "c1",
+      lines: [line()], filterCounts: { ALL: 1 },
+    }));
+    fieldDefinitions.mockResolvedValue([]);
+
+    const { container } = mount();
+    await waitFor(() => expect(screen.getByText("Not saved yet")).toBeInTheDocument());
+
+    // The send counts it as a blocker like any other, so the button says how
+    // many things remain rather than offering to send and then refusing.
+    expect(container.textContent).toContain("the quote has not been saved yet");
+    expect(screen.getByRole("button", { name: "1 to settle first" })).toBeDisabled();
+  });
+
+  it("discards a form with work in it only after asking", async () => {
+    getQuote.mockResolvedValue(form({ id: "f1", lines: [line()],
+                                      filterCounts: { ALL: 1 } }));
+    fieldDefinitions.mockResolvedValue([]);
+    discardQuoteForm.mockResolvedValue({ ok: true });
+
+    mount();
+    await waitFor(() => expect(screen.getByText("Not saved yet")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(await screen.findByText("Discard this quote?")).toBeInTheDocument();
+    // Still nothing discarded — the question is a question.
+    expect(discardQuoteForm).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Discard" }));
+    await waitFor(() => expect(discardQuoteForm).toHaveBeenCalledWith("tok", "f1"));
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/quotes"));
+  });
+
+  it("closes an untouched form without a question", async () => {
+    // A confirmation people always dismiss is one they stop reading, so a form
+    // with nothing in it goes straight out.
+    getQuote.mockResolvedValue(form({ id: "f1" }));
+    fieldDefinitions.mockResolvedValue([]);
+    discardQuoteForm.mockResolvedValue({ ok: true });
+
+    mount();
+    await waitFor(() => expect(screen.getByText("Not saved yet")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+    await waitFor(() => expect(discardQuoteForm).toHaveBeenCalledWith("tok", "f1"));
+    expect(screen.queryByText("Discard this quote?")).not.toBeInTheDocument();
+  });
+});
+
+// The builder's own "New quote" button. A saved quote is left where it is; an
+// unsaved form is thrown away first, because leaving it behind is how the
+// orphan rows this whole change removes would come back.
+describe("starting another quote from inside the builder", () => {
+  it("discards the unsaved form it was on, after asking", async () => {
+    getQuote.mockResolvedValue(
+      quote({ id: "f1", saved: false, number: "", savedAt: null,
+              lines: [line()], filterCounts: { ALL: 1 } }));
+    fieldDefinitions.mockResolvedValue([]);
+    discardQuoteForm.mockResolvedValue({ ok: true });
+    createQuoteForm.mockResolvedValue(
+      quote({ id: "f2", saved: false, number: "", savedAt: null }));
+
+    mount();
+    await waitFor(() => expect(screen.getByText("Not saved yet")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "New quote" }));
+    fireEvent.click(await screen.findByRole(
+      "button", { name: "Discard and start a new one" }));
+
+    await waitFor(() => expect(discardQuoteForm).toHaveBeenCalledWith("tok", "f1"));
+    await waitFor(() => expect(createQuoteForm).toHaveBeenCalled());
+    await waitFor(() => expect(navigate).toHaveBeenCalledWith("/quotes/f2"));
+  });
+
+  it("leaves a saved quote alone", async () => {
+    getQuote.mockResolvedValue(quote({ id: "q1" }));
+    fieldDefinitions.mockResolvedValue([]);
+    createQuoteForm.mockResolvedValue(
+      quote({ id: "f2", saved: false, number: "", savedAt: null }));
+
+    mount();
+    await waitFor(() => expect(screen.getByText("QB-0001")).toBeInTheDocument());
+
+    fireEvent.click(screen.getByRole("button", { name: "New quote" }));
+
+    await waitFor(() => expect(createQuoteForm).toHaveBeenCalled());
+    // Nothing was discarded, and no question was asked: a saved quote stays in
+    // the workspace whatever else the desk does next.
+    expect(discardQuoteForm).not.toHaveBeenCalled();
+    expect(screen.queryByText("Discard this quote?")).not.toBeInTheDocument();
+  });
+});
+
 // The economics control, which is a toggle rather than an action: it turns the
 // grid's cost and margin columns on and off, and it stays where it was left.
-// It spent a while as a `Button` holding its pressed state in a hand-written
-// `aria-pressed` next to a `variant` swapped by the same condition — two
-// spellings of one fact, and the pair a screen reader reads is not the pair
-// anybody looks at. So these assertions are about the announced state, not the
-// paint: `ToggleButton` derives the attribute from `selected`, and the test
-// fails if the control ever goes back to carrying its own.
+//
+// It was a `Button` swapping `variant` with a hand-written `aria-pressed`
+// beside it, then a `ToggleButton`, and both were read off the screen as
+// buttons — correctly, because both draw a rectangular bordered control whose
+// only state cue is its fill. It is a `Switch` now.
+//
+// `getByRole("switch")` is the assertion that holds that: it passes only for a
+// control that reports itself as one, so a change back to anything
+// button-shaped fails here rather than in somebody's report. The state
+// assertions read `aria-checked` for the same reason as before — MUI derives
+// it from `checked`, so what a screen reader announces cannot drift from what
+// is drawn.
 describe("the economics toggle", () => {
-  const economics = () => screen.getByRole("button", { name: "Economics" });
+  const economics = () => screen.getByRole("switch", { name: "Economics" });
 
   async function openAsOwner() {
     getQuote.mockResolvedValue(quote());
@@ -230,28 +392,28 @@ describe("the economics toggle", () => {
   // On by default for the role that has the numbers: the empty preference has
   // to mean "show me what I am pricing against", which is why the stored key is
   // the negative one.
-  it("opens pressed, and says so", async () => {
+  it("opens on, and says so", async () => {
     await openAsOwner();
 
-    expect(economics()).toHaveAttribute("aria-pressed", "true");
+    expect(economics()).toBeChecked();
   });
 
-  it("releases on a press, and remembers it", async () => {
+  it("switches off on a click, and remembers it", async () => {
     await openAsOwner();
 
     fireEvent.click(economics());
 
-    expect(economics()).toHaveAttribute("aria-pressed", "false");
+    expect(economics()).not.toBeChecked();
     expect(window.localStorage.getItem("pie.quote.hide-economics")).toBe("1");
   });
 
-  it("presses again on a second press, and forgets the preference", async () => {
+  it("switches back on, and forgets the preference", async () => {
     await openAsOwner();
 
     fireEvent.click(economics());
     fireEvent.click(economics());
 
-    expect(economics()).toHaveAttribute("aria-pressed", "true");
+    expect(economics()).toBeChecked();
     expect(window.localStorage.getItem("pie.quote.hide-economics")).toBeNull();
   });
 
@@ -266,6 +428,6 @@ describe("the economics toggle", () => {
     mount("SALESPERSON");
     await waitFor(() => expect(screen.getByText("QB-0001")).toBeInTheDocument());
 
-    expect(screen.queryByRole("button", { name: "Economics" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Economics" })).not.toBeInTheDocument();
   });
 });

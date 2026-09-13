@@ -63,20 +63,43 @@ log = logging.getLogger("pie_portal.quote")
 router = APIRouter(prefix="/api/v1/quotes", tags=["quotes"])
 
 
-def _get_quote(session: Session, quote_id: str, org: str) -> Quote:
-    """The quote, only if it belongs to this tenant.
+def _get_quote(session: Session, quote_id: str, org: str,
+               user_id: Optional[str] = None) -> Quote:
+    """The quote — or the form somebody has open — if it belongs to this tenant.
 
-    Read from ``quote_drafts`` for this request — it is the workspace's row,
-    not a process-wide object — and the org check is the whole of quote
-    authorization: without it a signed-in user from any tenant could read or
-    mutate another tenant's quote by naming its id. A foreign (or absent) id
-    is a 404 — the two are deliberately indistinguishable, so the endpoint
-    never confirms that some other org's quote exists.
+    Read for this request — it is a row, not a process-wide object — and the
+    org check is the whole of quote authorization: without it a signed-in user
+    from any tenant could read or mutate another tenant's quote by naming its
+    id. A foreign (or absent) id is a 404 — the two are deliberately
+    indistinguishable, so the endpoint never confirms that some other org's
+    quote exists.
+
+    ``user_id`` scopes the *unsaved* half and only that half: a quote is the
+    desk's and a colleague may pick it up, while a form is one person still
+    typing into it. Callers that pass none get the tenant check alone, which is
+    the rule a saved quote has always had.
     """
-    q = quote_workspace.load(session, org, quote_id)
+    q = quote_workspace.load(session, org, quote_id, user_id=user_id)
     if q is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Quote not found")
     return q
+
+
+def _needs_saving(q: Quote, action: str) -> None:
+    """Refuse an action that only makes sense once a quote exists.
+
+    Three of them: sending the quote into a ledger, handing it to a colleague,
+    and asking for an approval. Each writes a row that keys on a quote id and
+    outlives the request — a document, an assignment, an approval trail — and a
+    form's id is not one: it is discarded the moment Save mints the quote's own.
+    So the refusal names the button rather than letting the row point at
+    something that will not be there tomorrow.
+    """
+    if not q.saved:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"This quote has not been saved yet, so it cannot {action}. "
+            f"Press Save quote first.")
 
 
 def _get_editable(session: Session, principal: Principal, quote_id: str) -> Quote:
@@ -89,14 +112,15 @@ def _get_editable(session: Session, principal: Principal, quote_id: str) -> Quot
     sign on it. A 404 stays a 404: this runs *after* the tenant check, so an
     outsider still learns nothing.
     """
-    q = _get_quote(session, quote_id, principal.organization_id)
+    q = _get_quote(session, quote_id, principal.organization_id,
+                   user_id=principal.user_id)
     policy = approvals.get_policy(session, principal.organization_id)
     if not quote_workspace.may_edit(q, user_id=principal.user_id,
                                     role=principal.role, policy=policy):
         owner = _names(session, principal, [q.ownerId]).get(q.ownerId or "", "its owner")
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            f"{q.number} belongs to {owner}. Only they"
+            f"{q.number or 'This quote'} belongs to {owner}. Only they"
             + (" or a manager" if policy.managers_may_edit_any_quote else "")
             + " can change it — ask them, or have it handed to you.")
     return q
@@ -177,7 +201,9 @@ def books_for_quote(quote_id: str,
         return QuoteBooks(zoho=select_zoho_service())
 
     org = principal.organization_id
-    quote = _get_quote(session, quote_id, org)
+    # `user_id` for the same reason the reads above pass it: where this id is an
+    # unsaved form, only its own author has one.
+    quote = _get_quote(session, quote_id, org, user_id=principal.user_id)
     if not quote.has_customer:
         # Not an error — a quote starts this way. But there is no set of books
         # to read a price from until somebody says whose quote it is, and the
@@ -307,12 +333,95 @@ def create_quote(body: CreateQuoteRequest,
     return _view(session, principal, q)
 
 
+# ── the unsaved form ─────────────────────────────────────────────────────────
+# Pressing "New quote" used to run ``POST ""`` above: a row in the shared
+# workspace, with QB-0042 minted against it, before anybody had typed anything.
+# Open the builder and close it again and that number was spent and that empty
+# quote was on every desk's list for good. These three are the lifecycle it
+# should have had — open a form, save it, or throw it away — and a quote is
+# made at exactly one of them.
+#
+# Declared above ``/{quote_id}`` so ``form`` is read as the literal it is.
+@router.post("/form")
+def create_quote_form(body: CreateQuoteRequest,
+                      principal: Principal = Depends(current_principal),
+                      session: Session = Depends(get_session)):
+    """Open a blank quote form. **No quote is created and no number is minted.**
+
+    The company is still decided here, once, for the reason ``create_quote``
+    gives: a quote's lines are compared against each other on screen, and two
+    of them decoded by different companies' packs would look comparable and not
+    be. It is the one decision that cannot wait for Save, because the first
+    pasted RFQ line already needs a catalogue to resolve against.
+
+    Answers the same shape ``POST ""`` does, so the builder opens on it
+    unchanged — with ``saved: false`` and an empty ``number``.
+    """
+    try:
+        company = resolution.company_for(session, principal.organization_id,
+                                         body.connection_id)
+    except resolution.CompanyNotNamed as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            {"message": str(e), "companies": e.companies})
+    q = quote_workspace.create_form(session, principal.organization_id,
+                                    user_id=principal.user_id,
+                                    customer=body.customer,
+                                    customer_id=body.customer_id,
+                                    connection_id=company)
+    return _view(session, principal, q)
+
+
+@router.post("/form/{form_id}/save")
+def save_quote_form(form_id: str,
+                    principal: Principal = Depends(current_principal),
+                    session: Session = Depends(get_session)):
+    """Save the form: mint the number, write the quote, drop the form.
+
+    **The only place the builder creates a quote.** Validation stays where it
+    already is rather than being restated here — ``blockers``, ``missingFields``
+    and the approval gate are what the *send* enforces, and a quote that is
+    saved but not yet ready is the ordinary state of a quote somebody is still
+    working on. Refusing to save one would mean the desk could not put work
+    down, which is what the old always-a-row behaviour got right.
+
+    Idempotent: a second click returns the quote the first one made rather than
+    minting a second number. ``quote_workspace.save_form`` holds that under a
+    unique constraint, so it survives a double-submit and two racing requests,
+    not only a disabled button.
+    """
+    try:
+        q = quote_workspace.save_form(session, principal.organization_id, form_id,
+                                      user_id=principal.user_id)
+    except quote_workspace.FormNotFound:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Quote form not found")
+    return _view(session, principal, q)
+
+
+@router.delete("/form/{form_id}")
+def discard_quote_form(form_id: str,
+                       principal: Principal = Depends(current_principal),
+                       session: Session = Depends(get_session)):
+    """Throw the form away. Nothing was ever written to the workspace.
+
+    Idempotent in the way that matters on a Cancel button: discarding a form
+    that is already gone answers ``ok`` rather than 404, because the only way
+    to reach it twice is to have got what you wanted the first time.
+    """
+    quote_workspace.discard_form(session, principal.organization_id, form_id,
+                                 principal.user_id)
+    return {"ok": True}
+
+
 @router.get("/{quote_id}")
 def get_quote(quote_id: str,
               principal: Principal = Depends(current_principal),
               session: Session = Depends(get_session)):
+    # `user_id`, because this is the read an unsaved form is opened through and
+    # a form belongs to the person typing it. Without it a colleague could open
+    # somebody's half-written form by naming its id.
     return _view(session, principal,
-                 _get_quote(session, quote_id, principal.organization_id))
+                 _get_quote(session, quote_id, principal.organization_id,
+                            user_id=principal.user_id))
 
 
 @router.delete("/{quote_id}")
@@ -328,9 +437,19 @@ def delete_quote(quote_id: str,
 
     "Remove" is an archive stamp on the row rather than a DELETE, so the
     number it was given is never minted again (``quote_workspace.delete``).
+
+    An unsaved form is discarded instead, which is a real delete: the stamp
+    exists to protect a minted number and a form has none. Handled here rather
+    than left to the form endpoint because otherwise this would answer ``ok``
+    having deleted nothing — the archive stamp does not apply to a table it
+    cannot see, and silently succeeding is the shape of lie this file is
+    otherwise careful about.
     """
     org = principal.organization_id
-    _get_editable(session, principal, quote_id)
+    q = _get_editable(session, principal, quote_id)
+    if not q.saved:
+        quote_workspace.discard_form(session, org, quote_id, principal.user_id)
+        return {"ok": True}
     if quote_service.latest_document(session, org, quote_id=quote_id) is not None:
         raise HTTPException(
             status.HTTP_409_CONFLICT,
@@ -401,6 +520,7 @@ def set_owner(quote_id: str, body: SetOwnerRequest,
     """Hand the quote to another member. The owner may, and so may whoever the
     policy lets edit — handing over is a change like any other."""
     q = _get_editable(session, principal, quote_id)
+    _needs_saving(q, "be handed to somebody else")
     try:
         name = quote_workspace.set_owner(session, principal.organization_id, q,
                                          body.user_id, by_user_id=principal.user_id)
@@ -835,6 +955,7 @@ def create_estimate(quote_id: str,
                     books: QuoteBooks = Depends(books_for_quote),
                     session: Session = Depends(get_session)):
     q = _get_editable(session, principal, quote_id)
+    _needs_saving(q, "be sent")
     # The words for the system this quote is bound to, on every answer this
     # endpoint gives — refusals included. They used to be filled in only where
     # a document was actually written, so a screen that wanted to say what it

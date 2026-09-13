@@ -45,6 +45,17 @@ already fixed learns to distrust the rest of this file.
 for the accessible table under a chart. `platform/DataGrid.tsx` states the line;
 the check in §6 finds the cases worth thinking about.
 
+**A standalone on/off is a `Switch`, never a `ToggleButton` and never a `Button`
+whose `variant` carries the state.** In the digest for the same reason the grid
+rule is: `ui-standards.md` §5 said "`ToggleButton` where a control genuinely
+toggles", and read on its own that sentence sends you to a control which is
+still a rectangular bordered thing with a label. The Quote Builder's economics
+control was written twice off that reading — once as a `Button` swapping
+`contained` for `outlined`, once as a `ToggleButton` — and reported as "a
+button, not a toggle" both times by the person using it. `ToggleButton` is for
+an exclusive pick among several, where the row is what shows a choice is being
+made. §5 and §8 now say so; this line is the one people read first.
+
 ---
 
 ## 1. Invariants — these are not preferences

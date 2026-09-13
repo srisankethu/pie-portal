@@ -115,7 +115,20 @@ def request_quote_line_approval(
     The economics are re-derived here rather than taken from the request body,
     for the same reason a quote snapshot is: an approval whose numbers were
     supplied by the requester is a request to approve whatever they typed.
+
+    An unsaved form is refused. The request row keys on ``quote_id`` and
+    outlives this call — a manager answers it later, and the gate reads it back
+    against the quote — while a form's id is discarded the moment Save mints the
+    quote's own. An approval pointing at an id that will not exist tomorrow is
+    worse than being asked to press Save first.
     """
+    unsaved = quote_workspace.load(session, principal.organization_id,
+                                   body.quote_id, user_id=principal.user_id)
+    if unsaved is not None and not unsaved.saved:
+        raise HTTPException(
+            http.HTTP_409_CONFLICT,
+            "This quote has not been saved yet, so an approval cannot be "
+            "raised against it. Press Save quote first.")
     th = load_for_org(session, principal.organization_id)
     result = assess_quote(
         session, principal.organization_id, customer_ref=body.customer.strip(),

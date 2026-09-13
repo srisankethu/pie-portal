@@ -45,15 +45,17 @@ already fixed learns to distrust the rest of this file.
 for the accessible table under a chart. `platform/DataGrid.tsx` states the line;
 the check in §6 finds the cases worth thinking about.
 
-**A gesture is a shortcut, never the only way in — and it costs the pixels it
-listens on.** The phone nav opens on a rightward drag from the left edge, which
-is `SwipeableDrawer` with an `onOpen`, not a gesture library. Two of the three
-rules worth carrying to the next gesture: the menu button is untouched, because
-nothing announces that an edge is draggable and neither a keyboard nor a screen
-reader has an edge to drag from; and swipe-to-open is a real hit-testable strip
-down that edge, so it is rendered only on the viewport that wants it and offset
-clear of the control it sits over. `ui-standards.md` §9 has the third — where
-the browser already owns the edge, stand down.
+**A gesture is never the only way in, it costs the pixels it listens on, and it
+yields to whoever already owns the drag.** The phone nav opens on a rightward
+drag across the screen — `platform/swipe.ts`, not a library. It is in the digest
+because the first version was an *edge* gesture, and an edge gesture on a phone
+does nothing: Safari takes that drag for its own back-navigation, and Android's
+gesture navigation takes it at the OS level before any browser sees it. It
+passed a unit suite and a real browser with real touch and shipped dead, which
+is the part worth carrying: **a device emulator gives you the viewport and the
+user-agent and none of the OS, so verifying a gesture in a browser is not
+verifying it on a device.** `ui-standards.md` §9 has the three rules and what
+each one cost.
 
 **A standalone on/off is a `Switch`, never a `ToggleButton` and never a `Button`
 whose `variant` carries the state.** In the digest for the same reason the grid

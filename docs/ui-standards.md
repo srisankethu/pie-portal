@@ -139,35 +139,50 @@ mode being left on.
 `AppBar`, `Tabs`, `Breadcrumbs`, and a `Drawer` on a phone. Consistent
 throughout.
 
-**The phone drawer is `SwipeableDrawer`, and it opens on a rightward drag from
-the left edge.** That is MUI's own component with an `onOpen` beside its
-`onClose` — the gesture is a prop on the drawer that was already there, not a
-gesture library, and nothing was added to `package.json` for it. A second nav
-that listens for touches itself would be a second answer to "is the menu open",
-and the two would disagree the first time a drag was interrupted.
+**The phone drawer opens on a rightward drag across the screen** — anywhere on
+it, not from the edge. Closing is `SwipeableDrawer`'s own drag, which MUI ships
+and this app already depended on; opening is `platform/swipe.ts`, forty lines,
+and no library was added for it.
 
-Three things travel with it, and they are the general rules rather than facts
-about this one drawer:
+**It was an edge gesture first, and it did not work.** `SwipeableDrawer` opens
+by pinning a 20px hit-testable strip to the left edge and requiring the drag to
+start inside it. That passed a unit suite, passed a real browser with real touch
+input, shipped, and did nothing in the hand — because on a phone the left edge
+is not the page's to take:
 
-- **A gesture is never the only way in.** Nothing on a screen announces that an
-  edge is draggable; a phone teaches the habit and the app inherits it. The
-  menu button is untouched and stays the discoverable door — which is also
-  what keeps the nav reachable by keyboard and to a screen reader, neither of
-  which has an edge to swipe from.
-- **A gesture costs the pixels it listens on.** Swipe-to-open is detected by a
-  real, hit-testable strip down the edge — 20px, fixed, above the app bar —
-  and anything under it stops being clickable. It starts below the bar so it
-  does not clip the menu button, and it is not rendered at all above `md`, where
-  the five destinations are spelled out along the top and the strip would buy
-  nothing for the clicks it swallowed. Render a gesture surface only on the
-  viewport that wants it.
-- **Where the browser already owns the edge, stand down.** Safari navigates
-  back on exactly this drag. Two recognisers on the same pixels means one loses
-  unpredictably, and here the stray outcome is leaving a half-written quote. So
-  the gesture is off on iOS — MUI's default, restated explicitly in
-  `AppShell.tsx` so that the decision is ours, and widened by one case MUI's own
-  check misses: an iPad on iPadOS 13+ calls itself a Macintosh, and only its
-  touch points tell it apart from a desktop Mac.
+- **Safari** navigates back on a left-edge drag, so MUI disables swipe-to-open
+  on iOS by default. The gesture was not merely fighting anything there; it was
+  absent, and the code said so on purpose.
+- **Android 10+ gesture navigation** — the default on nearly every phone sold
+  since 2019 — reserves the left inset for Back at the OS level. The system
+  takes those touches before Chrome sees them, and no web page can opt out.
+  `overscroll-behavior-x` suppresses Chrome's *own* overscroll navigation and
+  has no bearing on the system one.
+
+Between them that is nearly every phone. The lesson is not about drawers:
+**verifying a gesture in a browser is not verifying it on a device, because the
+recognisers that outrank you are not in the browser.** A device emulator gives
+you the viewport and the user-agent string and none of the OS. If a gesture
+lives where the platform already has one, the platform wins, and the only fix is
+to stop living there.
+
+So the edge is left to the browser, where it already belonged, and the three
+rules that travel with any gesture here are:
+
+- **A gesture is never the only way in.** Nothing on a screen announces that it
+  can be dragged. The menu button is untouched and stays the discoverable door —
+  which is also what keeps the nav reachable by keyboard and to a screen reader,
+  neither of which has a screen to drag.
+- **A gesture costs the pixels it listens on.** MUI's strip was hit-testable, so
+  it swallowed every click in the first 20px of every screen and had to be
+  offset clear of the menu button it sat over. Dropping it gave those back.
+  Prefer a recogniser that reads touches over one that occupies a surface.
+- **Yield to whoever already owns the drag.** `ownsHorizontalDrag` walks up from
+  the touch and stands down for a slider, and for anything scrolled away from
+  its left end — a table mid-scroll keeps its scroll; the same table at its left
+  end cannot scroll that way, so the drag is free. That is the difference
+  between "the menu never opens over a table" and "the menu never steals a
+  scroll", and the second is the one worth having.
 
 **Five destinations, and one table behind them.** The shell is a top bar of
 Today / Quotes / Accounts / Money / Setup; a destination holding several
@@ -334,7 +349,7 @@ component rather than copying it.
 Honest, so the next person knows what they are walking into rather than
 discovering it. Written after an audit, not from memory.
 
-**Aligned:** the app shell (`AppBar` + `SwipeableDrawer`), dialogs, snackbars, the grid
+**Aligned:** the app shell (`AppBar` + `Drawer`), dialogs, snackbars, the grid
 wrapper, the settings and connections forms, the theme itself. Every button is
 MUI's — the `.btn` variant system is gone from the stylesheet, so there is
 nothing left to fall back into. `Bp` is a `Paper` (the corner marks survive

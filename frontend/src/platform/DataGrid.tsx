@@ -43,6 +43,34 @@ export type { ColDef } from "ag-grid-community";
  */
 export const NARROW_BREAKPOINT = 700;
 
+/** The narrowest a column is worth rendering at, on a grid too narrow to hold
+ *  them all: a money figure with its symbol and separators — "₹2,94,000" —
+ *  plus the cell padding and the sort arrow. */
+const READABLE_COLUMN = 120;
+
+/** What `sizeColumnsToFit` may do to the columns at this grid width.
+ *
+ *  Fitting divides whatever space there is between the columns and stops only
+ *  at each column's own minimum, which ag-grid defaults to 50px. At 390px the
+ *  Money screen's credit grid drew six columns of about 34px: headers reading
+ *  "O…", "O…", "C…" over cells reading "₹…". That is not a grid somebody can
+ *  scroll sideways — it is a grid with every value hidden and nothing on screen
+ *  saying so.
+ *
+ *  So below `NARROW_BREAKPOINT` a floor goes in and the columns that cannot fit
+ *  take it, which leaves the grid scrolling inside its own box: the narrow
+ *  fallback this file documents above, and readable. Above it, nothing —
+ *  ag-grid raises a column's own `minWidth` to this floor rather than only
+ *  filling one in where none was declared, so applying it at every width would
+ *  quietly re-lay-out every wide grid whose columns declare less.
+ *
+ *  Here rather than in the implementation because it is the same question as
+ *  `NARROW_BREAKPOINT` — what a grid does when there is not enough width — and
+ *  because this module is the one a test can import without loading ag-grid. */
+export function fitParamsAt(gridWidth: number): { defaultMinWidth: number } | undefined {
+  return gridWidth < NARROW_BREAKPOINT ? { defaultMinWidth: READABLE_COLUMN } : undefined;
+}
+
 // `lazy` erases the generic, so the type is restored here. The cast is safe:
 // the implementation's props are exactly `DataGridProps<T>`, and without it
 // every call site would silently degrade to `unknown` columns.

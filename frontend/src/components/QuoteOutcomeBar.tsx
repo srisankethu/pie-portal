@@ -1,7 +1,6 @@
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
@@ -15,7 +14,7 @@ import { useState, type ReactNode } from "react";
 import type { QuoteLossReason, QuoteOutcome, QuoteOutcomeStatus } from "../types";
 import { formatDate } from "../when";
 import { Tip } from "../Tip";
-import { StatusChip, TOUCH, type Tone } from "../platform/kit";
+import { FormDialog, StatusChip, TOUCH, type Tone } from "../platform/kit";
 // The five reasons, what each one means downstream, and the lifecycle in
 // readable words — all from the one place they are written. The reasons used to
 // live here, and the platform's two outcome screens needed the same wording; a
@@ -217,7 +216,7 @@ export function QuoteOutcomeBar({ outcome, onRecord, busy }: {
         <Alert severity="error" sx={{ mt: 1 }}>{error}</Alert>
       )}
 
-      <Dialog
+      <FormDialog
         open={asking} onClose={() => setAsking(false)} fullWidth maxWidth="sm"
         // MUI does not wire the title to the dialog on its own, so without this
         // a screen reader announces "dialog" and nothing else.
@@ -276,7 +275,7 @@ export function QuoteOutcomeBar({ outcome, onRecord, busy }: {
             Record the loss
           </Button>
         </DialogActions>
-      </Dialog>
+      </FormDialog>
     </Paper>
   );
 }

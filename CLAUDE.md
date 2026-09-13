@@ -17,9 +17,17 @@ dashboard surfaces and `Card` only for a business entity, status as a `Chip`
 rather than coloured text, **AG Grid through `platform/DataGrid.tsx` for any
 table whose row count is set by the size of the business — never a hand-written
 `<table>`**, MUI's own loading components rather than a hand-rolled shimmer,
-theme tokens rather than literals, and a shared component in `platform/kit.tsx`
-wherever a pattern appears twice. New UI follows it; existing screens move
-toward it as they are touched.
+theme tokens rather than literals, **a dialog somebody fills in as
+`kit.FormDialog`, which is full screen on a phone**, and a shared component in
+`platform/kit.tsx` wherever a pattern appears twice. New UI follows it;
+existing screens move toward it as they are touched.
+
+The phone clause is in this digest for the reason the grid clause below is.
+Twelve dialogs in this app are forms and one of them — the longest, in
+`ConnectionsPanel` — had reached for `fullScreen` and written down why, in a
+comment the other eleven authors had no reason to read. The rule and its
+measurements are `ui-standards.md` §12; what belongs here is that a phone is a
+viewport this desk quotes from, not a size the layout should merely survive.
 
 The grid rule is stated here because leaving it only in `ui-standards.md` §3 is
 how the Quote Builder's line table stayed a hand-written `<table class="grid">`

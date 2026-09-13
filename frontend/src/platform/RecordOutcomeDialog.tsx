@@ -51,7 +51,6 @@
 
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
@@ -59,6 +58,7 @@ import DialogTitle from "@mui/material/DialogTitle";
 import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
+import { FormDialog } from "./kit";
 import { useEffect, useState, type ReactNode } from "react";
 
 import type { QuoteLossReason, QuoteOutcomeStatus } from "../types";
@@ -203,7 +203,7 @@ export function RecordOutcomeDialog({
   }
 
   return (
-    <Dialog
+    <FormDialog
       open={open} onClose={busy ? undefined : onClose}
       fullWidth maxWidth="sm"
       // MUI does not wire the title to the dialog on its own, so without this
@@ -265,6 +265,6 @@ export function RecordOutcomeDialog({
           Record
         </Button>
       </DialogActions>
-    </Dialog>
+    </FormDialog>
   );
 }

@@ -903,11 +903,18 @@
 }
 /* Top-aligned with a little air rather than centred: the form is taller than a
    short viewport, and a centred box that overflows crops its own heading. It
-   scrolls in the backdrop, which is why the padding is on the backdrop. */
+   scrolls in the backdrop, which is why the padding is on the backdrop.
+
+   `margin: 0 auto`, not `margin: auto`. The shorthand centres vertically too —
+   an auto block margin wins over the backdrop's `align-items: flex-start` — so
+   on a 390x844 phone the sheet sat at top: -14px and the close button was cut
+   off by the edge of the screen, which is the exact failure the paragraph above
+   says this layout exists to avoid. Horizontal centring is all that was
+   wanted. */
 .pie-landing .lp-modal {
   position: relative;
   width: 100%; max-width: 720px;
-  margin: auto;
+  margin: 0 auto;
   box-shadow: 0 18px 48px rgba(17, 24, 33, 0.28);
 }
 .pie-landing .lp-modal:focus-visible {

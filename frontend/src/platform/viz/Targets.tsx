@@ -31,7 +31,6 @@
 
 import Alert from "@mui/material/Alert";
 import Button from "@mui/material/Button";
-import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogTitle from "@mui/material/DialogTitle";
@@ -47,7 +46,7 @@ import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
 import { DataGrid, numeric } from "../DataGrid";
-import { ErrorState, InlineLink, LoadingState } from "../kit";
+import { ErrorState, FormDialog, InlineLink, LoadingState } from "../kit";
 import type { PlatformSession } from "../types";
 
 type Row = Record<string, unknown>;
@@ -190,7 +189,7 @@ export function TargetEditor({
   };
 
   return (
-    <Dialog open onClose={onClose} maxWidth="md" fullWidth>
+    <FormDialog open onClose={onClose} maxWidth="md" fullWidth>
       <DialogTitle sx={{ pb: 0.5 }}>
         Supplier targets
         <Typography variant="body2" sx={{ color: "text.secondary" }}>
@@ -397,6 +396,6 @@ export function TargetEditor({
           {busy ? "Saving…" : "Save target"}
         </Button>
       </DialogActions>
-    </Dialog>
+    </FormDialog>
   );
 }

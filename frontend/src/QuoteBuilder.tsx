@@ -73,8 +73,8 @@ import { blockersFor, coverage, type Fix } from "./components/lineProblems";
 import { NARROW_BREAKPOINT } from "./platform/DataGrid";
 import { QuoteOutcomeBar } from "./components/QuoteOutcomeBar";
 import { SummaryBar } from "./components/SummaryBar";
-import { EmptyState, ErrorState, FieldLabel, FilterChip, FilterPanel, LoadingState,
-         SectionHeader, TOUCH } from "./platform/kit";
+import { EmptyState, ErrorState, FieldLabel, FilterChip, FilterPanel, FormDialog,
+         LoadingState, SectionHeader, TOUCH } from "./platform/kit";
 import { abilityFor } from "./platform/ability";
 import { PATH, pathFor } from "./platform/route";
 import type { PlatformSession } from "./platform/types";
@@ -1275,7 +1275,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
 
       {/* Handing the quote over. The list is the organization's active
           members, minus the current owner. */}
-      <Dialog open={handover !== null} onClose={() => setHandover(null)} fullWidth maxWidth="xs">
+      <FormDialog open={handover !== null} onClose={() => setHandover(null)} fullWidth maxWidth="xs">
         <DialogTitle>Hand {quote.number} to somebody else</DialogTitle>
         <DialogContent>
           <DialogContentText sx={{ mb: 2 }}>
@@ -1298,7 +1298,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
             Hand over
           </Button>
         </DialogActions>
-      </Dialog>
+      </FormDialog>
 
       {/* Choosing — or changing — the customer re-resolves the lines already
           on the quote under that customer's identity scope, and the server

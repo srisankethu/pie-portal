@@ -1,6 +1,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import CssBaseline from "@mui/material/CssBaseline";
+import useMediaQuery from "@mui/material/useMediaQuery";
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SnackbarProvider } from "notistack";
@@ -49,26 +50,44 @@ const queryClient = new QueryClient({
   },
 });
 
+/** Where a message lands, and why it is not the same place on a phone.
+ *
+ * Toasts stack rather than replace each other: the undo offer after an action
+ * is the one that must not be swallowed, and acting on two decisions quickly
+ * used to leave only the second one undoable.
+ *
+ * Bottom-*left* on a desk, not bottom-centre. The Quote Builder has a sticky
+ * summary bar along the bottom carrying the quotation total and the send
+ * button, and a centred toast landed on top of both — so the confirmation that
+ * a quote had been saved covered the control the reader was about to press.
+ * Left of the send button, which sits at the right end of that bar.
+ *
+ * **Top on a phone**, because there is no "left of" anything at 390px: a
+ * snackbar is the full width of the screen there, and the bottom of the screen
+ * is where every form dialog now keeps its actions (`kit.FormDialog`) and where
+ * the summary bar's send sits. "QB-0005 is for Pitti Engineering Ltd" was
+ * landing squarely on "Resolve & add" — a message about what just happened
+ * covering the button for what happens next. Nothing is under the top edge but
+ * the app bar, which no message is about. */
+function Toasts({ children }: { children: React.ReactNode }) {
+  const narrow = useMediaQuery(theme.breakpoints.down("sm"));
+  return (
+    <SnackbarProvider
+      maxSnack={3}
+      anchorOrigin={{ vertical: narrow ? "top" : "bottom", horizontal: "left" }}
+      autoHideDuration={6000}
+    >
+      {children}
+    </SnackbarProvider>
+  );
+}
+
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ThemeProvider theme={theme}>
       <CssBaseline />
       <QueryClientProvider client={queryClient}>
-        {/* Toasts stack rather than replace each other. The undo offer after
-            an action is the one that must not be swallowed: acting on two
-            decisions quickly used to leave only the second one undoable. */}
-        {/* Bottom-*left*, not bottom-centre. The Quote Builder has a sticky
-            summary bar along the bottom carrying the quotation total and the
-            send button, and a centred toast landed on top of both — so the
-            confirmation that a quote had been saved covered the control the
-            reader was about to press, and on a phone it covered the quote
-            details fields outright. Left of the send button, which sits at the
-            right end of that bar. */}
-        <SnackbarProvider
-          maxSnack={3}
-          anchorOrigin={{ vertical: "bottom", horizontal: "left" }}
-          autoHideDuration={6000}
-        >
+        <Toasts>
           {/* Hash rather than browser history: the API and this bundle are
               served by the same FastAPI app, and a browser-path router needs
               every unknown path rewritten to index.html there. See
@@ -80,7 +99,7 @@ createRoot(document.getElementById("root")!).render(
           <HashRouter>
             <PlatformApp />
           </HashRouter>
-        </SnackbarProvider>
+        </Toasts>
       </QueryClientProvider>
     </ThemeProvider>
   </React.StrictMode>,

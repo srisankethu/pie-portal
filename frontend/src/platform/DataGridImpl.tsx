@@ -15,6 +15,7 @@ import {
 } from "ag-grid-community";
 import { AgGridReact } from "ag-grid-react";
 import type { GridSizeChangedEvent } from "ag-grid-community";
+import { fitParamsAt } from "./DataGrid";
 import type { DataGridProps } from "./DataGrid";
 
 ModuleRegistry.registerModules([AllCommunityModule]);
@@ -136,7 +137,10 @@ export default function DataGridImpl<T>({
     }
     e.api.setColumnsVisible(hide, false);
     e.api.setColumnsVisible(show, true);
-    e.api.sizeColumnsToFit();
+    // And then fit them — under a floor on a phone, where fitting six columns
+    // into 390px is what produced headers reading "O…" over cells reading "₹…".
+    // `fitParamsAt` in DataGrid.tsx owns that rule and says why.
+    e.api.sizeColumnsToFit(fitParamsAt(width));
   }, []);
 
   // ── selection, controlled from upstream ───────────────────────────────────

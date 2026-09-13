@@ -24,7 +24,6 @@
 import { useId, useState } from "react";
 import Button from "@mui/material/Button";
 import CircularProgress from "@mui/material/CircularProgress";
-import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
@@ -33,6 +32,7 @@ import LinearProgress from "@mui/material/LinearProgress";
 import List from "@mui/material/List";
 import ListItemButton from "@mui/material/ListItemButton";
 import ListItemText from "@mui/material/ListItemText";
+import { FormDialog } from "../platform/kit";
 
 import type { QuoteCompany } from "../api";
 
@@ -65,7 +65,7 @@ export function CompanyPicker({
   const [taken, setTaken] = useState<string | null>(null);
 
   return (
-    <Dialog
+    <FormDialog
       open={open} onClose={onCancel} fullWidth maxWidth="xs"
       aria-describedby={noteId}
     >
@@ -118,6 +118,6 @@ export function CompanyPicker({
       <DialogActions>
         <Button onClick={onCancel} disabled={busy}>Cancel</Button>
       </DialogActions>
-    </Dialog>
+    </FormDialog>
   );
 }

@@ -65,7 +65,7 @@ import Typography from "@mui/material/Typography";
 
 import type { ColDef } from "./DataGrid";
 import { DataGrid } from "./DataGrid";
-import { EmptyState, Meta, PanelMark, StatusChip, TOUCH } from "./kit";
+import { EmptyState, FormDialog, Meta, PanelMark, StatusChip, TOUCH } from "./kit";
 import type { BindingChoice, BindingSuggestion, BuiltFile, CompanyCatalogueEntry,
               CompanySource, DecoderArtifact, DecoderProposalResponse } from "./types";
 import { Tip } from "./ui";
@@ -698,8 +698,8 @@ function DecodingDialog({ source, ruleSets, busy, onClose, onSave, onAnalyze,
   return (
     // Wider for the review, which is a grid of every varying part in the
     // file; the columns form alone reads better narrow.
-    <Dialog open onClose={onClose} fullWidth
-            maxWidth={path === "decoder" ? "lg" : "sm"}>
+    <FormDialog open onClose={onClose} fullWidth
+                maxWidth={path === "decoder" ? "lg" : "sm"}>
       <DialogTitle>How is {source.filename} decoded?</DialogTitle>
       {/* `dividers` because this content scrolls: with the decoder review open
           it is a form, a toggle and a 420px grid, and an unbounded scroll into
@@ -830,7 +830,7 @@ function DecodingDialog({ source, ruleSets, busy, onClose, onSave, onAnalyze,
         </Button>
         )}
       </DialogActions>
-    </Dialog>
+    </FormDialog>
   );
 }
 

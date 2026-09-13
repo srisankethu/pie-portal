@@ -167,17 +167,38 @@ export interface EvidenceEntry {
   need?: Subject;
 }
 
-/** Four of these cards open a screen that is also a tab somewhere else —
- *  `Won & lost` under Quotes, and `Vendors`, `Relationships` and
- *  `Dependencies` under Accounts. That is deliberate and not a duplicate entry:
- *  a tab is where you go when you already know you want the vendor side, and a
- *  card here is where you land when what you have is the question. The screen
- *  is one screen at one address either way. */
+/** Three of these cards open a screen that is also a tab somewhere else —
+ *  `Vendors`, `Relationships` and `Dependencies`, all under Accounts. That is
+ *  deliberate and not a duplicate entry: a tab is where you go when you
+ *  already know you want the vendor side, and a card here is where you land
+ *  when what you have is the question. The screen is one screen at one address
+ *  either way.
+ *
+ *  This said four, and counted `Won & lost` under Quotes. Quotes has no tab
+ *  strip — `DestinationLayout` is instantiated three times, for Accounts,
+ *  Money and Setup — so that card is `quoteOutcomes`'s only door, not its
+ *  second one. The name-agreement test below repeated the same count and could
+ *  not catch it: it walks the strips, so a screen that is a card and nothing
+ *  else never enters the loop. Corrected rather than deleted, because the
+ *  count is what a reader checks this paragraph against. */
 export const EVIDENCE: readonly EvidenceEntry[] = [
   { name: "The morning read", question: "What moved in the book, and why?",
     screen: "morningRead" },
   { name: "Lost revenue", question: "Where did the revenue go?",
     screen: "lostRevenue", need: "economics" },
+  // Directly under Lost revenue, because it is the half of that question a
+  // salesperson may read. `/lost-revenue` is `require_manager_or_owner` and
+  // `/insight/journey` is not, which `story.py` already knows: the
+  // lost-revenue beat swaps its call-to-action to `journey` for exactly the
+  // role that cannot open the other one. That made this the screen the
+  // storyboard sends a salesperson to and the only screen with an address
+  // that no nav item, tab, card or ⌘K row led back to — reachable once, from
+  // the beat, and never again. No `need` for the same reason the endpoint has
+  // no gate: it is customer counts and order dates, and nothing in it is
+  // derived from cost.
+  { name: "Customer journey",
+    question: "Is the customer base growing, holding, or turning over?",
+    screen: "journey" },
   { name: "Rhythm", question: "Which accounts have broken their own pattern?",
     screen: "cadence" },
   { name: "Landscape", question: "Which accounts are big and thin at the same time?",

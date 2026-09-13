@@ -513,6 +513,69 @@ def test_an_unscoped_answer_says_so_rather_than_naming_a_group(app_and_maker):
     assert body["group"] is None
 
 
+#: Every endpoint that takes a customer group, and the key its rows live under.
+#: Parametrised rather than written out six times, because the property is the
+#: same one at each: the scope is applied server-side and the answer names the
+#: group it was computed over. A sixth endpoint added without a row here is an
+#: endpoint whose scoping nothing checks.
+CUSTOMER_SCOPED = [
+    ("/api/v1/insight/credit", "accounts"),
+    ("/api/v1/insight/cadence", "customers"),
+    ("/api/v1/insight/journey", "series"),
+    ("/api/v1/insight/lost-revenue", "causes"),
+    ("/api/v1/insight/payments", "customers"),
+    ("/api/v1/insight/composition", "series"),
+]
+
+
+@pytest.mark.parametrize("path,_rows_key", CUSTOMER_SCOPED)
+def test_every_customer_scoped_screen_names_the_group_it_computed_over(
+        app_and_maker, path, _rows_key):
+    """The stamp travels with the answer, on all of them.
+
+    Asserted per endpoint rather than once on a shared helper: the helper is
+    trivially right and the failure mode is a screen that forgets to call it,
+    which only a request can see.
+    """
+    client, maker = app_and_maker
+    _seed_customers(maker)
+    version = _make_group(maker, members=["cust-0"])
+    manager = _hdr(client, MANAGER)
+
+    scoped = client.get(f"{path}?group=aerospace", headers=manager)
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json()["group"] == {
+        "slug": "aerospace", "name": "Aerospace", "entity_kind": "CUSTOMER",
+        "group_version": version, "members": 1}
+
+    # And unscoped says so, rather than naming a group that holds everything.
+    assert client.get(path, headers=manager).json()["group"] is None
+
+
+@pytest.mark.parametrize("path,_rows_key", CUSTOMER_SCOPED)
+def test_every_customer_scoped_screen_refuses_an_unknown_group(
+        app_and_maker, path, _rows_key):
+    """404, not a silently unscoped whole book — the one failure that looks
+    like a working screen."""
+    client, maker = app_and_maker
+    _seed_customers(maker)
+    r = client.get(f"{path}?group=no-such-thing", headers=_hdr(client, MANAGER))
+    assert r.status_code == 404, f"{path}: {r.status_code}"
+
+
+@pytest.mark.parametrize("path,_rows_key", CUSTOMER_SCOPED)
+def test_every_customer_scoped_screen_withholds_a_restricted_group(
+        app_and_maker, path, _rows_key):
+    """A salesperson naming a management-only group gets the same 404 a
+    nonexistent one gets. A 403 would confirm it exists."""
+    client, maker = app_and_maker
+    _seed_customers(maker)
+    _make_group(maker, slug="watchlist", members=["cust-0"],
+                visibility=groups.RESTRICTED)
+    r = client.get(f"{path}?group=watchlist", headers=_hdr(client, SALES))
+    assert r.status_code == 404, f"{path}: {r.status_code}"
+
+
 def test_an_empty_group_explains_itself_rather_than_blaming_the_sync(app_and_maker):
     """"No customers have synced yet" would send somebody to re-run a sync that
     has already worked. The group is the reason, so the group is what it says."""

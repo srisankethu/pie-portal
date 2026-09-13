@@ -212,8 +212,17 @@ def _as_of(snapshot) -> Optional[date]:
     return snapshot.as_of()
 
 
+#: "This screen does not take a group at all", as distinct from "it does and
+#: none was asked for". Both would be ``None`` as a default, and they mean
+#: different things on the wire: the first omits the key, the second sends
+#: ``null``. Without the distinction every screen in this router would advertise
+#: a ``group`` field, including the twenty that cannot be scoped by one.
+_UNSCOPED: Any = object()
+
+
 def _no_data(th: Any, what: str, *, missing: str = "sales history",
-             synced: bool = False) -> dict:
+             synced: bool = False, group: Any = _UNSCOPED,
+             items: Any = _UNSCOPED) -> dict:
     """An empty screen, and the *actual* reason it is empty.
 
     Two parameters because one message was being used for two different states.
@@ -226,14 +235,30 @@ def _no_data(th: Any, what: str, *, missing: str = "sales history",
 
     `missing` names what has to arrive. `synced` says the books are demonstrably
     connected, so the closing sentence stops suggesting otherwise.
+
+    **`group` is carried through so the envelope's shape does not depend on
+    whether there was anything to say.** A screen scoped to a group answers with
+    `group` on the way out or `null` — never with the key absent — because a
+    caller that has to handle "sometimes missing" is a caller that will read the
+    missing case as unscoped. It also keeps the chip on screen while the screen
+    is empty, which is the moment somebody most needs to see which set they are
+    looking at.
     """
+    # ``items`` is only ever passed by ``/composition``, the one screen that
+    # crosses two kinds of group at once. Two named kwargs rather than one that
+    # changes meaning, for the reason that endpoint keeps two query parameters.
+    scoped: dict[str, Any] = {}
+    if group is not _UNSCOPED:
+        scoped["group"] = group_scope.ref(group)
+    if items is not _UNSCOPED:
+        scoped["items"] = group_scope.ref(items)
     if synced:
         return _envelope(
-            {}, th=th,
+            {}, th=th, **scoped,
             empty_reason=(f"The books are synced, but no {missing} has come with "
                           f"them, so {what} cannot be computed yet."))
     return _envelope(
-        {}, th=th,
+        {}, th=th, **scoped,
         empty_reason=(f"No {missing} has been synced yet, so {what} cannot be "
                       f"computed. Connect a Zoho company and run a sync."))
 
@@ -373,23 +398,34 @@ def revenue_flow(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
 # ── customer journey ────────────────────────────────────────────────────────
 @router.get("/journey")
 def customer_journey(months: int = Query(12, ge=3, le=24),
+                     group: Optional[groups.ResolvedGroup] =
+                     Depends(group_scope.customer_group),
                      principal: Principal = Depends(current_principal),
                      session: Session = Depends(get_session)) -> dict:
-    """Customer states month by month, plus who has gone quiet."""
-    _org, snapshot, th = _context(session, principal)
+    """Customer states month by month, plus who has gone quiet.
+
+    ``group`` bounds the snapshot by customer, so the counts in each state are
+    the group's own rather than the book's with the others hidden — which is
+    the whole difference between "how is the PSU book ageing" and a chart that
+    happens to draw fewer bars.
+    """
+    _org, snapshot, th = _context(
+        session, principal,
+        **({"sales_for_customers": group.entity_ids} if group is not None else {}))
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th, "the customer journey")
+        return _no_data(th, "the customer journey", group=group)
 
     points = cohorts.journey(snapshot.sales, as_of, months=months,
                              names=snapshot.customer_names)
     return _envelope(
         {"series": [p.to_dict() for p in points],
          "dormant": cohorts.dormancy(snapshot.sales, snapshot.customer_names, as_of)},
-        th=th, as_of=as_of.isoformat(),
+        th=th, as_of=as_of.isoformat(), group=group_scope.ref(group),
         empty_reason=(None if points else
-                      "Less than two months of history — there is nothing to "
-                      "compare a month against yet."))
+                      (group_scope.empty_note(group, "sales history")
+                       or "Less than two months of history — there is nothing to "
+                          "compare a month against yet.")))
 
 
 @router.get("/migration")
@@ -548,13 +584,23 @@ def opportunities(limit: int = Query(100, ge=1, le=300),
 
 @router.get("/lost-revenue")
 def lost_revenue(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
+                 group: Optional[groups.ResolvedGroup] =
+                 Depends(group_scope.customer_group),
                  principal: Principal = Depends(require_manager_or_owner),
                  session: Session = Depends(get_session)) -> dict:
-    """Revenue that stopped, grouped by what the rows say caused it."""
-    org, snapshot, th = _context(session, principal)
+    """Revenue that stopped, grouped by what the rows say caused it.
+
+    ``group`` bounds the snapshot by customer. The per-cause totals are sums
+    over the customers read, so they become the group's losses rather than the
+    book's — which is the question somebody asks of a segment they are about to
+    go and visit.
+    """
+    org, snapshot, th = _context(
+        session, principal,
+        **({"sales_for_customers": group.entity_ids} if group is not None else {}))
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th, "lost revenue")
+        return _no_data(th, "lost revenue", group=group)
 
     by_customer: dict[str, list] = {}
     for row in session.scalars(
@@ -566,8 +612,11 @@ def lost_revenue(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
     result = cohorts.lost_revenue(snapshot.sales, snapshot.customer_names,
                                   comparison, by_customer)
     return _envelope(result, th=th, as_of=as_of.isoformat(),
+                     group=group_scope.ref(group),
                      empty_reason=(None if result["causes"] else
-                                   "No customer spent less this period than last."))
+                                   (group_scope.empty_note(group, "sales history")
+                                    or "No customer spent less this period "
+                                       "than last.")))
 
 
 # ── landscape: two measures per subject, positioned ─────────────────────────
@@ -632,7 +681,7 @@ def revenue_composition(
     _org, snapshot, th = _context(session, principal, **bound)
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th, "the revenue mix")
+        return _no_data(th, "the revenue mix", group=group, items=items)
 
     names = (snapshot.customer_names if dimension == composition.BY_CUSTOMER
              else snapshot.product_names)
@@ -649,21 +698,33 @@ def revenue_composition(
 
 # ── cadence: the buying rhythm ──────────────────────────────────────────────
 @router.get("/cadence")
-def buying_cadence(principal: Principal = Depends(current_principal),
-                   session: Session = Depends(get_session)) -> dict:
-    """When customers order, and who is off their own rhythm."""
-    _org, snapshot, th = _context(session, principal)
+def buying_cadence(
+        group: Optional[groups.ResolvedGroup] = Depends(group_scope.customer_group),
+        principal: Principal = Depends(current_principal),
+        session: Session = Depends(get_session)) -> dict:
+    """When customers order, and who is off their own rhythm.
+
+    ``group`` bounds the snapshot by customer, which is the safe direction of
+    that bound: every figure here is already per customer, so restricting which
+    customers are read changes who is listed and nothing about what is said of
+    each. (The dangerous direction is bounding *sales by product* under a
+    per-customer figure — ``load_snapshot`` spells out why.)
+    """
+    _org, snapshot, th = _context(
+        session, principal,
+        **({"sales_for_customers": group.entity_ids} if group is not None else {}))
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th, "buying rhythm")
+        return _no_data(th, "buying rhythm", group=group)
 
     # Same thresholds the dormancy detector runs on, so this screen and the
     # decision queue never disagree about who is overdue.
     result = cadence.build(snapshot.sales, snapshot.customer_names, as_of,
                            thresholds=load_signal_thresholds())
-    return _envelope(result, th=th,
+    return _envelope(result, th=th, group=group_scope.ref(group),
                      empty_reason=(None if result["customers"] else
-                                   "No customer has ordered yet."))
+                                   (group_scope.empty_note(group, "order")
+                                    or "No customer has ordered yet.")))
 
 
 # ── The book itself: the shelf, the suppliers and the cash ───────────────────────────
@@ -866,14 +927,23 @@ def _bill_settlements(session: Session, org: str,
 
 
 @router.get("/payments")
-def payment_behaviour(principal: Principal = Depends(current_principal),
-                      session: Session = Depends(get_session)) -> dict:
+def payment_behaviour(
+        group: Optional[groups.ResolvedGroup] = Depends(group_scope.customer_group),
+        principal: Principal = Depends(current_principal),
+        session: Session = Depends(get_session)) -> dict:
     """How long customers take to pay. Receivables — no cost, so every role.
 
     The per-account list is the whole book for every role, unchanged. The
     per-salesperson roll-up beside it is scoped to the reader's own book when
     they are a salesperson — see ``_settlement_books`` — because that is the
     scope this router already applies to anything keyed by who owns an account.
+
+    **``group`` narrows the settlements before they are built, not the rows
+    after.** This screen's headline figures — the typical days to pay, the
+    bands, the share settling late — are medians and proportions over the list
+    ``payments.build`` is handed. Filtering its output would leave those
+    describing the whole book under a chip naming a segment, which is the
+    failure the group filter exists to avoid rather than one it may commit.
     """
     org, snapshot, th = _labels_only(session, principal)
     as_of = _as_of(snapshot) or clock.today(th.timezone)
@@ -882,11 +952,22 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
         select(models.PaymentReceipt).where(
             models.PaymentReceipt.organization_id == org)).all()
     settled = _settlements(session, org)
+    if group is not None:
+        members = set(group.entity_ids)
+        # ``party_id`` rather than a customer field: a Settlement is the same
+        # shape on both sides of the book and names the role, which this call
+        # site has to respect even though the party here is always a customer.
+        settled = [s for s in settled if s.party_id in members]
+        # The advance and unapplied counters below are receipt-level and carry
+        # a customer, so they are narrowed with the same set rather than left
+        # whole — two figures on one screen counted over different populations
+        # is the thing being prevented.
+        receipts = [r for r in receipts if r.customer_id in members]
     if not receipts and not settled:
         # Not "no sales history": the sales may be entirely there, and what is
         # missing is a payment against them.
         return _no_data(th, "payment behaviour",
-                        missing="customer payment",
+                        missing="customer payment", group=group,
                         synced=_books_have_sales(session, org))
 
     result = payments.build(
@@ -915,11 +996,12 @@ def payment_behaviour(principal: Principal = Depends(current_principal),
     # not holding", which is a different conversation with a different person.
     result["by_owner"] = _settlement_books(session, principal, settled)
     return _envelope(
-        result, th=th,
+        result, th=th, group=group_scope.ref(group),
         empty_reason=(None if result["customers"] else
-                      "Payments have synced, but none of them is applied to an "
-                      "invoice yet — so there is no invoice date to measure "
-                      "from. Advances are counted separately above."))
+                      (group_scope.empty_note(group, "settled invoice")
+                       or "Payments have synced, but none of them is applied to "
+                          "an invoice yet — so there is no invoice date to "
+                          "measure from. Advances are counted separately above.")))
 
 
 @router.get("/payables")

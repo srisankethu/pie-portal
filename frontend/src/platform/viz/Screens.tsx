@@ -25,6 +25,7 @@ import { Tip } from "../../Tip";
 import { ChartTip, InlineLink, Unavailable, VarianceIndicator } from "../kit";
 import { DataGrid, numeric } from "../DataGrid";
 import { papi } from "../api";
+import { GroupFilter, useGroupFilter } from "../GroupFilter";
 import type { PlatformSession } from "../types";
 import { vizPath } from "../route";
 import { Figure, Panel, stateOf } from "./Panel";
@@ -208,10 +209,15 @@ export function OpportunityScreen({
 
 // ── Lost Revenue Explorer ───────────────────────────────────────────────────
 export function LostRevenueScreen({ session }: { session: PlatformSession }) {
+  // Server-side: the per-cause totals are sums over the customers read, so the
+  // group has to bound the read rather than trim the bars under an unchanged
+  // headline.
+  const group = useGroupFilter(session.token, "CUSTOMER");
   const [months, setMonths] = useState(3);
   const { data, loading, error, reload } = useInsight(
     "lostRevenue",
-    () => papi.lostRevenue(session.token, months), [session.token, months]);
+    () => papi.lostRevenue(session.token, months, group.group),
+    [session.token, months, group.group]);
 
   const causes = (data?.causes as Record<string, unknown>[] | undefined) ?? [];
   const total = Number(data?.total_lost ?? 0);
@@ -232,7 +238,14 @@ export function LostRevenueScreen({ session }: { session: PlatformSession }) {
       emptyReason={data?.empty_reason as string}
       onRetry={reload}
       wide
-      actions={<MonthPicker value={months} onChange={setMonths} id="lost-months" />}
+      actions={
+        <div className="seg-controls">
+          <GroupFilter label="Customer group" value={group.group}
+                       onChange={group.setGroup} options={group.options}
+                       show={group.show} minWidth={170} />
+          <MonthPicker value={months} onChange={setMonths} id="lost-months" />
+        </div>
+      }
     >
       <div className="story-hero">
         {/* Negated: `total` is the magnitude of what was lost, and the hero has
@@ -299,9 +312,14 @@ export function JourneyScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
   const [months, setMonths] = useState(12);
+  // Server-side: each month's state counts are over the customers read, so the
+  // group is "how is the PSU book ageing" rather than the whole book's chart
+  // with fewer bars drawn.
+  const group = useGroupFilter(session.token, "CUSTOMER");
   const { data, loading, error, reload } = useInsight(
     "journey",
-    () => papi.journey(session.token, months), [session.token, months]);
+    () => papi.journey(session.token, months, group.group),
+    [session.token, months, group.group]);
   const [ref, room] = useMeasure<HTMLDivElement>();
   /** Which band is open, as (month label, state). One at a time — two open
    *  drill-downs is two tables nobody asked to compare. */
@@ -340,8 +358,13 @@ export function JourneyScreen({
       onRetry={reload}
       wide
       actions={
-        <MonthPicker value={months} onChange={setMonths} id="journey-months"
-                     options={[6, 12, 24]} />
+        <div className="seg-controls">
+          <GroupFilter label="Customer group" value={group.group}
+                       onChange={group.setGroup} options={group.options}
+                       show={group.show} minWidth={170} />
+          <MonthPicker value={months} onChange={setMonths} id="journey-months"
+                       options={[6, 12, 24]} />
+        </div>
       }
     >
       <div ref={ref}>

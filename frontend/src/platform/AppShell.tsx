@@ -19,24 +19,22 @@
  * ordinary way this desk is used.
  *
  * On a phone the five fold back into a drawer, and the drawer is swipeable:
- * dragging rightwards from the left edge pulls it in, dragging back puts it
- * away. That is `SwipeableDrawer`, which MUI already ships and this app already
- * depends on — the gesture is a prop on the component that was here, not a
- * library. The button is untouched and stays the way the gesture is discovered:
- * a phone teaches edge-swipe by habit and nothing on the screen announces it,
- * so it is the shortcut and never the only door.
+ * dragging rightwards anywhere on the screen pulls it in, dragging it back puts
+ * it away. Closing is `SwipeableDrawer`'s, which MUI already ships; opening is
+ * `swipe.ts`, and its header has the reason the component's own open gesture
+ * could not be used — it is an *edge* gesture, and on a phone the left edge
+ * belongs to the browser or to the OS, not to the page.
  *
- * The left edge is contested, though, and two of the three things below exist
- * because of it: the browser wants that drag for its own back-navigation, and
- * where it insists — Safari — this stands down rather than fight for it.
+ * The button is untouched and stays the way the gesture is discovered: nothing
+ * on a screen announces that it can be dragged, and neither a keyboard nor a
+ * screen reader has a screen to drag. It is the shortcut, never the only door.
  */
-import { useState, type ReactNode } from "react";
+import { useCallback, useState, type ReactNode } from "react";
 import AppBar from "@mui/material/AppBar";
 import Badge from "@mui/material/Badge";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Divider from "@mui/material/Divider";
-import GlobalStyles from "@mui/material/GlobalStyles";
 import IconButton from "@mui/material/IconButton";
 import List from "@mui/material/List";
 import ListItemButton from "@mui/material/ListItemButton";
@@ -57,43 +55,16 @@ import AccountMenu from "./AccountMenu";
 import { DESTINATIONS, destinationFor, type Destination } from "./destinations";
 import type { OrganizationMembershipView } from "./types";
 import { pathFor, WIDE_SCREENS, type Screen } from "./route";
+import { useOpenOnSwipeRight } from "./swipe";
 
 /** What a destination has waiting. Only Today carries one today, and only ever
  *  an open count: a badge that never goes down stops being read. */
 export type NavCounts = Partial<Record<Destination, number>>;
 
-/** The height of the brand bar, in px. Stated once because the swipe strip
- *  below has to start exactly where the bar ends, and two numbers that have to
- *  agree will not. */
+/** The height of the brand bar, in px. Stated once because both toolbars —
+ *  the bar itself and the drawer's own header — have to agree on it. */
 export const TOOLBAR_HEIGHT = 56;
 
-/** How wide a band down the left edge starts the open gesture, in px. MUI's
- *  own default; kept as a named constant because the test measures it and
- *  because a wider band eats more of the content beneath it. */
-export const SWIPE_AREA_WIDTH = 20;
-
-/** Where the browser's own edge gesture owns the left edge already.
- *
- *  Safari navigates back on a swipe from the left edge, which is the same
- *  gesture and the same few pixels as opening this drawer. The two cannot both
- *  win, and the one that loses is unpredictable — a half-written quote is
- *  exactly what a stray "back" costs. So on those devices the drawer opens from
- *  the button and not from a swipe, which is what MUI defaults to; this
- *  restates the default rather than inheriting it so that the decision is ours
- *  and a change of default upstream cannot quietly hand iPhones the conflict.
- *
- *  Broader than MUI's own test by one case: an iPad on iPadOS 13+ reports
- *  itself as a Macintosh, and the only thing separating it from a desktop Mac
- *  is that it has touch points. A Mac never matches, because Safari on a
- *  desktop has no edge gesture and no touch to start one with. Only portrait
- *  iPads reach this at all — in landscape the shell is wide enough to put the
- *  five destinations in the bar and the drawer is not rendered. */
-function browserOwnsTheEdge(): boolean {
-  if (typeof navigator === "undefined") return false;
-  const ua = navigator.userAgent;
-  return /iPad|iPhone|iPod/.test(ua)
-    || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
-}
 
 export default function AppShell({
   current,
@@ -137,9 +108,9 @@ export default function AppShell({
   const wideLayout = WIDE_SCREENS.has(current);
   const [open, setOpen] = useState(false);
   const here = destinationFor(current);
-  // Whether the open gesture is live at all: a phone, and a browser that is not
-  // already using this drag for something of its own.
-  const swipeToOpen = !wide && !browserOwnsTheEdge();
+  // Armed on a phone, and only while the menu is shut — once it is open the
+  // drag belongs to the drawer, which reads it as "put this away".
+  useOpenOnSwipeRight(!wide && !open, useCallback(() => setOpen(true), []));
 
   const links = DESTINATIONS.map((d) => ({
     ...d, current: d.key === here, count: counts?.[d.key] ?? 0 }));
@@ -238,53 +209,22 @@ export default function AppShell({
         </Toolbar>
       </AppBar>
 
-      {/* Chrome navigates back on a rightward drag from the left edge — its
-          overscroll history gesture, the same drag and the same pixels as the
-          one below. Without this the swipe never reached the drawer at all: the
-          page went back instead, which on the first screen of a session means a
-          blank tab. `contain` stops the scroll chaining that carries an
-          overscroll into a navigation and nothing else; a grid still scrolls
-          sideways, the page still scrolls down. Mounted with the gesture, so a
-          desk browser keeps its own back-swipe, which nothing here is replacing.
-
-          This is the half of the feature no unit test can see. It is CSS on the
-          document, the browser consumes the gesture before any listener runs,
-          and jsdom has no gesture to consume — so the test below can only check
-          that the rule is emitted. Re-check it in a real browser with touch. */}
-      {swipeToOpen && (
-        <GlobalStyles styles={{ "html, body": { overscrollBehaviorX: "contain" } }} />
-      )}
-
-      {/* Only on a phone, and only rendered there.
-          `open={!wide && open}` would have been enough for a plain Drawer,
-          which draws nothing while closed. A swipeable one draws a strip: a
-          fixed, hit-testable band down the left edge that is how the gesture is
-          detected at all, and it is mounted whenever the drawer is, open or
-          not. Left in the tree at desk width it would sit over the first 20px
-          of every screen and swallow the clicks landing there, to arm a gesture
-          for a nav that is already spelled out along the top. */}
+      {/* Only on a phone. At desk width the five destinations are spelled out
+          along the top and there is nothing here to reach for. */}
       {!wide && (
         <SwipeableDrawer
           variant="temporary"
           open={open}
           onClose={() => setOpen(false)}
           onOpen={() => setOpen(true)}
-          // A swipe rightwards from the left edge pulls the menu in from the
-          // left, and a swipe back leftwards puts it away — the gesture every
-          // phone already teaches, and on this screen the one that saves reaching
-          // the top-left corner one-handed. The button stays exactly as it was:
-          // a gesture nothing announces cannot be the only way in.
-          disableSwipeToOpen={!swipeToOpen}
-          // Cheaper to animate on the low-end Android this desk is read on, and
-          // only turned off where MUI's demo keeps it: iOS renders the backdrop
-          // badly without it.
-          disableBackdropTransition={!browserOwnsTheEdge()}
-          swipeAreaWidth={SWIPE_AREA_WIDTH}
-          // Start the strip below the bar. It is fixed and above the AppBar, and
-          // the menu button — 30px wide, its left edge 13px in — sits directly
-          // under the default full-height strip, which would have eaten the first
-          // 7px of the one control this gesture is an alternative to.
-          slotProps={{ swipeArea: { style: { top: TOOLBAR_HEIGHT } } }}
+          // Kept for what it does once the drawer is OPEN: a drag leftwards
+          // puts it away, following the finger. Its *open* gesture is off, on
+          // purpose and on every device — it is an edge gesture, and it arms
+          // itself by pinning a hit-testable strip down the left edge of every
+          // screen. `swipe.ts` says why the edge cannot carry this; what
+          // matters here is that turning it off also gives back the 20px of
+          // every screen the strip was swallowing.
+          disableSwipeToOpen
           ModalProps={{ keepMounted: true }}
           sx={{ "& .MuiDrawer-paper": { width: 260, bgcolor: "var(--color-neutral-100)" } }}
         >

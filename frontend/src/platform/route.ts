@@ -250,6 +250,33 @@ export function screenAt(pathname: string): Screen {
   return "home";
 }
 
+/** The route *pattern* a URL matched, for Web Analytics.
+ *
+ * `screenAt` above answers "which nav item looks current". This answers a
+ * different question — "which address is this, with the ids taken out" — and
+ * the two part company exactly where an alias does: `/decision/D-91` and
+ * `/decision/D-14` are one route here and one nav highlight there.
+ *
+ * The distinction is the whole point of sending it. A pageview reported at its
+ * path alone puts every account on its own row, so the dashboard shows a
+ * thousand pages visited once each instead of one page visited a thousand
+ * times — and the busiest screen in the product looks like its quietest. The
+ * path still goes up alongside this, which is also what the Next adapter does.
+ *
+ * Reads the same `PARAMETERISED` table `screenAt` does, longest pattern first,
+ * so a pattern added there is matched here without a second edit. An
+ * unrecognised path reports home, where the catch-all route sends it.
+ */
+export function routeFor(pathname: string): string {
+  for (const [pattern] of PARAMETERISED) {
+    if (matchPath(pattern, pathname)) return pattern;
+  }
+  for (const screen of Object.keys(PATH) as Screen[]) {
+    if (!ALIASED.includes(screen) && PATH[screen] === pathname) return pathname;
+  }
+  return PATH.home;
+}
+
 /** Resolve a destination named by the insight layer onto a URL.
  *
  * The server names a destination for every storyboard beat and every weather

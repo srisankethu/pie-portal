@@ -838,7 +838,7 @@ def unavailable(side: str, *, has_reliability: bool) -> list[dict]:
     different reasons, and two identically-worded lines under one screen read as
     a rendering bug rather than as two facts.
     """
-    who = "customers" if side == CUSTOMER else "suppliers"
+    who = "customers" if side == CUSTOMER else "vendors"
     out: list[dict] = []
     if not has_reliability:
         out.append({

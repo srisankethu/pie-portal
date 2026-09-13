@@ -64,7 +64,7 @@ export function TargetWallScreen({ session }: { session: PlatformSession }) {
 
   return (
     <Panel
-      title="Supplier targets"
+      title="Vendor targets"
       question="Where each principal's number stands, what it pays, and whether the pace clears it"
       state={stateOf(loading, error, data?.empty_reason as string)}
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide

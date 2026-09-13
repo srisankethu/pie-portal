@@ -14,7 +14,8 @@
  *   Today     what needs a person, ranked — approvals, decisions, chases and
  *             the outcome questions, as one queue rather than four screens
  *   Quotes    the workspace and the builder
- *   Accounts  every customer across the three companies, as one list
+ *   Accounts  the counterparties, both sides — who buys from us and who we buy
+ *             from, and the two views of how the book leans on them
  *   Money     what is owed, what we owe, the cycle, and the statutory dates
  *   Setup     where the figures come from and the policy the rest obeys
  *
@@ -75,17 +76,21 @@ export const DESTINATIONS: readonly DestinationSpec[] = [
     // opened.
     covers: ["home", "list", "detail", "approvals", "unrecordedQuotes", "evidence",
              "weather", "opportunities", "lostRevenue", "landscape", "composition",
-             "cadence", "bonds", "mix", "dependency", "targets", "gmroi", "stock",
-             "supply", "attribution", "retrospective", "simulate", "journey",
-             "morningRead"],
+             "cadence", "mix", "targets", "gmroi", "stock", "attribution",
+             "retrospective", "simulate", "journey", "morningRead"],
   },
   {
     key: "quotes", label: "Quotes", screen: "quotes",
     covers: ["quotes", "quoteOutcomes"],
   },
   {
+    // Both sides of the book. `supply`, `bonds` and `dependency` were Today's
+    // until they were tabs here — a screen belongs to one of the five, and
+    // `destinationFor` takes the first that claims it, so listing a screen in
+    // two places would silently leave it in whichever comes first in this
+    // array rather than in the destination whose strip it appears in.
     key: "accounts", label: "Accounts", screen: "customer",
-    covers: ["customer", "customerItem"],
+    covers: ["customer", "customerItem", "supply", "bonds", "dependency"],
   },
   {
     key: "money", label: "Money", screen: "payments",
@@ -96,6 +101,28 @@ export const DESTINATIONS: readonly DestinationSpec[] = [
     covers: ["data", "settings", "catalogue", "decodedCatalog", "identity",
              "observability", "states", "trust", "monetization"],
   },
+] as const;
+
+/** Accounts: the counterparties, then what the book's position in them is.
+ *
+ *  This destination held one tab's worth of screen — Customers — while the
+ *  other side of the same book sat in the Evidence library under `Suppliers`,
+ *  and the two views that read *both* sides at once sat beside it. A
+ *  distributor is exposed in two directions; a place called Accounts that
+ *  knows about one of them is answering half the question and not saying so.
+ *
+ *  Who first, then how the book leans on them: Customers and Vendors are
+ *  directories somebody looks a name up in, Relationships and Dependencies are
+ *  the whole book read across those names. Vendors needs `supply` for the
+ *  reason `We owe` does — the endpoint behind it is gated the same way, and a
+ *  tab that always 403s is worse than no tab. `bonds` and `dependency` carry no
+ *  `need`: the server drops the supplier half of each for a salesperson and
+ *  answers the customer half, so both are real screens for every role. */
+export const ACCOUNT_TABS: readonly DestinationTab[] = [
+  { label: "Customers", screen: "customer" },
+  { label: "Vendors", screen: "supply", need: "supply" },
+  { label: "Relationships", screen: "bonds" },
+  { label: "Dependencies", screen: "dependency" },
 ] as const;
 
 /** Money: the same position across three companies, in the order a question
@@ -126,11 +153,12 @@ export const SETUP_TABS: readonly DestinationTab[] = [
 
 /** One analysis screen, and the question it answers.
  *
- *  The question is the index, not the screen's name: "Bonds" says nothing to
- *  somebody who has not already read it, and "Who is closest to this business?"
- *  is why they would open it. Written here rather than fetched — a figure on
- *  each card would be twelve requests to render an index nobody is deciding
- *  from, and a stale figure on a card is worse than none.
+ *  The question is the index, not the screen's name: `Relationships` says
+ *  little to somebody who has not already read it — it was called `Bonds`, which
+ *  said nothing at all — and "Who is closest to this business?" is why they
+ *  would open it. Written here rather than fetched — a figure on each card
+ *  would be eighteen requests to render an index nobody is deciding from, and a
+ *  stale figure on a card is worse than none.
  */
 export interface EvidenceEntry {
   name: string;
@@ -139,6 +167,12 @@ export interface EvidenceEntry {
   need?: Subject;
 }
 
+/** Four of these cards open a screen that is also a tab somewhere else —
+ *  `Won & lost` under Quotes, and `Vendors`, `Relationships` and
+ *  `Dependencies` under Accounts. That is deliberate and not a duplicate entry:
+ *  a tab is where you go when you already know you want the vendor side, and a
+ *  card here is where you land when what you have is the question. The screen
+ *  is one screen at one address either way. */
 export const EVIDENCE: readonly EvidenceEntry[] = [
   { name: "The morning read", question: "What moved in the book, and why?",
     screen: "morningRead" },
@@ -154,9 +188,9 @@ export const EVIDENCE: readonly EvidenceEntry[] = [
     screen: "weather", need: "economics" },
   { name: "Opportunities", question: "What does the book support doing?",
     screen: "opportunities", need: "economics" },
-  { name: "Dependency", question: "What does the book lean on?",
+  { name: "Dependencies", question: "What does the book lean on?",
     screen: "dependency" },
-  { name: "Bonds", question: "Who is closest to this business?",
+  { name: "Relationships", question: "Who is closest to this business?",
     screen: "bonds" },
   { name: "Product mix", question: "Which lines does an account not take?",
     screen: "mix" },
@@ -164,9 +198,9 @@ export const EVIDENCE: readonly EvidenceEntry[] = [
     screen: "stock" },
   { name: "Return on stock", question: "What is the cash on the shelf earning?",
     screen: "gmroi", need: "economics" },
-  { name: "Suppliers", question: "Who do we buy from, and on what terms?",
+  { name: "Vendors", question: "Who do we buy from, and on what terms?",
     screen: "supply", need: "supply" },
-  { name: "Supplier targets", question: "How far off is each principal's number?",
+  { name: "Vendor targets", question: "How far off is each principal's number?",
     screen: "targets", need: "supply" },
   { name: "Won & lost", question: "Which quotes were won, and why were the rest lost?",
     screen: "quoteOutcomes" },

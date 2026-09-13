@@ -1539,7 +1539,19 @@ export function StockScreen({ session }: { session: PlatformSession }) {
   );
 }
 
-// ── Suppliers ───────────────────────────────────────────────────────────────
+// ── Vendors ─────────────────────────────────────────────────────────────────
+//
+// "Vendors", not "Suppliers": this screen is the other half of Accounts, beside
+// Customers, and one thing with two names is what that destination's own history
+// is a lesson in. The identifiers below stay `supplier*` where the server's
+// payload does — renaming a field to match a label is how a screen starts
+// disagreeing with the endpoint it reads.
+//
+// The rename stops at the Accounts destination — its four tabs, and nothing
+// else. Money and the Today screens still say "supplier" in their own labels,
+// which is a wider vocabulary pass and not this one: the defect being fixed was
+// a tab reading `Vendors` opening a screen titled `Suppliers`, and no such door
+// exists into `#/cash-cycle`.
 export function SupplyScreen({ session }: { session: PlatformSession }) {
   const { data, loading, error, reload } = useInsight(
     "supply",
@@ -1559,13 +1571,13 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
 
   return (
     <Panel
-      title="Suppliers"
+      title="Vendors"
       question="Who does this book depend on, and what is still outstanding"
       state={stateOf(loading, error, data?.empty_reason as string)}
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
     >
       <p className="viz-headline">
-        {counts.suppliers ?? 0} suppliers, {money(num(data?.total_spend))} ordered
+        {counts.suppliers ?? 0} vendors, {money(num(data?.total_spend))} ordered
         {topShare != null && (
           <> · the largest is <strong>{pct(topShare, 0)}</strong> of it</>
         )}
@@ -1578,7 +1590,7 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
       <div className="tier3-list">
         <h4>Where the spend goes</h4>
         {/* The tail is deliberately not folded — see supply.py. Every name on a
-            supplier list is somebody with a phone number. */}
+            vendor list is somebody with a phone number. */}
         <CompanyFilter options={vendorCompany.options} value={vendorCompany.company}
                        onChange={vendorCompany.setCompany} show={vendorCompany.show} />
         <ul className="dist">
@@ -1610,7 +1622,7 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
           {shownSuppliers
             .filter((s) => s.typical_lead_time_days != null)
             .map((s) => `${s.label} ${s.typical_lead_time_days}d`)
-            .join(" · ") || "no supplier has enough logged receipts yet."}
+            .join(" · ") || "no vendor has enough logged receipts yet."}
         </p>
         {/* Same shape as the lead-time footnote above, and for the same reason:
             the measurement is named only for the suppliers that earned it. A
@@ -1620,13 +1632,13 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
             renders the ones it answered. */}
         <p className="viz-muted viz-footnote">
           Bills drawing a credit note — returns and price corrections — shown
-          only where a supplier has sent enough bills for a clean run to mean
+          only where a vendor has sent enough bills for a clean run to mean
           something{data?.min_bills_for_credit_rate != null
             && <> ({num(data.min_bills_for_credit_rate)} on this book)</>}:{" "}
           {shownSuppliers
             .filter((s) => s.credit_rate != null)
             .map((s) => `${s.label} ${pct(num(s.credit_rate), 0)} of ${num(s.bills)}`)
-            .join(" · ") || "no supplier has sent enough bills yet."}
+            .join(" · ") || "no vendor has sent enough bills yet."}
         </p>
         {/* The third dimension `11-procurement.md` §3 names, and the one whose
             refusal is the common case: a spread needs a line bought from the
@@ -1634,12 +1646,12 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
             a wide spread as "worth opening the line" — it cannot tell an annual
             revision apart from a price that bounces every order. */}
         <p className="viz-muted viz-footnote">
-          How far unit cost has ranged on the lines bought from a supplier more
+          How far unit cost has ranged on the lines bought from a vendor more
           than once, median across those lines:{" "}
           {shownSuppliers
             .filter((s) => s.typical_price_spread != null)
             .map((s) => `${s.label} ${pct(num(s.typical_price_spread), 0)} across ${num(s.repeat_bought_items)} lines`)
-            .join(" · ") || "no supplier has enough repeat-bought lines yet."}
+            .join(" · ") || "no vendor has enough repeat-bought lines yet."}
         </p>
       </div>
 
@@ -1651,7 +1663,7 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
           <>
             {/* A grid rather than the hand-rolled `<ol>` this used to be. The
                 list could not be sorted by value or age, filtered to one
-                supplier, or copied out — and "which of these should I chase"
+                vendor, or copied out — and "which of these should I chase"
                 is a question you answer by re-sorting. The standard says AG
                 Grid for tabular data; this was tabular data wearing a list. */}
             <DataGrid<Row>

@@ -12,7 +12,7 @@
  * reading is not itself a destination, and the badge counts only what is open.
  */
 import { ThemeProvider, createTheme } from "@mui/material/styles";
-import { render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 
@@ -77,6 +77,18 @@ describe("the navigation", () => {
   it("marks Money current on a screen behind one of its tabs", () => {
     show("payables");
     expect(screen.getByRole("link", { name: "Money" })).toHaveAttribute("aria-current", "page");
+  });
+
+  it("marks Accounts current on the vendor side, not only the customer side", () => {
+    // The three screens Accounts gained were Today's, and they render exactly
+    // the same either way — this is the only place the move is visible.
+    for (const s of ["supply", "bonds", "dependency"] as const) {
+      cleanup();
+      show(s);
+      expect(screen.getByRole("link", { name: "Accounts" }))
+        .toHaveAttribute("aria-current", "page");
+      expect(screen.getByRole("link", { name: "Today" })).not.toHaveAttribute("aria-current");
+    }
   });
 
   it("badges what is open, and says nothing at zero", () => {

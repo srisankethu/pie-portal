@@ -1646,6 +1646,159 @@ class ItemCategoryOverride(Base):
                                                  onupdate=_now)
 
 
+class EntityGroup(Base):
+    """A named set of customers, vendors or items that somebody in the business
+    drew, so a question can be asked about the set rather than about one row.
+
+    The same storage argument ``ItemCategoryOverride`` above makes, for the same
+    reason: customers, vendors and products are **derived** — Zoho is the system
+    of record and a complete re-sync rebuilds every one of those rows from
+    nothing — so a grouping somebody sat down and typed cannot live as a column
+    on them. It is the only copy. A ``group_id`` on ``Product`` would be deleted
+    by the next full sync, silently, with nothing to restore it from.
+
+    **One table for all three kinds, and the kind is part of the identity key.**
+    ``Vendor``'s docstring argues against fusing customers and vendors into one
+    table with a flag, and that argument is right about *entities*: they have
+    different lifecycles, different identity keys and different scope rules, and
+    a fused table grows a ``WHERE kind = …`` that somebody eventually forgets. A
+    group is not an entity. It is a label with a scope, identical in every column
+    whatever it labels, and ``entity_kind`` is never an optional filter here —
+    every lookup is by ``(organization_id, entity_kind, slug)``, so there is no
+    query it can fall out of. The cost, which is real: ``EntityGroupMember`` can
+    carry no foreign key to what it points at. See its docstring.
+
+    **The version is the part that is easy to leave out and expensive to add
+    back.** Editing a group changes every number computed under it, so without a
+    stamp "what the Aerospace book did last quarter" is a different answer on
+    Monday and on Friday with nothing on screen to say why — exactly what
+    ``CommercialThresholds.version`` exists to prevent. So a group hashes its own
+    definition, **the sorted roster included**: a membership edit is a definition
+    change, and a version that did not move when two customers were added would
+    be worse than no version at all, because it would look like an explanation.
+
+    The two fields Phase 1 writes but never populates are deliberate, not dead.
+    ``visibility`` and ``boundary_refs`` are the withholding path this table will
+    need the first time somebody asks for "my low-margin items" as a group: a
+    rule keyed on a restricted fact makes *membership itself* a predicate on
+    cost, and a predicate a caller can walk is the number it tests against (§1).
+    Rule membership is not built yet and no rule may key on such a field when it
+    is, but the columns are cheaper here than in a migration against live rows.
+    """
+
+    __tablename__ = "entity_groups"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "entity_kind", "slug",
+                         name="uq_entity_group_slug"),
+    )
+
+    group_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: ``SubjectEntityType``: CUSTOMER, VENDOR or PRODUCT. That enum rather than
+    #: a second one of its own — "which kind of entity is this about" is a
+    #: question the platform already answers in one vocabulary, and a parallel
+    #: enum saying ITEM where this one says PRODUCT is the semantic duplication
+    #: §2 is about. The screens say "Items"; the stored value says PRODUCT, the
+    #: same split ``Product`` itself lives with.
+    entity_kind: Mapped[str] = mapped_column(String(32), index=True)
+    #: What a query names: ``?group=aerospace``. Stable across a rename, which is
+    #: why it is separate from ``name`` — a saved link or a scheduled read must
+    #: not break because somebody fixed a capital letter.
+    slug: Mapped[str] = mapped_column(String(64))
+    name: Mapped[str] = mapped_column(String(128))
+    description: Mapped[Optional[str]] = mapped_column(String(512))
+    #: ROSTER (a typed list), and later RULE (a predicate over resolved facts) or
+    #: INHERITED (the ERP's own grouping, read-only here). Only ROSTER is built.
+    #: Stored rather than implied by ``rule IS NULL`` because the three fail
+    #: differently and a reader has to be able to tell which one a number rests
+    #: on: a roster is reproducible, a rule is only reproducible given the same
+    #: data, and an inherited group is somebody else's to change.
+    membership: Mapped[str] = mapped_column(String(16), default="ROSTER")
+    #: NULL for a roster group. The predicate, when RULE membership lands.
+    rule: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
+    #: ``gr_`` plus ten hex characters of a sha256 over the canonical definition.
+    #: Marked as a policy stamp so ``threshold_registry``'s flush handler records
+    #: the pre-image of any version that reaches the database, whichever writer
+    #: put it there — ``groups.service`` also records it explicitly, where the
+    #: bytes are in hand, the way ``policy.save_for_org`` does.
+    version: Mapped[str] = mapped_column(String(64), default="",
+                                         info={"policy_stamp": "group"})
+    #: Who may see this group at all: OPERATIONAL, or RESTRICTED — management
+    #: only, withheld from a salesperson in the list, in the pickers and on
+    #: ``?group=``, which answers 404 rather than 403 because a 403 confirms the
+    #: group exists and the existence is part of what is being withheld.
+    #:
+    #: **A manager sets it, and rule membership will force it.** Those are not
+    #: in conflict: the derived value is a floor rather than the whole answer. A
+    #: roster group reads no field, so nothing can be derived about it and the
+    #: judgement is the manager's — somebody who hand-picks the items sitting
+    #: under the margin floor and calls the group "watch these" has published
+    #: that boundary, and this is the control that stops them doing it by
+    #: accident. When a rule may key on a restricted fact, a rule that does will
+    #: force RESTRICTED and a manager will not be able to lower it, because
+    #: there the boundary is the platform's own arithmetic rather than a
+    #: person's choice of who to list.
+    visibility: Mapped[str] = mapped_column(String(16), default="OPERATIONAL")
+    #: What places this group's boundary, if anything does — the same field
+    #: ``QuoteException`` carries and ``quote_service.project`` withholds on.
+    boundary_refs: Mapped[list[str]] = mapped_column(JSON, default=list)
+    #: Who drew it. A group is a judgement about the business, and a judgement
+    #: with no name on it is one nobody can ask about.
+    created_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: Archived rather than deleted. A number was quoted under this group and the
+    #: version that produced it has to stay resolvable; a DELETE would make every
+    #: past answer unexplainable to save a row.
+    archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
+
+
+class EntityGroupMember(Base):
+    """One entity's place in one roster group, and who put it there.
+
+    **``entity_id`` carries no foreign key, and that is the price of the single
+    table above.** It holds a ``customer_id``, a ``vendor_id`` or a
+    ``product_id`` depending on the group's kind, so no one constraint can cover
+    it; ``groups.service.add_members`` validates existence and organization on
+    the way in, which is a writer's promise rather than the database's. Two
+    things make the trade acceptable: those three tables are upserted and never
+    row-deleted (a departed customer goes INACTIVE), so the orphan an FK guards
+    against does not arise here; and the alternative — one membership table per
+    kind, identical but for the constraint — is three tables today and six the
+    first time a group covers enquiries or locations.
+
+    ``group_id`` does carry one, because that one is single-target and real: a
+    membership row whose group no longer exists is a row nothing can interpret.
+
+    The kind is deliberately **not** denormalised onto this row. It is derivable
+    from the group, every read joins the group anyway for its name, and a second
+    copy would only create something to disagree with.
+    """
+
+    __tablename__ = "entity_group_members"
+    __table_args__ = (
+        UniqueConstraint("organization_id", "group_id", "entity_id",
+                         name="uq_entity_group_member"),
+        # The membership read: every member of one group. Both reads this table
+        # serves start from the group, so one index covers them.
+        Index("ix_entity_group_member_group", "organization_id", "group_id"),
+        # And the reverse: which groups is this entity in, for a row's chips.
+        Index("ix_entity_group_member_entity", "organization_id", "entity_id"),
+    )
+
+    membership_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                               default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    group_id: Mapped[str] = mapped_column(String(64),
+                                          ForeignKey("entity_groups.group_id"),
+                                          index=True)
+    entity_id: Mapped[str] = mapped_column(String(64))
+    added_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    note: Mapped[Optional[str]] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+
+
 class TenderResult(Base):
     """A published tender, what it asked for, and what we won of it.
 

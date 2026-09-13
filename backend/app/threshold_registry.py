@@ -82,7 +82,18 @@ log = logging.getLogger(__name__)
 #: ``Signal.threshold_config_version`` (engine detectors stamp ``th_``,
 #: Customer × Item detectors stamp ``ci_``) and ``OutcomeSnapshot.thresholds_version``,
 #: which copies the signal's verbatim.
-_PREFIXES: dict[str, str] = {"ci_": "commercial", "th_": "signal"}
+#:
+#: ``gr_`` is an ``EntityGroup``'s definition hash, and it is a different shape
+#: of thing from its two neighbours in exactly one way worth knowing: the other
+#: two stamp a *computed row* with the policy that judged it, while a group's
+#: version sits on the definition itself. It belongs here anyway, because what
+#: this registry is for is holding the pre-image of a hash somebody will later
+#: have to dereference — and a group's is the harder case, not the easier one.
+#: A threshold version can at least be re-derived from a policy row; a group's
+#: roster is mutable and superseded in place, so the membership that produced a
+#: number exists nowhere else once it has been edited.
+_PREFIXES: dict[str, str] = {"ci_": "commercial", "th_": "signal",
+                             "gr_": "group"}
 
 #: The truncation the two ``version`` properties apply. Stated once here so the
 #: verification in ``resolve`` cannot drift from the minting.
@@ -298,7 +309,7 @@ def serialized(th: Any) -> str:
 
 
 def kind_of(version: str) -> str:
-    """"commercial" | "signal", read off the stamp's own prefix.
+    """"commercial" | "signal" | "group", read off the stamp's own prefix.
 
     Read from the value rather than from the column marker because two columns
     hold both prefixes — see ``_PREFIXES``. An unrecognised prefix returns

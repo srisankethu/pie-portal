@@ -64,10 +64,11 @@ def last_sale_date(session: Session, organization_id: str) -> Optional[date]:
 
 def load_snapshot(session: Session, organization_id: str, *,
                   sales_for_customers: Optional[Iterable[str]] = None,
+                  sales_for_products: Optional[Iterable[str]] = None,
                   costs_for_products: Optional[Iterable[str]] = None) -> Snapshot:
     """One organization's sale and cost lines, optionally bounded.
 
-    The two bounds are deliberately separate and each names what it restricts.
+    The bounds are deliberately separate and each names what it restricts.
     A single ``product_ids`` that narrowed *both* looked tidier and was wrong:
     the quote screen needs every line its customer ever bought — that is what
     their buying rhythm is measured from — while needing costs only for the
@@ -76,7 +77,19 @@ def load_snapshot(session: Session, organization_id: str, *,
     reader never sees. The equality test caught it; the naming is what stops it
     coming back.
 
-    Both default to None, meaning everything — the behaviour every existing
+    **``sales_for_products`` is that same dangerous narrowing, offered on
+    purpose and under its own name.** A caller reaches for it when the question
+    genuinely is about a set of items — "what does the Kennametal line do" — and
+    every per-customer figure derived from a snapshot bounded this way silently
+    becomes *per-customer-within-those-items*: a last order date is the last
+    order **of one of these items**, and cadence is the rhythm of buying them.
+    That is the right answer for a question asked about the line and a wrong one
+    for a question asked about the customer, and nothing downstream can tell
+    which was meant. So: pass it only where the screen's own title names the
+    item set, and never combine it with a customer figure that the screen
+    presents as a fact about the account.
+
+    All three default to None, meaning everything — the behaviour every existing
     caller had. A bound is only correct when the excluded rows could not have
     changed the answer; callers that pass one say why at the call site, and
     ``test_bounded_loads.py`` runs the real consumer both ways.
@@ -88,6 +101,13 @@ def load_snapshot(session: Session, organization_id: str, *,
     if sales_for_customers is not None:
         sales_q = sales_q.where(
             models.SalesTxn.customer_id.in_(list(sales_for_customers)))
+    if sales_for_products is not None:
+        # An empty list is a real bound here too, and this is the one where it
+        # matters most: it is what an empty group resolves to, and reading it as
+        # "no filter" would answer a question about a set nobody is in with the
+        # whole book's revenue.
+        sales_q = sales_q.where(
+            models.SalesTxn.product_id.in_(list(sales_for_products)))
     if costs_for_products is not None:
         # An empty list is a real bound, not a mistake: it means this caller
         # reads no costs from the snapshot at all.

@@ -19,12 +19,14 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import approvals, clock
+from .. import approvals, clock, groups
 from ..authz import Principal, can_view_customer, current_principal
 from ..commercial import ownership
 from ..db import get_session
 from ..domain import models
+from ..domain.enums import SubjectEntityType
 from ..domain.origin import Companies
+from . import group_scope
 
 router = APIRouter(prefix="/api/v1/accounts", tags=["accounts"])
 
@@ -38,6 +40,7 @@ ACTIVE = "ACTIVE"
 def list_accounts(
     q: Optional[str] = None,
     status: str = Query("active", pattern="^(active|inactive|all)$"),
+    group: Optional[groups.ResolvedGroup] = Depends(group_scope.customer_group),
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ) -> list[dict]:
@@ -48,6 +51,12 @@ def list_accounts(
     silently mixed a dormant 2019 account into the list somebody scans before a
     call would be worse than the old behaviour, not better. Inactive accounts
     are one click away and never more than that.
+
+    **``group`` narrows to a set somebody drew** — the PSU accounts, one
+    territory, whoever a campaign is aimed at. Applied after the ownership scope
+    and through ``groups.narrow``, so it can only ever remove rows: a group is a
+    label, and a label that widened what somebody may see would be a permission
+    decision taken by the wrong feature.
 
     Every figure here is OPERATIONAL: when they last ordered, how often, and how
     much they spent. No cost and no margin — those reach a manager through the
@@ -66,6 +75,10 @@ def list_accounts(
         rows = [c for c in rows
                 if (owner := owners.get(c.customer_id)) is not None
                 and owner.user_id == principal.user_id]
+
+    if group is not None:
+        allowed = set(groups.narrow([c.customer_id for c in rows], group))
+        rows = [c for c in rows if c.customer_id in allowed]
 
     if status != "all":
         want_active = status == "active"
@@ -93,11 +106,19 @@ def list_accounts(
     assignees = approvals.user_names(
         session, principal.organization_id,
         [owners[c.customer_id].user_id for c in rows if c.customer_id in owners])
+    # Which groups each account is in, so a row says what it belongs to without
+    # somebody having to open every group to find out. One query for the page,
+    # the same reason the assignees above are resolved here.
+    in_groups = groups.groups_of(
+        session, principal.organization_id, SubjectEntityType.CUSTOMER.value,
+        [c.customer_id for c in rows],
+        include_restricted=principal.is_manager_or_owner)
     return [
         {
             "customer_id": c.customer_id,
             "name": c.name,
             "status": c.status,
+            "groups": in_groups.get(c.customer_id, []),
             # The owner to act on — the assignment where there is one, Zoho's
             # salesperson otherwise. `owner_source` says which, because "given
             # to this person" and "whoever was on the last invoice" are

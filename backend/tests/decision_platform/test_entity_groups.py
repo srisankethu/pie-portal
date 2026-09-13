@@ -337,6 +337,53 @@ def test_a_restricted_groups_name_does_not_reach_a_row_chip(app_and_maker):
     assert named["cust-0"] == ["Below floor"]
 
 
+def test_a_description_can_be_cleared_and_not_only_set(app_and_maker):
+    """A PATCH of ``{"description": null}`` means clear it.
+
+    Read off the value rather than off which fields the caller sent, "not
+    mentioned" and "explicitly null" are the same thing — so a description could
+    be set and never unset, which is the sort of gap nobody finds until they
+    have typed something into the wrong group.
+    """
+    client, maker = app_and_maker
+    _seed_customers(maker)
+    _make_group(maker, members=["cust-0"])
+    manager = _hdr(client, MANAGER)
+
+    client.patch("/api/v1/groups/CUSTOMER/aerospace", headers=manager,
+                 json={"description": "the PSU book"})
+    assert client.get("/api/v1/groups/CUSTOMER/aerospace",
+                      headers=manager).json()["description"] == "the PSU book"
+
+    client.patch("/api/v1/groups/CUSTOMER/aerospace", headers=manager,
+                 json={"description": None})
+    assert client.get("/api/v1/groups/CUSTOMER/aerospace",
+                      headers=manager).json()["description"] is None
+
+    # And a PATCH that does not mention the field leaves it alone.
+    client.patch("/api/v1/groups/CUSTOMER/aerospace", headers=manager,
+                 json={"description": "back again"})
+    client.patch("/api/v1/groups/CUSTOMER/aerospace", headers=manager,
+                 json={"name": "Renamed"})
+    body = client.get("/api/v1/groups/CUSTOMER/aerospace", headers=manager).json()
+    assert body["description"] == "back again"
+    assert body["name"] == "Renamed"
+
+
+def test_an_edited_group_still_says_who_drew_it(app_and_maker):
+    """``created_by: null`` reads as "nobody drew this", not as "not looked up",
+    and it is the one field whose point is that a judgement has a name on it."""
+    client, maker = app_and_maker
+    _seed_customers(maker)
+    manager = _hdr(client, MANAGER)
+    client.post("/api/v1/groups", headers=manager,
+                json={"entity_kind": "CUSTOMER", "name": "Aerospace"})
+
+    patched = client.patch("/api/v1/groups/CUSTOMER/aerospace", headers=manager,
+                           json={"name": "Aero"}).json()
+    assert patched["created_by"] == "M. Rao"
+
+
 def test_a_salesperson_cannot_draw_or_edit_a_group(app_and_maker):
     """Reading is everyone's; drawing is policy, the same gate item categories
     sit behind."""

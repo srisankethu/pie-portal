@@ -230,8 +230,20 @@ a card is a `Paper` surface, also correct. Name a component here once it exists.
 
 Existing shared pieces stay and are used rather than duplicated:
 `EntityName`/`EntitySource` (an imported record and its company),
-`CompanyFilter` (narrowing a list to one book), `Tip`/`Labelled` (an explained
-term), `DataGrid` (the AG Grid wrapper).
+`CompanyFilter` (narrowing a list to one book), `GroupFilter` (narrowing a
+screen to a group somebody drew), `Tip`/`Labelled` (an explained term),
+`DataGrid` (the AG Grid wrapper).
+
+**The last two of those look alike and behave oppositely, which is the one pair
+in this file worth reading twice.** `CompanyFilter` narrows rows already in the
+browser and deliberately never touches a figure the server computed — the
+platform pools every connected company on purpose, so a control that quietly
+re-scoped an aggregate would make a different claim than the one behind it.
+`GroupFilter` holds a slug, hands it to the server, and the screen refetches,
+because "what does the aerospace book do" is a question whose denominator has to
+move with its numerator. Both are correct; neither is a parameter on the other.
+The vendors screen renders them side by side, which is the clearest place to see
+the difference.
 
 ## 11. Styling
 

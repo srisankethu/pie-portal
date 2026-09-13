@@ -22,6 +22,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import groups
@@ -111,8 +112,6 @@ def list_groups(entity_kind: Optional[str] = Query(None),
 
 
 def _sizes(session: Session, org: str, group_ids: list[str]) -> dict[str, int]:
-    from sqlalchemy import func, select
-
     if not group_ids:
         return {}
     return dict(session.execute(
@@ -155,8 +154,6 @@ def get_group(entity_kind: str, slug: str,
 
 def _names(session: Session, org: str, model: type, id_column: str,
            ids: list[str]) -> dict[str, str]:
-    from sqlalchemy import select
-
     if not ids:
         return {}
     column = getattr(model, id_column)
@@ -218,13 +215,19 @@ def update_group(entity_kind: str, slug: str, body: GroupPatch,
     roster edit can never be one request that half-succeeds.
     """
     group = _group_or_404(session, principal, entity_kind, slug)
+    # Which fields the caller actually sent, rather than which came back
+    # non-null. The two differ on exactly one case and it is a real one: a PATCH
+    # of `{"description": null}` means "clear it", and reading absence off the
+    # value would make that indistinguishable from not mentioning the field —
+    # so a description could be set and never unset.
+    sent = body.model_fields_set
     try:
-        if body.name is not None or body.description is not None:
-            groups.rename(session, group,
-                          name=body.name if body.name is not None else group.name,
-                          description=(body.description
-                                       if body.description is not None
-                                       else group.description))
+        if "name" in sent or "description" in sent:
+            groups.rename(
+                session, group,
+                name=body.name if body.name is not None else group.name,
+                description=(body.description if "description" in sent
+                             else group.description))
         if body.visibility is not None:
             groups.set_visibility(session, group, body.visibility)
         if body.archived is not None:
@@ -233,7 +236,14 @@ def update_group(entity_kind: str, slug: str, body: GroupPatch,
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
     session.flush()
     ids = groups.member_ids(session, group)
-    return _to_read(group, members=len(ids), created_by=None)
+    # Resolved rather than left null. A PATCH response is the row the screen
+    # renders next, and `created_by: null` there does not read as "not looked
+    # up" — it reads as "nobody drew this", which is false and is the field
+    # whose whole point is that a judgement has a name on it.
+    people = user_names(session, principal.organization_id,
+                        [group.created_by_user_id] if group.created_by_user_id else [])
+    return _to_read(group, members=len(ids),
+                    created_by=people.get(group.created_by_user_id or ""))
 
 
 class MembersIn(BaseModel):

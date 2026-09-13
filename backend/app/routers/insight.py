@@ -2265,7 +2265,7 @@ def supplier_position(
     vendors = {v.vendor_id: v for v in session.scalars(
         select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
     if group is not None:
-        allowed = set(groups.narrow(vendors, group))
+        allowed = set(groups.narrow(list(vendors), group))
         vendors = {vid: v for vid, v in vendors.items() if vid in allowed}
     rows = session.scalars(
         select(models.PurchaseOrderDoc)

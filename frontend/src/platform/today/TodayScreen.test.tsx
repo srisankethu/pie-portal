@@ -13,13 +13,27 @@
  */
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { ThemeProvider, createTheme } from "@mui/material/styles";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { papi } from "../api";
 import type { ApprovalRequest, DecisionDetail, PlatformSession } from "../types";
 import TodayScreen from "./TodayScreen";
+
+// jsdom has no `ResizeObserver`, and the rail measures the panel beside it to
+// decide how tall it is allowed to be. Stubbed rather than given real numbers:
+// jsdom has no layout either, so every box is 0×0 and the rail falls back to
+// its viewport cap — which is the branch these tests exercise. What the cap
+// *is* on a real screen is a browser question, not a jsdom one.
+beforeAll(() => {
+  class RO {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  (globalThis as unknown as { ResizeObserver: unknown }).ResizeObserver = RO;
+});
 
 const SESSION: PlatformSession = {
   token: "t", role: "OWNER", name: "S. Menon", user_id: "u1",
@@ -56,6 +70,18 @@ const DECISION: DecisionDetail = {
   actions: [{ key: "accept", label: "Reprice to ₹545" }],
   ranking: {}, state_evidence: {}, state: { keys: [], as_of: null },
 };
+
+/** A second decision of a given type, so the type filter has something to
+ *  narrow. Everything but the type and the title is the one above. */
+function costDecision(id: string, title: string): DecisionDetail {
+  return {
+    ...DECISION,
+    decision_id: id,
+    decision_type: "COST_PASS_THROUGH",
+    subject_label: title,
+    interpretation: { ...DECISION.interpretation!, title },
+  };
+}
 
 function show(over: Partial<Parameters<typeof TodayScreen>[0]> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -154,6 +180,76 @@ describe("Today", () => {
     expect(await screen.findByText("Done for today")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Undo" })).toBeInTheDocument();
     expect(screen.getAllByText("recorded").length).toBe(1);
+  });
+
+  it("narrows the morning to one type, and starts at the top of what is left", async () => {
+    // The fault this answers: a hundred and eight items in one rail, most of
+    // them the same kind of thing. Choosing a type is choosing what to work,
+    // and it lands on that type's hardest item rather than on whatever sat at
+    // the index the cursor happened to hold.
+    show({ decisions: [DECISION, costDecision("d2", "Carbide drill up 50.7%"),
+                       costDecision("d3", "Insert grade up 12.1%")] });
+    await screen.findByRole("heading", { name: /TNMG160404 at ₹298/ });
+
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: /Type/ }));
+    // The count travels with the name: choosing this leaves two.
+    fireEvent.click(await screen.findByRole("option", { name: /Cost pass-through.*2/ }));
+
+    expect(await screen.findByRole("heading", { name: /Carbide drill up 50.7%/ }))
+      .toBeInTheDocument();
+    const queue = within(screen.getByRole("list", { name: "Queue" }));
+    expect(queue.getByText("Carbide drill up 50.7%")).toBeInTheDocument();
+    expect(queue.queryByText("Bharat Forge Ltd")).not.toBeInTheDocument();
+    // The morning is still the morning underneath the filter.
+    expect(screen.getByText(/2 of 4 to work through/)).toBeInTheDocument();
+  });
+
+  it("does not call the morning done when only the filtered type is finished", async () => {
+    // Absence of evidence is not a pass, in an interface too: there are three
+    // other things waiting, and "Done for today" over a narrowed queue is the
+    // screen saying the morning is over because it is looking at a slice of it.
+    show({ decisions: [DECISION, costDecision("d2", "Carbide drill up 50.7%")] });
+    await screen.findByRole("heading", { name: /TNMG160404 at ₹298/ });
+
+    fireEvent.mouseDown(screen.getByRole("combobox", { name: /Type/ }));
+    fireEvent.click(await screen.findByRole("option", { name: /Cost pass-through.*1/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Reprice to ₹545/ }));
+
+    expect(await screen.findByText(/Nothing of this type is left this morning/))
+      .toBeInTheDocument();
+    expect(screen.queryByText("Done for today")).not.toBeInTheDocument();
+    // And the filter still says what it is filtering. MUI renders a select
+    // holding a value it has no option for as blank, so a type dropped from
+    // the menu the moment it emptied left the control looking unset over a
+    // queue that was still narrowed.
+    expect(screen.getByRole("combobox", { name: /Type/ }))
+      .toHaveTextContent("Cost pass-through");
+    // And the way back to the rest of it.
+    fireEvent.click(screen.getByRole("button", { name: "Show every type" }));
+    expect(await screen.findByRole("heading", { name: /TNMG160404 at ₹298/ }))
+      .toBeInTheDocument();
+  });
+
+  it("keeps the queue inside its own scroll rather than running down the page", async () => {
+    // The rail is capped at the panel's height in CSS — see the comment on it —
+    // and this pins the half of that which is not layout: the list is its own
+    // scroll container, and it is reachable by keyboard, because a region you
+    // can only scroll with a pointer is one half the people on this desk
+    // cannot read the bottom of.
+    show();
+    const queue = await screen.findByRole("list", { name: "Queue" });
+    expect(queue).toHaveStyle({ overflowY: "auto" });
+    expect(queue).toHaveAttribute("tabindex", "0");
+  });
+
+  it("offers no type filter when the morning is all one thing", async () => {
+    // A select with one option filters nothing and costs a control in a rail
+    // that is short of room — the same rule the company filter follows.
+    vi.spyOn(papi, "listApprovals").mockResolvedValue(
+      { requests: [], pending_for_me: 0 } as never);
+    show({ decisions: [DECISION] });
+    await screen.findByRole("heading", { name: /Quoted below cost/ });
+    expect(screen.queryByRole("combobox", { name: /Type/ })).not.toBeInTheDocument();
   });
 
   it("says what it checked when nothing needs anybody", async () => {

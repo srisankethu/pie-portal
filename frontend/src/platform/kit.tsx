@@ -39,6 +39,7 @@ import Link from "@mui/material/Link";
 import Paper from "@mui/material/Paper";
 import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
+import TextField from "@mui/material/TextField";
 import Tooltip from "@mui/material/Tooltip";
 import Typography from "@mui/material/Typography";
 import useMediaQuery from "@mui/material/useMediaQuery";
@@ -547,6 +548,111 @@ export function FilterChip({
     />
   );
 }
+
+/** A filter as a dropdown, where a row of chips would not fit.
+ *
+ *  The sibling of `FilterChip`, and the choice between them is room rather than
+ *  taste: chips show every option at once and cost a line of the screen per
+ *  four of them, which is right above a full-width list and wrong inside a
+ *  320px rail with a dozen decision types in it. Same 44px floor either way.
+ *
+ *  Promoted out of `CompanyFilter`, where it was private and said so — "nothing
+ *  outside this file wants it" was true until Today's queue wanted the same
+ *  control. What is in here is the part that is about *a filter select* and was
+ *  already learned the hard way:
+ *
+ *  `displayEmpty`, because without it the control renders **blank** while
+ *  showing every row: MUI treats an empty value as "nothing selected" and hides
+ *  the option that represents it. A filter whose resting state looks unset is
+ *  one people set twice and then wonder why nothing changed.
+ *
+ *  `shrink`, because the two settings disagree otherwise. The label floats when
+ *  MUI thinks the field is filled, and "filled" means a non-empty value — but
+ *  "All companies" *is* the empty value, so the label stayed in its resting
+ *  position and sat on top of the text the select was already showing. Opening
+ *  the menu focused the field and floated it, which is why it looked correct
+ *  only while open. `displayEmpty` means there is always content to clear, so
+ *  the label should always be clear of it. This also notches the outlined
+ *  fieldset, since the notch follows the label.
+ *
+ *  `TOUCH`, and it is **not** redundant with the theme. `theme.ts` gives
+ *  `MuiSelect` a 44px `minHeight` default, which reaches a bare `<Select>` and
+ *  not this: `TextField select` builds its own `OutlinedInput` and hands it to
+ *  `Select` as `input`, and `Select` clones that rather than rendering the
+ *  `styled(OutlinedInput, { name: "MuiSelect" })` the override is attached to.
+ *  The `.MuiSelect-root` class lands on the element and carries no rule.
+ *  Verified by rendering both — the bare select computes 44px and a
+ *  `TextField select` computes nothing at all. Delete this spread and every
+ *  filter dropdown in the app quietly drops to 40. */
+export function FilterSelect({
+  label, value, onChange, minWidth, fullWidth, mb, children,
+}: {
+  label: string;
+  value: string;
+  onChange: (v: string) => void;
+  minWidth?: number;
+  /** For a filter that owns a column rather than sitting in a row of them. */
+  fullWidth?: boolean;
+  /** Space below, where the caller's layout expects the control to carry it.
+   *  A control that sets its own margin fights the `Stack` it is dropped into,
+   *  so this is passed only where it is already depended on. */
+  mb?: number;
+  children: ReactNode;
+}) {
+  return (
+    <TextField
+      select
+      size="small"
+      label={label}
+      value={value}
+      fullWidth={fullWidth}
+      onChange={(e) => onChange(e.target.value)}
+      slotProps={{ select: { displayEmpty: true }, inputLabel: { shrink: true } }}
+      sx={{ minWidth, mb, "& .MuiInputBase-root": TOUCH }}
+    >
+      {children}
+    </TextField>
+  );
+}
+
+/** The quiet half of an option in a `FilterSelect`: how many rows choosing it
+ *  leaves, and — where the option is a company — which system it syncs
+ *  through.
+ *
+ *  The count travels with the name — "4U Precision" alone does not say whether
+ *  choosing it leaves eighty rows or two — but it is not the name, and at one
+ *  weight the eye has to read the whole line to find the part that varies.
+ *  Muted and one step down the ramp, so the names scan as a column.
+ *
+ *  **The name goes first, and that is not a preference.** MUI's own type-ahead
+ *  matches a keypress against the option's `innerText` with `startsWith`, so
+ *  while the connector mark led the line, pressing "s" in an open company menu
+ *  jumped to nothing — every option began with "◇". Keyboard reach is the
+ *  whole point of this control on a busy desk. It also happens to be the order
+ *  `sourceLabel` already argues for: somebody working three books thinks in
+ *  companies, and only needs the connector once two of them come from
+ *  different systems.
+ *
+ *  `Meta` underneath rather than a fourth private answer to "the muted second
+ *  line" — `CompanyFilter`, where this started, wrote one of the three local
+ *  copies that made `Meta` a kit component. What is left is only the part that
+ *  is about a *menu option*: the mark and the separator. The one override is
+ *  `display: inline`, because the kit's default is a block — a `Meta` usually
+ *  sits *under* the value it qualifies, and this one sits beside a name on one
+ *  line of a menu. Everything else, the 1.45 line-height included, is what the
+ *  local copy was already inheriting from the theme's `caption`. */
+export function OptionMeta({ mark, children }: { mark?: string; children: ReactNode }) {
+  return (
+    <Meta sx={{ display: "inline", ml: 0.75 }}>
+      {/* Hidden from a screen reader for the reason `EntitySource` hides it:
+          it is a picture of the word beside it, and "diamond SLS Engineers"
+          read aloud is worse than "SLS Engineers". */}
+      {mark && <span aria-hidden="true">{mark} </span>}
+      · {children}
+    </Meta>
+  );
+}
+
 
 const BAND_TONE: Record<string, Tone> = { HIGH: "bad", MEDIUM: "warn", LOW: "neutral" };
 

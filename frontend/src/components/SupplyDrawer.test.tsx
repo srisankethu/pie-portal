@@ -65,7 +65,7 @@ function lineWithCaveats(over: Partial<Line> = {}): Line {
 function renderDrawer(line: Line) {
   return render(
     <SupplyDrawer
-      line={line} customer="Acme" token="t" mgmt={false}
+      line={line} customer="Acme" quoteId="q-1" token="t" mgmt={false}
       intel={null} intelLoading={false} intelError={null}
       onRecordOverride={vi.fn()} onRequestApproval={vi.fn()}
       approvalStatus={null} onClose={vi.fn()} onSetCustomCost={vi.fn()}

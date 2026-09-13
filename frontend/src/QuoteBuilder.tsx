@@ -1226,6 +1226,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         <SupplyDrawer
           line={drawerLine}
           customer={quote.customer}
+          quoteId={quote.id}
           token={t}
           mgmt={mgmt}
           intel={ci.byLineId[drawerLine.id] ?? null}

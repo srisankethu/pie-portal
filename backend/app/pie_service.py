@@ -251,6 +251,40 @@ class Resolution:
         }
 
 
+@dataclass(frozen=True)
+class CatalogueSearch:
+    """What a hand search of one company's catalogue found — and whether it ran.
+
+    **``available`` is the whole point of this being a type rather than a
+    list.** A person reaching for the search box is usually there *because* the
+    engine did not answer, and an empty list is the one answer that must never
+    stand for both "we looked and this catalogue does not carry it" and "there
+    was nothing to look in". The first is evidence about the product; the
+    second is evidence about the deployment, and reporting it as the first is
+    CLAUDE.md §1's benign default with a search box attached.
+
+    So ``available=False`` carries a ``reason`` a screen prints verbatim, and
+    ``records`` is empty because nothing was searched — never because nothing
+    matched. ``available=True`` with no records is the real negative.
+
+    ``searched`` is how many catalogue records the query actually ran against,
+    so "no results" can be read beside the size of the thing that produced it.
+
+    There is no price, cost or margin on a record here and there is no field
+    for one. This is nomenclature; what an item costs is the books' answer and
+    is read later, per line, by ``store._enrich_from_zoho``.
+    """
+
+    records: List[Dict[str, Any]] = field(default_factory=list)
+    available: bool = True
+    reason: Optional[str] = None
+    searched: int = 0
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"records": self.records, "available": self.available,
+                "reason": self.reason, "searched": self.searched}
+
+
 #: ``rule_set_families``' memo, keyed by rule-set path. Kept per path because
 #: an organization's price lists decode through several. A *failed* read is
 #: deliberately not cached: a rule set fetched after boot must be seen on the
@@ -472,6 +506,19 @@ class PieService:
         # with.
         _families_memo.clear()
 
+    @staticmethod
+    def _engine_present() -> bool:
+        """Whether pie-parser is on disk at all.
+
+        One statement of the check, because two callers now read it and they
+        must not disagree: :meth:`_view` uses it to tell a build that shipped
+        without the optional engine from a real failure, and
+        :meth:`search_catalogue` uses it to say *which* absence a person hand-
+        searching an empty catalogue is looking at. A second spelling here
+        would be a second answer to "is the engine installed".
+        """
+        return (settings.PIE_PARSER_ROOT / "identity").is_dir()
+
     # ── exact catalogue identity ─────────────────────────────────────────────
     def _view(self, connection_id: Optional[str]):
         """This company's loaded catalogue, or None if it has none.
@@ -503,7 +550,7 @@ class PieService:
             # it is a build that shipped without an optional engine, exactly as
             # `deploy/backend.Dockerfile` says it may. Say which one it is.
             root_path = settings.PIE_PARSER_ROOT
-            if not (root_path / "identity").is_dir():
+            if not self._engine_present():
                 log.warning(
                     "pie-parser is not present at %s, so item links will be left "
                     "unresolved. This deployment was built without the engine "
@@ -644,6 +691,112 @@ class PieService:
         :meth:`catalog_version`. Empty when it has none."""
         view = self._view(connection_id)
         return [dict(c) for c in view.catalogues] if view else []
+
+    def search_catalogue(self, text: str, connection_id: Optional[str],
+                         limit: int = 20) -> CatalogueSearch:
+        """Catalogue records that read like ``text``, for a person choosing by hand.
+
+        **This is a search, not a resolution, and the difference is the reason
+        it returns records rather than candidates.** :meth:`resolve` answers
+        "what is this line?" and every answer it gives carries a ``rel`` — a
+        relationship between the request and the record, computed under this
+        organization's equivalence bands. Nothing here is compared against a
+        requirement, so nothing here has a ``rel`` to carry, and inventing one
+        would publish a policy verdict about a comparison that never happened
+        (§1 — "an equivalence score is policy, never an identity"). A person
+        typing into a search box is telling the system what they want; the
+        system is not telling them the two are equivalent.
+
+        For the same reason a record found here can never become an asserted
+        identity: ``Resolution.identity_candidate`` is set by exactly one
+        branch of :meth:`_map`, a hand search reaches none of them, and
+        ``identity.service.confirm_proposed_identity`` refuses a selection with
+        no proposal behind it.
+
+        Two passes, in the order a person expects:
+
+        * the identifier itself, when what they typed *is* a catalogue record —
+          somebody pasting an MM# wants that row first and wants it whatever
+          the description similarity says;
+        * then the nearest descriptions, through the same per-catalogue index
+          the resolution path already builds (``app/retrieval``) and at the
+          same floor. The floor is tuned — a paraphrase sits near 0.7, a
+          request in words near 0.28, an unrelated part near 0.13 — and
+          lowering it here to make a thin search look fuller would be §1's
+          "do not weaken a rule to make output appear".
+        """
+        text = (text or "").strip()
+        if not text or limit <= 0:
+            return CatalogueSearch(available=True)
+        view = self._view(connection_id)
+        if view is None:
+            # Which absence this is, said rather than left as an empty list.
+            return CatalogueSearch(
+                available=False,
+                reason=("The resolution engine is not installed on this "
+                        "deployment, so the catalogue could not be searched."
+                        if not self._engine_present() else
+                        "This company has no built catalogue, so there was "
+                        "nothing to search."))
+        try:
+            if view.retriever is None:
+                view.retriever = self._load_retriever(view)
+            out: List[Dict[str, Any]] = []
+            seen: set = set()
+            exact = self._record(view, text)
+            if exact is not None:
+                # The record's own id, never the text that found it.
+                # ``lookup_material`` normalises what it is given, so somebody
+                # typing an identifier in lower case gets the row back under
+                # its real id — and excluding the *typed* string instead would
+                # leave the description pass free to list the same record a
+                # second time.
+                code = str(exact.get("record_id") or text)
+                out.append(self._search_record(exact, code, None))
+                seen.add(code)
+            retriever = view.retriever
+            if retriever:
+                for hit in retriever.search(text, k=limit, exclude=seen):
+                    rec = self._record(view, hit.record_id)
+                    if rec is None:
+                        continue
+                    out.append(self._search_record(rec, hit.record_id,
+                                                   hit.similarity))
+                searched = retriever.stamp.records
+            else:
+                # No index — the exact pass still ran and still answers, but
+                # the description pass did not, and a list built from one of
+                # two passes must not report itself as both. Zero searched is
+                # the honest count of what the neighbour search covered.
+                searched = 0
+            return CatalogueSearch(records=out[:limit], available=True,
+                                   searched=searched)
+        except Exception:  # noqa: BLE001 — a search box must not 500 the drawer
+            log.exception("catalogue search failed for %r", text)
+            return CatalogueSearch(
+                available=False,
+                reason="The catalogue search failed. This is not a statement "
+                       "about the product.")
+
+    @staticmethod
+    def _search_record(rec: Dict[str, Any], code: str,
+                       similarity: Optional[float]) -> Dict[str, Any]:
+        """One catalogue row as a search result.
+
+        ``similarity`` is ``None`` for the identifier pass, and that is a
+        distinction rather than a missing number: the row was found because it
+        *is* the code, not because its description reads alike, and a 1.0 there
+        would be a measurement nobody took.
+        """
+        return {
+            "code": code,
+            "desc": rec.get("description_raw") or rec.get("description") or code,
+            "grade": rec.get("grade"),
+            "brand": rec.get("brand"),
+            "catalogue": rec.get("catalogue_key"),
+            "similarity": similarity,
+            "attributes": _attributes_of(rec),
+        }
 
     def _make_args(self, text: str,
                    customer_scope: Optional[str] = None,

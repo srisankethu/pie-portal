@@ -434,6 +434,16 @@ EXPECTED_POLICIED = {
     # it" is not the promise, and a policy is what makes the query return
     # nothing at all. Listed in the same commit that creates the table.
     "rfq_documents",
+    # k2form — a quote form somebody has open, before they have saved it. Not a
+    # quote: no number, in no listing, discarded on Cancel. It holds the
+    # customer's name and every line typed against it all the same — including
+    # the cost each line carries, which is exactly what `quote_drafts` next
+    # door is policied for. "It is only scratch" is the argument that would
+    # leave it out, and it is wrong twice: the rows are real while the form is
+    # open, and being unsaved makes them *more* exposed rather than less,
+    # because nothing downstream is watching them. Listed in the same commit
+    # that creates the table.
+    "quote_form_drafts",
 }
 
 #: Tenant-scoped and deliberately uncovered — and after `d3rls` there is only

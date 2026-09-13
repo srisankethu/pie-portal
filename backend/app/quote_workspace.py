@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 import uuid
 from dataclasses import dataclass
+from datetime import timedelta
 from decimal import Decimal
 from typing import Any, Optional
 
@@ -52,6 +53,12 @@ log = logging.getLogger("pie_portal.quote_workspace")
 #: original numbering so a saved link or a note that says "QB-…" still reads
 #: as one of ours; only the part after the dash changed meaning.
 NUMBER_PREFIX = "QB"
+
+#: How long a blank, untouched form is left alone before the next New Quote
+#: from the same person sweeps it up. Generous on purpose: the row costs
+#: almost nothing and the failure mode on the other side is somebody's open
+#: tab losing the id it holds.
+_STALE_EMPTY_FORM_HOURS = 24
 
 #: How many times to re-mint a number when another desk took it first. Two
 #: desks starting a quote inside one transaction window is the only way to
@@ -77,6 +84,23 @@ def create(session: Session, org: str, *, user_id: Optional[str],
     one retry and not the caller's transaction. ``customer`` may be empty — that is the
     default, and the row says so rather than substituting a placeholder.
     """
+    return _mint(session, org, user_id=user_id, customer=customer,
+                 customer_id=customer_id, connection_id=connection_id,
+                 lines=[], fields={}, form_draft_id=None, updated_by=user_id)
+
+
+def _mint(session: Session, org: str, *, user_id: Optional[str],
+          customer: str, customer_id: Optional[str],
+          connection_id: Optional[str], lines: list[dict[str, Any]],
+          fields: dict[str, Any], form_draft_id: Optional[str],
+          updated_by: Optional[str]) -> Quote:
+    """Write the quote row, number and all. The one place a number is minted.
+
+    Two callers: ``create`` starts an empty quote directly, and ``save_form``
+    promotes a form somebody has filled in. They differ in what the row carries
+    at birth and in nothing else, and a second copy of the retry loop is how
+    two quotes eventually end up numbered differently for the same reason.
+    """
     customer = (customer or "").strip()
     customer_id = customer_id or None
     for _ in range(_MINT_ATTEMPTS):
@@ -84,7 +108,7 @@ def create(session: Session, org: str, *, user_id: Optional[str],
         row = models.QuoteDraft(
             quote_id=str(uuid.uuid4()), organization_id=org,
             customer_id=customer_id, customer_name=customer,
-            salesperson_id=user_id, updated_by_user_id=user_id,
+            salesperson_id=user_id, updated_by_user_id=updated_by,
             number=format_number(seq), sequence=seq,
             connection_id=connection_id,
             # The idempotency key for whatever ERP document this becomes. The
@@ -92,14 +116,23 @@ def create(session: Session, org: str, *, user_id: Optional[str],
             # reference written into a shared ledger should not collide with
             # another tenant's ``QB-0042`` either.
             reference=f"{format_number(seq)}-{uuid.uuid4().hex[:8]}",
-            lines=[], created_at=clock.now(), updated_at=clock.now())
+            form_draft_id=form_draft_id,
+            lines=list(lines), fields=dict(fields),
+            created_at=clock.now(), updated_at=clock.now())
         try:
             with session.begin_nested():
                 session.add(row)
                 session.flush()
         except IntegrityError:
-            # Somebody else minted this sequence between our read and our
-            # write. The savepoint has rolled the insert back; read again.
+            # Two constraints can land here and they mean opposite things.
+            # Another desk taking this sequence is a retry: the savepoint has
+            # rolled the insert back, so read again. Another *request saving
+            # this same form* is not — it means the quote already exists, and
+            # minting a second number for it is the duplicate this is here to
+            # prevent.
+            done = _promoted(session, org, form_draft_id) if form_draft_id else None
+            if done is not None:
+                return _to_quote(done)
             continue
         return _to_quote(row)
     raise RuntimeError(
@@ -114,15 +147,31 @@ def _next_sequence(session: Session, org: str) -> int:
 
 
 # ── read / write ─────────────────────────────────────────────────────────────
-def load(session: Session, org: str, quote_id: str) -> Optional[Quote]:
-    """The draft, only if it belongs to this tenant.
+# These two are the seam the whole unsaved-form change turns on. A quote and an
+# open form are the same working object with the same operations performed on
+# it — an RFQ read into lines, a supply chosen, a rate set — and they differ
+# only in which table the object came from and goes back to. Resolving that
+# here rather than at each endpoint is why the eighteen mutation routes in
+# ``routers/quote.py`` needed no edit: they load, mutate and save exactly as
+# they did, and never learn which kind they are holding.
+def load(session: Session, org: str, quote_id: str,
+         user_id: Optional[str] = None) -> Optional[Quote]:
+    """The quote, or the open form under that id, if it is this tenant's.
 
     The org check is the whole of quote authorization — a foreign id and an
     absent one are both ``None``, so nothing here confirms that another
     organization's quote exists.
+
+    A form is looked up second and additionally checked against ``user_id``:
+    an unsaved form belongs to the person typing it. Callers that pass no
+    ``user_id`` — the assessment path reading a cost, for instance — get the
+    tenant check alone, which is the rule a saved quote has always had.
     """
     row = _row(session, org, quote_id)
-    return None if row is None else _to_quote(row)
+    if row is not None:
+        return _to_quote(row)
+    form = _form_row(session, org, quote_id, user_id)
+    return None if form is None else _to_unsaved(form)
 
 
 def save(session: Session, quote: Quote, user_id: Optional[str]) -> None:
@@ -131,7 +180,14 @@ def save(session: Session, quote: Quote, user_id: Optional[str]) -> None:
     Every mutation endpoint ends here. The lines go back whole — cost and
     all, see ``Line.to_state`` — and the quote-level fields that can change
     after creation (the customer, and nothing else today) go with them.
+
+    An unsaved form is written back to its own table, which is the one thing
+    that makes editing one safe: the work survives a reload and a colleague's
+    list never learns about it, because no quote exists yet.
     """
+    if not quote.saved:
+        _save_form(session, quote, user_id)
+        return
     row = _row(session, quote.organizationId, quote.id)
     if row is None:
         # The draft was deleted underneath this request. Nothing to write to,
@@ -148,6 +204,22 @@ def save(session: Session, quote: Quote, user_id: Optional[str]) -> None:
     row.updated_by_user_id = user_id
     row.updated_at = now
     quote.savedAt = clock.iso(now)
+    session.flush()
+
+
+def _save_form(session: Session, quote: Quote, user_id: Optional[str]) -> None:
+    row = _form_row(session, quote.organizationId, quote.id, user_id)
+    if row is None:
+        log.warning("form %s vanished before it could be written", quote.id)
+        return
+    row.customer_id = quote.customerId or None
+    row.customer_name = quote.customer
+    row.lines = quote.lines_state()
+    row.fields = dict(quote.fields)
+    row.updated_at = clock.now()
+    # `savedAt` stays None. It means "when the server last wrote this quote's
+    # row", and the chip that reads it says "Saved 10:42" — which is exactly
+    # what an unsaved form must not claim.
     session.flush()
 
 
@@ -243,7 +315,167 @@ def _to_quote(row: models.QuoteDraft) -> Quote:
         customerId=row.customer_id or None, reference=row.reference or "",
         lines=[Line.from_state(state) for state in (row.lines or [])],
         savedAt=clock.iso(row.updated_at),
-        ownerId=row.salesperson_id, fields=dict(row.fields or {}))
+        ownerId=row.salesperson_id, fields=dict(row.fields or {}),
+        saved=True)
+
+
+# ── the unsaved form ─────────────────────────────────────────────────────────
+# A quote used to become a row, with a number, the instant somebody pressed
+# "New quote": open the builder and close it again and the desk's shared list
+# had an empty QB-0042 in it for good. What follows is the other half of the
+# lifecycle — a form somebody has open, which is not yet a quote and is not in
+# any listing — and ``save_form`` is where it becomes one.
+#
+# ``models.QuoteFormDraft`` says why the scratch is on the server rather than in
+# the browser; the short version is that a browser-held draft would carry cost
+# to a salesperson or carry none at all, and §1 refuses both.
+def create_form(session: Session, org: str, *, user_id: Optional[str],
+                customer: str = "", customer_id: Optional[str] = None,
+                connection_id: Optional[str] = None) -> Quote:
+    """Open a blank form. No number is minted and no quote exists yet.
+
+    Collects this person's abandoned *empty* forms on the way through — a tab
+    closed on an untouched form leaves a row nothing will ever discard, and one
+    holding no customer, no lines and no fields is carrying nothing anybody
+    could want back. Two conditions, and both are needed:
+
+    * **Empty.** A form with anything in it is left alone, always. Losing typed
+      work to a housekeeping rule would be far worse than the row it saves.
+    * **Stale.** A blank form this person opened minutes ago is very likely a
+      second tab they are about to paste into, and collecting it would break
+      that tab on the next keystroke — its id would no longer resolve. Only one
+      left untouched for ``_STALE_EMPTY_FORM_HOURS`` is treated as abandoned.
+    """
+    _collect_empty_forms(session, org, user_id)
+    row = models.QuoteFormDraft(
+        form_draft_id=str(uuid.uuid4()), organization_id=org,
+        owner_user_id=user_id,
+        customer_id=(customer_id or None), customer_name=(customer or "").strip(),
+        connection_id=connection_id,
+        lines=[], fields={}, created_at=clock.now(), updated_at=clock.now())
+    session.add(row)
+    session.flush()
+    return _to_unsaved(row)
+
+
+def _collect_empty_forms(session: Session, org: str,
+                         user_id: Optional[str]) -> None:
+    if not user_id:
+        return
+    cutoff = clock.now() - timedelta(hours=_STALE_EMPTY_FORM_HOURS)
+    rows = session.scalars(
+        select(models.QuoteFormDraft).where(
+            models.QuoteFormDraft.organization_id == org,
+            models.QuoteFormDraft.owner_user_id == user_id))
+    for row in rows:
+        if row.lines or row.fields or row.customer_name or row.customer_id:
+            continue
+        if (clock.aware(row.updated_at) or cutoff) > cutoff:
+            continue
+        session.delete(row)
+
+
+def discard_form(session: Session, org: str, form_id: str,
+                 user_id: Optional[str]) -> bool:
+    """Throw the form away. False when there was none to throw.
+
+    A real delete rather than the archive stamp ``delete`` uses on a quote:
+    that stamp exists to keep a minted number from being handed out twice, and
+    a form has no number. There is nothing here to preserve.
+    """
+    row = _form_row(session, org, form_id, user_id)
+    if row is None:
+        return False
+    session.delete(row)
+    session.flush()
+    return True
+
+
+def save_form(session: Session, org: str, form_id: str,
+              *, user_id: Optional[str]) -> Quote:
+    """Promote a form to a quote: mint the number, write the row, drop the form.
+
+    **Idempotent, and that is the whole of duplicate-save prevention.** The
+    quote records which form it came from under a unique constraint, so a
+    second click, a double-submit or a retried request finds the quote already
+    made and returns it. Two requests racing cannot both win the constraint;
+    the loser re-reads and answers with the same quote, which is what the first
+    caller got. Nothing here depends on the button being disabled.
+
+    Raises ``FormNotFound`` when the form is neither open nor already saved —
+    the caller turns that into a 404.
+    """
+    already = _promoted(session, org, form_id)
+    if already is not None:
+        return _to_quote(already)
+
+    row = _form_row(session, org, form_id, user_id)
+    if row is None:
+        raise FormNotFound(form_id)
+
+    lines = list(row.lines or [])
+    fields = dict(row.fields or {})
+    customer = row.customer_name or ""
+    customer_id = row.customer_id or None
+    connection_id = row.connection_id
+    owner = row.owner_user_id or user_id
+
+    quote = _mint(session, org, user_id=owner, customer=customer,
+                  customer_id=customer_id, connection_id=connection_id,
+                  lines=lines, fields=fields, form_draft_id=form_id,
+                  updated_by=user_id)
+    session.delete(row)
+    session.flush()
+    return quote
+
+
+class FormNotFound(LookupError):
+    """No open form under that id, and no quote already saved from one."""
+
+
+def _promoted(session: Session, org: str,
+              form_id: str) -> Optional[models.QuoteDraft]:
+    if not form_id:
+        return None
+    return session.scalar(
+        select(models.QuoteDraft).where(
+            models.QuoteDraft.form_draft_id == form_id,
+            models.QuoteDraft.organization_id == org))
+
+
+def _form_row(session: Session, org: str, form_id: str,
+              user_id: Optional[str]) -> Optional[models.QuoteFormDraft]:
+    """The form, only if it is this tenant's and this person's.
+
+    Both checks, and the second is not the quote rule relaxed — it is the
+    opposite question. A *quote* is the desk's and a colleague may pick it up;
+    a form is one person typing, and there is nothing to hand over until it has
+    been saved.
+    """
+    if not form_id:
+        return None
+    row = session.get(models.QuoteFormDraft, form_id)
+    if row is None or row.organization_id != org:
+        return None
+    if row.owner_user_id and user_id and row.owner_user_id != user_id:
+        return None
+    return row
+
+
+def _to_unsaved(row: models.QuoteFormDraft) -> Quote:
+    """The form as the working object, wearing no number.
+
+    ``saved=False`` is a field rather than something a reader infers from an
+    empty ``number``: the producer knows which of the two tables answered and
+    a consumer re-deriving that from the output shape would be guessing.
+    """
+    return Quote(
+        id=row.form_draft_id, customer=row.customer_name or "", number="",
+        organizationId=row.organization_id, connectionId=row.connection_id,
+        customerId=row.customer_id or None, reference="",
+        lines=[Line.from_state(state) for state in (row.lines or [])],
+        savedAt=None, ownerId=row.owner_user_id,
+        fields=dict(row.fields or {}), saved=False)
 
 
 # ── ownership ────────────────────────────────────────────────────────────────

@@ -764,11 +764,31 @@ distinct from zero** everywhere ("none recorded" ≠ ₹0).
 
 The Quote Builder is where a quote is negotiated: paste an RFQ, resolve every line to
 a quote-ready product, price it against the customer's own history, send the
-estimate into their books, and record what happened. Every quote is a row in
-`quote_drafts` (`app/quote_workspace.py`): the lines go back to the row on
-every mutation before the response is answered, so the same draft is open on
-whichever desk opens it, a server restart forgets nothing, and there is no
-Save button and no copy in the browser. Everything else durable — snapshots,
+estimate into their books, and record what happened. Every *saved* quote is a
+row in `quote_drafts` (`app/quote_workspace.py`): the lines go back to the row
+on every mutation before the response is answered, so the same draft is open on
+whichever desk opens it, a server restart forgets nothing, and there is no Save
+button on a saved quote and no copy in the browser.
+
+**Until it is saved it is not a quote at all.** "New quote" opens a *form*
+(`quote_form_drafts`, `POST /api/v1/quotes/form`) and creates nothing: no row in
+`quote_drafts`, no number, nothing on anybody's list. Pressing it used to write
+the row and mint `QB-0042` on the spot, so opening the builder and changing your
+mind left an empty quote on the shared list for good and spent the number. The
+form is on the server rather than in the browser because the builder's work is
+server-side — an RFQ resolves against the decoded catalogue, lines are priced
+from the connected book — and `store.Line.to_state` carries cost while the
+projection withholds it from a salesperson, so a browser-held draft would either
+hand over every line's cost or hold none at all. **Save quote**
+(`POST /api/v1/quotes/form/{id}/save`) mints the number, writes the quote and
+drops the form; it is idempotent under a unique constraint, so a double-click
+returns the quote the first press made. **Cancel**
+(`DELETE /api/v1/quotes/form/{id}`) throws it away, asking first where there is
+anything to lose. A form cannot be sent, handed over, or have an approval raised
+against it — each of those writes a row keyed on a quote id that outlives the
+request, and a form's id does not.
+
+Everything else durable — snapshots,
 sent documents, outcomes, confirmed identity mappings, approval requests —
 is its own row keyed on the quote id, and the sent state is re-joined from
 those rows on every read (a sent quote never looks unsent).
@@ -791,11 +811,21 @@ LOST; WON and LOST are terminal ("a margin analysis has already counted it").
    Needs a customer ·
    Needs approval · Awaiting approval · Ready to send · Sent. Filters group
    those into "Needs work", "Awaiting approval", "Ready to send", "Sent".
-2. "New quote" → `POST /api/v1/quotes` with **no customer** creates the draft
-   (the company is decided here, once; an organization reading several
-   books is asked which) and opens it at `#/quotes/:id`. The header shows the
-   number, a **Choose customer** control while none is chosen, and a
-   "Saved hh:mm" chip that says when the server last wrote the row.
+2. "New quote" → `POST /api/v1/quotes/form` with **no customer** opens a blank
+   form and **creates nothing** (the company is still decided here, once,
+   because the first pasted RFQ line needs a catalogue to resolve against; an
+   organization reading several books is asked which). It opens at
+   `#/quotes/:id` like any quote, and the whole builder works on it — paste an
+   RFQ, choose the customer, price the lines — with no row in `quote_drafts`
+   behind any of it. The header reads **Not saved yet** in place of a number,
+   carries **Save quote** and **Cancel** instead of "All quotes", and an alert
+   says what the state means. Save mints `QB-0042` and the screen becomes an
+   ordinary saved quote: the number appears, Save goes away, and every change
+   writes through as before. `POST /api/v1/quotes` still creates a quote
+   outright and is unchanged — it is simply no longer what the button calls.
+   The header then shows the number, a **Choose customer** control while none
+   is chosen, and a "Saved hh:mm" chip that says when the server last wrote the
+   row.
    **Every quote has an owner** — whoever started it — shown in the header;
    only the owner changes or sends it, plus managers and owners where the
    policy flag *Managers and owners may change any quote* is on (default on).
@@ -1092,14 +1122,23 @@ None of these change price or product.
 
 ### 7.11 Draft persistence
 
-Every quote change is written to the draft's row (`quote_drafts`) before the
-response is answered; the "Saved HH:MM" chip in the header is the server's
-`savedAt`, and there is no Save button and no copy in the browser (the old
-`localStorage` key is removed on the next visit to the workspace). The same
-draft opens on whichever desk follows its link, "New quote" starts another
-without touching this one, and a backend restart changes nothing. "Remove"
-archives the row — the number is never minted again — and is refused on a
-quote that has been sent.
+Every change to a **saved** quote is written to its row (`quote_drafts`) before
+the response is answered; the "Saved HH:MM" chip in the header is the server's
+`savedAt`, and there is no Save button on one and no copy in the browser (the
+old `localStorage` key is removed on the next visit to the workspace). The same
+draft opens on whichever desk follows its link, and a backend restart changes
+nothing. "Remove" archives the row — the number is never minted again — and is
+refused on a quote that has been sent.
+
+An **unsaved form** is written the same way to `quote_form_drafts`, so a reload
+does not lose the work and the lines keep the cost the browser could not hold.
+It differs in three ways and they are the point: it has no number and no
+`savedAt` (so the chip does not render and the header reads "Not saved yet"), it
+is scoped to the person typing it rather than shared with the desk, and it is in
+no listing because it is not a quote. "New quote" from inside the builder opens
+another form; where the one already open is unsaved it is discarded first, with
+the same question Cancel asks. A blank form left untouched for a day is swept up
+the next time that person opens one — a form with anything in it never is.
 ---
 
 ## 8. The outcome and value loop
@@ -1865,8 +1904,11 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/quotes` | signed-in | The workspace: every draft in the organization with number, customer, owner, line count, selling total, who changed it, whether this reader may edit it, and the send gate's readiness |
 | GET | `/api/v1/quotes/assignees` | signed-in | Who a quote can be handed to: the organization's active members, id and name only |
 | GET | `/api/v1/quotes/field-definitions` | signed-in | The quote-level fields this organization asks for (built-in plus custom), which are required, for the builder to render |
-| POST | `/api/v1/quotes` | signed-in | Create a draft — customer optional and empty by default; number minted from the org's sequence (QB-0001…); stamped with the principal's organization_id |
-| DELETE | `/api/v1/quotes/{quote_id}` | signed-in | Remove an unsent draft; 409 once a document has been written for it |
+| POST | `/api/v1/quotes` | signed-in | Create a draft outright — customer optional and empty by default; number minted from the org's sequence (QB-0001…); stamped with the principal's organization_id. Not what "New quote" calls: see /quotes/form |
+| POST | `/api/v1/quotes/form` | signed-in | Open a blank quote form. **Creates no quote and mints no number** — a `quote_form_drafts` row scoped to the caller, in no listing, answering the Quote shape with `saved: false`. The company is still settled here |
+| POST | `/api/v1/quotes/form/{form_id}/save` | signed-in | Save the form: mint the number, write the quote, drop the form. The only place the builder creates a quote. Idempotent under a unique constraint, so a second click returns the quote the first made |
+| DELETE | `/api/v1/quotes/form/{form_id}` | signed-in | Throw an unsaved form away; nothing was ever written to the workspace. Idempotent — discarding one already gone answers ok |
+| DELETE | `/api/v1/quotes/{quote_id}` | signed-in | Remove an unsent draft; 409 once a document has been written for it. An unsaved form under the same id is discarded instead |
 | GET | `/api/v1/quotes/{quote_id}` | signed-in | Read one quote, serialized via Quote.to_dict(mgmt) — economics/marginFloor/MFLOOR absent for a salesperson; 'estimate' block joined from the… |
 | PUT | `/api/v1/quotes/{quote_id}/customer` | signed-in | Say who the quote is for, or change it; lines already on it are re-resolved under the customer's identity scope, typed prices kept where the product is unchanged |
 | PUT | `/api/v1/quotes/{quote_id}/fields` | signed-in | Save the quote-level details, checked against the definitions (400 naming the field otherwise); required ones are judged at the send |

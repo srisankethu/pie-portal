@@ -102,6 +102,41 @@ export const api = {
                              connection_id: connectionId ?? null }),
     }, t),
 
+  /** Open a blank quote form. **Creates nothing.**
+   *
+   *  This is what "New quote" calls. `createQuote` above writes a row and mints
+   *  a number on the spot, which is what put an empty QB-0001 on the whole
+   *  desk's list every time somebody opened the builder and changed their mind.
+   *  The form is server-side scratch — the builder's work is done on the server
+   *  and a browser-held draft would carry every line's cost to a salesperson —
+   *  but it is not a quote: no number, in no listing, and `saved` is false
+   *  until `saveQuote` below.
+   *
+   *  The company is still settled here, because the first pasted RFQ line needs
+   *  a catalogue to resolve against. Refuses with `CompanyRequired` exactly as
+   *  `createQuote` does where the organization reads several books. */
+  createQuoteForm: (t: string, customer = "", customerId?: string,
+                    connectionId?: string) =>
+    req<Quote>("/api/v1/quotes/form", {
+      method: "POST",
+      body: JSON.stringify({ customer, customer_id: customerId ?? null,
+                             connection_id: connectionId ?? null }),
+    }, t),
+
+  /** Save the form: the quote is created here and nowhere else.
+   *
+   *  Idempotent on the server under a unique constraint, so a double-click or a
+   *  retried request answers with the quote the first one made rather than
+   *  minting a second number. The button is disabled while this is in flight
+   *  as well, but the guarantee does not depend on that. */
+  saveQuote: (t: string, formId: string) =>
+    req<Quote>(`/api/v1/quotes/form/${formId}/save`, { method: "POST" }, t),
+
+  /** Throw an unsaved form away. Nothing was ever written to the workspace, so
+   *  there is nothing left behind — and discarding one twice is not an error. */
+  discardQuoteForm: (t: string, formId: string) =>
+    req<{ ok: boolean }>(`/api/v1/quotes/form/${formId}`, { method: "DELETE" }, t),
+
   /** The workspace: every draft in the organization. */
   listQuotes: (t: string) =>
     req<{ quotes: QuoteDraftSummary[] }>("/api/v1/quotes", {}, t)

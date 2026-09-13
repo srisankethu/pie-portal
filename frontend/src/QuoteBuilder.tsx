@@ -16,9 +16,22 @@
  * which is what made a mode flag look necessary in the first place — and
  * which also meant one draft per browser, invisible to everyone else, with
  * the lines behind it gone from the server on the next restart. Every change
- * is written through before it is answered now, so there is no Save button:
- * the chip in the header says when the row was last written, and the same
- * quote is open on whichever desk opens it.
+ * is written through before it is answered now: the chip in the header says
+ * when the row was last written, and the same quote is open on whichever desk
+ * opens it.
+ *
+ * **Until it is saved it is not a quote.** "New quote" opens a *form* and
+ * creates nothing — no row in `quote_drafts`, no number, nothing on anybody's
+ * list. It used to write the row and mint QB-0042 on the press, so opening
+ * this screen and changing your mind left an empty quote on the shared list
+ * for good. So there *is* a Save button, on exactly one state: while
+ * `quote.saved` is false. Press it and the quote is made, the number appears
+ * and the button goes away, because from then on every change writes through
+ * as the paragraph above describes. The form is server-side rather than held
+ * here for a reason worth knowing before moving it: a line carries its cost,
+ * and the projection withholds that from a salesperson — a browser-held draft
+ * would either hand over every cost or hold none, and CLAUDE.md §1 refuses
+ * both.
  *
  * **A quote opens with no customer.** The enquiry is what arrived; who it is
  * from is a question the desk answers when it has the answer, and it is
@@ -131,6 +144,11 @@ function saveEcon(on: boolean): void {
   }
 }
 
+/** What throwing an unsaved form away is in aid of: leaving the builder, or
+ *  starting another form. The dialog has to know before it is answered, so the
+ *  intent is what opens it rather than something read back afterwards. */
+type DiscardIntent = "leave" | "new";
+
 function passesFilter(l: Line, f: string, flagged: Set<string>): boolean {
   switch (f) {
     case "EXC":
@@ -192,6 +210,11 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   const [definitions, setDefinitions] = useState<QuoteFieldDefinition[]>([]);
   /** Handing the quote over: who it can go to, once asked for. */
   const [handover, setHandover] = useState<{ members: QuoteOwner[]; to: string } | null>(null);
+  /** The "throw this form away?" question, open only for a form with
+   *  something in it — see `askDiscard` — and carrying what to do once it is
+   *  answered, because Cancel and "New quote" both ask it and want different
+   *  next steps. */
+  const [discardOpen, setDiscardOpen] = useState<DiscardIntent | null>(null);
   // Why the last attempt to send was refused. Held on the screen rather than
   // flashed, and cleared by the next change to the quote — which is exactly
   // when the sentence might stop being true.
@@ -274,16 +297,21 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
     );
   }, [quote, filter, search, flaggedLines]);
 
-  /** Start another draft and open it. This one stays in the workspace as it
-   *  is — nothing is abandoned, which is what "New quote" used to mean here.
+  /** Open another blank form and go to it. Nothing is created by pressing it.
    *
-   *  The company is decided at creation, once, and the server refuses to
-   *  choose where the organization reads several books: ask, then retry. */
+   *  What happens to the quote currently open depends on whether it has been
+   *  saved. A saved one stays in the workspace exactly as it is. An unsaved
+   *  form is *discarded* — it was never a quote, and leaving it behind would
+   *  put back the orphan rows this whole change removes — so the confirmation
+   *  below is the same one Cancel asks.
+   *
+   *  The company is decided when the form opens, once, and the server refuses
+   *  to choose where the organization reads several books: ask, then retry. */
   const startNewQuote = (connectionId?: string) =>
     guard(async () => {
       let q: Quote;
       try {
-        q = await api.createQuote(t, "", undefined, connectionId);
+        q = await api.createQuoteForm(t, "", undefined, connectionId);
       } catch (e) {
         if (e instanceof CompanyRequired) {
           setCompanyChoice(e.companies);
@@ -295,9 +323,76 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       setSelectedIds([]);
       setFilter("ALL");
       setSearch("");
+      setDiscardOpen(null);
       navigate(pathFor("quotes", q.id));
-      flash(`Started ${q.number}`);
+      flash("Started a new quote — it is saved when you press Save quote");
     });
+
+  /** "New quote" as the button means it: whatever is open is dealt with first.
+   *
+   *  A saved quote is left exactly where it is. An unsaved form is thrown
+   *  away, because leaving it behind is how the orphan rows this change
+   *  removes would come back — and thrown away is a decision, so a form with
+   *  work in it gets the same question Cancel asks. */
+  const newQuote = () => {
+    if (quote && !quote.saved) return askDiscard("new");
+    void startNewQuote();
+  };
+
+  /** Whether this form holds anything somebody would mind losing.
+   *
+   *  The question Cancel asks before throwing it away, and the reason a blank
+   *  form closes without a dialog: confirming the discard of something with
+   *  nothing in it trains people to dismiss the confirmation that matters. */
+  const hasContent = (q: Quote) =>
+    q.lines.length > 0 || q.customer.trim().length > 0
+    || Object.values(q.fields ?? {}).some((v) => String(v ?? "").trim() !== "");
+
+  /** Save the form: this is the only thing on this screen that makes a quote.
+   *
+   *  The server mints the number and answers with the quote, whose id is not
+   *  the form's — so the URL is replaced rather than pushed. `replace` matters:
+   *  Back from a saved quote must not return to a form id that no longer
+   *  resolves.
+   *
+   *  `busy` disables the button while this is in flight, and the server is
+   *  idempotent underneath that, so neither a fast second click nor a retried
+   *  request can mint a second number. */
+  const doSaveQuote = () =>
+    guard(async () => {
+      const q = await api.saveQuote(t, quote!.id);
+      setQuote(q);
+      navigate(pathFor("quotes", q.id), { replace: true });
+      flash(`Saved as ${q.number}`, "success");
+    });
+
+  /** Throw the form away, and then do whatever the discard was in aid of.
+   *
+   *  Nothing was ever written to the workspace, so there is nothing left
+   *  behind to tidy up. The two callers want different next steps — Cancel
+   *  leaves, "New quote" opens another — and the dialog has to know which
+   *  before it is answered, which is why the intent is what opens it. */
+  const doDiscard = (intent: DiscardIntent) =>
+    guard(async () => {
+      await api.discardQuoteForm(t, quote!.id);
+      setDiscardOpen(null);
+      if (intent === "new") {
+        await startNewQuote();
+        return;
+      }
+      navigate(PATH.quotes);
+      flash("Quote discarded — nothing was saved");
+    });
+
+  /** Straight through for an untouched form, a question for a filled one.
+   *
+   *  Asking about something with nothing in it is how people learn to dismiss
+   *  the confirmation that matters. */
+  const askDiscard = (intent: DiscardIntent) => {
+    if (!quote) return;
+    if (hasContent(quote)) setDiscardOpen(intent);
+    else void doDiscard(intent);
+  };
 
   const clearSelection = () => {
     setSelectedIds([]);
@@ -633,6 +728,9 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
   // mutation enforces with a 403, applied here so the refusal is never the
   // first thing somebody sees.
   const readOnly = !quote.canEdit;
+  // Whether a quote exists for this yet. The server's own field rather than
+  // `!quote.number`: which table answered is something only it knows.
+  const unsaved = !quote.saved;
   // What to call the ledger, in its own words — see `Quote.systemLabel`.
   const filters = filtersFor(quote.systemShort);
   const ownerName = quote.owner?.name || "its owner";
@@ -645,13 +743,24 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         actions={
           <>
             {/* Back to the list, then the two things this screen is opened
-                to do — all with a full tap target like the controls below. */}
-            <Button variant="text" size="small" sx={TOUCH}
-                    onClick={() => navigate(PATH.quotes)}>
-              All quotes
-            </Button>
+                to do — all with a full tap target like the controls below.
+
+                An unsaved form gets Cancel in that slot instead: leaving by
+                the same door would strand the form, and "All quotes" reads
+                like navigation rather than like the decision it would be. */}
+            {unsaved ? (
+              <Button variant="text" size="small" color="error" sx={TOUCH}
+                      onClick={() => askDiscard("leave")} disabled={busy}>
+                Cancel
+              </Button>
+            ) : (
+              <Button variant="text" size="small" sx={TOUCH}
+                      onClick={() => navigate(PATH.quotes)}>
+                All quotes
+              </Button>
+            )}
             <Button variant="outlined" size="small" sx={TOUCH}
-                    onClick={() => startNewQuote()} disabled={busy}>
+                    onClick={newQuote} disabled={busy}>
               New quote
             </Button>
             {/* Cost and margin, for the reader who has them. Offered only to
@@ -669,10 +778,20 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
                 Economics
               </Button>
             )}
-            <Button variant="contained" size="small" sx={TOUCH}
+            <Button variant={unsaved ? "outlined" : "contained"} size="small" sx={TOUCH}
                     onClick={() => setIntakeOpen(true)} disabled={readOnly}>
               Paste RFQ
             </Button>
+            {/* The one control on this screen that makes a quote. Primary while
+                the form is unsaved, and absent once it is: a saved quote writes
+                every change through as it always has, so a Save button on one
+                would be a button with nothing to do. */}
+            {unsaved && (
+              <Button variant="contained" size="small" sx={TOUCH}
+                      onClick={doSaveQuote} disabled={busy || readOnly}>
+                {busy ? "Saving…" : "Save quote"}
+              </Button>
+            )}
           </>
         }
       />
@@ -691,8 +810,12 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       >
         <Box>
           <FieldLabel>Quote</FieldLabel>
-          <Typography sx={{ fontFamily: "var(--font-heading)", fontWeight: 600 }}>
-            {quote.number}
+          {/* A number, or the plain fact that there is not one yet. A form has
+              no number because nothing has been minted — printing a provisional
+              one would be a number somebody could write down and then not find. */}
+          <Typography sx={{ fontFamily: "var(--font-heading)", fontWeight: 600,
+                            color: unsaved ? "text.secondary" : undefined }}>
+            {unsaved ? "Not saved yet" : quote.number}
           </Typography>
         </Box>
         <Box sx={{ minWidth: 0 }}>
@@ -851,6 +974,28 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           </AlertTitle>
           Lowest margin {(quote.marginFloor.worst * 100).toFixed(1)}% — review before creating the
           estimate.
+        </Alert>
+      )}
+
+      {/* This is a form, not a quote yet. Said out loud, with the button that
+          changes it, because every other screen in this product treats a quote
+          as something the whole desk can see — and until this is saved, nobody
+          else can. Not dismissible: it is the state of the thing, not news. */}
+      {unsaved && (
+        <Alert
+          severity="info"
+          sx={{ mb: 2 }}
+          action={
+            <Button color="inherit" size="small" onClick={doSaveQuote}
+                    disabled={busy || readOnly}>
+              {busy ? "Saving…" : "Save quote"}
+            </Button>
+          }
+        >
+          <AlertTitle>This quote has not been saved yet</AlertTitle>
+          It has no number, it is on nobody's list, and leaving without saving
+          discards it. Your work is held while you price it — saving is what
+          makes it a quote the desk can see, hand over and send.
         </Alert>
       )}
 
@@ -1076,6 +1221,32 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           readOnly={readOnly}
         />
       )}
+
+      {/* Throwing an unsaved form away. Asked only where there is something to
+          lose — `askDiscard` closes an untouched form without a word, because a
+          confirmation people always dismiss is one they stop reading. */}
+      <Dialog open={discardOpen !== null} onClose={() => setDiscardOpen(null)}
+              fullWidth maxWidth="xs">
+        <DialogTitle>Discard this quote?</DialogTitle>
+        <DialogContent>
+          <DialogContentText>
+            {quote.lines.length > 0
+              ? `${quote.lines.length} line(s)`
+                + (quote.customer.trim() ? ` for ${quote.customer}` : "")
+                + " have not been saved. They are thrown away and no quote is "
+                + "created."
+              : "Nothing here has been saved. It is thrown away and no quote "
+                + "is created."}
+          </DialogContentText>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setDiscardOpen(null)}>Keep editing</Button>
+          <Button color="error" variant="contained" disabled={busy}
+                  onClick={() => discardOpen && doDiscard(discardOpen)}>
+            {discardOpen === "new" ? "Discard and start a new one" : "Discard"}
+          </Button>
+        </DialogActions>
+      </Dialog>
 
       {/* Handing the quote over. The list is the organization's active
           members, minus the current owner. */}

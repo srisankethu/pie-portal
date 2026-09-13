@@ -45,6 +45,16 @@ already fixed learns to distrust the rest of this file.
 for the accessible table under a chart. `platform/DataGrid.tsx` states the line;
 the check in §6 finds the cases worth thinking about.
 
+**A gesture is a shortcut, never the only way in — and it costs the pixels it
+listens on.** The phone nav opens on a rightward drag from the left edge, which
+is `SwipeableDrawer` with an `onOpen`, not a gesture library. Two of the three
+rules worth carrying to the next gesture: the menu button is untouched, because
+nothing announces that an edge is draggable and neither a keyboard nor a screen
+reader has an edge to drag from; and swipe-to-open is a real hit-testable strip
+down that edge, so it is rendered only on the viewport that wants it and offset
+clear of the control it sits over. `ui-standards.md` §9 has the third — where
+the browser already owns the edge, stand down.
+
 **A standalone on/off is a `Switch`, never a `ToggleButton` and never a `Button`
 whose `variant` carries the state.** In the digest for the same reason the grid
 rule is: `ui-standards.md` §5 said "`ToggleButton` where a control genuinely

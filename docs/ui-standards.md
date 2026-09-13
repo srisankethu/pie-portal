@@ -139,6 +139,36 @@ mode being left on.
 `AppBar`, `Tabs`, `Breadcrumbs`, and a `Drawer` on a phone. Consistent
 throughout.
 
+**The phone drawer is `SwipeableDrawer`, and it opens on a rightward drag from
+the left edge.** That is MUI's own component with an `onOpen` beside its
+`onClose` — the gesture is a prop on the drawer that was already there, not a
+gesture library, and nothing was added to `package.json` for it. A second nav
+that listens for touches itself would be a second answer to "is the menu open",
+and the two would disagree the first time a drag was interrupted.
+
+Three things travel with it, and they are the general rules rather than facts
+about this one drawer:
+
+- **A gesture is never the only way in.** Nothing on a screen announces that an
+  edge is draggable; a phone teaches the habit and the app inherits it. The
+  menu button is untouched and stays the discoverable door — which is also
+  what keeps the nav reachable by keyboard and to a screen reader, neither of
+  which has an edge to swipe from.
+- **A gesture costs the pixels it listens on.** Swipe-to-open is detected by a
+  real, hit-testable strip down the edge — 20px, fixed, above the app bar —
+  and anything under it stops being clickable. It starts below the bar so it
+  does not clip the menu button, and it is not rendered at all above `md`, where
+  the five destinations are spelled out along the top and the strip would buy
+  nothing for the clicks it swallowed. Render a gesture surface only on the
+  viewport that wants it.
+- **Where the browser already owns the edge, stand down.** Safari navigates
+  back on exactly this drag. Two recognisers on the same pixels means one loses
+  unpredictably, and here the stray outcome is leaving a half-written quote. So
+  the gesture is off on iOS — MUI's default, restated explicitly in
+  `AppShell.tsx` so that the decision is ours, and widened by one case MUI's own
+  check misses: an iPad on iPadOS 13+ calls itself a Macintosh, and only its
+  touch points tell it apart from a desktop Mac.
+
 **Five destinations, and one table behind them.** The shell is a top bar of
 Today / Quotes / Accounts / Money / Setup; a destination holding several
 screens shows them as `Tabs` with an overflow, and everything else is reached
@@ -304,7 +334,7 @@ component rather than copying it.
 Honest, so the next person knows what they are walking into rather than
 discovering it. Written after an audit, not from memory.
 
-**Aligned:** the app shell (`AppBar` + `Drawer`), dialogs, snackbars, the grid
+**Aligned:** the app shell (`AppBar` + `SwipeableDrawer`), dialogs, snackbars, the grid
 wrapper, the settings and connections forms, the theme itself. Every button is
 MUI's — the `.btn` variant system is gone from the stylesheet, so there is
 nothing left to fall back into. `Bp` is a `Paper` (the corner marks survive

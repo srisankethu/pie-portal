@@ -49,11 +49,12 @@ import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
+import FormControlLabel from "@mui/material/FormControlLabel";
 import MenuItem from "@mui/material/MenuItem";
 import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
+import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
-import ToggleButton from "@mui/material/ToggleButton";
 import Typography from "@mui/material/Typography";
 import { useSnackbar } from "notistack";
 import { useCallback, useEffect, useMemo, useState } from "react";
@@ -768,29 +769,39 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
                 that reader: a salesperson's response carries no cost at all, so
                 a toggle here would be a control over two empty columns.
 
-                A `ToggleButton`, which is what ui-standards §5 asks for where
-                a control genuinely toggles — and this one does: it shows and
-                hides two grid columns, and it stays where it was left. It was
-                a `Button` wearing a toggle's clothes, with a hand-written
-                `aria-pressed` beside a `variant` swapped by the same
-                condition, and that cost twice. The pressed state was
-                `contained primary`, the same weight as "Paste RFQ" beside it,
-                so a remembered preference sat as loud as the screen's one
-                action; and the attribute a screen reader announces was ours to
-                keep in step with the paint nobody reads it against.
-                `ToggleButton` derives the attribute from `selected`, so the
-                two cannot disagree, and the theme's selected treatment
-                (`MuiToggleButton`) reads as set rather than as next. */}
+                A `Switch`, and the reason is what people read rather than what
+                the API is called. This was a `Button` swapping `variant`
+                between `outlined` and `contained`, then a `ToggleButton` —
+                which is what ui-standards §5 names for a control that toggles,
+                and which still renders a rectangular bordered control with a
+                label. Both were reported as "a button, not a toggle" by the
+                person looking at the screen, and on that question the person
+                looking at the screen is right: the only thing distinguishing
+                an on `ToggleButton` from an off one is its fill, so it reads
+                as an action whose last press happened to stick.
+
+                A switch says which of two states a thing is in without being
+                pressed first, which is what this control is: not an action,
+                a preference over which columns the grid draws, remembered
+                across visits. It is the deliberate exception to §5 recorded in
+                ui-standards §8, and the idiom is `RunLogPanel`'s — a `Switch`
+                in a `FormControlLabel` with `TOUCH`, because a bare switch is
+                20px of hit target and this screen is used standing up.
+
+                `aria-checked` comes from `checked`, so the state a screen
+                reader announces still cannot drift from the state drawn. */}
             {mgmt && (
-              <ToggleButton
-                value="economics"
-                selected={econ}
-                size="small"
-                sx={TOUCH}
-                onChange={() => setEcon((on) => { saveEcon(!on); return !on; })}
-              >
-                Economics
-              </ToggleButton>
+              <FormControlLabel
+                sx={{ ...TOUCH, mr: 0 }}
+                control={
+                  <Switch
+                    size="small"
+                    checked={econ}
+                    onChange={(e) => { saveEcon(e.target.checked); setEcon(e.target.checked); }}
+                  />
+                }
+                label={<Typography variant="body2">Economics</Typography>}
+              />
             )}
             <Button variant={unsaved ? "outlined" : "contained"} size="small" sx={TOUCH}
                     onClick={() => setIntakeOpen(true)} disabled={readOnly}>

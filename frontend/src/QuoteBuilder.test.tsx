@@ -367,14 +367,20 @@ describe("starting another quote from inside the builder", () => {
 
 // The economics control, which is a toggle rather than an action: it turns the
 // grid's cost and margin columns on and off, and it stays where it was left.
-// It spent a while as a `Button` holding its pressed state in a hand-written
-// `aria-pressed` next to a `variant` swapped by the same condition — two
-// spellings of one fact, and the pair a screen reader reads is not the pair
-// anybody looks at. So these assertions are about the announced state, not the
-// paint: `ToggleButton` derives the attribute from `selected`, and the test
-// fails if the control ever goes back to carrying its own.
+//
+// It was a `Button` swapping `variant` with a hand-written `aria-pressed`
+// beside it, then a `ToggleButton`, and both were read off the screen as
+// buttons — correctly, because both draw a rectangular bordered control whose
+// only state cue is its fill. It is a `Switch` now.
+//
+// `getByRole("switch")` is the assertion that holds that: it passes only for a
+// control that reports itself as one, so a change back to anything
+// button-shaped fails here rather than in somebody's report. The state
+// assertions read `aria-checked` for the same reason as before — MUI derives
+// it from `checked`, so what a screen reader announces cannot drift from what
+// is drawn.
 describe("the economics toggle", () => {
-  const economics = () => screen.getByRole("button", { name: "Economics" });
+  const economics = () => screen.getByRole("switch", { name: "Economics" });
 
   async function openAsOwner() {
     getQuote.mockResolvedValue(quote());
@@ -386,28 +392,28 @@ describe("the economics toggle", () => {
   // On by default for the role that has the numbers: the empty preference has
   // to mean "show me what I am pricing against", which is why the stored key is
   // the negative one.
-  it("opens pressed, and says so", async () => {
+  it("opens on, and says so", async () => {
     await openAsOwner();
 
-    expect(economics()).toHaveAttribute("aria-pressed", "true");
+    expect(economics()).toBeChecked();
   });
 
-  it("releases on a press, and remembers it", async () => {
+  it("switches off on a click, and remembers it", async () => {
     await openAsOwner();
 
     fireEvent.click(economics());
 
-    expect(economics()).toHaveAttribute("aria-pressed", "false");
+    expect(economics()).not.toBeChecked();
     expect(window.localStorage.getItem("pie.quote.hide-economics")).toBe("1");
   });
 
-  it("presses again on a second press, and forgets the preference", async () => {
+  it("switches back on, and forgets the preference", async () => {
     await openAsOwner();
 
     fireEvent.click(economics());
     fireEvent.click(economics());
 
-    expect(economics()).toHaveAttribute("aria-pressed", "true");
+    expect(economics()).toBeChecked();
     expect(window.localStorage.getItem("pie.quote.hide-economics")).toBeNull();
   });
 
@@ -422,6 +428,6 @@ describe("the economics toggle", () => {
     mount("SALESPERSON");
     await waitFor(() => expect(screen.getByText("QB-0001")).toBeInTheDocument());
 
-    expect(screen.queryByRole("button", { name: "Economics" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("switch", { name: "Economics" })).not.toBeInTheDocument();
   });
 });

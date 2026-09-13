@@ -28,6 +28,7 @@ import { EntityName } from "../EntityName";
 import { InlineLink, MetricCard, StatusChip } from "../kit";
 import type { Tone } from "../kit";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
+import { GroupFilter, useGroupFilter } from "../GroupFilter";
 import { DataGrid, numeric } from "../DataGrid";
 import type { ColDef } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
@@ -1553,9 +1554,17 @@ export function StockScreen({ session }: { session: PlatformSession }) {
 // a tab reading `Vendors` opening a screen titled `Suppliers`, and no such door
 // exists into `#/cash-cycle`.
 export function SupplyScreen({ session }: { session: PlatformSession }) {
+  // Two filters on this screen, and they work in opposite directions on
+  // purpose. The company filter below narrows the *list* and deliberately never
+  // touches the shares, because those are the server's and computed over the
+  // whole book. The group filter is part of the request: the server recomputes
+  // concentration inside the group, so the shares that come back are the
+  // group's own and the denominator moved with them.
+  const groupFilter = useGroupFilter(session.token, "VENDOR");
   const { data, loading, error, reload } = useInsight(
     "supply",
-    () => papi.supply(session.token), [session.token]);
+    () => papi.supply(session.token, groupFilter.group),
+    [session.token, groupFilter.group]);
 
   const suppliers = rows(data?.suppliers);
   const vendorSourcesDiffer = Boolean(data?.sources_differ);
@@ -1591,6 +1600,9 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
         <h4>Where the spend goes</h4>
         {/* The tail is deliberately not folded — see supply.py. Every name on a
             vendor list is somebody with a phone number. */}
+        <GroupFilter label="Vendor group" value={groupFilter.group}
+                     onChange={groupFilter.setGroup} options={groupFilter.options}
+                     show={groupFilter.show} />
         <CompanyFilter options={vendorCompany.options} value={vendorCompany.company}
                        onChange={vendorCompany.setCompany} show={vendorCompany.show} />
         <ul className="dist">

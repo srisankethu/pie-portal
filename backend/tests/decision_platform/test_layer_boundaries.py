@@ -111,9 +111,10 @@ _APP = pathlib.Path(__file__).resolve().parents[2] / "app"
 #:                    produce one that is indistinguishable from a decoded
 #:                    one and defensible in exactly the same words.
 DETERMINISTIC = ("attributes", "attribution", "commercial", "context",
-                 "decoding", "domain", "enquiry", "identity", "ingestion",
-                 "master_health", "messaging", "monetization", "observability",
-                 "retrieval", "signals", "sso", "state", "trust")
+                 "decoding", "domain", "enquiry", "groups", "identity",
+                 "ingestion", "master_health", "messaging", "monetization",
+                 "observability", "retrieval", "signals", "sso", "state",
+                 "trust")
 
 #: The packages deliberately *outside* ``DETERMINISTIC``, each with the reason
 #: it is out. A package silently omitted from an opt-in list is the same defect

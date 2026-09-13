@@ -120,6 +120,14 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("vendor_payment_terms", models.VendorPaymentTerm),
     ("vendor_msme_statuses", models.VendorMsmeStatus),
     ("item_category_overrides", models.ItemCategoryOverride),
+    # How this business segments its own counterparties and catalogue — the
+    # groups somebody drew and who they put in each. Squarely in this section
+    # and not a close call: no source system holds them, a full re-sync rebuilds
+    # nothing here, and they are the shape of the book rather than its contents.
+    # An export that handed back every customer and no record of which were the
+    # PSU accounts would return the rows and keep the thinking.
+    ("entity_groups", models.EntityGroup),
+    ("entity_group_members", models.EntityGroupMember),
     # The customer side of the same rule. Zoho holds no credit limit on a
     # contact, and its salesperson field is derived — the sync rewrites it from
     # whoever was on the last invoice. Both of these are the typed decision

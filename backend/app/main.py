@@ -27,8 +27,8 @@ from .routers import (accounts, admin, ai_settings, api_keys, approvals,
                       onboarding, operator, organizations, outcomes,
                       platform_auth,
                       quote, resolve,
-                      insight, monetization, quote_intelligence, quote_support,
-                      retrospective, trust)
+                      groups, insight, monetization, quote_intelligence,
+                      quote_support, retrospective, trust)
 
 # One place decides what this process logs and where it goes — level from
 # LOG_LEVEL, a rotating file when LOG_FILE names one, and the per-run
@@ -345,6 +345,12 @@ app.include_router(outcomes.router,
 # a gate and this note is what flagged it once).
 app.include_router(quote_support.router)
 app.include_router(accounts.router)
+# Ungated, like the account directory beside it and for the same reason: a group
+# is how somebody narrows a screen they already have, so gating it behind the
+# paid decision layer would take the filter off the free Quote Desk's own
+# directories while leaving the directories there. It computes no number and
+# reads no decision, which is the line `quote_support` above is left ungated on.
+app.include_router(groups.router)
 app.include_router(data_status.router)
 app.include_router(commercial.router)
 app.include_router(quote_intelligence.router)

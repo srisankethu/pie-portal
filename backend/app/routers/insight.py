@@ -31,7 +31,7 @@ from ..authz import (Principal, can_view_customer, current_principal,
                      decision_queue_scope, require_manager_or_owner,
                      require_owner)
 from ..repositories import DecisionRepository
-from .. import approvals, clock, memberships
+from .. import approvals, clock, groups, memberships
 from ..commercial import (economics, jurisdiction, ownership,
                           policy, portfolio, principals, quote_service)
 from ..commercial.compute import compute_for
@@ -63,6 +63,7 @@ from ..commercial.insight import series
 from ..state.engine import latest_as_of, load as load_state
 from ..state.reducers.trade import CUSTOMER_MONTH
 from ..state import engine as state_engine
+from . import group_scope
 # The direction spellings belong to the reducer that writes them, both here
 # and in `insight/cashflow`. Two string literals would be two places to
 # drift from one fold.
@@ -600,13 +601,35 @@ def revenue_composition(
         dimension: str = Query("customer", pattern="^(customer|product)$"),
         measure: str = Query("revenue", pattern="^(revenue|orders)$"),
         months: int = Query(12, ge=3, le=24),
+        group: Optional[groups.ResolvedGroup] = Depends(group_scope.customer_group),
+        items: Optional[groups.ResolvedGroup] =
+        Depends(group_scope.item_group_as_items),
         principal: Principal = Depends(current_principal),
         session: Session = Depends(get_session)) -> dict:
     """Revenue composition and order flow — one chart, two parameters.
 
     Neither measure is margin, so this is visible to every role.
+
+    **Two group filters, and they are not the two dimensions.** ``group`` is a
+    set of customers and ``items`` a set of items; either may be combined with
+    either ``dimension``, because the interesting questions cross them — "which
+    customers buy the Kennametal line" is ``dimension=customer`` with an item
+    group, and "what does the aerospace book buy" is ``dimension=product`` with a
+    customer group. Two parameters rather than one that changes meaning with the
+    dimension, for the reason ``load_snapshot`` keeps its bounds separate: one
+    argument that narrows different things depending on another argument is the
+    shape that was wrong there.
+
+    The bounds are passed to the snapshot, so the composition is recomputed
+    within the filtered lines rather than drawn from the whole book and trimmed.
+    A share of revenue means nothing unless its denominator moved too.
     """
-    _org, snapshot, th = _context(session, principal)
+    bound: dict[str, Any] = {}
+    if group is not None:
+        bound["sales_for_customers"] = group.entity_ids
+    if items is not None:
+        bound["sales_for_products"] = items.entity_ids
+    _org, snapshot, th = _context(session, principal, **bound)
     as_of = _as_of(snapshot)
     if as_of is None:
         return _no_data(th, "the revenue mix")
@@ -616,8 +639,12 @@ def revenue_composition(
     result = composition.build(snapshot.sales, names, as_of,
                                dimension=dimension, measure=measure, months=months)
     return _envelope(result, th=th, as_of=as_of.isoformat(),
+                     group=group_scope.ref(group),
+                     items=group_scope.ref(items),
                      empty_reason=(None if result["series"] else
-                                   "Nothing traded in this window."))
+                                   (group_scope.empty_note(group, "sales history")
+                                    or group_scope.empty_note(items, "sales history")
+                                    or "Nothing traded in this window.")))
 
 
 # ── cadence: the buying rhythm ──────────────────────────────────────────────
@@ -2215,22 +2242,44 @@ def _item_cost_ranges(session: Session, org: str) -> list[supply.ItemCostRange]:
 
 
 @router.get("/supply")
-def supplier_position(principal: Principal = Depends(require_manager_or_owner),
-                      session: Session = Depends(get_session)) -> dict:
+def supplier_position(
+        group: Optional[groups.ResolvedGroup] = Depends(group_scope.vendor_group),
+        principal: Principal = Depends(require_manager_or_owner),
+        session: Session = Depends(get_session)) -> dict:
     """Suppliers, open orders and measured lead times.
 
     Manager and above: supplier spend is purchase cost by another name, and
     the platform does not put cost in front of a salesperson.
+
+    **``group`` narrows to a set of suppliers**, and every figure below is then
+    computed within it — concentration is concentration *inside the group*, not
+    the book's concentration with the other rows hidden. That distinction is
+    what makes this a server-side filter rather than one in the browser: the
+    company filter beside it hides rows and deliberately never touches a total,
+    because a total it re-scoped would be making a different claim than the one
+    the server computed. Re-computing here is how this one earns the right to.
     """
     org, _snapshot, th = _labels_only(session, principal)
     as_of = clock.today(th.timezone)
 
     vendors = {v.vendor_id: v for v in session.scalars(
         select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
+    if group is not None:
+        allowed = set(groups.narrow(list(vendors), group))
+        vendors = {vid: v for vid, v in vendors.items() if vid in allowed}
     rows = session.scalars(
         select(models.PurchaseOrderDoc)
         .where(models.PurchaseOrderDoc.organization_id == org)).all()
+    if group is not None:
+        # An order whose supplier is not in the group is not this answer's, and
+        # neither is one whose supplier the vendor pull never returned: the
+        # branch below names those honestly when the whole book is in view, and
+        # "not in the contact list" cannot be said to be inside a group.
+        rows = [po for po in rows if po.vendor_id in vendors]
     if not rows:
+        if (note := group_scope.empty_note(group, "purchase order")) is not None:
+            return _envelope({"suppliers": [], "open_orders": []}, th=th,
+                             empty_reason=note, group=group_scope.ref(group))
         return _no_data(th, "vendor orders",
                         missing="purchase order")
 
@@ -2274,7 +2323,8 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
     companies.stamp(result.get("suppliers") or [], vendors, by="vendor_id")
     companies.stamp(result.get("open_orders") or [], vendors, by="vendor_id")
     result["sources_differ"] = companies.count > 1
-    return _envelope(result, th=th, empty_reason=None)
+    return _envelope(result, th=th, empty_reason=None,
+                     group=group_scope.ref(group))
 
 
 # ── relationship bonds ──────────────────────────────────────────────────────
@@ -3413,9 +3463,10 @@ def _exposures(session: Session, org: str,
         limits)
 
 
-def _customers_in_scope(session: Session,
-                        principal: Principal) -> tuple[list[models.Customer],
-                                                       dict[str, ownership.Owner]]:
+def _customers_in_scope(session: Session, principal: Principal, *,
+                        group: Optional[groups.ResolvedGroup] = None,
+                        ) -> tuple[list[models.Customer],
+                                   dict[str, ownership.Owner]]:
     """The accounts this person may act on, and who owns each of them.
 
     A salesperson sees their own book and no further — the same scope the
@@ -3426,6 +3477,13 @@ def _customers_in_scope(session: Session,
     Scoped through ``ownership.owners`` rather than by reading
     ``assigned_user_id``: an account handed over by hand lives in the typed
     table, and a filter on the column would leave it in the wrong person's book.
+
+    ``group`` narrows further, **after** the ownership scope and through
+    ``groups.narrow``, so the order cannot be got wrong: a group applied first
+    and then used as the scope would be a label deciding what somebody may see.
+    ``owners`` is returned whole rather than narrowed with the rows — callers
+    index into it by the ids they kept, and trimming a lookup table to match a
+    filtered list is work that only creates a way for the two to disagree.
     """
     org = principal.organization_id
     rows = session.scalars(
@@ -3436,12 +3494,17 @@ def _customers_in_scope(session: Session,
         rows = [c for c in rows
                 if (owner := owners.get(c.customer_id)) is not None
                 and owner.user_id == principal.user_id]
+    if group is not None:
+        allowed = set(groups.narrow([c.customer_id for c in rows], group))
+        rows = [c for c in rows if c.customer_id in allowed]
     return list(rows), owners
 
 
 @router.get("/credit")
-def credit_exposure(principal: Principal = Depends(current_principal),
-                    session: Session = Depends(get_session)) -> dict:
+def credit_exposure(
+        group: Optional[groups.ResolvedGroup] = Depends(group_scope.customer_group),
+        principal: Principal = Depends(current_principal),
+        session: Session = Depends(get_session)) -> dict:
     """What every account owes against the limit it was given, and whose it is.
 
     Every customer, not only those over their limit and not only those with a
@@ -3453,7 +3516,7 @@ def credit_exposure(principal: Principal = Depends(current_principal),
     is "who do I stop shipping to, and who calls them", and that is a rank.
     """
     org, _snapshot, th = _labels_only(session, principal)
-    customers, owners = _customers_in_scope(session, principal)
+    customers, owners = _customers_in_scope(session, principal, group=group)
     if not customers:
         return _envelope(
             {"accounts": [], "statuses": credit.STATUSES,
@@ -3461,13 +3524,14 @@ def credit_exposure(principal: Principal = Depends(current_principal),
              "max_limit": float(credit.MAX_LIMIT),
              "owner_sources": ownership.SOURCE_LABELS,
              "may_set": principal.is_manager_or_owner, "people": []},
-            th=th,
+            th=th, group=group_scope.ref(group),
             empty_reason=(
-                "No customers are in your book yet, so there is nothing to hold "
-                "a balance against."
-                if principal.is_salesperson else
-                "No customers have synced yet, so there is nothing to hold a "
-                "balance against. Connect a Zoho company and run a sync."))
+                group_scope.empty_note(group, "account")
+                or ("No customers are in your book yet, so there is nothing to "
+                    "hold a balance against."
+                    if principal.is_salesperson else
+                    "No customers have synced yet, so there is nothing to hold a "
+                    "balance against. Connect a Zoho company and run a sync.")))
 
     exposures = _exposures(session, org, customers)
     limits = _credit_limits(session, org)
@@ -3532,6 +3596,7 @@ def credit_exposure(principal: Principal = Depends(current_principal),
                     if principal.is_manager_or_owner else [])},
         th=th,
         sources_differ=companies.count > 1,
+        group=group_scope.ref(group),
         empty_reason=None)
 
 
@@ -4023,10 +4088,27 @@ def principal_schemes(principal: Principal = Depends(require_manager_or_owner),
 
 @router.get("/catalogue")
 def catalogue_lines(unplaced_only: bool = Query(True),
+                    group: Optional[groups.ResolvedGroup] =
+                    Depends(group_scope.item_group),
                     principal: Principal = Depends(require_manager_or_owner),
                     session: Session = Depends(get_session)) -> dict:
-    """Every item's line, where it came from, and what it is worth placing."""
-    org, snapshot, th = _context(session, principal)
+    """Every item's line, where it came from, and what it is worth placing.
+
+    **``group`` narrows to a set of items**, and the coverage figures below are
+    then that group's — "of the items in this group, what share of the revenue
+    is unplaced". That is the whole reason the snapshot is bounded by
+    ``sales_for_products`` rather than filtered afterwards: the denominator has
+    to move with the numerator, and a percentage computed over the whole book
+    and printed under a group's name is the shape of wrong number that comes
+    with an explanation attached.
+
+    The bound is safe *here* in a way it would not be on a customer screen —
+    see ``load_snapshot``, which spells out what a sales-by-product bound does
+    to a per-customer figure. Nothing on this screen is per customer.
+    """
+    org, snapshot, th = _context(
+        session, principal,
+        **({"sales_for_products": group.entity_ids} if group is not None else {}))
     principal_of = _principal_of_product(session, org)
     vendor_of = _principal_ids(principal_of)
     lines_of = _category_of(session, org, th, vendor_of)
@@ -4040,8 +4122,16 @@ def catalogue_lines(unplaced_only: bool = Query(True),
     for row in snapshot.sales:
         revenue[row.product_id] = revenue.get(row.product_id, 0.0) + float(row.line_revenue)
 
-    products = session.scalars(
-        select(models.Product).where(models.Product.organization_id == org)).all()
+    products = list(session.scalars(
+        select(models.Product).where(models.Product.organization_id == org)).all())
+    if group is not None:
+        # The rows and the coverage denominator have to be the same set. The
+        # snapshot above is already bounded to the group; filtering the item
+        # list here is the other half, and leaving it out would list the whole
+        # catalogue against revenue counted only for the group's part of it.
+        allowed = set(groups.narrow([p.product_id for p in products], group))
+        products = [p for p in products if p.product_id in allowed]
+        lines_of = {pid: r for pid, r in lines_of.items() if pid in allowed}
 
     rows = []
     for p in products:
@@ -4093,10 +4183,12 @@ def catalogue_lines(unplaced_only: bool = Query(True),
          "unplaced_revenue_share": (round(unplaced_revenue / total_revenue, 4)
                                     if total_revenue else None)},
         th=th,
+        group=group_scope.ref(group),
         empty_reason=(None if rows else
-                      ("Every item that has traded is placed in a line."
-                       if unplaced_only else
-                       "No items have been synced yet.")))
+                      (group_scope.empty_note(group, "item")
+                       or ("Every item that has traded is placed in a line."
+                           if unplaced_only else
+                           "No items have been synced yet."))))
 
 
 class ItemLineIn(BaseModel):

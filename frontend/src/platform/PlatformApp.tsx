@@ -99,6 +99,8 @@ const DataScreen = lazy(() =>
   import("./DataScreen").then((m) => ({ default: m.DataScreen })));
 const CatalogScreen = lazy(() =>
   import("./CatalogScreen").then((m) => ({ default: m.CatalogScreen })));
+const GroupsScreen = lazy(() =>
+  import("./GroupsScreen").then((m) => ({ default: m.GroupsScreen })));
 const CustomerCommercial = lazy(() =>
   import("./CommercialScreens").then((m) => ({ default: m.CustomerCommercial })));
 const CustomerItemScreen = lazy(() =>
@@ -1259,6 +1261,7 @@ export default function PlatformApp() {
               <Route path={PATH.data} element={<DataScreen session={session} onSynced={load} />} />
               <Route path={PATH.decodedCatalog} element={<CatalogScreen session={session} />} />
               <Route path={PATH.catalogue} element={<CatalogueScreen session={session} />} />
+              <Route path={PATH.groups} element={<GroupsScreen session={session} />} />
               <Route path={PATH.identity} element={<IdentityScreen token={session.token} />} />
               <Route path={PATH.observability}
                      element={<ObservabilityDashboard session={session} />} />

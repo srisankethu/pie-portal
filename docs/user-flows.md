@@ -1813,6 +1813,12 @@ shims, are mounted but are not flows and are not listed here.
 | POST | `/api/v1/enquiries/{inbound_line_id}/disposition` | signed-in | Decide or correct a line (supersede-not-mutate); returns written flag so re-runnable callers can tell a write from an idempotent no-op; 400 for… |
 | GET | `/api/v1/entitlements` | signed-in | Plan, effective plan, trial view (incl. ended state with ended_reason), features map, loses_on_expiry, locked, pending_request |
 | POST | `/api/v1/entitlements` | owner | Record a PlanChangeRequest (grants nothing; operator decides via CLI); 400 unknown plan, 409 same-plan or duplicate open request; returns whole… |
+| GET | `/api/v1/groups` | signed-in | Every group of customers, vendors or items this reader may see, with member counts and the kinds; RESTRICTED groups absent for a salesperson |
+| POST | `/api/v1/groups` | manager/owner | Draw a new, empty roster group; slug derived from the name when omitted; 422 on a taken slug or a name with no addressable form |
+| GET | `/api/v1/groups/{entity_kind}/{slug}` | signed-in | One group with its roster resolved to names; 404 (never 403) for a group this reader may not see |
+| PATCH | `/api/v1/groups/{entity_kind}/{slug}` | manager/owner | Rename, re-describe, restrict or archive; never a membership change, so it never moves the group's version |
+| POST | `/api/v1/groups/{entity_kind}/{slug}/members` | manager/owner | Add entities and restamp; idempotent; 422 refuses the whole call on an id that is not this workspace's entity of that kind |
+| DELETE | `/api/v1/groups/{entity_kind}/{slug}/members/{entity_id}` | manager/owner | Remove one entity and restamp; 404 when it was not a member |
 | GET | `/api/v1/identity/settings/policy` | manager/owner | Auto-link flags per kind + can_manage + the explanatory note (declared before /{kind} so it is not swallowed as kind='settings') |
 | PATCH | `/api/v1/identity/settings/policy` | owner | Toggle auto_link_customers / auto_link_items |
 | GET | `/api/v1/identity/{kind}` | manager/owner | Active identities with their connector records, search q, linked_only filter, pending_suggestions count, can_manage |

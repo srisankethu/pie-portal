@@ -393,10 +393,79 @@ export interface Sourced {
   sources_differ?: boolean;
 }
 
+/** A group this row belongs to, as a directory renders it: a chip, and the slug
+ *  that would narrow the screen to it. The name is what a person reads; the
+ *  slug is what `?group=` carries, and they are separate so a rename does not
+ *  break a link. */
+export interface GroupChip {
+  slug: string;
+  name: string;
+}
+
+/** What may be grouped. The stored value for items says PRODUCT — the same
+ *  split `Product` already lives with — and `entity_label` carries the word a
+ *  screen shows, resolved server-side so the two cannot drift. */
+export type GroupKind = "CUSTOMER" | "VENDOR" | "PRODUCT";
+
+/** One group's definition, as the list and the authoring screen read it.
+ *
+ *  `group_version` is the definition's content hash, and it is on every
+ *  representation of a group rather than only on a computed answer: a reader
+ *  comparing two figures needs to be able to see that the group moved between
+ *  them, and this screen is where somebody looks when they disagree. */
+export interface EntityGroup {
+  slug: string;
+  name: string;
+  description: string | null;
+  entity_kind: GroupKind;
+  entity_label: string;
+  membership: string;
+  visibility: "OPERATIONAL" | "RESTRICTED";
+  group_version: string;
+  members: number;
+  created_by: string | null;
+  archived: boolean;
+  updated_at: string | null;
+}
+
+/** One member of a group. `name` is null when the entity is no longer in the
+ *  books — named honestly rather than dropped, because a roster that quietly
+ *  shrinks is a definition that changed without anybody deciding to. */
+export interface GroupMember {
+  entity_id: string;
+  name: string | null;
+}
+
+export interface GroupDetail extends EntityGroup {
+  roster: GroupMember[];
+  may_edit: boolean;
+}
+
+export interface GroupList {
+  groups: EntityGroup[];
+  kinds: { value: GroupKind; label: string }[];
+  may_edit: boolean;
+  empty_reason: string | null;
+}
+
+/** The group a scoped answer was computed over, carried beside
+ *  `thresholds_version`. Null when no group was asked for — which is the whole
+ *  book, a different claim from a group that happens to hold everything. */
+export interface GroupRef {
+  slug: string;
+  name: string;
+  entity_kind: GroupKind;
+  group_version: string;
+  members: number;
+}
+
 export interface Account extends Sourced {
   customer_id: string;
   name: string;
   status: string;
+  /** Which groups this account is in. Restricted groups are absent for a
+   *  salesperson — withheld server-side, not hidden here. */
+  groups?: GroupChip[];
   assigned_user_id: string | null;
   /** The assignee's name, resolved server-side. Null means unassigned — the
    *  client does not resolve this itself because it would need the user

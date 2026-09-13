@@ -145,7 +145,7 @@ def test_the_stamp_markers_name_a_kind_the_registry_understands():
 
 
 def test_the_expected_stamped_tables_are_all_still_marked():
-    """The ten tables that carry a threshold stamp, pinned by name.
+    """The eleven tables that carry a threshold stamp, pinned by name.
 
     Pinned so that *removing* a marker fails too. The check above only notices a
     column nobody classified; silently deleting an ``info=`` would leave a
@@ -158,12 +158,22 @@ def test_the_expected_stamped_tables_are_all_still_marked():
     stamp, reading the kind off the value's own prefix. Both were stamped and
     unmarked, so the values behind those stamps were not being recorded — an
     audit trail of hashes, which is the state the registry exists to end.
+
+    ``entity_groups`` is the eleventh and the odd one, worth naming as such so a
+    reader does not take the whole list for one kind of thing. The other ten
+    stamp a **computed row** with the policy that judged it. A group's ``gr_``
+    version sits on the *definition* — the row is the policy. It is marked for
+    the same reason all the same: the registry's job is holding the pre-image of
+    a hash somebody will later have to dereference, and a group's is the harder
+    case rather than the easier one. A threshold version can be re-derived from
+    a policy row; a group's roster is superseded in place, so the membership
+    that produced a figure exists nowhere else once it has been edited.
     """
     assert STAMPED_TABLES == {
         "customer_item_metrics", "signals", "approval_requests",
         "quote_decisions", "outcome_snapshots", "value_events",
         "evaluation_baselines", "business_states",
-        "quote_documents", "audit_entries",
+        "quote_documents", "audit_entries", "entity_groups",
     }
 
 

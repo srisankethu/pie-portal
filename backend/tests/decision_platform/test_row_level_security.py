@@ -444,6 +444,15 @@ EXPECTED_POLICIED = {
     # because nothing downstream is watching them. Listed in the same commit
     # that creates the table.
     "quote_form_drafts",
+    # l1grp — how this business segments its own book: the groups somebody drew
+    # over customers, vendors and items, and who is in each. A cross-tenant read
+    # is both halves of a leak — the roster names a competitor's customers and
+    # suppliers outright, and the group names say which of them they treat as
+    # strategic, which is the part no export of the rows themselves would give
+    # away. Listed in the same commit that creates the tables, and policied by
+    # that same revision rather than a later `*rls` one: a table created today
+    # has no window in which it is uncovered.
+    "entity_groups", "entity_group_members",
 }
 
 #: Tenant-scoped and deliberately uncovered — and after `d3rls` there is only

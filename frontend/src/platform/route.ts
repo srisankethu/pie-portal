@@ -58,6 +58,10 @@ export type Screen =
   | "targets"
   /** Which line of the business each item belongs to. */
   | "catalogue"
+  /** The sets somebody drew over customers, vendors and items, and who is in
+   *  each. Authored here; used as `?group=` on the directories and the
+   *  analyses, where every figure behind one is recomputed inside it. */
+  | "groups"
   /** The decoded nomenclature catalogue resolution runs against: whether one
    *  exists, which pack and ruleset checksum built it, and the control that
    *  rebuilds it. Distinct from `catalogue` above and deliberately not named
@@ -155,6 +159,7 @@ export const PATH: Record<Screen, string> = {
   dependency: "/dependency",
   targets: "/targets",
   catalogue: "/item-lines",
+  groups: "/groups",
   decodedCatalog: "/decoded-catalogue",
   quoteOutcomes: "/quote-outcomes",
   unrecordedQuotes: "/unanswered-quotes",
@@ -281,6 +286,7 @@ export function vizPath(route: string): string {
     stock: "stock",
     gmroi: "gmroi",
     supply: "supply",
+    groups: "groups",
     "quote-outcomes": "quoteOutcomes",
     "unanswered-quotes": "unrecordedQuotes",
     // The two names the *needs-you* tiles carry. They were missing, and the

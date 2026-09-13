@@ -5,7 +5,8 @@ import useMediaQuery from "@mui/material/useMediaQuery";
 import { ThemeProvider } from "@mui/material/styles";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { SnackbarProvider } from "notistack";
-import { HashRouter } from "react-router-dom";
+import { HashRouter, useLocation } from "react-router-dom";
+import { Analytics } from "@vercel/analytics/react";
 
 // Self-hosted, not the Google Fonts CDN. The <link> in index.html failed on any
 // network that cannot reach fonts.gstatic.com — an air-gapped shop floor, a
@@ -21,6 +22,7 @@ import "@fontsource/barlow-condensed/600.css";
 import "@fontsource/barlow-condensed/700.css";
 
 import PlatformApp from "./platform/PlatformApp";
+import { routeFor } from "./platform/route";
 import theme from "./theme";
 // After the theme: `CssBaseline` emits the design tokens, and these rules read
 // them. Import order decides nothing about custom properties at runtime, but it
@@ -82,6 +84,35 @@ function Toasts({ children }: { children: React.ReactNode }) {
   );
 }
 
+/** Vercel Web Analytics, told where it is.
+ *
+ * `<Analytics />` with no props tracks pageviews itself: the injected script
+ * watches history and reads `window.location.pathname`. That is the right
+ * default almost everywhere and the wrong one here, because this is a
+ * `HashRouter` — that pathname is `/` on every screen in the product and the
+ * address is in the fragment, which the script does not read. Left alone it
+ * would report one page, called `/`, for the whole app — and it would look
+ * like it was working.
+ *
+ * Passing `route` and `path` is the way out: supplying either turns the
+ * script's own tracking off, and the component reports the pair whenever it
+ * changes. `route` is the pattern, so a thousand accounts aggregate onto one
+ * row instead of a row each (see `routeFor`); `path` is the address actually
+ * visited. That is the same split the Next adapter sends.
+ *
+ * This covers `index.html` — the landing and every signed-in screen. It does
+ * NOT cover the prerendered `/erp/<slug>` documents: `prerender.mjs` strips
+ * the module script from those on purpose, because `createRoot().render()`
+ * would throw their baked markup away and draw the landing over it. Nothing
+ * mounts there, so nothing reports. Measuring those pages means putting the
+ * analytics script tag in them directly, which is a decision about those
+ * documents rather than about this one.
+ */
+function Pageviews() {
+  const { pathname } = useLocation();
+  return <Analytics route={routeFor(pathname)} path={pathname} />;
+}
+
 createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <ThemeProvider theme={theme}>
@@ -97,6 +128,9 @@ createRoot(document.getElementById("root")!).render(
               with its own shell and its own login. The builder is a route now,
               so this is just the app. */}
           <HashRouter>
+            {/* Inside the router, because that is the only place the route it
+                reports can be read from. */}
+            <Pageviews />
             <PlatformApp />
           </HashRouter>
         </Toasts>

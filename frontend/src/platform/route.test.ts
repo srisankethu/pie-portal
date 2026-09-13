@@ -18,7 +18,7 @@ import { describe, expect, it } from "vitest";
 import dailySource from "../../../backend/app/commercial/insight/daily.py?raw";
 
 import type { Screen } from "./route";
-import { LEGACY_ACCOUNTS, PATH, PATTERN, pathFor, screenAt, vizPath } from "./route";
+import { LEGACY_ACCOUNTS, PATH, PATTERN, pathFor, routeFor, screenAt, vizPath } from "./route";
 
 describe("pathFor", () => {
   it("returns the plain path for a screen that carries no id", () => {
@@ -155,5 +155,57 @@ describe("vizPath", () => {
     const dead = [...emitted]
       .filter((r) => !deliberatelyHome.has(r) && vizPath(r) === PATH.home);
     expect(dead).toEqual([]);
+  });
+});
+
+/** What Web Analytics is told a pageview was.
+ *
+ * The failure this guards is silent in exactly the way the rest of this file
+ * is about: an id left in the route still reports a pageview, still shows up
+ * on the dashboard, and still reads as working — it just spreads one screen
+ * across a row per customer, so the screen the desk lives on looks unused.
+ */
+describe("routeFor", () => {
+  it("reports a parameterised screen as its pattern, not its path", () => {
+    expect(routeFor("/decision/D-91")).toBe(PATTERN.detail);
+    expect(routeFor("/account/CUST-1")).toBe(PATTERN.account);
+    expect(routeFor("/quotes/QB-0005")).toBe(PATTERN.quote);
+  });
+
+  it("does not let a shorter pattern shadow a longer one", () => {
+    // The same ordering bug `screenAt` is written against: `/account/:id`
+    // matches the head of a customer-item URL, and first-match-wins would
+    // collapse every item pair onto the account row.
+    expect(routeFor("/account/CUST-1/item/ITEM-9")).toBe(PATTERN.customerItem);
+  });
+
+  it("keeps an id out of the route entirely", () => {
+    // The point of the pattern: two accounts are one row.
+    expect(routeFor("/account/CUST-1")).toBe(routeFor("/account/CUST-2"));
+    expect(routeFor("/account/CUST-1")).not.toContain("CUST-1");
+  });
+
+  it("reports a parameterless screen as itself", () => {
+    for (const path of new Set(Object.values(PATH))) {
+      expect(routeFor(path)).toBe(path);
+    }
+  });
+
+  it("sends anything unrecognised where the catch-all route sends it", () => {
+    // Not an assertion about these strings in particular — it is that an
+    // unknown path reports a real route rather than itself, so a mistyped or
+    // stale link cannot mint a new row on the dashboard.
+    expect(routeFor("/not-a-screen")).toBe(PATH.home);
+    expect(routeFor(LEGACY_ACCOUNTS)).toBe(PATH.home);
+  });
+
+  it("agrees with screenAt on which paths are parameterised", () => {
+    // Two readers of one table. If `PARAMETERISED` grows a pattern and only
+    // one of them is updated, this fails rather than drifting quietly.
+    for (const pattern of Object.values(PATTERN)) {
+      const sample = pattern.replace(/:\w+/g, "x");
+      expect(routeFor(sample)).toBe(pattern);
+      expect(screenAt(sample)).not.toBe("home");
+    }
   });
 });

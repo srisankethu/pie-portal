@@ -2231,7 +2231,7 @@ def supplier_position(principal: Principal = Depends(require_manager_or_owner),
         select(models.PurchaseOrderDoc)
         .where(models.PurchaseOrderDoc.organization_id == org)).all()
     if not rows:
-        return _no_data(th, "supplier orders",
+        return _no_data(th, "vendor orders",
                         missing="purchase order")
 
     orders = [
@@ -2565,10 +2565,10 @@ def _why_no_vendor_bonds(session: Session, org: str, lines: list) -> Optional[st
         select(func.count()).select_from(models.CostRecord)
         .where(models.CostRecord.organization_id == org)) or 0
     if total == 0:
-        return ("No supplier bill has been synced yet, so there is no purchase "
+        return ("No vendor bill has been synced yet, so there is no purchase "
                 "relationship to measure.")
     return (f"{total} bill line(s) are on record, but none of them names a "
-            "supplier. Cost lines only started carrying their vendor recently — "
+            "vendor. Cost lines only started carrying their vendor recently — "
             "re-run a full sync and this fills in.")
 
 

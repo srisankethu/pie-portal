@@ -42,7 +42,7 @@ import CommandPalette from "./CommandPalette";
 import TodayScreen from "./today/TodayScreen";
 import DestinationLayout from "./DestinationLayout";
 import EvidenceLibrary from "./EvidenceLibrary";
-import { MONEY_TABS, SETUP_TABS } from "./destinations";
+import { ACCOUNT_TABS, MONEY_TABS, SETUP_TABS } from "./destinations";
 import { SetupChecklist } from "./SetupChecklist";
 import { TrialNotice } from "./TrialNotice";
 import { SignInCard } from "../SignInCard";
@@ -1099,7 +1099,7 @@ export default function PlatformApp() {
               }
             />
 
-            {/* ── CUSTOMERS ──
+            {/* ── ACCOUNTS ──
                 "Customers" and "Accounts" were two nav items for one thing, and
                 the names did not say which held what. One screen now, and the
                 merge is inside the screen rather than a stack of the two old
@@ -1110,11 +1110,22 @@ export default function PlatformApp() {
                 account — which is a navigation, so it lands in the URL and Back
                 returns to the directory.
 
-                Two paths, one screen: the picker, and one account. */}
-            {[PATH.customer, PATTERN.account].map((path) => (
+                And then Accounts was one screen, which made a destination
+                named after the counterparties hold only the half that buys.
+                The other three tabs are screens that already existed and were
+                reachable only through the Evidence library: the vendor side,
+                and the two views that read both sides at once. Same layout
+                route as Money and Setup — each tab keeps its own address, so
+                every link already sent to somebody still works. */}
+            <Route element={
+              <DestinationLayout
+                title="Accounts"
+                sub="Both sides of the book: who buys from us, who we buy from, and what the whole thing leans on."
+                tabs={ACCOUNT_TABS} current={screen} ability={ability}
+              />
+            }>
               <Route
-                key={path}
-                path={path}
+                path={PATH.customer}
                 element={
                   <CustomerRoute
                     session={session}
@@ -1125,7 +1136,31 @@ export default function PlatformApp() {
                   />
                 }
               />
-            ))}
+              <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
+              <Route path={PATH.bonds} element={<BondsScreen session={session} />} />
+              <Route path={PATH.dependency} element={<DependencyScreen session={session} />} />
+            </Route>
+
+            {/* One account — outside the strip above, and so is the item page
+                below it. A tab row belongs to a place somebody is choosing
+                within, and this is what got chosen: the page is the account, it
+                carries that account's name as its heading and its own way back
+                to the directory, and an "Accounts" title above the name would
+                be the shell announcing where you are to somebody already
+                reading it. The nav still marks Accounts current — `covers` in
+                `destinations.ts` answers that, not this route. */}
+            <Route
+              path={PATTERN.account}
+              element={
+                <CustomerRoute
+                  session={session}
+                  details={details}
+                  openPath={detailPath}
+                  onOpened={recordView}
+                  onNavigate={goViz}
+                />
+              }
+            />
 
             {/* ── CUSTOMER x ITEM (the grain that names what is eroding) ── */}
             <Route path={PATTERN.customerItem} element={<CustomerItemRoute session={session} />} />
@@ -1176,10 +1211,7 @@ export default function PlatformApp() {
             </Route>
             <Route path={PATH.stock} element={<StockScreen session={session} />} />
             <Route path={PATH.gmroi} element={<GmroiScreen session={session} />} />
-            <Route path={PATH.supply} element={<SupplyScreen session={session} />} />
-            <Route path={PATH.bonds} element={<BondsScreen session={session} />} />
             <Route path={PATH.mix} element={<MixScreen session={session} onNavigate={goViz} />} />
-            <Route path={PATH.dependency} element={<DependencyScreen session={session} />} />
             <Route path={PATH.targets} element={<TargetWallScreen session={session} />} />
             <Route path={PATH.quoteOutcomes} element={<QuoteOutcomesScreen session={session} />} />
             <Route path={PATH.unrecordedQuotes} element={<UnrecordedQuotesScreen session={session} />} />
@@ -2054,13 +2086,14 @@ function CustomerScreen({
 
     return (
       <div>
-        <div className="dp-head">
-          <h1>Customers</h1>
-          <p>
-            Every account you cover, with what they have actually been doing —
-            then the whole book's movement underneath.
-          </p>
-        </div>
+        {/* A section heading, not the page's. `Accounts` is the page — this
+            screen is the first of its four tabs, and two `h1`s on one document
+            leave a screen reader with two answers to "what is this". */}
+        <SectionHeader
+          level="section"
+          title="Customers"
+          sub="Every account you cover, with what they have actually been doing — then the whole book's movement underneath."
+        />
 
         <div className="acct-controls">
           <input

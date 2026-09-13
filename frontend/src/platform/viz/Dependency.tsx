@@ -84,7 +84,7 @@ export function DependencyScreen({
 
   return (
     <Panel
-      title="Dependency"
+      title="Dependencies"
       question="What this book leans on — at both ends"
       state={stateOf(loading, error, data?.empty_reason as string)}
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
@@ -106,7 +106,7 @@ export function DependencyScreen({
           <strong>{pct(attributed, 0)}</strong> of revenue could be traced to a
           principal ({money(num(attribution.revenue_total) - num(attribution.revenue_attributed))}{" "}
           could not). A sale is attributed through the bills that bought the
-          item, so this fills in after a full sync — until then the supplier
+          item, so this fills in after a full sync — until then the vendor
           shares below are computed over the traced part only.
         </p>
       )}
@@ -127,7 +127,7 @@ export function DependencyScreen({
       <div className="dep-halves">
         {supplierSide && (
           <Side
-            title="Suppliers we lean on"
+            title="Vendors we lean on"
             question="Spend, and the revenue riding on their product"
             rows={vendorRows}
             concentration={(vendors?.concentration as Row) ?? {}}
@@ -327,7 +327,7 @@ function Side({
                 {num(r.sole_source_items) > 0 && (
                   <StatusChip label={`only source for ${num(r.sole_source_items)}`}
                               tone="warn" dense
-                              tip="No other supplier has ever sold us these items. That is not the same as no other supplier existing." />
+                              tip="No other vendor has ever sold us these items. That is not the same as no other vendor existing." />
                 )}
               </span>
 
@@ -385,7 +385,7 @@ function Side({
               : undefined}
             columns={[
               {
-                field: "label", headerName: isVendor ? "Supplier" : "Customer",
+                field: "label", headerName: isVendor ? "Vendor" : "Customer",
                 flex: 1, minWidth: 200, filter: "agTextColumnFilter",
                 cellRenderer: (p: { data: Row }) => (
                   <EntityName name={String(p.data.label)}

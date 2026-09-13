@@ -29,7 +29,7 @@ import { Link as RouterLink } from "react-router-dom";
 
 import type { AppAbility } from "./ability";
 import {
-  DESTINATIONS, MONEY_TABS, SETUP_TABS, visibleEvidence, visibleTabs,
+  ACCOUNT_TABS, DESTINATIONS, MONEY_TABS, SETUP_TABS, visibleEvidence, visibleTabs,
 } from "./destinations";
 import { PATH, pathFor, type Screen } from "./route";
 
@@ -76,6 +76,7 @@ export default function CommandPalette({
       rows.push({ label, to: pathFor(screen), also });
     };
     for (const d of DESTINATIONS) add(d.label, d.screen);
+    for (const t of visibleTabs(ACCOUNT_TABS, ability, isOperator)) add(`Accounts · ${t.label}`, t.screen);
     for (const t of visibleTabs(MONEY_TABS, ability, isOperator)) add(`Money · ${t.label}`, t.screen);
     for (const t of visibleTabs(SETUP_TABS, ability, isOperator)) add(`Setup · ${t.label}`, t.screen);
     add("Evidence — every analysis view", "evidence", "analysis charts patterns");

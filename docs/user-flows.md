@@ -82,7 +82,7 @@ SALES_MANAGER + OWNER.
 | `#/statutory` | MSME watchlist, capture backlog, 194Q | mgmt | Deadlines the tax code sets |
 | `#/stock` | The shelf (`?item=` focus) | all (cost columns mgmt) | What stock costs to keep |
 | `#/gmroi` | Return on stock | mgmt | What each line returns |
-| `#/supply` | Suppliers + open POs | mgmt | Who the book depends on |
+| `#/supply` | Vendors + open POs | mgmt | Who the book depends on |
 | `#/bonds` | Relationship bonds + playback | all (supplier half mgmt) | Who is close, who is drifting |
 | `#/mix` | Product mix grid | all | Which lines each customer takes |
 | `#/dependency` | Both-ends dependency | all (supplier side mgmt) | What the book leans on |
@@ -109,6 +109,17 @@ behind — the analysis screens are the Evidence library, the book screens are
 Money tabs, the setup screens are Setup tabs with an overflow, and
 `#/decisions`, `#/approvals` and `#/unanswered-quotes` are still themselves for
 anybody who wants the whole pile rather than this morning's head of it.
+
+**Accounts is both sides of the book, in four tabs**: Customers (`#/customers`),
+Vendors (`#/supply`, mgmt), Relationships (`#/bonds`) and Dependencies
+(`#/dependency`). It held Customers alone while the vendor side and the two
+views that read both sides at once were reachable only through the Evidence
+library — a destination named after the counterparties that knew about the half
+that buys. Those three cards are still in the library, because a tab is where
+you go knowing you want the vendor side and a card is where you land holding
+the question. `#/account/:id` and the item drill-down below it carry no tab
+strip: the page is the account, and it has its own heading and its own way back
+to the directory.
 
 `vizPath()` in `route.ts` is the single table that turns server-named
 destinations (storyboard beats, weather drills, daily tiles) into these routes;

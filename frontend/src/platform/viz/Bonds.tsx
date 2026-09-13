@@ -84,7 +84,7 @@ const FACETS: [string, string, string][] = [
   ["weight", "Material",
    "Their share of this company's book, saturating at a tenth. Concentration is part of a bond, and part of what makes losing one hurt."],
   ["reliability", "Dependable",
-   "Customers: the share of datable invoices settled by the due date. Suppliers: the share of their orders not left hanging."],
+   "Customers: the share of datable invoices settled by the due date. Vendors: the share of their orders not left hanging."],
 ];
 
 const BAND_TONE: Record<string, "good" | "warn" | "bad" | "neutral"> = {
@@ -124,7 +124,7 @@ function WatchPicker({
         multiple size="small" disableCloseOnSelect
         options={options}
         value={chosen}
-        groupBy={(o) => (o.side === "vendor" ? "Suppliers" : "Customers")}
+        groupBy={(o) => (o.side === "vendor" ? "Vendors" : "Customers")}
         getOptionLabel={(o) => o.label}
         isOptionEqualToValue={(a, b) => a.id === b.id}
         onChange={(_, v) => onChange(v.map((o) => o.id))}
@@ -321,7 +321,7 @@ export function BondsScreen({ session }: { session: PlatformSession }) {
           {supplierSide && (
             <Seg label="Show" value={view} onChange={setView}
                  options={[["both", "Both"], ["customers", "Customers"],
-                           ["suppliers", "Suppliers"]]} />
+                           ["suppliers", "Vendors"]]} />
           )}
           <Seg label="Group" value={group} onChange={setGroup}
                options={[["all", "Together"], ["line", "By line"]]} />
@@ -332,7 +332,7 @@ export function BondsScreen({ session }: { session: PlatformSession }) {
     >
       <p className="viz-headline">
         {counted(shownCustomers, "customer")}
-        {showSuppliers && <>, {counted(shownVendors, "supplier")}</>}
+        {showSuppliers && <>, {counted(shownVendors, "vendor")}</>}
         {" "}scored on five measured facets.{" "}
         {anchored(ledger) > 0 && (
           <><strong>{anchored(ledger)}</strong>{" "}
@@ -433,7 +433,7 @@ export function BondsScreen({ session }: { session: PlatformSession }) {
           never what it means. */}
       {showSuppliers && !shownVendors.length && vendors?.empty_reason != null && (
         <p className="bond-unscored">
-          <strong>No supplier bonds.</strong>{" "}
+          <strong>No vendor bonds.</strong>{" "}
           <span className="viz-muted">{String(vendors.empty_reason)}</span>
         </p>
       )}

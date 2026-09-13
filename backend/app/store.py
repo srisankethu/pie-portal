@@ -669,6 +669,16 @@ class Quote:
     #: Quote-level details, keyed by the organization's field definitions —
     #: ``quote_fields``. Stored as given; which are mandatory is judged there.
     fields: Dict[str, Any] = field(default_factory=dict)
+    #: Whether this is a quote or a form somebody still has open.
+    #:
+    #: False means it came from ``quote_form_drafts``: no number, no reference,
+    #: in no listing, and nothing downstream keys on it until Save promotes it.
+    #: An explicit field rather than something a reader infers from an empty
+    #: ``number``, because the producer is the only thing that knows which
+    #: table answered — a consumer re-deriving it would be guessing, which is
+    #: the mistake CLAUDE.md §1 records against ``_identity_candidate``.
+    #: Defaults True so every quote built any other way is unchanged.
+    saved: bool = True
 
     @property
     def customer_ref(self) -> str:
@@ -747,6 +757,10 @@ class Quote:
         return {
             "id": self.id, "customer": self.customer,
             "customerId": self.customerId, "number": self.number,
+            # Whether a quote exists for this yet. False while somebody has the
+            # form open: the builder shows Save rather than a number, and the
+            # send is refused until it has one.
+            "saved": self.saved,
             # Which company's catalogue answered every line on this quote. On
             # the wire because a resolution is only interpretable against the
             # catalogue that produced it — the screen says which one, rather

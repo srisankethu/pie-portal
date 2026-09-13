@@ -287,6 +287,15 @@ export interface Quote {
    *  lines say for themselves. */
   connectionId: string | null;
   number: string;
+  /** Whether a quote exists for this yet.
+   *
+   *  False while somebody has the form open: pressing "New quote" no longer
+   *  writes anything, so there is no number, nothing on the shared list, and
+   *  nothing for a colleague to find. `number` is empty exactly while this is
+   *  false — but the screens read *this*, because which table answered is
+   *  something only the server knows and a reader inferring it from an empty
+   *  string would be guessing. Save promotes the form and this becomes true. */
+  saved: boolean;
   /** The key any Zoho estimate for this quote is written under. It is what
    *  makes sending twice return the first estimate rather than create a second,
    *  and what a person searches Zoho for when a send fails in a way the screen

@@ -1897,6 +1897,67 @@ class QuoteDraft(Base):
     #: to end. An archived draft is invisible to every read and holds its
     #: number for good.
     archived_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
+    #: The form draft this quote was saved from, when it came through the
+    #: builder. It is the whole of Save's idempotency: a second click, a
+    #: double-submit or a retried request finds this row and returns the quote
+    #: already made rather than minting a second number for the same work.
+    #: Unique, and null for a quote made any other way.
+    form_draft_id: Mapped[Optional[str]] = mapped_column(
+        String(64), unique=True, index=True)
+
+
+class QuoteFormDraft(Base):
+    """A quote form somebody has open, before they have saved it.
+
+    **Not a quote.** It has no number, no sequence and no reference; it is in
+    no listing, no signal, no approval and no export; nothing downstream keys
+    on it. It is the state of one person's open form, which is why it is a
+    table of its own rather than a flag on ``quote_drafts`` — a hidden quote
+    is still a quote, and the number would already have been minted.
+
+    **Why it is on the server at all.** The obvious place for unsaved form
+    state is the browser, and it cannot go there. The builder's work is done
+    server-side — an RFQ is resolved against the decoded catalogue, lines are
+    priced from the connected book, the assessment reads cost — and
+    ``store.Line.to_state`` carries cost while ``to_dict(mgmt)`` withholds it
+    from a salesperson. A browser-held draft would therefore either hand a
+    salesperson the cost of every line (CLAUDE.md §1) or hold a quote with no
+    cost on record, so margin, the floor and the approval gate would all judge
+    it on evidence that is missing — which §1 names as the worse of the two.
+    So the scratch stays here, cost and all, under the same role gate on the
+    way out that every other quote read goes through.
+
+    **Its whole lifecycle is three events.** Created when somebody opens New
+    Quote, updated as they work, and then either promoted to a ``QuoteDraft``
+    (Save) or deleted (Cancel). Nothing else writes it and nothing else reads
+    it. A row that survives its browser tab is collected the next time that
+    person opens a new form — see ``quote_workspace.create_form``.
+
+    ``lines`` is ``store.Line.to_state`` exactly as ``QuoteDraft.lines`` is, so
+    promotion is a copy rather than a conversion and a quote saved from a form
+    is byte-identical to one built the old way.
+    """
+
+    __tablename__ = "quote_form_drafts"
+
+    form_draft_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: Whose form this is. Unlike a draft, which the whole desk shares, an
+    #: unsaved form belongs to the person typing into it: there is nothing for
+    #: a colleague to collaborate on until it has been saved, and a half-typed
+    #: line appearing on somebody else's screen is not collaboration.
+    owner_user_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    customer_id: Mapped[Optional[str]] = mapped_column(String(64))
+    customer_name: Mapped[str] = mapped_column(String(255), default="")
+    #: Decided when the form is opened, for the same reason ``QuoteDraft``
+    #: decides it at creation: every line on one quote resolves against one
+    #: company's catalogue.
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64))
+    lines: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    fields: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
+                                                 onupdate=_now)
 
 
 class QuoteFieldDefinition(Base):

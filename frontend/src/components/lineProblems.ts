@@ -216,6 +216,14 @@ export function blockersFor(
   const n = (count: number, one: string, many: string) =>
     `${count} ${count === 1 ? one : many}`;
 
+  // First, because nothing else about a quote matters until it is one. The
+  // server refuses the send on an unsaved form with the same sentence; this is
+  // what stops the button offering it in the first place, which is the rule
+  // every other blocker here follows.
+  if (!quote.saved) {
+    out.push({ key: "unsaved", text: "the quote has not been saved yet" });
+  }
+
   const unresolved = quote.lines.filter((l) => !l.supplyCode).length;
   if (unresolved) {
     out.push({ key: "unresolved", text: n(unresolved, "line has no item yet", "lines have no item yet") });

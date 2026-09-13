@@ -180,7 +180,13 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
     }
   }
 
-  /** Start a draft and open it.
+  /** Open a blank quote form and go to it. **Nothing is created.**
+   *
+   *  This used to write the row and mint the number on the press, so opening
+   *  the builder and changing your mind left an empty QB-0042 on this list —
+   *  everybody's list — for good, and the number was spent. The form is
+   *  unsaved until somebody presses Save quote in the builder, which is the
+   *  only place a quote is now made.
    *
    *  Normally with no customer: it is chosen in the builder — after the RFQ is
    *  pasted, if that is the order it arrived in — rather than demanded here as
@@ -196,7 +202,7 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
     guard(async () => {
       let q;
       try {
-        q = await api.createQuote(
+        q = await api.createQuoteForm(
           t, forCustomer?.name ?? "", forCustomer?.id, connectionId,
         );
       } catch (e) {

@@ -158,7 +158,11 @@ describe("what a line says is wrong with it", () => {
 
 function quote(over: Partial<Quote> = {}): Quote {
   return {
-    id: "q1", number: "QT-1", customer: "Bharat Forge", customerId: "c1",
+    // Saved, which is what every case below is about. The unsaved form has its
+    // own test at the end: it is a blocker like any other, and a fixture that
+    // left it out would put "not saved yet" in front of all of them.
+    id: "q1", number: "QT-1", saved: true,
+    customer: "Bharat Forge", customerId: "c1",
     lines: [line()], summary: { subtotal: 10000, tax: 1800, taxLabel: "GST",
       taxRate: 0.18, taxBasis: { known: 1, assumed: 0, defaultRate: 0.18 },
       grand: 11800, total: 1, unpriced: 0, atListPrice: 0 },
@@ -172,6 +176,15 @@ function quote(over: Partial<Quote> = {}): Quote {
 describe("what is still stopping the send", () => {
   it("counts nothing on a quote that is ready", () => {
     expect(blockersFor(quote(), {}, null)).toEqual([]);
+  });
+
+  // Pressing "New quote" creates nothing now, so a quote the desk is building
+  // may not exist yet. The send must not offer to send one that does not: the
+  // server refuses it, and this is what keeps the button from asking.
+  it("stops the send on a quote that has not been saved", () => {
+    const blockers = blockersFor(quote({ saved: false }), {}, null);
+    expect(blockers.map((b) => b.key)).toEqual(["unsaved"]);
+    expect(blockers[0].text).toContain("not been saved");
   });
 
   it("counts a kind of problem once, not once per line", () => {

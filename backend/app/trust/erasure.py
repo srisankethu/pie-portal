@@ -178,6 +178,12 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     ("decisions", models.Decision),
     ("approval_requests", models.ApprovalRequest),
     ("quote_drafts", models.QuoteDraft),
+    # A quote form somebody still has open. Not a quote — no number, in no
+    # listing — but it holds a customer name and the lines typed against it,
+    # so it is theirs on exactly the same footing as the draft above. Leaving
+    # it out would mean an export that is complete only for people who had
+    # nothing open at the time.
+    ("quote_form_drafts", models.QuoteFormDraft),
     # Which details this organization asks for on every quote, and which it
     # made mandatory. Exported rather than excluded as configuration: it is
     # the shape of their own quote form, and the values on `quote_drafts`

@@ -9,8 +9,8 @@
  * on one request is how a screen ends up displaying one person's name while
  * deciding what to show from another's role.
  */
-import type { EstimateResult, Quote, QuoteDraftSummary, QuoteFieldDefinition, QuoteOwner,
-  RfqDocument } from "./types";
+import type { EstimateResult, ItemSearch, Quote, QuoteDraftSummary, QuoteFieldDefinition,
+  QuoteOwner, RfqDocument } from "./types";
 import { authInit } from "./authFetch";
 
 /** The key the builder used to keep one draft under in `localStorage`.
@@ -218,6 +218,15 @@ export const api = {
   confirmReading: (t: string, id: string, lineId: string) =>
     req<Quote>(`/api/v1/quotes/${id}/lines/${lineId}/confirm-reading`,
                { method: "POST" }, t),
+
+  /** Find an item by hand — the catalogue and the books at once.
+   *
+   *  Scoped to the quote rather than to a company id, because the quote is
+   *  where the company was decided (once, at creation) and a second place to
+   *  name one is a second place to name the wrong one. */
+  searchItems: (t: string, id: string, q: string) =>
+    req<ItemSearch>(
+      `/api/v1/quotes/${id}/item-search?q=${encodeURIComponent(q)}`, {}, t),
 
   selectSupply: (t: string, id: string, lineId: string, code: string, manual = false) =>
     req<Quote>(

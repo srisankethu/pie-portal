@@ -10,6 +10,7 @@ import type { Line, LineIntelligence } from "../types";
 import { isFromOwnBook, relTone, sourceLabel } from "../rel";
 import { StatusChip } from "../platform/kit";
 import { DecisionSupport } from "./DecisionSupport";
+import { ItemSearch } from "./ItemSearch";
 import { QuoteIntelligence } from "./QuoteIntelligence";
 import { money } from "../money";
 import { formatTime } from "../when";
@@ -18,6 +19,7 @@ import { pathFor } from "../platform/route";
 export function SupplyDrawer({
   line,
   customer,
+  quoteId,
   token,
   mgmt,
   intel,
@@ -34,6 +36,10 @@ export function SupplyDrawer({
   readOnly = false }: {
   line: Line;
   customer: string;
+  /** The quote this line belongs to. The hand search is scoped through it —
+   *  the quote is where the company was decided, and the catalogue and books
+   *  searched have to be that company's. */
+  quoteId: string;
   /** The signed-in session's token, for the panels that call the platform. */
   token: string;
   mgmt: boolean;
@@ -225,7 +231,11 @@ export function SupplyDrawer({
           )}
           {line.candidates.length === 0 && (
             <div className="empty">
-              No supply candidates. The PIE engine could not resolve this line to a product.
+              {line.rel === "PIE_DOWN"
+                ? "The resolution engine did not answer for this line, so nothing was ranked. "
+                  + "This is not a statement about the product — search for it below."
+                : "Nothing in this company's catalogue ranked against this line. "
+                  + "Search for the item below."}
             </div>
           )}
           {line.candidates.map((c) => {
@@ -329,6 +339,19 @@ export function SupplyDrawer({
               </div>
             );
           })}
+
+          {/* Under the ranking, never instead of it. The engine's answer is
+              the better one where there is one, and a search box above it
+              would invite a person to re-do work that is already done — but a
+              line with nothing ranked had no way forward at all, which is the
+              gap this fills. */}
+          <ItemSearch
+            quoteId={quoteId}
+            token={token}
+            readOnly={readOnly}
+            onSelect={onSelect}
+          />
+
           {mgmt && exactSelected && line.economics && (
             <div className="text-muted" style={{ fontSize: 11.5, marginTop: 12 }}>
               Economics — cost {money(line.economics.cost)} · recommended {money(line.economics.recommended)}

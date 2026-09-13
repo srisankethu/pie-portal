@@ -48,7 +48,8 @@ from ..schemas import (
     SetOwnerRequest,
     SetPriceRequest,
 )
-from ..pie_service import Bands
+from ..pie_service import Bands, pie_service
+from ..repositories import ReadModelRepository
 from ..enquiry import documents
 from ..sellable_catalog import sellable_pool_for
 from ..store import Line, Quote, store
@@ -763,6 +764,61 @@ def line_options(quote_id: str, line_id: str,
         "supplyCode": ln.supplyCode,
         "candidates": [c.to_dict() for c in ln.candidates],
         "notes": ln.notes,
+    }
+
+
+@router.get("/{quote_id}/item-search")
+def item_search(quote_id: str, q: str = "", limit: int = 20,
+                principal: Principal = Depends(current_principal),
+                session: Session = Depends(get_session)):
+    """Find an item by hand, in the catalogue and in the books at once.
+
+    **The door the drawer did not have.** A line the engine could not answer
+    offered its ranked candidates and nothing else, so a line with no
+    candidates — the engine down, or a product this company has never decoded —
+    could not be pointed at an item at all, however plainly the person knew
+    which one it was. ``select_supply`` has always accepted a code that is in
+    no candidate list (``manual``); there was simply no way to name one.
+
+    **Two sources, kept apart in the response on purpose.** They answer
+    different questions and a merged list would blur them: the catalogue says
+    *this product exists and here is what it decodes to*, the books say *this
+    business already sells it, under this code*. A record can be in one and not
+    the other, and which one it is changes what happens next — a catalogue
+    record that is not in the books comes back NOT IN BOOKS with no price, and
+    the screen offers to create it.
+
+    Each side reports whether it could be searched at all. That is not
+    symmetry for its own sake: the usual reason somebody is on this screen is
+    that the engine did not answer, and an empty catalogue list that cannot say
+    "there was nothing to search" is CLAUDE.md §1's benign default — absence of
+    evidence read as evidence of absence.
+
+    Scoped to the quote's own company, for the reason ``create_quote`` decides
+    it once: this is the catalogue that resolves this quote's lines and the
+    book that prices them, and a search answering out of another company's
+    would offer a product this one cannot sell.
+
+    **No money.** Not a price, not a cost, not a margin, and no field for one.
+    Search answers *which item*; what it costs is the books' answer and is read
+    per line at selection. A salesperson and a manager get identical bytes
+    here, which is the cheapest way to be sure of §1's second invariant.
+    """
+    q = (q or "").strip()
+    limit = max(1, min(int(limit or 20), 50))
+    quote = _get_quote(session, quote_id, principal.organization_id)
+    found = pie_service.search_catalogue(q, quote.connectionId, limit=limit)
+    books = ReadModelRepository(session, principal.organization_id).search_items(
+        q, connection_id=quote.connectionId, limit=limit)
+    return {
+        "query": q,
+        "catalogue": found.to_dict(),
+        # No `available` twin: the read model is this deployment's own database,
+        # so "could it be searched" is not a question with two answers the way
+        # it is for an engine that may not be installed. An empty list here is
+        # evidence — nothing in this company's synced master matches — and the
+        # honest shape for evidence is the evidence.
+        "books": {"records": books, "searched": len(books)},
     }
 
 

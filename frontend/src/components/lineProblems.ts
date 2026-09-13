@@ -107,8 +107,13 @@ export function problemsFor(
       key: `${line.id}:unresolved`,
       tone: "bad",
       title: "Which item is this?",
+      // "Chosen by hand" was written before there was any way to do that: the
+      // drawer this sentence points at listed the engine's candidates and
+      // nothing else, so on the one line where the sentence was shown — no
+      // candidates — it named a door that did not exist. The search in
+      // `ItemSearch` is that door, and the sentence is true now.
       detail: line.rel === "PIE_DOWN"
-        ? "The resolution engine did not answer, so nothing was matched. The item can still be chosen by hand."
+        ? "The resolution engine did not answer, so nothing was matched. Search for the item by hand."
         : offered.length
           ? `Nothing matched closely enough to take automatically. ${offered.length} candidate(s) came back.`
           : "Nothing matched, and there are no candidates to choose from.",

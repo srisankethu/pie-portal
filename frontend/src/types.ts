@@ -547,3 +547,69 @@ export interface RfqDocument {
   uploaded_by_user_id: string | null;
   created_at: string | null;
 }
+
+/** A hand search for an item — `GET /api/v1/quotes/{id}/item-search`.
+ *
+ *  Two sources, kept apart because they answer different questions. The
+ *  catalogue says a product exists and what it decodes to; the books say this
+ *  business already sells it, under this code. A record can be in one and not
+ *  the other, and which one it came from changes what happens when it is
+ *  selected — a catalogue record the books do not carry comes back NOT IN
+ *  BOOKS with no price, and the screen offers to create it.
+ *
+ *  **No money, and no field for any.** Search answers *which item*. What it
+ *  costs, what it lists at and what is on the shelf are the books' answer
+ *  about a line that has one, read live at selection. */
+export interface ItemSearch {
+  query: string;
+  catalogue: CatalogueSearch;
+  books: { records: BookItem[]; searched: number };
+}
+
+/** The catalogue half.
+ *
+ *  `available` is the field that matters and the reason this is not just an
+ *  array. A person is usually here *because* the engine did not answer, so an
+ *  empty list must not stand for both "searched, and this catalogue does not
+ *  carry it" and "there was nothing to search". The second carries `reason`,
+ *  which the screen prints as the server worded it. */
+export interface CatalogueSearch {
+  records: CatalogueRecord[];
+  available: boolean;
+  reason: string | null;
+  /** How many catalogue records the description pass ran against, so "nothing
+   *  found" can be read beside the size of the thing that produced it. */
+  searched: number;
+}
+
+/** One catalogue record, as a search result.
+ *
+ *  Deliberately **not** a `Candidate`: nothing here was compared against a
+ *  requirement, so there is no `rel` and no `score`. A relationship word would
+ *  be this organization's equivalence policy applied to a comparison that
+ *  never ran. */
+export interface CatalogueRecord {
+  code: string;
+  desc: string;
+  grade: string | null;
+  brand: string | null;
+  /** Which of this company's manufacturer catalogues the record came from. */
+  catalogue: string | null;
+  /** How alike the descriptions read, or `null` when the record was found
+   *  because it *is* the code — a distinction, not a missing number. */
+  similarity: number | null;
+  attributes: Record<string, unknown>;
+}
+
+/** One item out of this company's synced ERP master. */
+export interface BookItem {
+  /** What to select. The product's name — see `Repository.search_items` for
+   *  why it is not the stored SKU, which is a normalised matching key. */
+  code: string;
+  name: string;
+  externalId: string;
+  manufacturer: string | null;
+  uom: string | null;
+  /** An inactive item exists in the ledger and cannot go on a document. */
+  active: boolean;
+}

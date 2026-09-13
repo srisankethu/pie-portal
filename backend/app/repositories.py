@@ -17,6 +17,11 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from . import clock
+# The one part-number normaliser. Imported rather than restated: `search_items`
+# re-ranks on it, and a second idea of what punctuation means in a SKU is how
+# a search and the matcher behind identity would start disagreeing about which
+# rows are the same part.
+from .identity.matchers import normalize_sku
 from .domain import models
 from .domain.enums import DecisionStatus, HumanAction
 from .domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
@@ -350,6 +355,95 @@ class ReadModelRepository:
                 models.Product.connection_id.is_(None),
             )
         )
+
+    def search_items(self, text: str, *, connection_id: Optional[str],
+                     limit: int = 20) -> list[dict[str, Any]]:
+        """Items in one connected company's synced master whose SKU or name
+        contains every word of ``text``.
+
+        **Over the synced master rather than the source's own search API, and
+        that is the design rather than a shortcut.** ``item_connector_records``
+        is written by every connector the registry carries — the sync is
+        connector-blind (CLAUDE.md §3) — so one query here searches Zoho,
+        NetSuite, Business Central, Acumatica, Prophet 21 and Sage alike. Going
+        to a live API instead would mean a search method on the ``ZohoService``
+        protocol and a sixth implementation of it per connector, to answer a
+        question the read model already holds.
+
+        The freshness that costs is bounded and is the right half to lose: what
+        a person needs from a search box is *which item*, and the numbers that
+        go stale — stock, list price — are read live from the books the moment
+        the line is actually pointed at one (``store._enrich_from_zoho``). A
+        name a sync is an hour behind on is still that item's name.
+
+        ``code`` in each row is the product's **name**, and that is chosen
+        rather than obvious. ``ItemConnectorRecord.sku`` holds the *normalised*
+        key ``identity.service.ingest`` writes — ``CNMG120408UCD2YC0014`` for a
+        master that reads ``CNMG120408-UC-D2 YC0014`` — which is right for
+        matching and wrong for everything else: handing it back would put a
+        code on screen that nobody in the business writes that way, and
+        ``ZohoBooksService._find_item`` would search the live ledger for a
+        string with its separators missing and find nothing. The name is what
+        that lookup matches on, what ``commercial.quote_service._resolve_products``
+        matches on, and what the item screens already show. So the normalised
+        SKU is read here and never published: it ranks, it does not identify.
+
+        Scoped to the organization *and* one connected company. Not through
+        ``_source``: that pins to this repository's ``connector`` as well, and
+        the caller here is a screen that knows which company a quote is for and
+        has no reason to know which system that company runs on — which is the
+        same blindness the paragraph above is about.
+
+        **Every word must appear, and it must appear literally.** Separators are
+        not normalised away, so a master holding ``CNMG 120408-49`` is not found
+        by ``CNMG120408``. Stated rather than fixed: doing it properly means
+        matching the way ``identity.matchers.normalize_sku`` does, and the only
+        honest way to get that into a ``WHERE`` clause is a stored normalised
+        column, not a second spelling of the rule written in SQL. The re-rank
+        below uses the real function on what the filter returned, so an exact
+        normalised hit still leads where the filter could reach it at all.
+        """
+        words = [w for w in (text or "").split() if w]
+        if not words or limit <= 0:
+            return []
+        rec, prod = models.ItemConnectorRecord, models.Product
+        clauses = [rec.organization_id == self.org,
+                   rec.connection_id == connection_id]
+        for word in words[:8]:
+            like = f"%{word.lower()}%"
+            clauses.append(or_(func.lower(rec.sku).like(like),
+                               func.lower(rec.description).like(like)))
+        rows = self.s.execute(
+            select(rec.sku, rec.description, rec.external_id,
+                   prod.name, prod.manufacturer, prod.uom, prod.active)
+            .outerjoin(prod, prod.product_id == rec.product_id)
+            .where(*clauses)
+            # A generous read behind a small answer: the re-rank below decides
+            # the order, and it can only rank what the query returned. Bounded
+            # so a one-letter search cannot walk a whole master into memory.
+            .limit(max(limit * 10, 200))
+        ).all()
+        wanted = normalize_sku(" ".join(words))
+        # ``description`` is the name as the sync passed it, so it is the
+        # fallback when the record points at no product row — not a second
+        # field with a second meaning.
+        out = [{"code": (name or description or external_id),
+                "name": name or description, "externalId": external_id,
+                "manufacturer": manufacturer, "uom": uom,
+                "active": bool(active) if active is not None else True,
+                "_sku": sku}
+               for sku, description, external_id, name, manufacturer, uom, active in rows]
+        # Exact normalised SKU first, then the shortest name — a match that is
+        # most of the field beats one buried in a long description — then the
+        # code, so two equal rows always come back in the same order.
+        # ``wanted`` is None when the search was all punctuation, and then
+        # nothing is an exact hit — without this guard a row whose SKU is also
+        # None would compare None == None and lead the list as a match.
+        out.sort(key=lambda r: (wanted is None or r["_sku"] != wanted,
+                                len(r["name"] or ""), r["code"]))
+        # The normalised key drops out here. It did its job in the sort and it
+        # is not a code anything downstream may use — see the docstring.
+        return [{k: v for k, v in r.items() if k != "_sku"} for r in out[:limit]]
 
     # ── sales / cost ─────────────────────────────────────────────────────────
     def upsert_sales_txn(self, t: SalesTxnIn, customer_id: str, product_id: str) -> models.SalesTxn:

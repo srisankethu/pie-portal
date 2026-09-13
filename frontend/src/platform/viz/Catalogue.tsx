@@ -26,6 +26,7 @@ import { useState } from "react";
 import { useSnackbar } from "notistack";
 import { money } from "../../money";
 import { papi } from "../api";
+import { GroupFilter, useGroupFilter } from "../GroupFilter";
 import { InlineLink, StatusChip } from "../kit";
 import { DataGrid, numeric } from "../DataGrid";
 import type { PlatformSession } from "../types";
@@ -52,10 +53,15 @@ const SOURCE_TONE: Record<string, "good" | "warn" | "neutral"> = {
 export function CatalogueScreen({ session }: { session: PlatformSession }) {
   const { enqueueSnackbar } = useSnackbar();
   const [scope, setScope] = useState("unplaced");
+  // Part of the request, not a filter over the rows: the coverage share below
+  // is a percentage, and a numerator narrowed to a group against a denominator
+  // still counting the whole catalogue would be a wrong figure with a caption
+  // explaining it. The server moves both.
+  const groupFilter = useGroupFilter(session.token, "PRODUCT");
   const { data, loading, error, reload } = useInsight(
     "catalogue",
-    () => papi.catalogue(session.token, scope === "unplaced"),
-    [session.token, scope]);
+    () => papi.catalogue(session.token, scope === "unplaced", groupFilter.group),
+    [session.token, scope, groupFilter.group]);
 
   const items = rows(data?.items);
   const lines = rows(data?.lines);
@@ -93,6 +99,9 @@ export function CatalogueScreen({ session }: { session: PlatformSession }) {
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
       actions={
         <div className="seg-controls">
+          <GroupFilter label="Item group" value={groupFilter.group}
+                       onChange={groupFilter.setGroup}
+                       options={groupFilter.options} show={groupFilter.show} />
           <Seg label="Show" value={scope} onChange={setScope}
                options={[["unplaced", "Needs placing"], ["all", "Everything"]]} />
         </div>

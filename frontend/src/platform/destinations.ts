@@ -98,8 +98,8 @@ export const DESTINATIONS: readonly DestinationSpec[] = [
   },
   {
     key: "setup", label: "Setup", screen: "data",
-    covers: ["data", "settings", "catalogue", "decodedCatalog", "identity",
-             "observability", "states", "trust", "monetization"],
+    covers: ["data", "settings", "catalogue", "decodedCatalog", "groups",
+             "identity", "observability", "states", "trust", "monetization"],
   },
 ] as const;
 
@@ -144,6 +144,12 @@ export const SETUP_TABS: readonly DestinationTab[] = [
   { label: "Policy & people", screen: "settings" },
   { label: "Catalogue", screen: "decodedCatalog" },
   { label: "Your data", screen: "trust", need: "trust" },
+  // Primary rather than secondary, and no `need`: reading groups is open to
+  // every role — the picker on a directory is what a salesperson uses them
+  // through — and a tab in the overflow is a tab nobody finds the first time.
+  // Drawing one is manager and above, which the screen asks the server about
+  // rather than reconstructing here.
+  { label: "Groups", screen: "groups" },
   { label: "Item lines", screen: "catalogue", need: "supply", secondary: true },
   { label: "Identities", screen: "identity", need: "policy", secondary: true },
   { label: "System health", screen: "observability", need: "policy", secondary: true },

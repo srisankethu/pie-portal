@@ -1,5 +1,5 @@
 import type { MonetizationCalculation, MonetizationScorecard, MonetizationSegments } from "./types";
-import type { BindingChoice, DecoderArtifact, DecoderProposalResponse, AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, PhraseAliases, RetrievalReport, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ObservabilityDashboard, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteFieldSpec, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoSecret, ZohoVisibleOrg } from "./types";
+import type { BindingChoice, DecoderArtifact, DecoderProposalResponse, AccessReport, Account, AccountItem, AiByokView, AiKeyTestResult, AiMetricsReport, AiReadiness, ApprovalRequest, AttributionEvaluation, AttributionEvents, AttributionRollup, AttributionSummary, CompanyCatalogue, CompanyCatalogues, ConnectionCheck, PhraseAliases, RetrievalReport, ConnectionsView, ConnectorCatalog, CustomerItemDetail, CustomerPortfolio, DataStatus, DecisionDetail, DecisionSummary, DecisionTrace, DemoOffer, DisclosureStatement, Entitlements, EntityGroup, EntityKind, ErasureState, ErpConnectInput, ErpDiscoveredCompany, FixedThresholds, FloorBacktest, GroupDetail, GroupKind, GroupList, Identity, IdentityCoverage, IdentityPolicy, IdentitySuggestion, MarginPolicy, MarginPolicyPatch, NewConnectionInput, ObservabilityDashboard, OnboardingView, OrgPolicy, PayloadsReport, PlatformSession, PlatformUser, QuoteFieldSpec, QuoteGate, Retrospective, Role, SignupOffer, SkippedRows, StatusFilter, SyncOptions, SyncRunLogPage, SyncStartResponse, SyncState, ThresholdView, UnrecordedQuotes, ZohoConnection, ZohoConnectionInput, ZohoCredential, ZohoSecret, ZohoVisibleOrg } from "./types";
 
 import { setMoneyCurrency } from "../money";
 import { setBusinessTimezone } from "../when";
@@ -560,8 +560,15 @@ export const papi = {
   stock: (t: string) =>
     req<Record<string, unknown>>("/api/v1/insight/stock", {}, t),
 
-  supply: (t: string) =>
-    req<Record<string, unknown>>("/api/v1/insight/supply", {}, t),
+  // `group` narrows to a set of suppliers somebody drew, and the server
+  // recomputes inside it rather than hiding rows — see `insight.supply`. Sent
+  // as a parameter for exactly that reason: `CompanyFilter` narrows in the
+  // browser because it must never restate a total, and this one restates them
+  // on purpose.
+  supply: (t: string, group = "") =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/supply${group ? `?group=${encodeURIComponent(group)}` : ""}`,
+      {}, t),
 
   // What each line returns on the cash it ties up. Manager and above, and
   // permanently: GMROI is gross profit ÷ purchase cost with nothing else in it,
@@ -624,9 +631,11 @@ export const papi = {
 
   // The catalogue's last mile: which line an item belongs to, set by hand.
   // Manager and above — placing an item moves every mix figure downstream.
-  catalogue: (t: string, unplacedOnly: boolean) =>
-    req<Record<string, unknown>>(
-      `/api/v1/insight/catalogue?unplaced_only=${unplacedOnly}`, {}, t),
+  catalogue: (t: string, unplacedOnly: boolean, group = "") => {
+    const p = new URLSearchParams({ unplaced_only: String(unplacedOnly) });
+    if (group) p.set("group", group);
+    return req<Record<string, unknown>>(`/api/v1/insight/catalogue?${p}`, {}, t);
+  },
 
   setItemLine: (t: string, productId: string, category: string) =>
     req<Record<string, unknown>>(
@@ -977,11 +986,52 @@ export const papi = {
       `/api/v1/commercial/customers/${encodeURIComponent(customerId)}` +
       `/items/${encodeURIComponent(productId)}`, {}, t),
 
-  listAccounts: (t: string, q = "", status: StatusFilter = "active") => {
+  listAccounts: (t: string, q = "", status: StatusFilter = "active", group = "") => {
     const p = new URLSearchParams({ status });
     if (q) p.set("q", q);
+    if (group) p.set("group", group);
     return req<Account[]>(`/api/v1/accounts?${p}`, {}, t);
   },
+
+  // ── groups: named sets of customers, vendors or items ──────────────────────
+  //
+  // Reading is open to every role, so the picker works for a salesperson; the
+  // five writes below are manager and above, and the server is what enforces
+  // that. `may_edit` on the list is the server answering about this request
+  // rather than the browser reconstructing the rule — see `platform/ability.ts`.
+  listGroups: (t: string, kind = "", includeArchived = false) => {
+    const p = new URLSearchParams();
+    if (kind) p.set("entity_kind", kind);
+    if (includeArchived) p.set("include_archived", "true");
+    return req<GroupList>(`/api/v1/groups?${p}`, {}, t);
+  },
+
+  getGroup: (t: string, kind: GroupKind, slug: string) =>
+    req<GroupDetail>(
+      `/api/v1/groups/${kind}/${encodeURIComponent(slug)}`, {}, t),
+
+  createGroup: (t: string, body: {
+    entity_kind: GroupKind; name: string; slug?: string;
+    description?: string; visibility?: string;
+  }) => req<EntityGroup>("/api/v1/groups",
+    { method: "POST", body: JSON.stringify(body) }, t),
+
+  updateGroup: (t: string, kind: GroupKind, slug: string, body: {
+    name?: string; description?: string; visibility?: string; archived?: boolean;
+  }) => req<EntityGroup>(`/api/v1/groups/${kind}/${encodeURIComponent(slug)}`,
+    { method: "PATCH", body: JSON.stringify(body) }, t),
+
+  addGroupMembers: (t: string, kind: GroupKind, slug: string, entityIds: string[]) =>
+    req<{ added: string[]; members: number; group_version: string }>(
+      `/api/v1/groups/${kind}/${encodeURIComponent(slug)}/members`,
+      { method: "POST", body: JSON.stringify({ entity_ids: entityIds }) }, t),
+
+  // One at a time, id in the path: no other DELETE in this API carries a body,
+  // and each removal is a definition change with its own version.
+  removeGroupMember: (t: string, kind: GroupKind, slug: string, entityId: string) =>
+    req<{ removed: string[]; members: number; group_version: string }>(
+      `/api/v1/groups/${kind}/${encodeURIComponent(slug)}` +
+      `/members/${encodeURIComponent(entityId)}`, { method: "DELETE" }, t),
 
   /** The items one account has bought, newest first. Lets a screen offer a name
    *  where it would otherwise demand an id nobody can recognise. */

@@ -20,8 +20,13 @@ import { CSS_VARS } from "../theme";
 import { isPlaceholder } from "./content";
 import { DEMO_BOOKING_URL } from "./cta";
 import { ERP_PAGES, type ErpPageData } from "./erp";
+import { FAQ, type FaqItem } from "./faq";
 import { caseStudy, complianceRows, namedCustomers } from "./proof";
 import { ErpPage } from "./ErpPage";
+import { INDUSTRY_PAGES } from "./industries";
+import { IndustryPage } from "./IndustryPage";
+import { ROLE_PAGES } from "./roles";
+import { RolePage } from "./RolePage";
 import { Landing } from "./Landing";
 
 /** The landing exactly as `PlatformApp` mounts it for a signed-out visitor.
@@ -103,6 +108,16 @@ export interface PrerenderPage {
   description: string | null;
   standalone: boolean;
   erp?: ErpPageData;
+  /** The questions this page renders, for the `FAQPage` node the build emits.
+   *
+   *  Present only where the component actually shows them, which is the whole
+   *  rule and the reason this is a field rather than a lookup: schema may
+   *  restate what is on the page and nothing else. Google's FAQPage guidance
+   *  requires the question and answer to be visible, so a build that emitted
+   *  the node from a second copy of the strings would be one edit away from a
+   *  manual action. One array, two renderers — the same contract `faq.ts`
+   *  states for the landing page, now held by every page that has one. */
+  faq?: FaqItem[];
   render: () => string;
 }
 
@@ -112,6 +127,11 @@ export const PAGES: PrerenderPage[] = [
     title: null,
     description: null,
     standalone: false,
+    // The landing renders `FAQ` at the bottom of the document, so it declares
+    // it here like every other page that has one. It used to be the build's
+    // only `isLanding` special case; three more families render an FAQ now,
+    // and a rule with one exception in it is a rule that grows a second.
+    faq: FAQ,
     render: renderLandingMarkup,
   },
   ...ERP_PAGES.map((page) => ({
@@ -121,6 +141,22 @@ export const PAGES: PrerenderPage[] = [
     standalone: true,
     erp: page,
     render: () => renderToStaticMarkup(<ErpPage page={page} />),
+  })),
+  ...INDUSTRY_PAGES.map((page) => ({
+    slug: `industries/${page.slug}`,
+    title: page.title,
+    description: page.description,
+    standalone: true,
+    faq: page.faq,
+    render: () => renderToStaticMarkup(<IndustryPage page={page} />),
+  })),
+  ...ROLE_PAGES.map((page) => ({
+    slug: `roles/${page.slug}`,
+    title: page.title,
+    description: page.description,
+    standalone: true,
+    faq: page.faq,
+    render: () => renderToStaticMarkup(<RolePage page={page} />),
   })),
 ];
 

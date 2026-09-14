@@ -174,12 +174,26 @@ describe("the history window", () => {
         checked += 1;
       }
     }
-    // And every page that makes the claim is actually reached — a loop that
-    // matched nothing would pass in silence, which is the shape of test this
-    // repository has been burned by before (CLAUDE.md §1, "absence of evidence
-    // is not a pass").
+    // And the pages that must make the claim actually do — a loop that matched
+    // nothing would pass in silence, which is the shape of test this repository
+    // has been burned by before (CLAUDE.md §1, "absence of evidence is not a
+    // pass").
+    //
+    // Held against `ERP_PAGES` rather than against `documents.length`, which is
+    // what it said until the industry and role pages arrived. That number was
+    // never the invariant — it happened to equal the page count on the day it
+    // was written, and it made every future page anywhere on the site
+    // responsible for repeating a fact about ERP connections. The claim belongs
+    // to the pages about connecting an ERP; a page about a trade or a role
+    // stating how far the first pull reads would be padding, and a test that
+    // demands padding gets satisfied with padding.
     expect(checked, "no page states the history window at all")
-      .toBeGreaterThanOrEqual(documents.length);
+      .toBeGreaterThanOrEqual(ERP_PAGES.length);
+    for (const erp of ERP_PAGES) {
+      const html = documents.find((d) => d.page.slug === `erp/${erp.slug}`)!.html;
+      expect(html, `/erp/${erp.slug} does not state the history window`)
+        .toContain("first day of");
+    }
   });
 });
 
@@ -525,16 +539,32 @@ describe("every prerendered page", () => {
     }
   });
 
-  it("keeps a standalone page's links absolute, because it ships no router", () => {
+  it("keeps a standalone page's links absolute, or pointing at its own ids", () => {
     // A standalone document carries no bundle: `href="#pricing"` on it is a
     // fragment that scrolls nowhere, and the reader is left on a page with a
     // dead button. Every in-site link has to be a path.
+    //
+    // With one exception, which is the rule rather than a hole in it: a
+    // fragment naming an id **in this same document** needs no router and no
+    // script — the browser has scrolled to those since before JavaScript
+    // existed. The original test forbade every bare fragment, which was
+    // stricter than the reason it gave, and the reason is the part worth
+    // keeping. So the check is now the reason itself: a fragment is fine when
+    // it resolves here, and a dead one fails whether it names a section of the
+    // landing page or a section of this one that got renamed. That is strictly
+    // more than the old rule caught — `#worked` with a typo used to be
+    // indistinguishable from `#worked` without one, because both were simply
+    // banned.
     for (const { page, html } of documents.filter((d) => d.page.standalone)) {
+      const ownIds = new Set(
+        [...html.matchAll(/\bid="([^"]+)"/g)].map((m) => m[1]));
       const hrefs = [...html.matchAll(/href="([^"]*)"/g)].map((m) => m[1]);
       expect(hrefs.length).toBeGreaterThan(0);
       for (const href of hrefs) {
-        expect(href.startsWith("#"), `/${page.slug} has a bare fragment: ${href}`)
-          .toBe(false);
+        if (!href.startsWith("#")) continue;
+        expect(ownIds.has(href.slice(1)),
+          `/${page.slug} has a fragment ${href} that names no id in its own document`)
+          .toBe(true);
       }
     }
   });

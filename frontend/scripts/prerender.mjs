@@ -205,14 +205,20 @@ function documentFor(page) {
   // Schema may only restate what is on the page.
   //
   // FAQPage has moved from that list to the graph, and only because the page
-  // moved first. It was excluded when there was no FAQ; there is now a visible
-  // one at the bottom of the landing document, rendered from the same `FAQ`
-  // array this node is built from, so the schema restates the page rather than
-  // describing a page that does not exist. That ordering is the whole rule:
-  // Google's FAQPage guidance requires the question and answer to be visible,
-  // and a build that emitted this node from a second copy of the strings would
-  // be one edit away from a manual action. It is on the landing page only,
-  // because that is the only document that renders the FAQ.
+  // moved first. It was excluded when there was no FAQ; there are now visible
+  // ones — at the bottom of the landing document and on every `/industries/`
+  // and `/roles/` page — each rendered from the same array this node is built
+  // from, so the schema restates the page rather than describing a page that
+  // does not exist. That ordering is the whole rule: Google's FAQPage guidance
+  // requires the question and answer to be visible, and a build that emitted
+  // this node from a second copy of the strings would be one edit away from a
+  // manual action.
+  //
+  // It was landing-only when the landing was the only document that rendered
+  // an FAQ, written as an `isLanding` branch. Three more families render one
+  // now, so the condition is the registry field — `page.faq`, which the
+  // component read — and a page that shows no FAQ still gets no node. The rule
+  // did not move; the number of pages that satisfy it did.
   //
   // SoftwareApplication is likewise landing-only now, where it used to appear
   // on all eight. The node is referenced from every WebPage's `about`, so the
@@ -281,11 +287,15 @@ function documentFor(page) {
               operatingSystem: "Web",
               publisher: { "@id": `${SITE_ORIGIN}/#organization` },
             },
+          ]
+        : []),
+      ...(page.faq?.length
+        ? [
             {
               "@type": "FAQPage",
               "@id": `${url}#faq`,
               isPartOf: { "@id": `${url}#webpage` },
-              mainEntity: faq.map((item) => ({
+              mainEntity: page.faq.map((item) => ({
                 "@type": "Question",
                 name: item.question,
                 acceptedAnswer: { "@type": "Answer", text: item.answer },

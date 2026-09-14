@@ -1,9 +1,11 @@
 import { useEffect, useState } from "react";
 import { demoCta } from "./cta";
 import { ERP_PAGES } from "./erp";
+import { INDUSTRY_PAGES } from "./industries";
+import { ROLE_PAGES } from "./roles";
 import { FAQ } from "./faq";
 import { caseStudy, complianceRows, hasProof, namedCustomers } from "./proof";
-import { DEMO_LENGTH, FooterBlurb, TrustBand, navItems } from "./shared";
+import { DecisionCard, DEMO_LENGTH, FooterBlurb, TrustBand, navItems } from "./shared";
 import { ContactModal } from "./ContactModal";
 import {
   EXAMPLE_ITEM,
@@ -12,7 +14,6 @@ import {
   heldToFloor,
   heldToRecommended,
   lineTotal,
-  marginPct,
   unitPrice,
   type Region,
 } from "./worked-example";
@@ -406,121 +407,7 @@ export function Landing({ onEnter, onDemo }: {
                 wrapper the hero's two-column grid took the caption as a third
                 child and set it under the copy, four hundred pixels from the
                 card it is about. */}
-            <div className="lp-card-cell">
-            <div
-              className="lp-card"
-              role="img"
-              /* The figures are *in* the label. `role="img"` makes every
-                 descendant presentational, so a screen-reader user got "showing
-                 cost, margin floor and recommended price" and none of the three
-                 — on the one worked example the whole page argues from. Built
-                 from the same values the card renders, so the two cannot say
-                 different things. */
-              aria-label={
-                `A PIE decision card for ${EXAMPLE_ITEM}, with sample figures. `
-                + `A customer asked for ${line.units} units at ${unitPrice(price, line.asked)}, `
-                + `which is ${marginPct(price)} margin — below the floor of `
-                + `${unitPrice(price, line.floor)} that this organization's policy `
-                + `sets for the item. It costs ${unitPrice(price, line.cost)} and the `
-                + `recommended price is ${unitPrice(price, line.recommended)}. The line `
-                + "routes for a manager's approval, and every fact names the record it "
-                + "came from."
-              }
-            >
-              <span className="lp-corner tl" aria-hidden="true" />
-              <span className="lp-corner tr" aria-hidden="true" />
-              <span className="lp-corner bl" aria-hidden="true" />
-              <span className="lp-corner br" aria-hidden="true" />
-              {/* Below this line the card is the product's own decision screen,
-                  element for element: the type-and-priority row, the subject as
-                  the heading, who it is routed to, "Facts · what the data
-                  shows" over a table whose every row names the record it came
-                  from, then the evidence and the actions that screen actually
-                  offers (`platform/PlatformApp.tsx`, the decision detail).
-
-                  It was a drawing of a card before — its own invented layout,
-                  its own invented identifiers, and a disclaimer chip shouting
-                  that none of it was real, which is a worse answer than the
-                  problem it fixed. A page that will not show its own product is
-                  a page arguing that the product is not worth showing. So: the
-                  real screen, sample figures, said once and quietly under the
-                  card rather than stamped across it. */}
-              <div className="lp-card-top">
-                <span className="lp-chip alert">Below floor</span>
-                <span className="lp-chip kind">Approval needed</span>
-              </div>
-              {/* Not a heading. The card is one `role="img"` with a full
-                  aria-label, so nothing inside it is exposed to a screen
-                  reader anyway — but it sits between the page's h1 and its
-                  first h2, and an h1 followed by an h3 is a skipped level in
-                  the document outline that every accessibility checker will
-                  find and that no reader benefits from. Styled identically. */}
-              <p className="lp-card-title">{EXAMPLE_ITEM}</p>
-              <p className="lp-card-body">
-                {line.units} units for <b>{price.customer}</b>, quoted at{" "}
-                {unitPrice(price, line.asked)} — routed to a sales manager, no
-                individual owner. The platform holds it, not the salesperson.
-              </p>
-
-              <div className="lp-facts-mark">Facts &middot; what the data shows</div>
-              <table className="lp-facttable">
-                <tbody>
-                  <tr>
-                    <td>Quoted unit price<span>this quote</span></td>
-                    <td className="lp-fv lp-num">{unitPrice(price, line.asked)}</td>
-                  </tr>
-                  <tr>
-                    <td>Effective unit cost<span>bill</span></td>
-                    <td className="lp-fv lp-num">{unitPrice(price, line.cost)}</td>
-                  </tr>
-                  <tr>
-                    <td>Margin floor<span>your margin policy</span></td>
-                    <td className="lp-fv lp-num">{unitPrice(price, line.floor)}</td>
-                  </tr>
-                  <tr>
-                    <td>Recommended<span>this customer&rsquo;s own history</span></td>
-                    <td className="lp-fv lp-num">{unitPrice(price, line.recommended)}</td>
-                  </tr>
-                  <tr>
-                    <td>Margin at this price<span>computed</span></td>
-                    <td className="lp-fv lp-num warn">{marginPct(price)}</td>
-                  </tr>
-                </tbody>
-              </table>
-
-              {/* The real screen names the connector each record came from —
-                  "zoho · invoice", because that is the book that answered. On
-                  this page there is no such book yet: the reader has not
-                  connected one, and the strip below offers seven. Naming one
-                  of them here told six distributors the card was drawn for
-                  somebody else's stack, which is the same defect as the
-                  carbide part number two rows up. The record types are the
-                  part that is true of every connection. */}
-              <div className="lp-facts-mark">Evidence used</div>
-              <div className="lp-evi"><span>your ERP &middot; invoice</span><span>the price history</span></div>
-              <div className="lp-evi"><span>your ERP &middot; bill</span><span>the cost</span></div>
-
-              <div className="lp-actions"><span>Request approval</span><span>Full analysis &rarr;</span></div>
-              {/* The title block stays, because what it says about the
-                  product is true and is the argument: a number here is
-                  computed by a policy you set and stamped with the version of
-                  it that judged the row. What it may not do is print a
-                  *particular* policy's hash and revision for a quote that does
-                  not exist. It names the mechanism now instead of forging an
-                  instance of it. */}
-              <div className="lp-tblock lp-num">
-                <div><span className="k">Computed by</span>your margin policy</div>
-                <div><span className="k">Stamped with</span>its version</div>
-                <div><span className="k">AI&rsquo;s part</span>none</div>
-                <div><span className="k">Figures</span>sample</div>
-              </div>
-            </div>
-            <p className="lp-card-note">
-              The manager&rsquo;s decision card, as the product draws it — with
-              sample figures, because no customer&rsquo;s numbers belong on a
-              public page.
-            </p>
-            </div>
+            <DecisionCard item={EXAMPLE_ITEM} price={price} />
           </div>
         </header>
 
@@ -563,6 +450,30 @@ export function Landing({ onEnter, onDemo }: {
             })}
             <span className="lp-sched-note">
               — your ERP records what happened; PIE helps you decide what to do next
+            </span>
+          </div>
+        </div>
+
+        {/* The trades that have a page of their own, derived for the same
+            reason the systems above are: these links are the only route from
+            this page to that family, and a page reachable only from the
+            sitemap is an orphan.
+
+            Two entries, and that is the whole list on purpose. `industries.ts`
+            says what a trade has to clear to be here and
+            `docs/vertical-strategy.md` is the gate — a trade whose headline
+            pain this product does not serve does not get a page just because
+            it is a plausible buyer. */}
+        <div className="lp-sched">
+          <div className="lp-wrap lp-sched-row">
+            <span className="lp-sched-label">Written for your trade</span>
+            {INDUSTRY_PAGES.map((page) => (
+              <a className="lp-sys" key={page.slug} href={`/industries/${page.slug}`}>
+                {page.short}
+              </a>
+            ))}
+            <span className="lp-sched-note">
+              — the same platform, argued in the vocabulary of one desk
             </span>
           </div>
         </div>
@@ -770,6 +681,18 @@ export function Landing({ onEnter, onDemo }: {
                   force when you gave it.
                 </p>
               </div>
+            </div>
+            {/* Derived rather than three written-out links, for the reason
+                every other cross-family row on this site is: a hand-kept list
+                is how the fourth page becomes unreachable. The panels above
+                are the summary; these are the pages. */}
+            <div className="lp-footer-erp">
+              {ROLE_PAGES.map((page) => (
+                <span key={page.slug}>
+                  <a href={`/roles/${page.slug}`}>PIE for {page.short}</a>
+                  <span className="lp-sep" aria-hidden="true"> · </span>
+                </span>
+              ))}
             </div>
           </div>
         </section>

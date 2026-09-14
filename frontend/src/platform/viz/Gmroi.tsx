@@ -37,6 +37,7 @@ import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { money } from "../../money";
 import { papi } from "../api";
+import { useGroupScope } from "../groupScope";
 import { EntityName } from "../EntityName";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
 import { DataGrid, numeric } from "../DataGrid";
@@ -97,8 +98,13 @@ const BY_BRAND = "brand";
 export function GmroiScreen({ session }: { session: PlatformSession }) {
   const [months, setMonths] = useState(12);
   const [grain, setGrain] = useState(BY_SKU);
+  // Server-side: a principal's GMROI is Σ gross profit ÷ Σ average inventory
+  // over its own items, so the ratio has to be recomputed inside the group
+  // rather than listed for three of the book's rows.
+  const itemGroup = useGroupScope("PRODUCT");
   const { data, loading, error, reload } = useInsight(
-    "gmroi", () => papi.gmroi(session.token, months), [session.token, months]);
+    "gmroi", () => papi.gmroi(session.token, months, itemGroup),
+    [session.token, months, itemGroup]);
 
   const covered = (data?.window as Row | undefined) ?? {};
   const totals = (data?.totals as Row | undefined) ?? {};

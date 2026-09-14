@@ -14,16 +14,34 @@
 // **Rendered narrow on purpose**, the same reason `UnrecordedQuotes.test.tsx`
 // gives: below `NARROW_BREAKPOINT` the ag-grid chunk is never fetched, so these
 // assertions are about this component rather than about ag-grid inside jsdom.
+//
+// **Rendered at `/stock`, inside a `GroupScopeProvider`.** This screen reads the
+// page's item group, and `useGroupScope` throws rather than quietly answering
+// "the whole book" when there is no provider above it — a screen that takes a
+// group and renders without one is a page that scopes nothing while looking
+// like it does. So the harness mounts the page, at its own address, which is
+// also what makes `SCOPED_BY` declare the kind this screen asks for.
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 
 import { papi } from "../api";
+import { defineAbilityFor } from "../ability";
+import { GroupScopeProvider } from "../groupScope";
+import { PATH } from "../route";
 import { StockScreen } from "./TheBook";
 import type { PlatformSession } from "../types";
 
-vi.mock("../api", () => ({ papi: { stock: vi.fn() } }));
+vi.mock("../api", () => ({
+  papi: {
+    stock: vi.fn(),
+    // The provider asks for this workspace's item groups. Answering with none
+    // draws no control, which is the state these two assertions are about.
+    listGroups: vi.fn().mockResolvedValue({
+      groups: [], kinds: [], may_edit: true, empty_reason: null }),
+  },
+}));
 
 const SESSION: PlatformSession = {
   token: "t", role: "OWNER", name: "S. Uppalapati", user_id: "u1",
@@ -61,8 +79,11 @@ function draw(body: Record<string, unknown>) {
     <QueryClientProvider client={new QueryClient({
       defaultOptions: { queries: { retry: false } },
     })}>
-      <MemoryRouter>
-        <StockScreen session={SESSION} />
+      <MemoryRouter initialEntries={[PATH.stock]}>
+        <GroupScopeProvider token={SESSION.token}
+                            ability={defineAbilityFor("OWNER")}>
+          <StockScreen session={SESSION} />
+        </GroupScopeProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );

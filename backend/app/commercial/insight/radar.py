@@ -23,11 +23,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Iterable, Optional
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...domain import models
 from ...signals.aggregates import label_for
+from . import scope
 from ..config import CommercialThresholds
 
 #: Opportunity kinds, in the order a reader should think about them: the ones
@@ -117,7 +117,8 @@ def _impact(row: models.CustomerItemMetric) -> tuple[float, bool]:
     return max(gap, peer, 0.0), False
 
 
-def below_floor(session: Session, org: str, th: CommercialThresholds) -> dict:
+def below_floor(session: Session, org: str, th: CommercialThresholds, *,
+                customers: Optional[Iterable[str]] = None) -> dict:
     """What the materiality floor excluded, so an empty radar can explain itself.
 
     A screen that is empty because every gap is small should say exactly that,
@@ -139,9 +140,7 @@ def below_floor(session: Session, org: str, th: CommercialThresholds) -> dict:
     than about the customers.
     """
     floor = th.min_material_gap
-    rows = session.scalars(
-        select(models.CustomerItemMetric)
-        .where(models.CustomerItemMetric.organization_id == org)).all()
+    rows = session.scalars(scope.metrics_for(org, customers=customers)).all()
 
     excluded = []
     unnamed = 0
@@ -168,12 +167,18 @@ def below_floor(session: Session, org: str, th: CommercialThresholds) -> dict:
 
 def build(session: Session, org: str, th: CommercialThresholds, *,
           customer_names: dict[str, str], product_names: dict[str, str],
-          limit: int = 100) -> list[Opportunity]:
-    """Every relationship with a material, named, evidenced gap."""
+          limit: int = 100,
+          customers: Optional[Iterable[str]] = None) -> list[Opportunity]:
+    """Every relationship with a material, named, evidenced gap.
+
+    ``customers`` narrows the read to a group somebody drew. ``below_floor``
+    takes the same bound and must be given it: the two are one answer, and a
+    radar that came back empty for a segment while explaining itself with the
+    whole book's rejected gaps would be describing a screen nobody is looking
+    at.
+    """
     floor = th.min_material_gap
-    rows = session.scalars(
-        select(models.CustomerItemMetric)
-        .where(models.CustomerItemMetric.organization_id == org)).all()
+    rows = session.scalars(scope.metrics_for(org, customers=customers)).all()
 
     out: list[Opportunity] = []
     for row in rows:

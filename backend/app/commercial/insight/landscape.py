@@ -22,12 +22,11 @@ stamped with the version that produced it.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, Optional
+from typing import Iterable, Literal, Optional
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from ...domain import models
+from . import scope
 from ..config import CommercialThresholds
 
 RELATIONSHIP = "relationship"
@@ -133,13 +132,23 @@ def build(session: Session, org: str, th: CommercialThresholds, *,
           subject: Literal["relationship", "product"] = RELATIONSHIP,
           measure: Literal["margin", "momentum"] = BY_MARGIN,
           customer_names: Optional[dict] = None,
-          product_names: Optional[dict] = None) -> dict:
-    """Position every subject against revenue and the chosen vertical measure."""
+          product_names: Optional[dict] = None,
+          customers: Optional[Iterable[str]] = None,
+          products: Optional[Iterable[str]] = None) -> dict:
+    """Position every subject against revenue and the chosen vertical measure.
+
+    ``customers`` and ``products`` narrow the read to a group somebody drew.
+    They bound the rows rather than trim the points, and the horizontal split is
+    why: it is the median revenue of what was read, so inside a group "large"
+    means large for that group. Trimming afterwards would draw the whole book's
+    dividing line across a segment and call a dot small that is the biggest
+    thing in it. The vertical split is unaffected either way — it is policy, as
+    the module docstring says, and that is the point of it being policy.
+    """
     names_c = customer_names or {}
     names_p = product_names or {}
     rows = session.scalars(
-        select(models.CustomerItemMetric)
-        .where(models.CustomerItemMetric.organization_id == org)).all()
+        scope.metrics_for(org, customers=customers, products=products)).all()
 
     if subject == PRODUCT:
         points = _by_product(rows, names_p, measure)

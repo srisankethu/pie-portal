@@ -81,8 +81,14 @@ customer_group = for_kind(SubjectEntityType.CUSTOMER.value)
 vendor_group = for_kind(SubjectEntityType.VENDOR.value)
 item_group = for_kind(SubjectEntityType.PRODUCT.value)
 
-#: For a screen that crosses two kinds at once. ``?items=`` beside ``?group=``.
+#: For a screen that crosses two kinds at once, beside ``?group=``. Two screens
+#: answer about both ends of the book in one response — ``/landscape`` positions
+#: relationships, which are a customer and an item, and ``/bonds`` measures the
+#: customer side and the supplier side together — so each needs a second
+#: parameter under a name a reader can tell from the first.
 item_group_as_items = for_kind(SubjectEntityType.PRODUCT.value, alias="items")
+vendor_group_as_vendors = for_kind(SubjectEntityType.VENDOR.value,
+                                   alias="vendors")
 
 
 def ref(group: Optional[groups.ResolvedGroup]) -> Optional[dict]:

@@ -15,6 +15,7 @@ import { money } from "../../money";
 import { ChartTip, InlineLink, Unavailable, VarianceIndicator } from "../kit";
 import { Tip } from "../../Tip";
 import { papi } from "../api";
+import { useGroupScope } from "../groupScope";
 import type { PlatformSession } from "../types";
 import { vizPath } from "../route";
 import { Figure, Panel, stateOf } from "./Panel";
@@ -281,9 +282,15 @@ export function MigrationMatrix({ session, months }: {
   session: PlatformSession;
   months: number;
 }) {
+  // The page's customer group. This panel renders directly under the journey
+  // chart on both `/journey` and `/customers`, and those pages carry one —
+  // unscoped it was the whole book's movement beneath a chart that had visibly
+  // narrowed, which is two answers on one screen.
+  const group = useGroupScope("CUSTOMER");
   const { data, loading, error, reload } = useInsight(
     "migration",
-    () => papi.migration(session.token, months), [session.token, months]);
+    () => papi.migration(session.token, months, group),
+    [session.token, months, group]);
   const [open, setOpen] = useState<string | null>(null);
   const [ref, room] = useMeasure<HTMLDivElement>();
 

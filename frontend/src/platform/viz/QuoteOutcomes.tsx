@@ -33,6 +33,7 @@ import { formatDate } from "../../when";
 import type { QuoteLossReason, QuoteOutcomeStatus } from "../../types";
 import { abilityFor } from "../ability";
 import { papi } from "../api";
+import { useGroupScope } from "../groupScope";
 import { DataGrid, numeric, text } from "../DataGrid";
 import { RecordOutcomeDialog, type LossChoice } from "../RecordOutcomeDialog";
 import type { ColDef } from "../DataGrid";
@@ -92,8 +93,12 @@ const SLICES: [string, string][] = [
 ];
 
 export function QuoteOutcomesScreen({ session }: { session: PlatformSession }) {
+  // Server-side: a win rate is a ratio, and one computed over the book and
+  // listed beside a segment's quotes is a number about neither.
+  const group = useGroupScope("CUSTOMER");
   const { data, loading, error, reload } = useInsight(
-    "quote-outcomes", () => papi.quoteOutcomes(session.token), [session.token]);
+    "quote-outcomes", () => papi.quoteOutcomes(session.token, 12, group),
+    [session.token, group]);
 
   // Manager territory, and omitted rather than rendered and then refused —
   // a panel that always fails teaches people the product is broken.
@@ -410,8 +415,13 @@ type ComparisonRow = {
 };
 
 function PricingPanel({ session }: { session: PlatformSession }) {
+  // The page's group, not this panel's — the same one the outcomes above read.
+  // Two panels each holding their own selection is the defect `groupScope.tsx`
+  // exists to have removed.
+  const group = useGroupScope("CUSTOMER");
   const { data, loading, error, reload } = useInsight(
-    "quote-pricing", () => papi.quotePricing(session.token), [session.token]);
+    "quote-pricing", () => papi.quotePricing(session.token, group),
+    [session.token, group]);
 
   const columns = useMemo<ColDef<ComparisonRow>[]>(() => [
     text<ComparisonRow>("product_label", "Item", { minWidth: 220 }),

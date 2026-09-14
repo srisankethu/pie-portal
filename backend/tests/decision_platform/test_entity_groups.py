@@ -22,7 +22,7 @@ same rows is a wrong number nobody would ever look twice at.
 """
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 import pytest
@@ -82,12 +82,14 @@ def _hdr(client, email):
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
-def _seed_customers(maker, *, owned_by: dict[str, str] | None = None) -> list[str]:
-    """Three accounts. ``owned_by`` maps customer id to the user who covers it."""
+def _seed_customers(maker, *, owned_by: dict[str, str] | None = None,
+                    n: int = 3) -> list[str]:
+    """``n`` accounts, three by default. ``owned_by`` maps customer id to the
+    user who covers it."""
     owned_by = owned_by or {}
     s = maker()
     ids = []
-    for i in range(3):
+    for i in range(n):
         cid = f"cust-{i}"
         s.add(models.Customer(customer_id=cid, organization_id=ORG,
                               external_id=f"zx-{i}", name=f"Account {i}",
@@ -514,10 +516,15 @@ def test_an_unscoped_answer_says_so_rather_than_naming_a_group(app_and_maker):
 
 
 #: Every endpoint that takes a customer group, and the key its rows live under.
-#: Parametrised rather than written out six times, because the property is the
-#: same one at each: the scope is applied server-side and the answer names the
-#: group it was computed over. A sixth endpoint added without a row here is an
+#: Parametrised rather than written out thirteen times, because the property is
+#: the same one at each: the scope is applied server-side and the answer names
+#: the group it was computed over. An endpoint added without a row here is an
 #: endpoint whose scoping nothing checks.
+#:
+#: Two of these are the same *page*, and that is why both are listed.
+#: `/quote-outcomes` is the win rate and `/quote-pricing` is the panel under it;
+#: a page-level control that reached one of them would be a control that looked
+#: applied to both.
 CUSTOMER_SCOPED = [
     ("/api/v1/insight/credit", "accounts"),
     ("/api/v1/insight/cadence", "customers"),
@@ -525,7 +532,128 @@ CUSTOMER_SCOPED = [
     ("/api/v1/insight/lost-revenue", "causes"),
     ("/api/v1/insight/payments", "customers"),
     ("/api/v1/insight/composition", "series"),
+    ("/api/v1/insight/opportunities", "opportunities"),
+    ("/api/v1/insight/landscape", "points"),
+    ("/api/v1/insight/mix", "customers"),
+    ("/api/v1/insight/bonds", "customers"),
+    ("/api/v1/insight/dependency", "customers"),
+    ("/api/v1/insight/quote-outcomes", "customers"),
+    ("/api/v1/insight/quote-pricing", "comparisons"),
+    # Not because the matrix is a share of anything, but because of *where it
+    # renders*: directly under the journey chart on `/journey` and on
+    # `/customers`, both of which carry a customer group. A panel beside a
+    # narrowed one that is not narrowed itself is two answers on one screen.
+    ("/api/v1/insight/migration", "cells"),
 ]
+
+#: The same three properties for the other two kinds. Written as their own
+#: tables rather than folded into the one above with a kind column, because the
+#: group each names has to exist before the request is made and a shared
+#: fixture that made one of each would hide which kind an endpoint actually
+#: read — the failure `group_scope.for_kind`'s alias note describes.
+VENDOR_SCOPED = [
+    "/api/v1/insight/supply",
+    "/api/v1/insight/payables",
+    # The second panel on `/payables`, for the reason `/migration` is listed
+    # above: a list of every supplier under a median narrowed to a set of them
+    # is the page half scoped.
+    "/api/v1/insight/vendor-terms",
+]
+
+ITEM_SCOPED = [
+    "/api/v1/insight/catalogue",
+    "/api/v1/insight/stock",
+    "/api/v1/insight/gmroi",
+]
+
+
+@pytest.mark.parametrize("path", VENDOR_SCOPED)
+def test_every_vendor_scoped_screen_names_the_group_it_computed_over(
+        app_and_maker, path):
+    client, maker = app_and_maker
+    version = _make_group(maker, slug="principals", name="Import principals",
+                          kind="VENDOR")
+    manager = _hdr(client, MANAGER)
+
+    scoped = client.get(f"{path}?group=principals", headers=manager)
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json()["group"] == {
+        "slug": "principals", "name": "Import principals",
+        "entity_kind": "VENDOR", "group_version": version, "members": 0}
+    assert client.get(path, headers=manager).json()["group"] is None
+
+
+@pytest.mark.parametrize("path", VENDOR_SCOPED)
+def test_a_vendor_scoped_screen_refuses_a_customer_group(app_and_maker, path):
+    """The kind is part of the lookup, not a label on it. A customer group named
+    on a supplier screen resolves to nothing and is a 404 — the same answer a
+    slug that does not exist gets, because within this kind it does not."""
+    client, maker = app_and_maker
+    _seed_customers(maker)
+    _make_group(maker, members=["cust-0"])
+    r = client.get(f"{path}?group=aerospace", headers=_hdr(client, MANAGER))
+    assert r.status_code == 404, f"{path}: {r.status_code}"
+
+
+@pytest.mark.parametrize("path", ITEM_SCOPED)
+def test_every_item_scoped_screen_names_the_group_it_computed_over(
+        app_and_maker, path):
+    client, maker = app_and_maker
+    version = _make_group(maker, slug="drills", name="Carbide drills",
+                          kind="PRODUCT")
+    manager = _hdr(client, MANAGER)
+
+    scoped = client.get(f"{path}?group=drills", headers=manager)
+    assert scoped.status_code == 200, scoped.text
+    assert scoped.json()["group"] == {
+        "slug": "drills", "name": "Carbide drills", "entity_kind": "PRODUCT",
+        "group_version": version, "members": 0}
+    assert client.get(path, headers=manager).json()["group"] is None
+
+
+@pytest.mark.parametrize("path", ITEM_SCOPED)
+def test_every_item_scoped_screen_refuses_an_unknown_group(app_and_maker, path):
+    client, _maker = app_and_maker
+    r = client.get(f"{path}?group=no-such-thing", headers=_hdr(client, MANAGER))
+    assert r.status_code == 404, f"{path}: {r.status_code}"
+
+
+#: The two screens that answer about both ends of the book in one response, and
+#: the parameter each carries its second kind on. One parameter would have had
+#: to mean a different kind of set depending on which half the reader was
+#: looking at.
+TWO_ENDED = [
+    ("/api/v1/insight/bonds", "vendors", "VENDOR"),
+    ("/api/v1/insight/dependency", "vendors", "VENDOR"),
+    ("/api/v1/insight/landscape", "items", "PRODUCT"),
+    ("/api/v1/insight/composition", "items", "PRODUCT"),
+]
+
+
+@pytest.mark.parametrize("path,param,kind", TWO_ENDED)
+def test_a_second_kind_binds_to_its_own_parameter(app_and_maker, path, param, kind):
+    """Both bounds at once, each resolving as its own kind.
+
+    The failure this rules out is the one ``group_scope.for_kind`` documents:
+    two dependencies on one endpoint both binding to ``?group=``, reading the
+    same slug as two kinds of group and keeping whichever resolved. Here the
+    customer slug and the second-kind slug are deliberately *different*, so an
+    endpoint that read one parameter twice would 404 rather than pass.
+    """
+    client, maker = app_and_maker
+    _seed_customers(maker)
+    _make_group(maker, members=["cust-0"])
+    second = _make_group(maker, slug="second-set", name="Second set", kind=kind)
+
+    r = client.get(f"{path}?group=aerospace&{param}=second-set",
+                   headers=_hdr(client, MANAGER))
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["group"]["slug"] == "aerospace"
+    key = "items" if param == "items" else "vendors_group"
+    assert body[key] == {
+        "slug": "second-set", "name": "Second set", "entity_kind": kind,
+        "group_version": second, "members": 0}
 
 
 @pytest.mark.parametrize("path,_rows_key", CUSTOMER_SCOPED)
@@ -574,6 +702,80 @@ def test_every_customer_scoped_screen_withholds_a_restricted_group(
                 visibility=groups.RESTRICTED)
     r = client.get(f"{path}?group=watchlist", headers=_hdr(client, SALES))
     assert r.status_code == 404, f"{path}: {r.status_code}"
+
+
+def _seed_metrics(maker, revenues: dict[str, float]) -> None:
+    """One ``CustomerItemMetric`` per customer, at the revenue given.
+
+    The analytical core the landscape and the radar both read. Revenue is the
+    horizontal axis on one and the ranking on the other, so setting it is
+    enough to make both answer differently for different sets.
+    """
+    s = maker()
+    for cid, revenue in revenues.items():
+        s.add(models.CustomerItemMetric(
+            organization_id=ORG, customer_id=cid, product_id=f"prod-{cid}",
+            revenue_12m=revenue, transaction_count=4,
+            thresholds_version="ci_test", computed_at=datetime.now(timezone.utc)))
+    s.commit()
+    s.close()
+
+
+def test_a_groups_landscape_is_split_at_the_groups_own_median(app_and_maker):
+    """The reason the bound is on the *read* and not on the points.
+
+    The horizontal split is the median revenue of what was read, so inside a
+    group "large" has to mean large for that group. Trimming the points after
+    the fact would draw the whole book's dividing line across a segment and
+    call a dot small that is the biggest thing in it — which is the same
+    picture with the wrong quadrants on it, the hardest kind of wrong to see.
+    """
+    client, maker = app_and_maker
+    _seed_customers(maker, n=4)
+    _seed_metrics(maker, {"cust-0": 100.0, "cust-1": 200.0,
+                          "cust-2": 300.0, "cust-3": 9000.0})
+    _make_group(maker, slug="small-two", name="Small two",
+                members=["cust-0", "cust-1"])
+    manager = _hdr(client, MANAGER)
+
+    whole = client.get("/api/v1/insight/landscape", headers=manager).json()
+    part = client.get("/api/v1/insight/landscape?group=small-two",
+                      headers=manager).json()
+
+    assert len(whole["points"]) == 4
+    assert len(part["points"]) == 2
+    # 100/200/300/9000 splits at 300; 100/200 splits at 200. Had the split not
+    # moved, the group's larger member would be graded against a line nothing
+    # in the group reaches — the same picture with the wrong quadrants on it.
+    assert whole["x_split"] == 300.0
+    assert part["x_split"] == 200.0
+    # And the quadrant counts are the group's own, not four rows of the book's.
+    assert sum(part["counts"].values()) == 2
+
+
+def test_a_group_bounds_what_the_radar_examined_not_only_what_it_ranked(
+        app_and_maker):
+    """``below_floor`` takes the same bound as ``build``, and must.
+
+    The two are one answer: the list, and the sentence that explains an empty
+    list. A radar that came back empty for a segment while explaining itself
+    with the whole book's rejected gaps would be describing a screen nobody is
+    looking at — and that sentence quotes a count and a largest-excluded
+    figure, so it would be quoting numbers from outside the group.
+    """
+    client, maker = app_and_maker
+    _seed_customers(maker)
+    _seed_metrics(maker, {"cust-0": 100.0, "cust-1": 200.0, "cust-2": 9000.0})
+    _make_group(maker, slug="one-only", name="One only", members=["cust-0"])
+
+    manager = _hdr(client, MANAGER)
+
+    whole = client.get("/api/v1/insight/opportunities", headers=manager).json()
+    part = client.get("/api/v1/insight/opportunities?group=one-only",
+                      headers=manager).json()
+
+    assert whole["excluded"]["relationships_examined"] == 3
+    assert part["excluded"]["relationships_examined"] == 1
 
 
 def test_an_empty_group_explains_itself_rather_than_blaming_the_sync(app_and_maker):

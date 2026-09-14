@@ -48,6 +48,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
+import { useGroupScope } from "../groupScope";
 import { isAre } from "../format";
 import { EntityName } from "../EntityName";
 import { ChartTip, InlineLink, StatusChip, Unavailable } from "../kit";
@@ -158,10 +159,15 @@ function WatchPicker({
 
 export function BondsScreen({ session }: { session: PlatformSession }) {
   const [months, setMonths] = useState("24");
+  // Two halves, two groups. Every facet a bond publishes is measured against
+  // the counterparties read, so both bounds go to the server — a supplier that
+  // is 40% of the import principals is not 40% of the book.
+  const customerGroup = useGroupScope("CUSTOMER");
+  const vendorGroup = useGroupScope("VENDOR");
   const { data, loading, error, reload } = useInsight(
     "bonds",
-    () => papi.bonds(session.token, Number(months)),
-    [session.token, months]);
+    () => papi.bonds(session.token, Number(months), customerGroup, vendorGroup),
+    [session.token, months, customerGroup, vendorGroup]);
 
   const customers = (data?.customers as Row | undefined) ?? {};
   const vendors = (data?.vendors as Row | null | undefined) ?? null;

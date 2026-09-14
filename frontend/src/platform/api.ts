@@ -371,11 +371,19 @@ export const papi = {
     return req<Record<string, unknown>>(`/api/v1/insight/journey?${p}`, {}, t);
   },
 
-  migration: (t: string, months = 3) =>
-    req<Record<string, unknown>>(`/api/v1/insight/migration?months=${months}`, {}, t),
+  // Takes the page's customer group for the reason the endpoint gives: this
+  // renders directly beneath the journey chart, on two pages that carry one.
+  migration: (t: string, months = 3, group = "") => {
+    const p = new URLSearchParams({ months: String(months) });
+    if (group) p.set("group", group);
+    return req<Record<string, unknown>>(`/api/v1/insight/migration?${p}`, {}, t);
+  },
 
-  opportunities: (t: string, limit = 100) =>
-    req<Record<string, unknown>>(`/api/v1/insight/opportunities?limit=${limit}`, {}, t),
+  opportunities: (t: string, limit = 100, group = "") => {
+    const p = new URLSearchParams({ limit: String(limit) });
+    if (group) p.set("group", group);
+    return req<Record<string, unknown>>(`/api/v1/insight/opportunities?${p}`, {}, t);
+  },
 
   lostRevenue: (t: string, months = 3, group = "") => {
     const p = new URLSearchParams({ months: String(months) });
@@ -389,9 +397,16 @@ export const papi = {
 
   // ── Patterns: three endpoints covering five specified views, because two
   // pairs of them are the same chart with a different measure.
-  landscape: (t: string, subject = "relationship", measure = "margin") =>
-    req<Record<string, unknown>>(
-      `/api/v1/insight/landscape?subject=${subject}&measure=${measure}`, {}, t),
+  // Two group parameters, like `composition` below and for the same reason: a
+  // point here is a relationship — a customer and an item — so either kind of
+  // set narrows either `subject`.
+  landscape: (t: string, subject = "relationship", measure = "margin",
+              group = "", items = "") => {
+    const p = new URLSearchParams({ subject, measure });
+    if (group) p.set("group", group);
+    if (items) p.set("items", items);
+    return req<Record<string, unknown>>(`/api/v1/insight/landscape?${p}`, {}, t);
+  },
 
   // Two group parameters, and they are not the two dimensions: `group` is a set
   // of customers and `items` a set of items, either combinable with either
@@ -422,8 +437,10 @@ export const papi = {
   // scoped like `supply` rather than like `payments`: which customers pay us
   // slowly is a call list, which suppliers we are stringing along is a
   // commercial position.
-  payables: (t: string) =>
-    req<Record<string, unknown>>("/api/v1/insight/payables", {}, t),
+  payables: (t: string, group = "") =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/payables${group ? `?group=${encodeURIComponent(group)}` : ""}`,
+      {}, t),
 
   // The whole cycle the two above sit inside: order → invoice → payment. Dates
   // and day counts only, so it is scoped like `payments` rather than like
@@ -435,9 +452,11 @@ export const papi = {
   // Which quotes were won and which were lost. No cost anywhere in it, so
   // every role reads it — a salesperson sees their own accounts, scoped by the
   // server exactly as `/api/v1/accounts` is.
-  quoteOutcomes: (t: string, months = 12) =>
-    req<Record<string, unknown>>(
-      `/api/v1/insight/quote-outcomes?months=${months}`, {}, t),
+  quoteOutcomes: (t: string, months = 12, group = "") => {
+    const p = new URLSearchParams({ months: String(months) });
+    if (group) p.set("group", group);
+    return req<Record<string, unknown>>(`/api/v1/insight/quote-outcomes?${p}`, {}, t);
+  },
 
   /** The quotes the ERP holds no outcome for, in the order worth asking about.
    *
@@ -465,14 +484,23 @@ export const papi = {
   // has paid — and the margin behind both. Manager and above, scoped like
   // `payables`: a win rate is a fact about a relationship, where the margin
   // sits on the ones we lose is a commercial position.
-  quotePricing: (t: string) =>
-    req<Record<string, unknown>>("/api/v1/insight/quote-pricing", {}, t),
+  // The same `group` the outcomes call takes, because this is the panel below
+  // it on the same page. Half a page scoped is two answers on one screen.
+  quotePricing: (t: string, group = "") =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/quote-pricing${group ? `?group=${encodeURIComponent(group)}` : ""}`,
+      {}, t),
 
   // What we actually agreed to pay a supplier in, which Zoho's fixed dropdown
   // often cannot express. Zoho's own value is never overwritten — both travel
   // together, because the gap between them is the thing worth seeing.
-  vendorTerms: (t: string) =>
-    req<Record<string, unknown>>("/api/v1/insight/vendor-terms", {}, t),
+  // The page's vendor group, because this renders under the payables
+  // settlements on a page that carries one — every supplier listed beneath a
+  // chart narrowed to the import principals is the page half scoped.
+  vendorTerms: (t: string, group = "") =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/vendor-terms${group ? `?group=${encodeURIComponent(group)}` : ""}`,
+      {}, t),
 
   setVendorTerm: (t: string, vendorId: string, days: number, basis: string,
                   note?: string | null) =>
@@ -577,8 +605,10 @@ export const papi = {
     req<Record<string, unknown>>(
       `/api/v1/insight/cash-cycle?months=${months}`, {}, t),
 
-  stock: (t: string) =>
-    req<Record<string, unknown>>("/api/v1/insight/stock", {}, t),
+  stock: (t: string, group = "") =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/stock${group ? `?group=${encodeURIComponent(group)}` : ""}`,
+      {}, t),
 
   // `group` narrows to a set of suppliers somebody drew, and the server
   // recomputes inside it rather than hiding rows — see `insight.supply`. Sent
@@ -595,9 +625,11 @@ export const papi = {
   // so there is no version of the screen with the economics removed. The nav
   // item follows the endpoint rather than 403-ing, and `/stock` carries the
   // withholding notice for the roles that cannot open this.
-  gmroi: (t: string, months: number) =>
-    req<Record<string, unknown>>(
-      `/api/v1/insight/gmroi?months=${months}`, {}, t),
+  gmroi: (t: string, months: number, group = "") => {
+    const p = new URLSearchParams({ months: String(months) });
+    if (group) p.set("group", group);
+    return req<Record<string, unknown>>(`/api/v1/insight/gmroi?${p}`, {}, t);
+  },
 
   // Relationship bonds — the one view that reads both sides of the book.
   //
@@ -606,8 +638,14 @@ export const papi = {
   // answer rather than a 403. The server omits the supplier half from their
   // response entirely, which is why this takes no `side` parameter — asking is
   // not what decides, the role is.
-  bonds: (t: string, months: number) =>
-    req<Record<string, unknown>>(`/api/v1/insight/bonds?months=${months}`, {}, t),
+  // Two group parameters, because this is two screens in one response: `group`
+  // narrows the customer half and `vendors` the supplier half.
+  bonds: (t: string, months: number, group = "", vendors = "") => {
+    const p = new URLSearchParams({ months: String(months) });
+    if (group) p.set("group", group);
+    if (vendors) p.set("vendors", vendors);
+    return req<Record<string, unknown>>(`/api/v1/insight/bonds?${p}`, {}, t);
+  },
 
   // Product mix — who takes which lines of the business, and which they do not.
   // Every role: the grid is revenue and dates, and the conversation it exists
@@ -616,22 +654,32 @@ export const papi = {
   // `connectionId` scopes the whole grid to one connected company on the
   // server, rather than filtering rows in the browser: the headline counts are
   // what this screen is for, so narrowing has to recompute them.
-  mix: (t: string, months: number, by = "category", connectionId?: string) =>
-    req<Record<string, unknown>>(
-      `/api/v1/insight/mix?months=${months}&by=${by}`
-      + (connectionId ? `&connection_id=${encodeURIComponent(connectionId)}` : ""),
-      {}, t),
+  mix: (t: string, months: number, by = "category", connectionId?: string,
+        group = "") => {
+    const p = new URLSearchParams({ months: String(months), by });
+    if (connectionId) p.set("connection_id", connectionId);
+    // Intersected with the company bound on the server, never substituted for
+    // it — see `groups.narrow`.
+    if (group) p.set("group", group);
+    return req<Record<string, unknown>>(`/api/v1/insight/mix?${p}`, {}, t);
+  },
 
   // What this book leans on, at both ends. The supplier half is manager+ and
   // is omitted from a salesperson's response rather than 403-ing the screen.
   // `connectionId` scopes both halves on the server. Like the mix grid and
   // unlike the row filters: this screen's figures are shares of a total, so
   // narrowing has to recompute them.
-  dependency: (t: string, connectionId?: string) =>
-    req<Record<string, unknown>>(
-      "/api/v1/insight/dependency"
-      + (connectionId ? `?connection_id=${encodeURIComponent(connectionId)}` : ""),
-      {}, t),
+  dependency: (t: string, connectionId?: string, group = "", vendors = "") => {
+    const p = new URLSearchParams();
+    if (connectionId) p.set("connection_id", connectionId);
+    // Both ends, each intersected with the company bound rather than replacing
+    // it. `vendors` narrows the supplier half a salesperson never receives.
+    if (group) p.set("group", group);
+    if (vendors) p.set("vendors", vendors);
+    const q = p.toString();
+    return req<Record<string, unknown>>(
+      `/api/v1/insight/dependency${q ? `?${q}` : ""}`, {}, t);
+  },
 
   // Vendor targets, and the rebate scheme attached to each. The one thing in
   // the platform that is typed rather than synced, so it has a write path.

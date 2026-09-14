@@ -139,6 +139,19 @@ mode being left on.
 `AppBar`, `Tabs`, `Breadcrumbs`, and a `Drawer` on a phone. Consistent
 throughout.
 
+**A `Tabs` strip below `sm` is a button and a menu, not a strip.** MUI's
+scrollable variant renders two scroll arrows and then hides them below `sm`, so
+the tabs past the fold are reachable only by swiping something that gives no
+sign it can be swiped — the drawer's lesson below, one component over.
+Measured on Setup at 390px: the strip overflowed its scroller by 98px with two
+tabs clipped out of frame and `scrollButtons=2 hidden=2`. Turning the arrows on
+made it worse, because they cost about 80px of a 390px row. So
+`DestinationTabs` draws one full-width button naming the current tab and a menu
+holding every destination; the items stay `RouterLink`s, because a `Select`
+here would break ctrl-click and "open in a new tab" on every tab in the
+product. `e2e/.shots/tabstrip.mjs` is the measurement, and it is the shape of
+check this rule needs — the source read as correct in both states.
+
 **The phone drawer opens on a rightward drag across the screen** — anywhere on
 it, not from the edge. Closing is `SwipeableDrawer`'s own drag, which MUI ships
 and this app already depended on; opening is `platform/swipe.ts`, forty lines,

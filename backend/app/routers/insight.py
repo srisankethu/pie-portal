@@ -20,7 +20,7 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field
@@ -45,6 +45,7 @@ from ..commercial.insight import (absence, adoption, bonds, cadence, capital,
                                   outcomes as outcomes_view,
                                   passthrough as pass_through_view, payments,
                                   periods, radar, routing, schemes, selffunding,
+                                  scope as metric_scope,
                                   simulate, stock,
                                   unrecorded as unrecorded_view,
                                   story, supply, terms as vendor_terms, wallet,
@@ -222,7 +223,7 @@ _UNSCOPED: Any = object()
 
 def _no_data(th: Any, what: str, *, missing: str = "sales history",
              synced: bool = False, group: Any = _UNSCOPED,
-             items: Any = _UNSCOPED) -> dict:
+             items: Any = _UNSCOPED, vendors_group: Any = _UNSCOPED) -> dict:
     """An empty screen, and the *actual* reason it is empty.
 
     Two parameters because one message was being used for two different states.
@@ -244,14 +245,18 @@ def _no_data(th: Any, what: str, *, missing: str = "sales history",
     is empty, which is the moment somebody most needs to see which set they are
     looking at.
     """
-    # ``items`` is only ever passed by ``/composition``, the one screen that
-    # crosses two kinds of group at once. Two named kwargs rather than one that
-    # changes meaning, for the reason that endpoint keeps two query parameters.
+    # ``items`` and ``vendors_group`` are the second kind on the four screens
+    # that cross two at once. Named kwargs rather than one that changes meaning,
+    # for the reason those endpoints keep two query parameters — and
+    # ``vendors_group`` rather than ``vendors`` because ``/bonds`` and
+    # ``/dependency`` both already publish a ``vendors`` half of their data.
     scoped: dict[str, Any] = {}
     if group is not _UNSCOPED:
         scoped["group"] = group_scope.ref(group)
     if items is not _UNSCOPED:
         scoped["items"] = group_scope.ref(items)
+    if vendors_group is not _UNSCOPED:
+        scoped["vendors_group"] = group_scope.ref(vendors_group)
     if synced:
         return _envelope(
             {}, th=th, **scoped,
@@ -430,19 +435,35 @@ def customer_journey(months: int = Query(12, ge=3, le=24),
 
 @router.get("/migration")
 def migration_matrix(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
+                     group: Optional[groups.ResolvedGroup] =
+                     Depends(group_scope.customer_group),
                      principal: Principal = Depends(current_principal),
                      session: Session = Depends(get_session)) -> dict:
-    """Which revenue band each customer moved between."""
-    _org, snapshot, th = _context(session, principal)
+    """Which revenue band each customer moved between.
+
+    ``group`` bounds the snapshot by customer, so a cell counts movement inside
+    that set. It takes one because of **where this renders rather than what it
+    computes**: the matrix sits directly beneath the journey chart on both
+    ``/journey`` and ``/customers``, and those two pages carry a customer group.
+    Left unscoped it was a grid of the whole book's movement under a control
+    that had visibly narrowed the chart above it — two answers on one screen
+    with nothing saying which was which, which is the defect the page-level
+    scope exists to have removed.
+    """
+    _org, snapshot, th = _context(
+        session, principal,
+        **({"sales_for_customers": group.entity_ids} if group else {}))
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th, "band migration")
+        return _no_data(th, "band migration", group=group)
 
     comparison = periods.comparison(as_of, months=months)
     result = cohorts.migration(snapshot.sales, snapshot.customer_names, comparison)
     return _envelope(result, th=th, as_of=as_of.isoformat(),
+                     group=group_scope.ref(group),
                      empty_reason=(None if result["cells"] else
-                                   "No customer traded in either period."))
+                                   (group_scope.empty_note(group, "trade")
+                                    or "No customer traded in either period.")))
 
 
 def _require_visible_customer(session: Session, customer_id: str,
@@ -530,13 +551,23 @@ def customer_timeline(customer_id: str,
 # ── opportunity radar and lost revenue ──────────────────────────────────────
 @router.get("/opportunities")
 def opportunities(limit: int = Query(100, ge=1, le=300),
+                  group: Optional[groups.ResolvedGroup] =
+                  Depends(group_scope.customer_group),
                   principal: Principal = Depends(require_manager_or_owner),
                   session: Session = Depends(get_session)) -> dict:
-    """Ranked by evidence, then by money. Manager+: every field is margin."""
+    """Ranked by evidence, then by money. Manager+: every field is margin.
+
+    ``group`` bounds the metric read by customer, so "where is the upside in
+    the aerospace book" is answered over that book's relationships — the
+    ranking, the totals and the materiality accounting all move with it. The
+    same bound goes to ``below_floor`` because the two are one answer.
+    """
+    ids = group.entity_ids if group is not None else None
     org, snapshot, th = _labels_only(session, principal)
     rows = radar.build(session, org, th, customer_names=snapshot.customer_names,
-                       product_names=snapshot.product_names, limit=limit)
-    excluded = radar.below_floor(session, org, th)
+                       product_names=snapshot.product_names, limit=limit,
+                       customers=ids)
+    excluded = radar.below_floor(session, org, th, customers=ids)
 
     # An empty radar should answer the question, not shrug. "Nothing qualified"
     # is useless; "seven relationships have gaps, the largest is 3,352, your
@@ -544,6 +575,12 @@ def opportunities(limit: int = Query(100, ge=1, le=300),
     # the dial would have to move to for anything to appear.
     if rows:
         reason = None
+    elif group is not None and group.size == 0:
+        # An empty group first, because the three explanations below are all
+        # about relationships that were examined, and a group nobody is in has
+        # none. "Every gap is below your floor" over a roster of zero is a
+        # sentence about the floor that sends somebody to the wrong setting.
+        reason = group_scope.empty_note(group, "relationship")
     elif excluded["excluded_count"]:
         reason = (
             f"{excluded['excluded_count']} of {excluded['relationships_examined']} "
@@ -579,7 +616,7 @@ def opportunities(limit: int = Query(100, ge=1, le=300),
     return _envelope(
         {"opportunities": [o.to_dict() for o in rows],
          "totals": radar.totals(rows), "excluded": excluded},
-        th=th, empty_reason=reason)
+        th=th, group=group_scope.ref(group), empty_reason=reason)
 
 
 @router.get("/lost-revenue")
@@ -624,6 +661,9 @@ def lost_revenue(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
 def commercial_landscape(
         subject: str = Query("relationship", pattern="^(relationship|product)$"),
         measure: str = Query("margin", pattern="^(margin|momentum)$"),
+        group: Optional[groups.ResolvedGroup] = Depends(group_scope.customer_group),
+        items: Optional[groups.ResolvedGroup] =
+        Depends(group_scope.item_group_as_items),
         principal: Principal = Depends(require_manager_or_owner),
         session: Session = Depends(get_session)) -> dict:
     """Margin-vs-revenue and product momentum — one chart, two parameters.
@@ -632,16 +672,29 @@ def commercial_landscape(
     cost, but the endpoint stays manager-scoped rather than switching its own
     permission on a query parameter: a route whose authorisation depends on an
     argument is one that will eventually be called with the other argument.
+
+    **Two group bounds, and both apply to either subject.** A point here is a
+    relationship — a customer *and* an item — so a customer group narrows the
+    product chart as surely as it narrows the relationship one, and the reverse
+    holds too. ``?group=`` is the customer set and ``?items=`` the item set, the
+    same pair ``/composition`` takes and for the same reason: one parameter that
+    changed meaning with ``subject`` would be a parameter nobody can read off a
+    saved link.
     """
     org, snapshot, th = _labels_only(session, principal)
     result = landscape.build(session, org, th, subject=subject, measure=measure,
                              customer_names=snapshot.customer_names,
-                             product_names=snapshot.product_names)
+                             product_names=snapshot.product_names,
+                             customers=group.entity_ids if group else None,
+                             products=items.entity_ids if items else None)
     return _envelope(
         result, th=th,
+        group=group_scope.ref(group), items=group_scope.ref(items),
         empty_reason=(None if result["points"] else
-                      "No relationship has trailing revenue yet. Run a sync, "
-                      "then recompute metrics."))
+                      (group_scope.empty_note(group, "trailing revenue")
+                       or group_scope.empty_note(items, "trailing revenue")
+                       or "No relationship has trailing revenue yet. Run a "
+                          "sync, then recompute metrics.")))
 
 
 # ── composition: the mix, over time ─────────────────────────────────────────
@@ -1005,7 +1058,9 @@ def payment_behaviour(
 
 
 @router.get("/payables")
-def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
+def payable_behaviour(group: Optional[groups.ResolvedGroup] =
+                      Depends(group_scope.vendor_group),
+                      principal: Principal = Depends(require_manager_or_owner),
                       session: Session = Depends(get_session)) -> dict:
     """How long *we* take to pay, per supplier. Manager and above.
 
@@ -1018,6 +1073,13 @@ def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
     Computed by the same code as the receivable side — see ``insight/payments``
     for why there is one module and not two — with the vocabulary and the prose
     switched by ``payments.PAYABLE``.
+
+    ``?group=`` narrows to a set of vendors, and it narrows the settlements
+    rather than the vendor list that comes back. The headline here is a *median*
+    days-to-pay and the bands below it are proportions, both taken over the
+    settlements handed to ``payments.build`` — trim the rows afterwards and
+    those two figures go on describing the whole book under a chip naming the
+    import principals.
     """
     org, _snapshot, th = _labels_only(session, principal)
     as_of = clock.today(th.timezone)
@@ -1032,7 +1094,11 @@ def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
     if not made and not settled:
         return _no_data(th, "payment behaviour towards suppliers",
                         missing="supplier payment",
-                        synced=_books_have_sales(session, org))
+                        synced=_books_have_sales(session, org), group=group)
+    if group is not None:
+        keep = set(group.entity_ids)
+        vendors = {vid: v for vid, v in vendors.items() if vid in keep}
+        settled = [s for s in settled if s.party_id in keep]
 
     result = payments.build(
         settled, {vid: v.name for vid, v in vendors.items()}, as_of,
@@ -1060,12 +1126,13 @@ def payable_behaviour(principal: Principal = Depends(require_manager_or_owner),
     result["sources_differ"] = companies.count > 1
     result["bases"] = vendor_terms.BASIS_LABELS
     return _envelope(
-        result, th=th,
+        result, th=th, group=group_scope.ref(group),
         empty_reason=(None if result["vendors"] else
-                      "Payments out have synced, but none of them is applied to "
-                      "a bill yet — so there is no bill date to measure from. "
-                      "A sync run before bill breakdowns were read will fill "
-                      "this in on its next pass."))
+                      (group_scope.empty_note(group, "settled bill")
+                       or "Payments out have synced, but none of them is "
+                          "applied to a bill yet — so there is no bill date to "
+                          "measure from. A sync run before bill breakdowns "
+                          "were read will fill this in on its next pass.")))
 
 
 @router.get("/customer-financing")
@@ -1270,7 +1337,9 @@ def _assigned_customer_ids(session: Session,
 
 
 def _scoped_outcomes(session: Session, org: str, principal: Principal,
-                     statuses: tuple[str, ...]) -> list[models.QuoteOutcome]:
+                     statuses: tuple[str, ...],
+                     group: Optional[groups.ResolvedGroup] = None,
+                     ) -> list[models.QuoteOutcome]:
     """Every quote in these states this principal may see, and nothing else.
 
     A salesperson is narrowed to their own accounts, the same rule
@@ -1284,6 +1353,12 @@ def _scoped_outcomes(session: Session, org: str, principal: Principal,
     outcome. Those are usually a walk-in or a name typed slightly differently,
     and dropping them would quietly remove a salesperson's own losses from
     their own denominator.
+
+    ``group`` narrows further, never wider: it is a second ``where`` on the same
+    query, so it can only remove rows the visibility clause already allowed. It
+    also removes the unattributed quotes above — deliberately. A quote with no
+    customer on it belongs to no set of customers, and counting it inside one
+    would put a walk-in in the aerospace book's denominator.
     """
     stmt = select(models.QuoteOutcome).where(
         models.QuoteOutcome.organization_id == org,
@@ -1294,6 +1369,9 @@ def _scoped_outcomes(session: Session, org: str, principal: Principal,
             models.QuoteOutcome.customer_id.in_(mine)
             | (models.QuoteOutcome.customer_id.is_(None)
                & (models.QuoteOutcome.updated_by_user_id == principal.user_id)))
+    if group is not None:
+        stmt = stmt.where(
+            models.QuoteOutcome.customer_id.in_(list(group.entity_ids)))
     return list(session.scalars(stmt).all())
 
 
@@ -1459,10 +1537,12 @@ class _QuoteEvidence:
     quotes: list[outcomes_view.DecidedQuote]
 
 
-def _quote_evidence(session: Session, principal: Principal) -> _QuoteEvidence:
+def _quote_evidence(session: Session, principal: Principal,
+                    group: Optional[groups.ResolvedGroup] = None,
+                    ) -> _QuoteEvidence:
     org, snapshot, th = _labels_only(session, principal)
-    decided = _scoped_outcomes(session, org, principal, _DECIDED)
-    awaiting = _scoped_outcomes(session, org, principal, _AWAITING)
+    decided = _scoped_outcomes(session, org, principal, _DECIDED, group)
+    awaiting = _scoped_outcomes(session, org, principal, _AWAITING, group)
     lines_by_quote = _latest_lines(
         session, org, [o.quote_id for o in decided + awaiting])
     principal_names, principal_of, line_of = _quote_facets(session, org, th)
@@ -1476,6 +1556,8 @@ def _quote_evidence(session: Session, principal: Principal) -> _QuoteEvidence:
 
 @router.get("/quote-outcomes")
 def quote_outcomes(months: int = Query(12, ge=1, le=36),
+                   group: Optional[groups.ResolvedGroup] =
+                   Depends(group_scope.customer_group),
                    principal: Principal = Depends(current_principal),
                    session: Session = Depends(get_session)) -> dict:
     """How often quotes are won, sliced the ways this business asks.
@@ -1489,8 +1571,14 @@ def quote_outcomes(months: int = Query(12, ge=1, le=36),
     them — the same class of fact as a win rate, and nothing in it can be
     inverted into what we paid for anything. What it costs us to lose those
     quotes is a different question and stays behind ``/quote-pricing``.
+
+    ``?group=`` narrows to a set of customers, and it bounds the quotes rather
+    than the rows that come back — a win rate is a ratio, and one computed over
+    the book and listed beside a segment's quotes is a number about neither.
+    ``/quote-pricing`` takes the same parameter because it is the panel *below
+    this one on the same page*: half a page scoped is two answers on one screen.
     """
-    ev = _quote_evidence(session, principal)
+    ev = _quote_evidence(session, principal, group)
     org, snapshot, th, as_of = ev.org, ev.snapshot, ev.th, ev.as_of
     awaiting, lines_by_quote, quotes = ev.awaiting, ev.lines_by_quote, ev.quotes
 
@@ -1532,17 +1620,20 @@ def quote_outcomes(months: int = Query(12, ge=1, le=36),
     #: rather than silently absent from the counts above.
     result["unpriced_quotes"] = len(ev.decided) - len(quotes)
     return _envelope(
-        result, th=th,
+        result, th=th, group=group_scope.ref(group),
         empty_reason=(None if quotes else
-                      "No quote has been marked won or lost yet. Record an "
-                      "outcome on a quote and its result appears here — a win "
-                      "rate is not computed until "
-                      f"{outcomes_view.MIN_DECIDED_QUOTES} quotes have been "
-                      "decided."))
+                      (group_scope.empty_note(group, "decided quote")
+                       or "No quote has been marked won or lost yet. Record an "
+                          "outcome on a quote and its result appears here — a "
+                          "win rate is not computed until "
+                          f"{outcomes_view.MIN_DECIDED_QUOTES} quotes have "
+                          "been decided.")))
 
 
 @router.get("/quote-pricing")
-def quote_pricing(principal: Principal = Depends(require_manager_or_owner),
+def quote_pricing(group: Optional[groups.ResolvedGroup] =
+                  Depends(group_scope.customer_group),
+                  principal: Principal = Depends(require_manager_or_owner),
                   session: Session = Depends(get_session)) -> dict:
     """Where a losing price sat, against what wins and against what they paid.
 
@@ -1555,17 +1646,21 @@ def quote_pricing(principal: Principal = Depends(require_manager_or_owner),
     have been quoted often enough on both sides to compare, and a book with a
     thin quote history produces nothing at all — which is the honest reply to
     "are we losing on price" when the evidence cannot say.
+
+    ``?group=`` for the reason ``/quote-outcomes`` takes it: this is the panel
+    below that one on the same page, and a page-level scope that reached one of
+    them would be a control that looked applied to both.
     """
-    ev = _quote_evidence(session, principal)
+    ev = _quote_evidence(session, principal, group)
 
     # What each customer has historically paid, from the metrics layer that
     # already computes it. Recomputing a price history here would be a second
     # answer to a question ``commercial/metrics`` has one answer to.
     paid_before = {
         (row.customer_id, row.product_id): Decimal(row.current_sell_price)
-        for row in session.scalars(
-            select(models.CustomerItemMetric).where(
-                models.CustomerItemMetric.organization_id == ev.org)).all()
+        for row in session.scalars(metric_scope.metrics_for(
+            ev.org,
+            customers=group.entity_ids if group is not None else None)).all()
         if row.current_sell_price is not None
     }
 
@@ -1574,8 +1669,9 @@ def quote_pricing(principal: Principal = Depends(require_manager_or_owner),
 
     result = outcomes_view.pricing(ev.quotes, lines, as_of=ev.as_of)
     return _envelope(
-        result, th=ev.th,
+        result, th=ev.th, group=group_scope.ref(group),
         empty_reason=(None if result["comparisons"] else
+                      group_scope.empty_note(group, "decided quote") or
                       "No product has been quoted often enough on both sides to "
                       "compare: a comparison needs "
                       f"{outcomes_view.MIN_PRICE_OBSERVATIONS} won and "
@@ -1994,7 +2090,9 @@ def _recent_buyers(session: Session, org: str,
 
 
 @router.get("/stock")
-def stock_position(principal: Principal = Depends(current_principal),
+def stock_position(item_group: Optional[groups.ResolvedGroup] =
+                   Depends(group_scope.item_group),
+                   principal: Principal = Depends(current_principal),
                    session: Session = Depends(get_session)) -> dict:
     """What is on the shelf, and which of it is a problem.
 
@@ -2011,6 +2109,11 @@ def stock_position(principal: Principal = Depends(current_principal),
     screen reports. ``state_on`` is the day the state was last built. A stale
     build shows stale stock and says when it was taken, which is the honest
     failure; guessing today would show an empty shelf.
+
+    ``?group=`` narrows the shelf to a set of items. The bound goes on the state
+    *before* the lines are projected, so the counts, the KPIs and the band
+    filters are all computed inside the group — "38 lines are dead stock" has to
+    mean 38 of the drills, not 38 of the book with the rest of the list hidden.
     """
     org, snapshot, th = _labels_only(session, principal)
     as_of = _as_of(snapshot) or clock.today(th.timezone)
@@ -2019,11 +2122,17 @@ def stock_position(principal: Principal = Depends(current_principal),
     state_on = state_engine.latest_as_of(session, org, INVENTORY)
     if state_on is None:
         return _envelope(
-            {}, th=th,
+            {}, th=th, group=group_scope.ref(item_group),
             empty_reason=("Stock has not been folded into business state yet. "
                           "It is built at the end of every sync — run one, and "
                           "this screen fills in."))
     states = state_engine.load(session, org, INVENTORY, state_on)
+    if item_group is not None:
+        # Named `item_group` rather than `items`, which this function already
+        # uses for the product index thirty lines below. Two different sets of
+        # items in one scope is how the wrong one gets passed.
+        keep = set(item_group.entity_ids)
+        states = {pid: v for pid, v in states.items() if pid in keep}
 
     lines = stock.lines_from_state(
         states,
@@ -2067,10 +2176,11 @@ def stock_position(principal: Principal = Depends(current_principal),
         companies.stamp(group.get("items") or [], items, by="product_id")
     result["sources_differ"] = companies.count > 1
     return _envelope(
-        result, th=th,
+        result, th=th, group=group_scope.ref(item_group),
         empty_reason=(None if lines else
-                      "Nothing in the item master is stock-tracked, so there is "
-                      "no shelf to report on."))
+                      (group_scope.empty_note(item_group, "stock-tracked item")
+                       or "Nothing in the item master is stock-tracked, so "
+                          "there is no shelf to report on.")))
 
 
 # ── GMROI: what each line returns on the cash it ties up ────────────────────
@@ -2084,7 +2194,9 @@ def stock_position(principal: Principal = Depends(current_principal),
 
 
 def _stock_observations(session: Session, org: str, *, since: date,
-                        until: date) -> list[gmroi.Observation]:
+                        until: date,
+                        products: Optional[list[str]] = None,
+                        ) -> list[gmroi.Observation]:
     """Every stock reading in the window, as the GMROI denominator reads them.
 
     Bounded by date on both sides, which is safe here in the way `CLAUDE.md`
@@ -2092,8 +2204,21 @@ def _stock_observations(session: Session, org: str, *, since: date,
     the window, and `window_for` derives the effective span from the rows it is
     given. The bound is the same one the ratio itself applies.
 
+    ``products`` bounds it to a group's items. ``None`` is no group and ``[]``
+    is a group nobody is in — the second matches nothing, which is the right
+    answer and not the same as the first.
+
     ``ix_stock_org_asof`` is the index this runs on.
     """
+    q = (select(models.StockSnapshot.product_id, models.StockSnapshot.as_of,
+                models.StockSnapshot.on_hand,
+                models.StockSnapshot.purchase_rate,
+                models.StockSnapshot.tracked)
+         .where(models.StockSnapshot.organization_id == org,
+                models.StockSnapshot.as_of >= since,
+                models.StockSnapshot.as_of <= until))
+    if products is not None:
+        q = q.where(models.StockSnapshot.product_id.in_(products))
     return [
         gmroi.Observation(
             product_id=product_id, as_of=as_of,
@@ -2105,19 +2230,14 @@ def _stock_observations(session: Session, org: str, *, since: date,
             # ``stock.lines_from_state`` takes of the flag.
             tracked=bool(tracked))
         for product_id, as_of, on_hand, purchase_rate, tracked
-        in session.execute(
-            select(models.StockSnapshot.product_id, models.StockSnapshot.as_of,
-                   models.StockSnapshot.on_hand,
-                   models.StockSnapshot.purchase_rate,
-                   models.StockSnapshot.tracked)
-            .where(models.StockSnapshot.organization_id == org,
-                   models.StockSnapshot.as_of >= since,
-                   models.StockSnapshot.as_of <= until)).all()
+        in session.execute(q).all()
     ]
 
 
 @router.get("/gmroi")
 def gmroi_position(months: int = Query(12, ge=1, le=36),
+                   item_group: Optional[groups.ResolvedGroup] =
+                   Depends(group_scope.item_group),
                    principal: Principal = Depends(require_manager_or_owner),
                    session: Session = Depends(get_session)) -> dict:
     """Gross margin return on inventory investment, by item and by principal.
@@ -2137,17 +2257,29 @@ def gmroi_position(months: int = Query(12, ge=1, le=36),
     two dates answer different questions and here it is the shelf that is being
     measured: readings continue while the book is quiet, and anchoring on the
     last sale would clip the most recent of them out of the average.
+
+    ``?group=`` narrows to a set of items, and it narrows the *snapshot* rather
+    than the result. A principal's GMROI is Σ gross profit ÷ Σ average inventory
+    over its own items, so a ratio computed over the whole book and then listed
+    for three of its rows would be three correct-looking numbers about a
+    different shelf. The stock readings are bounded with it, because they are
+    that ratio's denominator.
     """
-    org, snapshot, th = _context(session, principal)
+    ids = item_group.entity_ids if item_group is not None else None
+    org, snapshot, th = _context(
+        session, principal,
+        **({"sales_for_products": ids, "costs_for_products": ids}
+           if ids is not None else {}))
     today = clock.today(th.timezone)
     requested_days = months * 30
 
     observations = _stock_observations(
-        session, org, since=today - timedelta(days=requested_days), until=today)
+        session, org, since=today - timedelta(days=requested_days), until=today,
+        products=ids)
     if not observations:
         return _no_data(
             th, "GMROI", missing="stock reading",
-            synced=_books_have_sales(session, org))
+            synced=_books_have_sales(session, org), group=item_group)
 
     result = gmroi.build(
         sales=snapshot.sales, costs=snapshot.costs,
@@ -2167,9 +2299,10 @@ def gmroi_position(months: int = Query(12, ge=1, le=36),
     companies.stamp(result.get("skus") or [], items, by="product_id")
     result["sources_differ"] = companies.count > 1
     return _envelope(
-        result, th=th,
+        result, th=th, group=group_scope.ref(item_group),
         empty_reason=(None if result["measurable"] else
-                      result["window"]["shortfall"]))
+                      (group_scope.empty_note(item_group, "stock reading")
+                       or result["window"]["shortfall"])))
 
 
 @router.get("/pass-through")
@@ -2362,8 +2495,12 @@ def supplier_position(
         if (note := group_scope.empty_note(group, "purchase order")) is not None:
             return _envelope({"suppliers": [], "open_orders": []}, th=th,
                              empty_reason=note, group=group_scope.ref(group))
+        # `group=` even though this branch is only reached when there is none:
+        # the key has to be on the way out either way, or a caller learns to
+        # read "absent" as "unscoped" — which is the same value and a different
+        # claim. The branch above answers the scoped case.
         return _no_data(th, "vendor orders",
-                        missing="purchase order")
+                        missing="purchase order", group=group)
 
     orders = [
         supply.SupplierOrder(
@@ -2475,6 +2612,29 @@ def _principal_ids(resolved: dict[str, principals.Principal]) -> dict[str, str]:
     """product_id → principal_id, dropping the items nothing could attribute."""
     return {product_id: p.principal_id
             for product_id, p in resolved.items() if p.known}
+
+
+def _bound_by(visible: Optional[list[str]],
+              group: Optional[groups.ResolvedGroup]) -> Optional[list[str]]:
+    """A company bound and a group bound, composed — as an intersection.
+
+    Three endpoints take both. ``None`` on the left is "every company", so a
+    group alone becomes the bound; a list on the left is one company's ids, and
+    the group narrows *within* it through ``groups.narrow``, which cannot widen.
+    A group says which part of what you may see you are looking at, and handing
+    back a company the connection filter excluded would be a labelling feature
+    making a scoping decision.
+
+    ``None`` out means no bound at all. An empty list out is a real bound
+    meaning nothing matches — an empty group, or a group that shares no member
+    with the chosen company — and reading it as "no filter" would answer a
+    question about an empty set with the whole book.
+    """
+    if group is None:
+        return visible
+    if visible is None:
+        return list(group.entity_ids)
+    return groups.narrow(visible, group)
 
 
 def _customers_of_connection(session: Session, org: str,
@@ -2620,23 +2780,33 @@ def _line_of(lines_of: dict[str, cat.Resolution], product_id: str) -> Optional[s
 
 def _vendor_bonds(session: Session, org: str,
                   lines_of: dict[str, cat.Resolution],
-                  th, as_of: date, months: int) -> dict:
+                  th, as_of: date, months: int,
+                  only: Optional[Iterable[str]] = None) -> dict:
     """Bill lines and purchase orders → one bond per supplier.
 
     Bill lines rather than bill headers: breadth is "how much of the catalogue
     do they actually supply", which only exists at line grain. That is what
     ``cost_records.vendor_id`` was added for — before it, this question needed
     the bill id split back out of a composite ``external_ref``.
+
+    ``only`` bounds it to a group of vendors, on the query rather than on the
+    bonds that come out: every facet here is measured against the counterparties
+    read, so a supplier that is 40% of the import principals is not 40% of the
+    book and must not be drawn as if it were.
     """
-    vendors = {v.vendor_id: v for v in session.scalars(
-        select(models.Vendor).where(models.Vendor.organization_id == org)).all()}
-    cost_rows = session.execute(
-        select(models.CostRecord.vendor_id, models.CostRecord.product_id,
-               models.CostRecord.date, models.CostRecord.qty,
-               models.CostRecord.unit_cost, models.CostRecord.source_ref,
-               models.CostRecord.external_ref)
-        .where(models.CostRecord.organization_id == org,
-               models.CostRecord.vendor_id.is_not(None))).all()
+    vendor_q = select(models.Vendor).where(models.Vendor.organization_id == org)
+    cost_q = (select(models.CostRecord.vendor_id, models.CostRecord.product_id,
+                     models.CostRecord.date, models.CostRecord.qty,
+                     models.CostRecord.unit_cost, models.CostRecord.source_ref,
+                     models.CostRecord.external_ref)
+              .where(models.CostRecord.organization_id == org,
+                     models.CostRecord.vendor_id.is_not(None)))
+    if only is not None:
+        ids = list(only)
+        vendor_q = vendor_q.where(models.Vendor.vendor_id.in_(ids))
+        cost_q = cost_q.where(models.CostRecord.vendor_id.in_(ids))
+    vendors = {v.vendor_id: v for v in session.scalars(vendor_q).all()}
+    cost_rows = session.execute(cost_q).all()
     lines = [
         bonds.TradeLine(
             counterparty_id=r.vendor_id,
@@ -2723,17 +2893,35 @@ def _overdue_to_vendors(session: Session, org: str, as_of: date) -> dict[str, fl
 def relationship_bonds(
         months: int = Query(bonds.DEFAULT_MONTHS,
                             ge=BOND_MIN_MONTHS, le=BOND_MAX_MONTHS),
+        group: Optional[groups.ResolvedGroup] = Depends(group_scope.customer_group),
+        vendor_set: Optional[groups.ResolvedGroup] =
+        Depends(group_scope.vendor_group_as_vendors),
         principal: Principal = Depends(current_principal),
         session: Session = Depends(get_session)) -> dict:
-    """How strong each tie is, and how it got that way."""
-    org, snapshot, th = _context(session, principal)
+    """How strong each tie is, and how it got that way.
+
+    **Two group bounds, because this is two screens in one response.** The
+    customer side and the supplier side are measured by the same code and
+    returned together, so one parameter would have to mean a different kind of
+    set depending on which half the reader was looking at. ``?group=`` is the
+    customer set and ``?vendors=`` the supplier set; either, both or neither.
+
+    Both bound the read. Every facet a bond publishes — share, breadth,
+    reliability — is measured against the counterparties actually read, so
+    narrowing afterwards would rank a segment's members against the whole
+    book's dividing lines.
+    """
+    org, snapshot, th = _context(
+        session, principal,
+        **({"sales_for_customers": group.entity_ids} if group else {}))
     as_of = _as_of(snapshot) or clock.today(th.timezone)
     with_suppliers = principal.role in (Role.SALES_MANAGER, Role.OWNER)
     lines_of = _category_of(session, org, th)
 
     customers = _customer_bonds(session, principal, snapshot, th, as_of, months,
                                 lines_of)
-    vendors = (_vendor_bonds(session, org, lines_of, th, as_of, months)
+    vendors = (_vendor_bonds(session, org, lines_of, th, as_of, months,
+                             only=vendor_set.entity_ids if vendor_set else None)
                if with_suppliers else None)
 
     # A counterparty is per connected company: the same firm trading with two of
@@ -2750,11 +2938,14 @@ def relationship_bonds(
 
     empty = None
     if not customers["bonds"] and not (vendors or {}).get("bonds"):
-        empty = ("Nothing has been traded yet, so there is no relationship to "
-                 "measure. Connect a Zoho company and run a sync.")
+        empty = (group_scope.empty_note(group, "trade")
+                 or group_scope.empty_note(vendor_set, "purchase")
+                 or "Nothing has been traded yet, so there is no relationship "
+                    "to measure. Connect a Zoho company and run a sync.")
     return _envelope(
         {"customers": customers, "vendors": vendors}, th=th,
         empty_reason=empty, as_of=as_of.isoformat(),
+        group=group_scope.ref(group), vendors_group=group_scope.ref(vendor_set),
         sources_differ=companies.count > 1,
         supplier_side_visible=with_suppliers,
         # How well the catalogue is placed. Rendered rather than hidden: a
@@ -2794,6 +2985,8 @@ def product_mix(months: int = Query(12, ge=3, le=36),
                 by: str = Query(mix.BY_CATEGORY,
                                 pattern=f"^({mix.BY_CATEGORY}|{mix.BY_VENDOR})$"),
                 connection_id: Optional[str] = Query(None),
+                group: Optional[groups.ResolvedGroup] =
+                Depends(group_scope.customer_group),
                 principal: Principal = Depends(current_principal),
                 session: Session = Depends(get_session)) -> dict:
     """Who takes which lines — or which principals — and where the gaps are.
@@ -2817,14 +3010,22 @@ def product_mix(months: int = Query(12, ge=3, le=36),
     is also the only reading that is true, since one firm buying from two of
     the books is two relationships and a line SLS has never sold them is not a
     gap in 4U.
+
+    ``?group=`` is the same kind of bound and composes with it by
+    **intersection**, through ``groups.narrow`` rather than by replacing the
+    connection's list. A group narrows what somebody is looking at and never
+    what they may see — the company scope is the second thing it must not
+    widen, and the shape of that mistake is that it looks like it is filtering
+    correctly.
     """
-    org, snapshot, th = _context(
-        session, principal,
-        sales_for_customers=_customers_of_connection(
-            session, principal.organization_id, connection_id))
+    bound = _bound_by(
+        _customers_of_connection(session, principal.organization_id,
+                                 connection_id),
+        group)
+    org, snapshot, th = _context(session, principal, sales_for_customers=bound)
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th, "product mix")
+        return _no_data(th, "product mix", group=group)
 
     principal_of = _principal_of_product(session, org)
     vendor_of = _principal_ids(principal_of)
@@ -2875,9 +3076,15 @@ def product_mix(months: int = Query(12, ge=3, le=36),
     companies = Companies(session, org)
     companies.stamp(result["customers"], index_of(session, org, models.Customer),
                     by="customer_id")
+    # Popped unconditionally, then chosen between. `_envelope` spreads `data`
+    # last, so a key left on `result` wins over the argument — an `empty_reason`
+    # popped in only one branch of a conditional is a group's note silently
+    # overwritten by the grid's own.
+    reason = result.pop("empty_reason", None)
+    if not result["customers"]:
+        reason = group_scope.empty_note(group, "sales history") or reason
     return _envelope(
-        result, th=th,
-        empty_reason=result.pop("empty_reason", None),
+        result, th=th, group=group_scope.ref(group), empty_reason=reason,
         sources_differ=companies.count > 1,
         catalogue=cat.coverage_report(lines_of),
         principals=principals.coverage_report(principal_of,
@@ -3183,6 +3390,10 @@ def _targets(session: Session, org: str) -> list[dependency.Target]:
 
 @router.get("/dependency")
 def book_dependency(connection_id: Optional[str] = Query(None),
+                    group: Optional[groups.ResolvedGroup] =
+                    Depends(group_scope.customer_group),
+                    vendor_set: Optional[groups.ResolvedGroup] =
+                    Depends(group_scope.vendor_group_as_vendors),
                     principal: Principal = Depends(current_principal),
                     session: Session = Depends(get_session)) -> dict:
     """Who this book leans on, in both directions.
@@ -3198,13 +3409,22 @@ def book_dependency(connection_id: Optional[str] = Query(None),
     company whose customer bought it. Purchases scope by **vendor** — neither
     ``CostRecord`` nor ``SalesTxn`` carries a connection, but ``Customer`` and
     ``Vendor`` both do, and those are the ends the money is attributed to.
+
+    ``?group=`` and ``?vendors=`` narrow the same two ends to sets somebody
+    drew, and each **intersects** with the company bound above it rather than
+    replacing it — ``groups.narrow``, which cannot widen. A group says which
+    part of what you may see you are looking at; it has no business handing back
+    a company the connection filter had excluded.
     """
-    scope = _customers_of_connection(session, principal.organization_id,
-                                     connection_id)
-    org, snapshot, th = _context(session, principal, sales_for_customers=scope)
+    of_connection = _customers_of_connection(session, principal.organization_id,
+                                             connection_id)
+    customer_scope = _bound_by(of_connection, group)
+    org, snapshot, th = _context(session, principal,
+                                 sales_for_customers=customer_scope)
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th, "dependency")
+        return _no_data(th, "dependency", group=group,
+                        vendors_group=vendor_set)
 
     with_suppliers = principal.role in (Role.SALES_MANAGER, Role.OWNER)
     principal_of = _principal_of_product(session, org)
@@ -3224,7 +3444,8 @@ def book_dependency(connection_id: Optional[str] = Query(None),
             category=_line_of(lines_of, row.product_id))
         for row in snapshot.sales
     ]
-    only_vendors = _vendors_of_connection(session, org, connection_id)
+    only_vendors = _bound_by(_vendors_of_connection(session, org, connection_id),
+                             vendor_set)
     spend_where = [models.CostRecord.organization_id == org,
                    models.CostRecord.vendor_id.is_not(None)]
     if only_vendors is not None:
@@ -3263,7 +3484,7 @@ def book_dependency(connection_id: Optional[str] = Query(None),
     # its own. Every role: a balance is money already billed, so it carries no
     # cost and no margin — the same reason `/payments` is open and `/payables`
     # is not.
-    result["receivables"] = _receivables_dependency(session, org, scope)
+    result["receivables"] = _receivables_dependency(session, org, customer_scope)
 
     companies = Companies(session, org)
     companies.stamp(result["customers"]["rows"],
@@ -3275,9 +3496,11 @@ def book_dependency(connection_id: Optional[str] = Query(None),
                         index_of(session, org, models.Vendor), by="entity_id")
     return _envelope(
         result, th=th,
+        group=group_scope.ref(group), vendors_group=group_scope.ref(vendor_set),
         empty_reason=(None if result["customers"]["rows"] else
-                      "Nothing has been traded yet, so there is no exposure to "
-                      "measure."),
+                      (group_scope.empty_note(group, "trade")
+                       or "Nothing has been traded yet, so there is no exposure "
+                          "to measure.")),
         sources_differ=companies.count > 1,
         supplier_side_visible=with_suppliers,
         catalogue=cat.coverage_report(lines_of),
@@ -3405,19 +3628,28 @@ def clear_vendor_term(vendor_id: str,
 
 
 @router.get("/vendor-terms")
-def list_vendor_terms(principal: Principal = Depends(require_manager_or_owner),
+def list_vendor_terms(group: Optional[groups.ResolvedGroup] =
+                      Depends(group_scope.vendor_group),
+                      principal: Principal = Depends(require_manager_or_owner),
                       session: Session = Depends(get_session)) -> dict:
     """Every supplier, what Zoho holds, and what we agreed.
 
     Every supplier rather than only those with an agreement: the screen this
     feeds is where somebody goes *to* record one, and a list of the rows already
     filled in is not the list somebody with work to do needs.
+
+    ``group`` narrows to a set of suppliers, on the vendor read. This panel sits
+    under the payables settlements on ``/payables``, which carries a vendor
+    group — a list of every supplier beneath a chart narrowed to the import
+    principals is the page half-scoped.
     """
     org = principal.organization_id
     th = policy.load_for_org(session, org)
-    vendors = session.scalars(
-        select(models.Vendor).where(
-            models.Vendor.organization_id == org)).all()
+    vendor_q = select(models.Vendor).where(models.Vendor.organization_id == org)
+    if group is not None:
+        vendor_q = vendor_q.where(
+            models.Vendor.vendor_id.in_(list(group.entity_ids)))
+    vendors = session.scalars(vendor_q).all()
     agreed = _agreed_terms(session, org)
     notes = {
         r.vendor_id: r
@@ -3458,10 +3690,11 @@ def list_vendor_terms(principal: Principal = Depends(require_manager_or_owner),
     return _envelope(
         {"terms": rows, "bases": vendor_terms.BASIS_LABELS,
          "max_days": vendor_terms.MAX_TERM_DAYS},
-        th=th,
+        th=th, group=group_scope.ref(group),
         empty_reason=(None if rows else
-                      "No suppliers have synced yet, so there is nothing to "
-                      "record a term against."),
+                      (group_scope.empty_note(group, "supplier")
+                       or "No suppliers have synced yet, so there is nothing "
+                          "to record a term against.")),
         sources_differ=companies.count > 1)
 
 

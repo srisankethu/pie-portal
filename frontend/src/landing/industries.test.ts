@@ -157,3 +157,64 @@ describe("query intent, against the /erp/ family", () => {
     }
   });
 });
+
+describe("the pages stay distinct from each other", () => {
+  /** The narrative fields — the ones whose job is to argue, and therefore the
+   *  ones a fifth page written in a hurry would copy from the first.
+   *
+   *  `notServed` is deliberately **not** here, and that exclusion is the more
+   *  interesting half of this check. Two trades genuinely share a limitation:
+   *  the rebate disclosure is the same fact on every book, and `industries.
+   *  test.ts` already requires it on all of them. A distinctness rule applied
+   *  to that list would be a rule demanding the same truth be reworded per
+   *  page — which is how a limits section turns into copy, and copy is what a
+   *  reader stops believing. Shared facts stay word-for-word; shared
+   *  *arguments* are the defect. */
+  function narrative(page: (typeof INDUSTRY_PAGES)[number]): string[] {
+    return [
+      page.sub,
+      page.problem.body,
+      page.problem.detail,
+      page.resolution.body,
+      ...page.resolution.points,
+      ...page.fit.map((f) => f.body),
+      ...page.faq.map((f) => f.answer),
+    ]
+      .flatMap((text) => text.split(/(?<=[.?])\s+/))
+      .map((s) => s.replace(/\s+/g, " ").trim())
+      .filter((s) => s.length > 40);
+  }
+
+  it("gives every page its own headline, problem and lead", () => {
+    // The three fields a reader sees before deciding to stay. If two pages
+    // share one of these they are one page with two addresses, which is the
+    // doorway pattern a search engine is looking for.
+    for (const field of ["sub", "title", "description"] as const) {
+      const values = INDUSTRY_PAGES.map((p) => p[field]);
+      expect(new Set(values).size, `two pages share a ${field}`).toBe(values.length);
+    }
+    const problems = INDUSTRY_PAGES.map((p) => p.problem.title);
+    expect(new Set(problems).size, "two pages state the same problem").toBe(problems.length);
+  });
+
+  it("keeps the argument on each page mostly its own", () => {
+    // Sentence overlap, pairwise. A little is fine and some is unavoidable —
+    // both pages describe one product. A lot means the second page was written
+    // by find-and-replace on the first, and that is the moment this family
+    // stops being worth having.
+    for (const a of INDUSTRY_PAGES) {
+      for (const b of INDUSTRY_PAGES) {
+        if (a.slug >= b.slug) continue;
+        const [x, y] = [narrative(a), narrative(b)];
+        const shared = x.filter((s) => y.includes(s));
+        const ratio = shared.length / Math.min(x.length, y.length);
+        expect(ratio,
+          `/industries/${a.slug} and /industries/${b.slug} share `
+          + `${shared.length} of ${Math.min(x.length, y.length)} sentences `
+          + `(${Math.round(ratio * 100)}%). Shared facts belong in notServed; `
+          + `a shared argument means one of these pages is not needed.`)
+          .toBeLessThan(0.25);
+      }
+    }
+  });
+});

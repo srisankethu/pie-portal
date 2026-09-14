@@ -3,7 +3,7 @@ import { demoCta } from "./cta";
 import { ERP_PAGES } from "./erp";
 import { FAQ } from "./faq";
 import { caseStudy, complianceRows, hasProof, namedCustomers } from "./proof";
-import { DEMO_LENGTH, FooterBlurb, TrustBand } from "./shared";
+import { DEMO_LENGTH, FooterBlurb, TrustBand, navItems } from "./shared";
 import { ContactModal } from "./ContactModal";
 import {
   EXAMPLE_ITEM,
@@ -249,7 +249,11 @@ export function Landing({ onEnter, onDemo }: {
    *  reference that survives the section it points at moving is the only kind
    *  worth writing. */
   const proofShown = hasProof();
-  const sections = ["problem", "outcomes", "roles", "how", "worth", "ownership",
+  // Keyed by DOM id throughout. This list said "ownership" for the section
+  // whose element is `id="trust"` — harmless while only `letter()` read it, and
+  // a trap the moment anything else did: the obvious nav href for it is
+  // `#ownership`, which is not an element on this page. One vocabulary now.
+  const sections = ["problem", "outcomes", "roles", "how", "worth", "trust",
                     ...(proofShown ? ["proof"] : []), "demo", "faq"];
   const letter = (name: string) => String.fromCharCode(65 + sections.indexOf(name));
 
@@ -320,11 +324,14 @@ export function Landing({ onEnter, onDemo }: {
               className={`lp-nav-links${menuOpen ? " open" : ""}`}
               id="lp-nav-menu"
             >
-              <a href="#outcomes" onClick={closeMenu}>Outcomes</a>
-              <a href="#roles" onClick={closeMenu}>Who it&rsquo;s for</a>
-              <a href="#how" onClick={closeMenu}>How it works</a>
-              <a href="#worth" onClick={closeMenu}>What it&rsquo;s worth</a>
-              {proofShown && <a href="#proof" onClick={closeMenu}>Proof</a>}
+              {/* One list, shared with the ERP pages — see `navItems` in
+                  ./shared. `proofShown` is not consulted here any more: the
+                  same `hasProof()` decides the section and the link, in one
+                  place, so the bar cannot advertise a section this render did
+                  not draw. */}
+              {navItems().map((item) => (
+                <a key={item.id} href={`#${item.id}`} onClick={closeMenu}>{item.label}</a>
+              ))}
               {/* Sign in is a quiet link and Book a demo is the button. On
                   every page of this kind the existing customer knows where the
                   door is; the visitor who has not decided yet is the one the
@@ -883,7 +890,7 @@ export function Landing({ onEnter, onDemo }: {
           </div>
         </section>
 
-        <div className="lp-dim"><b>Section {letter("ownership")} — What you own</b></div>
+        <div className="lp-dim"><b>Section {letter("trust")} — What you own</b></div>
         <section id="trust">
           <div className="lp-wrap">
             <div className="lp-sec-head">

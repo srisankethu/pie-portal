@@ -1,6 +1,6 @@
 import { filled } from "./content";
 import { demoCta } from "./cta";
-import { DEMO_LENGTH, FooterBlurb, TrustBand } from "./shared";
+import { DEMO_LENGTH, FooterBlurb, TrustBand, navItems } from "./shared";
 import { ERP_PAGES, type ErpPageData } from "./erp";
 import "./landing.css";
 
@@ -92,20 +92,27 @@ export function ErpPage({ page }: { page: ErpPageData }) {
                 opens — not to a broken nav. */}
             {/* These are cross-document links, which is why they are worth a
                 note: the landing page's section ids are this file's
-                dependency, and nothing here fails when one of them is renamed.
-                `/#product` and `/#plans` both dangled for exactly that reason
-                — the first was renamed to `#outcomes` and the second deleted
-                with the plans section — and a sub-page whose nav scrolls to
-                the top of the front page is a dead link that looks like a
-                working one. */}
+                dependency, and nothing *here* fails when one of them is
+                renamed. `/#product` and `/#plans` both dangled for exactly
+                that reason — the first was renamed to `#outcomes` and the
+                second deleted with the plans section — and a sub-page whose
+                nav scrolls to the top of the front page is a dead link that
+                looks like a working one.
+
+                The list is no longer this file's to keep: `navItems()` is
+                shared with the landing page's own bar, and `nav.test.tsx`
+                renders the landing and asserts every id in it is a section
+                there. So a renamed section now fails a test rather than a
+                visitor. The paragraph above stays in the past tense on
+                purpose — it is why the check exists, not an open defect. */}
             <details className="lp-nav-menu">
               <summary className="lp-nav-toggle" aria-label="Menu">
                 <span className="lp-burger" aria-hidden="true" />
               </summary>
               <div className="lp-nav-links">
-                <a href="/#outcomes">Outcomes</a>
-                <a href="/#how">How it works</a>
-                <a href="/#worth">What it&rsquo;s worth</a>
+                {navItems().map((item) => (
+                  <a key={item.id} href={`/#${item.id}`}>{item.label}</a>
+                ))}
                 <a className="lp-nav-signin" href="/#signin">Sign in</a>
                 <a className="lp-btn solid lp-nav-cta" href="/#talk">Book a demo</a>
               </div>

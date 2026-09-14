@@ -134,7 +134,13 @@ describe("query intent, against the /erp/ family", () => {
     // actually reads.
     const names = ERP_PAGES.flatMap((p) => [p.name, p.short]);
     for (const { page, html } of rendered) {
-      const h1 = html.match(/<h1[^>]*>(.*?)<\/h1>/s)?.[1] ?? "";
+      // Tags stripped and whitespace collapsed: the headline puts one word in
+      // an <em>, so the raw markup reads "industrial and <em>MRO</em>" and a
+      // substring match on it fails for a heading that is perfectly correct.
+      // The rule is about the sentence a reader sees, not the elements it is
+      // built from.
+      const h1 = (html.match(/<h1[^>]*>(.*?)<\/h1>/s)?.[1] ?? "")
+        .replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
       for (const name of names) {
         for (const [field, value] of Object.entries(
           { title: page.title, description: page.description, h1 },
@@ -215,6 +221,29 @@ describe("the pages stay distinct from each other", () => {
           + `a shared argument means one of these pages is not needed.`)
           .toBeLessThan(0.25);
       }
+    }
+  });
+});
+
+describe("the first heading names what the page is about", () => {
+  // The rule the ERP family is already tested on, applied to this one.
+  // `erp.ts` states it: a distributor searching for their own system should
+  // land on a page that names it in the first line, because "Prophet 21" is
+  // what they call their problem and a page that says "your ERP" is a page
+  // about somebody else.
+  //
+  // This family shipped without that check and immediately broke it. The
+  // cutting tools page led with "Quote without losing the margin in the
+  // cross-reference" — true, well-formed, and it never said "cutting tools",
+  // so the one reader it was written for could not tell it was theirs.
+  it("puts the trade in the h1 of every page", () => {
+    expect(INDUSTRY_PAGES.length).toBeGreaterThan(0);
+    for (const page of INDUSTRY_PAGES) {
+      const html = renderToStaticMarkup(IndustryPage({ page }));
+      const h1 = (html.match(/<h1[^>]*>(.*?)<\/h1>/s)?.[1] ?? "")
+        .replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+      expect(h1, `/industries/${page.slug} h1 does not name ${page.short}`)
+        .toContain(page.short);
     }
   });
 });

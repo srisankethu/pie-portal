@@ -46,6 +46,15 @@ export interface RolePageData {
   /** What this person calls themselves. */
   name: string;
   short: string;
+  /** The singular, as the `h1` says it — "salesperson", not "salespeople".
+   *
+   *  A separate field rather than a de-pluralised `short`, because the two are
+   *  not the same word in either direction: "owners and finance" is how the
+   *  audience is described and "owner" is who the page addresses, and no rule
+   *  turns one into the other. `roles.test.ts` holds each page's h1 to this,
+   *  on the same rule `erp.ts` states for the ERP family — a page that does
+   *  not name its reader in the first line is a page about somebody else. */
+  noun: string;
   title: string;
   description: string;
   eyebrow: string;
@@ -73,6 +82,7 @@ export const ROLE_PAGES: RolePageData[] = [
     role: "SALESPERSON",
     name: "the salesperson",
     short: "salespeople",
+    noun: "salesperson",
     title: "PIE for salespeople · quote faster, without ever seeing cost",
     description:
       "Paste an enquiry as it arrived and get priced lines. You see the floor, "
@@ -81,7 +91,7 @@ export const ROLE_PAGES: RolePageData[] = [
       + "travels with the quote instead of living in a manager's head.",
     eyebrow: "For the quoting desk",
     headline: {
-      lead: "Quote confidently, without ever seeing ",
+      lead: "A salesperson quotes confidently, without ever seeing ",
       em: "cost",
       tail: ".",
     },
@@ -97,7 +107,7 @@ export const ROLE_PAGES: RolePageData[] = [
       body:
         "A forwarded email, a photograph of a fax, a line of WhatsApp from "
         + "somebody standing at a machine. Paste it in as it came. PIE reads it "
-        + "into lines and resolves each one against your own catalogue, you "
+        + "into lines and resolves each one against your own catalog, you "
         + "confirm anything it flagged, and you price. Where it could not place a "
         + "line it says so rather than guessing — an unrecognised token is kept "
         + "verbatim, never quietly turned into a part number.",
@@ -112,7 +122,7 @@ export const ROLE_PAGES: RolePageData[] = [
       // only — `CORE_SLOTS` has no vocabulary for anybody else's attributes.
       // A role page is read by every trade, so it gets the claim that holds
       // for all of them and names where the stronger one applies.
-      "The alternatives it found in your own book — and, on a catalogue whose "
+      "The alternatives it found in your own book — and, on a catalog whose "
       + "designations it decodes, which attribute contributed what",
     ],
     cannotSee: [
@@ -128,7 +138,7 @@ export const ROLE_PAGES: RolePageData[] = [
         body:
           "Pasted text to resolved, priced lines without re-keying. Resolution "
           + "is deterministic — the same enquiry resolves the same way every "
-          + "time — and it runs against your own catalogue rather than a generic "
+          + "time — and it runs against your own catalog rather than a generic "
           + "product database.",
       },
       {
@@ -153,7 +163,7 @@ export const ROLE_PAGES: RolePageData[] = [
       "There is no activity log and no follow-up entity — no call, visit or "
       + "email is recorded against an account. If that is your daily tool, PIE is "
       + "not it.",
-      "Manual entry of a product that is not in your catalogue is not reachable "
+      "Manual entry of a product that is not in your catalog is not reachable "
       + "from the screen. A line resolves against what has been uploaded, or it "
       + "stays unresolved.",
       "Your accounts have to be assigned to you inside PIE — salespeople are not "
@@ -187,7 +197,7 @@ export const ROLE_PAGES: RolePageData[] = [
           "It ranks what it found and shows which attribute contributed what. It "
           + "does not decide, and where nothing discriminates between the "
           + "candidates it abstains rather than returning the least-bad one. On a "
-          + "catalogue whose designations it does not decode it will find the "
+          + "catalog whose designations it does not decode it will find the "
           + "line in your own book by description, which is not the same thing as "
           + "proposing an equivalent.",
         source: "/industries/cutting-tools; the abstention rule in the engine",
@@ -208,6 +218,7 @@ export const ROLE_PAGES: RolePageData[] = [
     role: "SALES_MANAGER",
     name: "the sales manager",
     short: "sales managers",
+    noun: "sales manager",
     title: "PIE for sales managers · stop being surprised by a number",
     description:
       "Every quote line checked against your policy before it goes out, breaches "
@@ -216,7 +227,7 @@ export const ROLE_PAGES: RolePageData[] = [
       + "Every figure opens into the rows beneath it.",
     eyebrow: "For the desk that owns the number",
     headline: {
-      lead: "Stop finding out at ",
+      lead: "A sales manager stops finding out at ",
       em: "month end",
       tail: ".",
     },
@@ -332,6 +343,7 @@ export const ROLE_PAGES: RolePageData[] = [
     role: "OWNER",
     name: "the owner",
     short: "owners and finance",
+    noun: "owner",
     title: "PIE for owners · a control that cannot be talked around",
     description:
       "You set the floors and the thresholds; the platform holds every quote to "
@@ -340,7 +352,7 @@ export const ROLE_PAGES: RolePageData[] = [
       + "months it could not measure.",
     eyebrow: "For the owner and finance",
     headline: {
-      lead: "You set the floors. The platform ",
+      lead: "The owner sets the floors. The platform ",
       em: "holds",
       tail: " them.",
     },
@@ -440,7 +452,7 @@ export const ROLE_PAGES: RolePageData[] = [
         question: "What is it going to cost?",
         answer:
           "That depends on how many companies you connect, which ERP each one "
-          + "sits on and how much catalogue there is to build, so this site "
+          + "sits on and how much catalog there is to build, so this site "
           + "states no price rather than printing one that is wrong for you. It "
           + "is a conversation, and a short one.",
         source: "docs/marketing-placeholders.md §1 — the site states no price, deliberately",

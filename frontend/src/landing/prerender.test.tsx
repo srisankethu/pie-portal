@@ -735,3 +735,34 @@ describe("the landing page's own fragments", () => {
     }
   });
 });
+
+describe("the site spells things one way", () => {
+  // American, because that is what the existing pages already show a visitor:
+  // "catalog" appeared ten times across the landing and ERP documents and
+  // "catalogue" zero times, and the audience these pages are addressed to —
+  // Prophet 21, NetSuite and Acumatica distributors — reads it that way.
+  //
+  // This is here because the industry and role pages shipped with **both**:
+  // twenty-six of each, in the same family, sometimes in the same paragraph.
+  // Neither spelling is wrong in isolation, which is exactly why nothing
+  // caught it — a reader does not file it as an error, they file it as
+  // sloppiness, and sloppiness is the thing a page arguing for auditable
+  // numbers can least afford.
+  //
+  // Rendered markup only, deliberately. The source comments beside these
+  // strings sit next to backend prose that says "catalogue" throughout —
+  // `app/catalog.py`'s own docstring does — and rewriting those would make the
+  // files disagree with the modules they cite. What a visitor reads is what
+  // has to be consistent.
+  const BRITISH = /\b(catalogues?|organisations?|recognise[ds]?|normalise[ds]?|behaviour|favour|licence|centre|colour)\b/i;
+
+  it("uses no British variant in any served document", () => {
+    for (const { page, html } of documents) {
+      const hit = html.match(BRITISH);
+      expect(hit?.[0] ?? null,
+        `/${page.slug} carries the British spelling “${hit?.[0]}”. The site says `
+        + "catalog, organization, normalize — see the note above this test.")
+        .toBeNull();
+    }
+  });
+});

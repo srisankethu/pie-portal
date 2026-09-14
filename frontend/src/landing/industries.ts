@@ -166,7 +166,7 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
       body:
         "Paste a customer's enquiry as it arrived — a forwarded email, a line of "
         + "WhatsApp — and PIE reads it into quote lines and resolves each one "
-        + "against the catalogue you uploaded: an exact match where there is one, "
+        + "against the catalog you uploaded: an exact match where there is one, "
         + "and otherwise the nearest neighbours by description, scored the same "
         + "way every time.",
       points: [
@@ -216,11 +216,11 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
       "Quotes are not imported from any ERP, so a win rate has no denominator "
       + "until you start quoting here.",
       "Cross-manufacturer interchange is not offered outside metalworking. PIE "
-      + "resolves an enquiry against your own catalogue; it does not rank one "
+      + "resolves an enquiry against your own catalog; it does not rank one "
       + "manufacturer's part as an equivalent for another's.",
       "Nothing resolves until a price list has been uploaded and its decoding "
       + "confirmed by a person. There is no default decoder and no shared "
-      + "catalogue — a company that has uploaded nothing resolves nothing.",
+      + "catalog — a company that has uploaded nothing resolves nothing.",
       "Stock levels and customer payments are not read from Prophet 21 in this "
       + "version, so the stock, GMROI and collections screens stay empty on a P21 "
       + "book.",
@@ -287,13 +287,13 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
       + "hold the floor",
     description:
       "Paste a customer's enquiry and each line resolves against your own decoded "
-      + "catalogue — ISO designations and grade systems read into typed fields, "
+      + "catalog — ISO designations and grade systems read into typed fields, "
       + "alternatives ranked on the dimensions actually decoded, and nothing "
       + "offered where nothing discriminates. Then every priced line is checked "
       + "against your margin floor.",
     eyebrow: "For cutting tool and metalworking distributors",
     headline: {
-      lead: "Quote without losing the margin in the ",
+      lead: "Quote cutting tools without losing the margin in the ",
       em: "cross-reference",
       tail: ".",
     },
@@ -301,7 +301,7 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
       "The enquiry names a competitor's designation. Twenty minutes later somebody "
       + "has found what you stock that is equivalent, and the price on it is a "
       + "judgement made at speed by whoever did the finding. PIE reads the enquiry "
-      + "as it arrived, resolves each code against your own decoded catalogue, and "
+      + "as it arrived, resolves each code against your own decoded catalog, and "
       + "then checks the price on the resolved line against your floor. Both halves "
       + "show their working.",
     problem: {
@@ -321,7 +321,7 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
     resolution: {
       title: "Your designations, read rather than matched",
       body:
-        "This is the one catalogue the engine understands as more than text. ISO "
+        "This is the one catalog the engine understands as more than text. ISO "
         + "designations and grade systems decode into typed fields — shape, "
         + "clearance, tolerance, edge length, thickness, corner radius, "
         + "chipbreaker, grade — each carrying provenance, a confidence and the "
@@ -361,7 +361,7 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
         body:
           "Every emitted field carries where it came from and every computed row "
           + "is stamped with the version of the policy that judged it. The "
-          + "catalogue's own ruleset version is in the record too, which is what "
+          + "catalog's own ruleset version is in the record too, which is what "
           + "explains why the same text resolved differently before you rebuilt "
           + "it.",
       },
@@ -376,7 +376,7 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
       + "books afterwards and keyed by the manufacturer part number it returned.",
       "Nothing resolves until you have uploaded a price list per manufacturer you "
       + "sell and confirmed how each one is read. The corpus that ships with the "
-      + "engine is a seed for the first company, not a catalogue of your book.",
+      + "engine is a seed for the first company, not a catalog of your book.",
       "Quotes are not imported from any ERP, so a win rate has no denominator "
       + "until you start quoting here.",
       "An equivalence is never composed. PIE will not reason from one scored "
@@ -390,7 +390,7 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
         answer:
           "Whichever ones you upload a price list for. Each list is analysed on "
           + "its own to find the shapes of description it contains, a person "
-          + "confirms what the varying parts mean, and the catalogue is built from "
+          + "confirms what the varying parts mean, and the catalog is built from "
           + "that. There is no shipped list of supported brands and no default "
           + "decoder — a decoder that guessed would be a wrong number with a real "
           + "provenance stamp on it.",
@@ -425,13 +425,13 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
         source: "the determinism band; pie-parser resolves before any model is asked",
       },
       {
-        question: "What happens when we rebuild the catalogue?",
+        question: "What happens when we rebuild the catalog?",
         answer:
-          "Resolutions carry the catalogue's ruleset version, so a line that "
+          "Resolutions carry the catalog's ruleset version, so a line that "
           + "resolved differently before the rebuild can say which edition answered "
-          + "it. That is deliberate: a rebuilt catalogue decoding differently is "
+          + "it. That is deliberate: a rebuilt catalog decoding differently is "
           + "exactly the fact that explains an old answer.",
-        source: "this page's third fit panel — the catalogue's ruleset version is in the record",
+        source: "this page's third fit panel — the catalog's ruleset version is in the record",
       },
     ],
     erpSlugs: ["prophet-21", "zoho-books", "dynamics-365-business-central"],

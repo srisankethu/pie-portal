@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { demoCta } from "./cta";
 import { ERP_PAGES } from "./erp";
-import { INDUSTRY_PAGES } from "./industries";
+import { INDUSTRY_PAGES, verticalLabel } from "./industries";
 import { ROLE_PAGES } from "./roles";
 import { FAQ } from "./faq";
 import { caseStudy, complianceRows, hasProof, namedCustomers } from "./proof";
@@ -469,7 +469,7 @@ export function Landing({ onEnter, onDemo }: {
             <span className="lp-sched-label">Written for your trade</span>
             {INDUSTRY_PAGES.map((page) => (
               <a className="lp-sys" key={page.slug} href={`/industries/${page.slug}`}>
-                {page.short}
+                {verticalLabel(page)}
               </a>
             ))}
             <span className="lp-sched-note">

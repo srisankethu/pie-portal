@@ -1,7 +1,7 @@
 import { filled } from "./content";
 import { demoCta } from "./cta";
 import { DEMO_LENGTH, FooterBlurb, SubPageNav, TrustBand } from "./shared";
-import { INDUSTRY_PAGES } from "./industries";
+import { INDUSTRY_PAGES, verticalLabel } from "./industries";
 import { ERP_PAGES, type ErpPageData } from "./erp";
 import "./landing.css";
 
@@ -299,7 +299,7 @@ export function ErpPage({ page }: { page: ErpPageData }) {
               {INDUSTRY_PAGES.map((industry) => (
                 <span key={industry.slug}>
                   <a href={`/industries/${industry.slug}`}>
-                    PIE for {industry.short}
+                    PIE for {verticalLabel(industry)}
                   </a>
                   <span className="lp-sep" aria-hidden="true"> · </span>
                 </span>

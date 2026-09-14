@@ -64,12 +64,36 @@ export type SpeedReach = "decoded" | "matched";
 
 import { type FaqItem } from "./faq";
 
+/** The trade's name where it is a *label* rather than part of a sentence.
+ *
+ * Derived from `short` rather than stored beside it, and that is the whole
+ * point. Two fields would be two spellings of one trade, and the one that went
+ * stale would be whichever the next author did not open — the failure
+ * `shared.tsx` opens by describing, arriving as a capital letter instead of a
+ * promise. One string, two renderings: `short` is the prose fragment ("on a
+ * cutting tools book", which is correct English and stays lowercase), and this
+ * is the chip, the nav link and the llms.txt entry.
+ *
+ * Capitalising the first character is the entire transform, and it is enough
+ * because every acronym in this registry is already upper-case *inside* the
+ * string — "industrial and MRO" → "Industrial and MRO", "plumbing and PVF" →
+ * "Plumbing and PVF". A title-caser would have to know that MRO and PVF are
+ * acronyms and that "and" is not a word to capitalise, which is three rules
+ * where one will do; `industries.test.ts` pins all seven results so a trade
+ * whose `short` does not survive this transform fails rather than ships
+ * mis-cased.
+ */
+export function verticalLabel(page: Pick<IndustryPageData, "short">): string {
+  return page.short.charAt(0).toUpperCase() + page.short.slice(1);
+}
+
 export interface IndustryPageData {
   /** The URL segment: `/industries/{slug}`. */
   slug: string;
   /** The trade, as its own people write it. */
   name: string;
-  /** What fits in a sentence. */
+  /** What fits in a sentence — lower-case, because that is where it is used:
+   *  "on a {short} book". For the same trade as a label, see `verticalLabel`. */
   short: string;
   title: string;
   description: string;
@@ -124,18 +148,18 @@ export interface IndustryPageData {
 export const INDUSTRY_PAGES: IndustryPageData[] = [
   {
     slug: "industrial-mro",
-    name: "industrial and MRO distribution",
+    name: "Industrial and MRO distribution",
     short: "industrial and MRO",
     title:
-      "PIE for industrial & MRO distributors · a floor on every quote line",
+      "PIE for Industrial and MRO distributors · a floor on every quote line",
     description:
       "Every quote line checked against your own margin floor before it goes out, "
       + "and a breach held for a named approver instead of sent. Computed from the "
       + "invoice and AP-invoice lines your system already holds, and stamped with "
       + "the policy version that judged it.",
-    eyebrow: "For industrial and MRO distributors",
+    eyebrow: "For Industrial and MRO distributors",
     headline: {
-      lead: "Margin discipline for industrial and ",
+      lead: "Margin discipline for Industrial and ",
       em: "MRO",
       tail: " distributors.",
     },
@@ -280,10 +304,10 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
   },
   {
     slug: "cutting-tools",
-    name: "cutting tool and metalworking distribution",
+    name: "Cutting tool and metalworking distribution",
     short: "cutting tools",
     title:
-      "PIE for cutting tool & metalworking distributors · resolve the enquiry, "
+      "PIE for Cutting tool and metalworking distributors · resolve the enquiry, "
       + "hold the floor",
     description:
       "Paste a customer's enquiry and each line resolves against your own decoded "
@@ -291,9 +315,9 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
       + "alternatives ranked on the dimensions actually decoded, and nothing "
       + "offered where nothing discriminates. Then every priced line is checked "
       + "against your margin floor.",
-    eyebrow: "For cutting tool and metalworking distributors",
+    eyebrow: "For Cutting tool and metalworking distributors",
     headline: {
-      lead: "Quote cutting tools without losing the margin in the ",
+      lead: "Cutting tools, quoted without losing the margin in the ",
       em: "cross-reference",
       tail: ".",
     },
@@ -438,17 +462,17 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
   },
   {
     slug: "fasteners",
-    name: "fastener distribution",
+    name: "Fastener distribution",
     short: "fasteners",
-    title: "PIE for fastener distributors · a floor on every line of a 200-line RFQ",
+    title: "PIE for Fastener distributors · a floor on every line of a 200-line RFQ",
     description:
       "A fastener RFQ is not one decision, it is two hundred. PIE checks each "
       + "priced line against your own margin floor before the quote goes out and "
       + "holds a breach for a named approver, so line 174 gets the same policy as "
       + "line 1.",
-    eyebrow: "For fastener distributors",
+    eyebrow: "For Fastener distributors",
     headline: {
-      lead: "Two hundred fasteners on one RFQ, and a floor on ",
+      lead: "Fasteners: two hundred lines on one RFQ, and a floor on ",
       em: "every line",
       tail: ".",
     },
@@ -577,18 +601,18 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
   },
   {
     slug: "bearings-power-transmission",
-    name: "bearing and power transmission distribution",
+    name: "Bearing and power transmission distribution",
     short: "bearings and power transmission",
     title:
-      "PIE for bearings & power transmission distributors · hold the floor on an "
-      + "urgent line",
+      "PIE for Bearings and power transmission distributors · hold the floor on "
+      + "an urgent line",
     description:
       "A bearing goes down and the customer needs it today. PIE checks the price "
       + "typed on that line against your own margin floor before the quote goes "
       + "out, so urgency does not become the discount.",
-    eyebrow: "For bearings and power transmission distributors",
+    eyebrow: "For Bearings and power transmission distributors",
     headline: {
-      lead: "In bearings and power transmission, urgency is not a reason to ",
+      lead: "Bearings and power transmission: urgency is not a reason to ",
       em: "give the margin away",
       tail: ".",
     },
@@ -715,17 +739,17 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
   },
   {
     slug: "fluid-power",
-    name: "fluid power, hose and fitting distribution",
+    name: "Fluid power, hose and fitting distribution",
     short: "fluid power",
-    title: "PIE for fluid power distributors · one floor across every branch",
+    title: "PIE for Fluid power distributors · one floor across every branch",
     description:
       "Two branches quote the same assembly a week apart and the prices are not "
       + "close. PIE applies one margin policy wherever the line was priced, and "
       + "says UNKNOWN rather than guessing where a fabricated assembly carries no "
       + "cost.",
-    eyebrow: "For fluid power, hose and fitting distributors",
+    eyebrow: "For Fluid power, hose and fitting distributors",
     headline: {
-      lead: "One fluid power quote, one floor — whichever ",
+      lead: "Fluid power: one quote, one floor — whichever ",
       em: "branch",
       tail: " typed it.",
     },
@@ -848,18 +872,18 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
   },
   {
     slug: "electrical",
-    name: "electrical distribution",
+    name: "Electrical distribution",
     short: "electrical",
     title:
-      "PIE for electrical distributors · what your book says before the rebates "
+      "PIE for Electrical distributors · what your book says before the rebates "
       + "land",
     description:
       "On an SPA-heavy book the invoiced cost is not your cost, so PIE leads with "
       + "what needs no cost at all: which accounts are declining, which have gone "
       + "quiet, and where your price stopped following your purchase price.",
-    eyebrow: "For electrical distributors",
+    eyebrow: "For Electrical distributors",
     headline: {
-      lead: "Your electrical book knows which accounts are ",
+      lead: "Electrical: your book knows which accounts are ",
       em: "going quiet",
       tail: ". That needs no cost at all.",
     },
@@ -988,16 +1012,16 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
   },
   {
     slug: "plumbing-pvf",
-    name: "plumbing and PVF distribution",
+    name: "Plumbing and PVF distribution",
     short: "plumbing and PVF",
-    title: "PIE for plumbing & PVF distributors · the bid you priced last month",
+    title: "PIE for Plumbing and PVF distributors · the bid you priced last month",
     description:
       "Pipe reprices while a bid is open. PIE reads what each customer actually "
       + "paid, names where your price stopped following your cost, and checks a "
       + "quote line against your policy — with the rebate caveat stated plainly.",
-    eyebrow: "For plumbing and PVF distributors",
+    eyebrow: "For Plumbing and PVF distributors",
     headline: {
-      lead: "In plumbing and PVF the cost moved after you ",
+      lead: "Plumbing and PVF: the cost moved after you ",
       em: "quoted",
       tail: ". Nobody told the price.",
     },

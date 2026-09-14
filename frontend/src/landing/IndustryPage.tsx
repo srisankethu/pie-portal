@@ -3,7 +3,7 @@ import {
   DecisionCard, DEMO_LENGTH, FaqSection, FooterBlurb, LimitsSection, SubPageNav, TrustBand,
 } from "./shared";
 import { ERP_PAGES } from "./erp";
-import { INDUSTRY_PAGES, type IndustryPageData } from "./industries";
+import { INDUSTRY_PAGES, verticalLabel, type IndustryPageData } from "./industries";
 import { EXAMPLE_ITEM, exampleFor } from "./worked-example";
 import "./landing.css";
 
@@ -276,7 +276,7 @@ export function IndustryPage({ page }: { page: IndustryPageData }) {
             <div className="lp-footer-erp">
               {INDUSTRY_PAGES.filter((other) => other.slug !== page.slug).map((other) => (
                 <span key={other.slug}>
-                  <a href={`/industries/${other.slug}`}>{other.short}</a>
+                  <a href={`/industries/${other.slug}`}>{verticalLabel(other)}</a>
                   <span className="lp-sep" aria-hidden="true"> · </span>
                 </span>
               ))}

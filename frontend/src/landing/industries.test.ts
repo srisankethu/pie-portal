@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ERP_PAGES } from "./erp";
-import { INDUSTRY_PAGES } from "./industries";
+import { INDUSTRY_PAGES, verticalLabel } from "./industries";
 import { IndustryPage } from "./IndustryPage";
 
 /** What `renderToStaticMarkup` does to page copy on the way into the document.
@@ -56,6 +56,32 @@ describe("the industry registry", () => {
       "electrical",
       "plumbing-pvf",
     ]);
+  });
+
+  it("writes every trade's label in sentence case with its acronyms intact", () => {
+    // The seven strings, written out. `verticalLabel` derives them from `short`
+    // by capitalising one character, which is enough only while every acronym
+    // in this registry is already upper-case inside the string — so the check
+    // that matters is not "the function runs" but "the seven results are the
+    // seven labels". A trade added as "hvac and refrigeration" would come back
+    // "Hvac and refrigeration" and fail here rather than ship.
+    expect(INDUSTRY_PAGES.map(verticalLabel)).toEqual([
+      "Industrial and MRO",
+      "Cutting tools",
+      "Fasteners",
+      "Bearings and power transmission",
+      "Fluid power",
+      "Electrical",
+      "Plumbing and PVF",
+    ]);
+  });
+
+  it("keeps the label out of the URL", () => {
+    // Casing is a rendering decision and a slug is an address. A slug that
+    // followed the label would be a redirect nobody wrote.
+    for (const page of INDUSTRY_PAGES) {
+      expect(page.slug).toBe(page.slug.toLowerCase());
+    }
   });
 
   it("gives every page a unique slug", () => {
@@ -259,8 +285,12 @@ describe("the first heading names what the page is about", () => {
       const html = renderToStaticMarkup(IndustryPage({ page }));
       const h1 = (html.match(/<h1[^>]*>(.*?)<\/h1>/s)?.[1] ?? "")
         .replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
-      expect(h1, `/industries/${page.slug} h1 does not name ${page.short}`)
-        .toContain(page.short);
+      // The label, not `short`: a trade name in a heading is a name, and the
+      // h1 is one of the places this site renders it capitalised. Asserting the
+      // lower-case fragment here would pass on "Quote cutting tools" and on
+      // nothing the reader is actually shown.
+      expect(h1, `/industries/${page.slug} h1 does not name ${verticalLabel(page)}`)
+        .toContain(verticalLabel(page));
     }
   });
 });

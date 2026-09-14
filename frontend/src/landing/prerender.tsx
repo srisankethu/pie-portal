@@ -23,7 +23,7 @@ import { ERP_PAGES, type ErpPageData } from "./erp";
 import { FAQ, type FaqItem } from "./faq";
 import { caseStudy, complianceRows, namedCustomers } from "./proof";
 import { ErpPage } from "./ErpPage";
-import { INDUSTRY_PAGES } from "./industries";
+import { INDUSTRY_PAGES, type IndustryPageData } from "./industries";
 import { IndustryPage } from "./IndustryPage";
 import { ROLE_PAGES } from "./roles";
 import { RolePage } from "./RolePage";
@@ -108,6 +108,17 @@ export interface PrerenderPage {
   description: string | null;
   standalone: boolean;
   erp?: ErpPageData;
+  /** The trade a sub-page is about, and `undefined` everywhere else.
+   *
+   *  Here for the reason `erp` is: `scripts/prerender.mjs` writes llms.txt from
+   *  this registry rather than from a second list of the same names, and the
+   *  trade pages were missing from that file entirely — seven documents in
+   *  sitemap.xml and in the footers of every other family, and not one line of
+   *  them in the one file written for a model answering a question about this
+   *  site. A page a crawler is told about and a reader is routed to, that the
+   *  site's own summary does not mention, is the same orphan the footers exist
+   *  to prevent, one layer further out. */
+  industry?: IndustryPageData;
   /** The questions this page renders, for the `FAQPage` node the build emits.
    *
    *  Present only where the component actually shows them, which is the whole
@@ -148,6 +159,7 @@ export const PAGES: PrerenderPage[] = [
     description: page.description,
     standalone: true,
     faq: page.faq,
+    industry: page,
     render: () => renderToStaticMarkup(<IndustryPage page={page} />),
   })),
   ...ROLE_PAGES.map((page) => ({

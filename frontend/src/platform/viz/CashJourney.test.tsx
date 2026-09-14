@@ -13,13 +13,19 @@
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render, screen, waitFor } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 
+import { defineAbilityFor } from "../ability";
+import { GroupScopeProvider } from "../groupScope";
+import { PATH } from "../route";
 import { CashJourney } from "./CashJourney";
+import { aGroup } from "../../test/groups";
 import type { PlatformSession, Role } from "../types";
 
-const { cashflow } = vi.hoisted(() => ({ cashflow: vi.fn() }));
-vi.mock("../api", () => ({ papi: { cashflow } }));
+const { cashflow, listGroups } = vi.hoisted(
+  () => ({ cashflow: vi.fn(), listGroups: vi.fn() }));
+vi.mock("../api", () => ({ papi: { cashflow, listGroups } }));
 
 // jsdom has neither, and the sheet measures its own container before it draws.
 // Stubbed to a real width so the drawing renders rather than sitting at the
@@ -119,8 +125,78 @@ function mount() {
   );
 }
 
+/** The same panel, on its page, inside the page-level scope.
+ *
+ *  `mount` above deliberately has neither router nor provider — every other
+ *  assertion in this file is about the drawing, and `NotNarrowedByGroup`
+ *  renders nothing without a provider above it, so those tests are unaffected
+ *  by the scope existing at all. */
+function mountScoped(at: string) {
+  listGroups.mockResolvedValue({
+    groups: [aGroup({ slug: "aerospace", name: "Aerospace" })],
+    kinds: [], may_edit: true, empty_reason: null });
+  return render(
+    <QueryClientProvider client={new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    })}>
+      <MemoryRouter initialEntries={[at]}>
+        <GroupScopeProvider token="t" ability={defineAbilityFor("OWNER")}>
+          <CashJourney session={session()} />
+        </GroupScopeProvider>
+      </MemoryRouter>
+    </QueryClientProvider>,
+  );
+}
+
 const sheet = (container: HTMLElement) =>
   container.querySelector("svg.wcj-sheet") as SVGElement | null;
+
+// ── the page narrows and this panel does not ────────────────────────────────
+//
+// `/cashflow` reads receivables *and* payables. A customer group narrows only
+// the inflow half, and a projection with one side rescaled nets to a figure
+// that answers no question — the endpoint's own reasoning for being scoped by
+// role rather than half-stripped. So this panel stays whole-book on a page that
+// narrows around it, which looks exactly like the filter being broken.
+//
+// **These are placement tests, and they exist because neither of the other two
+// checks can see placement.** `groupScope.test.tsx` proves the note renders
+// when a group is chosen; it cannot see where the note was put. `Panel` draws
+// its children only in the `ready` state, so a note dropped into a branch that
+// never runs would pass that suite. The browser could not see it either — the
+// seeded demo book has no cash schedule, so this panel is permanently empty
+// there, and an empty panel makes no whole-book claim to explain.
+describe("under a customer group", () => {
+  it("says it is not narrowed, in the panel with the figures", async () => {
+    cashflow.mockResolvedValue(response());
+    mountScoped(`${PATH.payments}?customers=aerospace`);
+
+    expect(await screen.findByText("Not narrowed")).toBeTruthy();
+    expect(screen.getByText(/money in and not money out/)).toBeTruthy();
+  });
+
+  it("says nothing while the page is the whole book", async () => {
+    // Until a group is chosen there is nothing to explain, and a standing
+    // caveat on every panel is a caveat nobody reads.
+    cashflow.mockResolvedValue(response());
+    const { container } = mountScoped(PATH.payments);
+
+    await waitFor(() => expect(sheet(container)).not.toBeNull());
+    expect(container.textContent).not.toContain("Not narrowed");
+  });
+
+  it("never sends the group to the endpoint", async () => {
+    // The note is an explanation, not a half-applied filter. The day this panel
+    // starts passing the group, the note becomes a lie.
+    cashflow.mockResolvedValue(response());
+    mountScoped(`${PATH.payments}?customers=aerospace`);
+
+    await screen.findByText("Not narrowed");
+    for (const call of cashflow.mock.calls) {
+      expect(call).not.toContain("aerospace");
+    }
+  });
+});
 
 describe("the working capital journey", () => {
   it("draws the past, the datum and the committed channel", async () => {

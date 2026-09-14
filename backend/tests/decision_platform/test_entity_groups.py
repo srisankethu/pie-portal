@@ -539,6 +539,11 @@ CUSTOMER_SCOPED = [
     ("/api/v1/insight/dependency", "customers"),
     ("/api/v1/insight/quote-outcomes", "customers"),
     ("/api/v1/insight/quote-pricing", "comparisons"),
+    # Not because the matrix is a share of anything, but because of *where it
+    # renders*: directly under the journey chart on `/journey` and on
+    # `/customers`, both of which carry a customer group. A panel beside a
+    # narrowed one that is not narrowed itself is two answers on one screen.
+    ("/api/v1/insight/migration", "cells"),
 ]
 
 #: The same three properties for the other two kinds. Written as their own
@@ -549,6 +554,10 @@ CUSTOMER_SCOPED = [
 VENDOR_SCOPED = [
     "/api/v1/insight/supply",
     "/api/v1/insight/payables",
+    # The second panel on `/payables`, for the reason `/migration` is listed
+    # above: a list of every supplier under a median narrowed to a set of them
+    # is the page half scoped.
+    "/api/v1/insight/vendor-terms",
 ]
 
 ITEM_SCOPED = [

@@ -435,19 +435,35 @@ def customer_journey(months: int = Query(12, ge=3, le=24),
 
 @router.get("/migration")
 def migration_matrix(months: int = Query(3, ge=MIN_MONTHS, le=MAX_MONTHS),
+                     group: Optional[groups.ResolvedGroup] =
+                     Depends(group_scope.customer_group),
                      principal: Principal = Depends(current_principal),
                      session: Session = Depends(get_session)) -> dict:
-    """Which revenue band each customer moved between."""
-    _org, snapshot, th = _context(session, principal)
+    """Which revenue band each customer moved between.
+
+    ``group`` bounds the snapshot by customer, so a cell counts movement inside
+    that set. It takes one because of **where this renders rather than what it
+    computes**: the matrix sits directly beneath the journey chart on both
+    ``/journey`` and ``/customers``, and those two pages carry a customer group.
+    Left unscoped it was a grid of the whole book's movement under a control
+    that had visibly narrowed the chart above it — two answers on one screen
+    with nothing saying which was which, which is the defect the page-level
+    scope exists to have removed.
+    """
+    _org, snapshot, th = _context(
+        session, principal,
+        **({"sales_for_customers": group.entity_ids} if group else {}))
     as_of = _as_of(snapshot)
     if as_of is None:
-        return _no_data(th, "band migration")
+        return _no_data(th, "band migration", group=group)
 
     comparison = periods.comparison(as_of, months=months)
     result = cohorts.migration(snapshot.sales, snapshot.customer_names, comparison)
     return _envelope(result, th=th, as_of=as_of.isoformat(),
+                     group=group_scope.ref(group),
                      empty_reason=(None if result["cells"] else
-                                   "No customer traded in either period."))
+                                   (group_scope.empty_note(group, "trade")
+                                    or "No customer traded in either period.")))
 
 
 def _require_visible_customer(session: Session, customer_id: str,
@@ -3612,19 +3628,28 @@ def clear_vendor_term(vendor_id: str,
 
 
 @router.get("/vendor-terms")
-def list_vendor_terms(principal: Principal = Depends(require_manager_or_owner),
+def list_vendor_terms(group: Optional[groups.ResolvedGroup] =
+                      Depends(group_scope.vendor_group),
+                      principal: Principal = Depends(require_manager_or_owner),
                       session: Session = Depends(get_session)) -> dict:
     """Every supplier, what Zoho holds, and what we agreed.
 
     Every supplier rather than only those with an agreement: the screen this
     feeds is where somebody goes *to* record one, and a list of the rows already
     filled in is not the list somebody with work to do needs.
+
+    ``group`` narrows to a set of suppliers, on the vendor read. This panel sits
+    under the payables settlements on ``/payables``, which carries a vendor
+    group — a list of every supplier beneath a chart narrowed to the import
+    principals is the page half-scoped.
     """
     org = principal.organization_id
     th = policy.load_for_org(session, org)
-    vendors = session.scalars(
-        select(models.Vendor).where(
-            models.Vendor.organization_id == org)).all()
+    vendor_q = select(models.Vendor).where(models.Vendor.organization_id == org)
+    if group is not None:
+        vendor_q = vendor_q.where(
+            models.Vendor.vendor_id.in_(list(group.entity_ids)))
+    vendors = session.scalars(vendor_q).all()
     agreed = _agreed_terms(session, org)
     notes = {
         r.vendor_id: r
@@ -3665,10 +3690,11 @@ def list_vendor_terms(principal: Principal = Depends(require_manager_or_owner),
     return _envelope(
         {"terms": rows, "bases": vendor_terms.BASIS_LABELS,
          "max_days": vendor_terms.MAX_TERM_DAYS},
-        th=th,
+        th=th, group=group_scope.ref(group),
         empty_reason=(None if rows else
-                      "No suppliers have synced yet, so there is nothing to "
-                      "record a term against."),
+                      (group_scope.empty_note(group, "supplier")
+                       or "No suppliers have synced yet, so there is nothing "
+                          "to record a term against.")),
         sources_differ=companies.count > 1)
 
 

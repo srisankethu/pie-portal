@@ -43,6 +43,7 @@ import { scaleLinear } from "d3-scale";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
+import { NotNarrowedByGroup } from "../groupScope";
 import { ChartTip, MetricCard, StatusChip } from "../kit";
 import { DataGrid, numeric } from "../DataGrid";
 import type { ColDef } from "../DataGrid";
@@ -156,6 +157,14 @@ export function CashJourney({ session }: { session: PlatformSession }) {
         </div>
       }
     >
+      {/* Says so where the figure is, rather than leaving a reader with a group
+          selected to conclude the filter is broken. */}
+      <NotNarrowedByGroup
+        kind="CUSTOMER"
+        why={"A customer group narrows money in and not money out, and a "
+             + "projection with one side rescaled nets to a figure that "
+             + "answers no question. The settlements below it do narrow."}
+      />
       <DrawingDefs />
 
       <p className="viz-headline">

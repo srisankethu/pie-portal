@@ -371,8 +371,13 @@ export const papi = {
     return req<Record<string, unknown>>(`/api/v1/insight/journey?${p}`, {}, t);
   },
 
-  migration: (t: string, months = 3) =>
-    req<Record<string, unknown>>(`/api/v1/insight/migration?months=${months}`, {}, t),
+  // Takes the page's customer group for the reason the endpoint gives: this
+  // renders directly beneath the journey chart, on two pages that carry one.
+  migration: (t: string, months = 3, group = "") => {
+    const p = new URLSearchParams({ months: String(months) });
+    if (group) p.set("group", group);
+    return req<Record<string, unknown>>(`/api/v1/insight/migration?${p}`, {}, t);
+  },
 
   opportunities: (t: string, limit = 100, group = "") => {
     const p = new URLSearchParams({ limit: String(limit) });
@@ -489,8 +494,13 @@ export const papi = {
   // What we actually agreed to pay a supplier in, which Zoho's fixed dropdown
   // often cannot express. Zoho's own value is never overwritten — both travel
   // together, because the gap between them is the thing worth seeing.
-  vendorTerms: (t: string) =>
-    req<Record<string, unknown>>("/api/v1/insight/vendor-terms", {}, t),
+  // The page's vendor group, because this renders under the payables
+  // settlements on a page that carries one — every supplier listed beneath a
+  // chart narrowed to the import principals is the page half scoped.
+  vendorTerms: (t: string, group = "") =>
+    req<Record<string, unknown>>(
+      `/api/v1/insight/vendor-terms${group ? `?group=${encodeURIComponent(group)}` : ""}`,
+      {}, t),
 
   setVendorTerm: (t: string, vendorId: string, days: number, basis: string,
                   note?: string | null) =>

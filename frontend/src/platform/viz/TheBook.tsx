@@ -28,7 +28,7 @@ import { EntityName } from "../EntityName";
 import { InlineLink, MetricCard, StatusChip } from "../kit";
 import type { Tone } from "../kit";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
-import { useGroupScope } from "../groupScope";
+import { NotNarrowedByGroup, useGroupScope } from "../groupScope";
 import { DataGrid, numeric } from "../DataGrid";
 import type { ColDef } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
@@ -125,6 +125,11 @@ function SelfFunding({ session }: { session: PlatformSession }) {
       state={stateOf(loading, error, reason)}
       error={error} emptyReason={reason} onRetry={reload}
     >
+      <NotNarrowedByGroup
+        kind="CUSTOMER"
+        why={"Whether growth was paid for out of what the book kept is a "
+             + "question about the legal entity, not about a set of customers."}
+      />
       <Stack spacing={2}>
         <Box sx={{
           display: "grid", gap: 2,
@@ -1014,9 +1019,13 @@ type TermRow = Sourced & {
 };
 
 function VendorTermsPanel({ session }: { session: PlatformSession }) {
+  // The page's vendor group, the same one the settlements above read. This is
+  // the second panel on `/payables`; a list of every supplier under a median
+  // narrowed to a set of them is the page half scoped.
+  const group = useGroupScope("VENDOR");
   const { data, loading, error, reload } = useInsight(
     "vendor-terms",
-    () => papi.vendorTerms(session.token), [session.token]);
+    () => papi.vendorTerms(session.token, group), [session.token, group]);
   const [busy, setBusy] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
 

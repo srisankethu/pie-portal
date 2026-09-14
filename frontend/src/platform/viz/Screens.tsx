@@ -101,9 +101,14 @@ export function WeatherScreen({
 export function OpportunityScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
+  // The page's customer group. Server-side: the ranking, the totals and the
+  // materiality accounting are all over the relationships read, so the group
+  // has to bound the read rather than shorten the list under an unmoved total.
+  const group = useGroupScope("CUSTOMER");
   const { data, loading, error, reload } = useInsight(
     "opportunities",
-    () => papi.opportunities(session.token), [session.token]);
+    () => papi.opportunities(session.token, 100, group),
+    [session.token, group]);
   const [ref, room] = useMeasure<HTMLDivElement>();
 
   const rows = (data?.opportunities as Record<string, unknown>[] | undefined) ?? [];

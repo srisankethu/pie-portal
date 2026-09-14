@@ -1201,9 +1201,13 @@ function VendorTermsPanel({ session }: { session: PlatformSession }) {
 export function PayablesScreen({
   session, onNavigate,
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
+  // Server-side: the headline is a median days-to-pay and the bands are
+  // proportions, both over the settlements the endpoint is handed. Trimming
+  // rows afterwards would leave those two describing the whole book.
+  const group = useGroupScope("VENDOR");
   const { data, loading, error, reload } = useInsight(
     "payables",
-    () => papi.payables(session.token), [session.token]);
+    () => papi.payables(session.token, group), [session.token, group]);
 
   return (
     <div className="screen-stack">
@@ -1258,9 +1262,13 @@ const HEALTH_LABEL: Record<string, string> = {
 };
 
 export function StockScreen({ session }: { session: PlatformSession }) {
+  // Server-side: the counts, the KPIs and the band filters are all computed
+  // inside whatever is read, so "38 lines are dead stock" has to mean 38 of the
+  // drills rather than 38 of the book with the rest of the list hidden.
+  const itemGroup = useGroupScope("PRODUCT");
   const { data, loading, error, reload } = useInsight(
     "stock",
-    () => papi.stock(session.token), [session.token]);
+    () => papi.stock(session.token, itemGroup), [session.token, itemGroup]);
   const [active, setActive] = useState<string[]>([]);
   // `?item=` narrows the shelf to one product. The landscape sends items here
   // because there is no product screen and Stock is the closest thing to one —

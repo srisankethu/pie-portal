@@ -65,10 +65,16 @@ export function LandscapeScreen({
 }: { session: PlatformSession; onNavigate: (r: string) => void }) {
   const [subject, setSubject] = useState("relationship");
   const [measure, setMeasure] = useState("margin");
+  // Both kinds: a point here is a relationship, so either set narrows either
+  // subject. Server-side because the horizontal split is the median revenue of
+  // what was read — "large" has to mean large for the group, or the whole
+  // book's dividing line gets drawn across a segment.
+  const customerGroup = useGroupScope("CUSTOMER");
+  const itemGroup = useGroupScope("PRODUCT");
   const { data, loading, error, reload } = useInsight(
     "landscape",
-    () => papi.landscape(session.token, subject, measure),
-    [session.token, subject, measure]);
+    () => papi.landscape(session.token, subject, measure, customerGroup, itemGroup),
+    [session.token, subject, measure, customerGroup, itemGroup]);
   const [ref, room] = useMeasure<HTMLDivElement>();
 
   const all = (data?.points as Record<string, unknown>[] | undefined) ?? [];

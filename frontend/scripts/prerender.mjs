@@ -22,20 +22,16 @@
  *      rather than committed to public/ because both carry the absolute
  *      origin, and the origin is a build-time setting.
  *
- * SITE_ORIGIN is that setting: set the env var to build for a custom domain;
- * the default is the current public home. Fails loudly — a broken prerender
- * must fail the build, not ship an empty page quietly.
+ * The origin those tags carry is `SITE_URL` in src/landing/site.ts — the one
+ * place this site's address is written down. The SITE_ORIGIN env var overrides
+ * it for a self-host behind its own domain; it is an override, not the source.
+ * Fails loudly — a broken prerender must fail the build, not ship an empty
+ * page quietly, and not ship one that names the wrong host as canonical.
  */
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import process from "node:process";
 import { createServer } from "vite";
-
-// `||`, not `??`: docker passes the arg as an empty string when unset, and an
-// empty origin would write canonical="/" and a sitemap of relative URLs.
-const SITE_ORIGIN = (
-  process.env.SITE_ORIGIN || "https://pie-portal-seven.vercel.app"
-).replace(/\/+$/, "");
 
 const DIST = path.resolve(process.cwd(), "dist");
 const INDEX = path.join(DIST, "index.html");
@@ -79,14 +75,35 @@ const vite = await createServer({
   appType: "custom",
   logLevel: "error",
 });
-let pages, tokenCss, gaps;
+let pages, tokenCss, gaps, siteUrl, faq;
 try {
   const mod = await vite.ssrLoadModule("/src/landing/prerender.tsx");
   pages = mod.PAGES;
   tokenCss = mod.landingTokenCss();
   gaps = mod.contentGaps();
+  // The site's own address, from the one module that states it. Loaded
+  // through the same SSR server rather than duplicated here, so the constant
+  // this build writes into every canonical tag is the one `tsc -b` checks and
+  // `site.test.ts` asserts — not a second copy in a script nothing type-checks.
+  ({ SITE_URL: siteUrl } = await vite.ssrLoadModule("/src/landing/site.ts"));
+  // The same array the landing page renders its visible FAQ from. The whole
+  // point of reading it here is that the JSON-LD cannot say something the
+  // document does not — see the FAQPage note in `documentFor`.
+  ({ FAQ: faq } = await vite.ssrLoadModule("/src/landing/faq.ts"));
 } finally {
   await vite.close();
+}
+
+// `||`, not `??`: docker passes the build-arg as an empty string when unset,
+// and an empty origin would write canonical="/" and a sitemap of relative
+// URLs. The override exists for a self-host behind its own domain; the
+// default is this site, and no longer the platform host it was deployed to.
+const SITE_ORIGIN = (process.env.SITE_ORIGIN || siteUrl).replace(/\/+$/, "");
+
+if (!/^https?:\/\/[^/]+$/.test(SITE_ORIGIN)) {
+  fail(
+    `SITE_ORIGIN must be an absolute origin with no path or trailing slash, got "${SITE_ORIGIN}"`,
+  );
 }
 
 if (!Array.isArray(pages) || pages.length === 0) {
@@ -178,25 +195,64 @@ function documentFor(page) {
                       "", "the module script tag");
   }
 
-  // WebSite + WebPage + SoftwareApplication, every value true of the product
-  // and already stated on the page. Deliberately absent: offers, ratings,
-  // reviews, FAQPage — schema the audit's ground rules exclude, and values
-  // (a rating, an award) the product simply does not have. BreadcrumbList is
-  // absent for the same reason it always was: no page here renders a visible
-  // breadcrumb, and schema may only restate what is on the page.
+  // Organization + WebSite + WebPage on every page; SoftwareApplication and
+  // FAQPage on the landing page alone. Every value is true of the product and
+  // already stated on the page it appears on.
   //
-  // The WebPage node is per-page — its own @id and url — while WebSite and
-  // SoftwareApplication are one node each, referenced rather than re-declared.
-  // Four documents all claiming to be `${SITE_ORIGIN}/#webpage` would describe
-  // one page four times, which is worse than describing none.
+  // Still deliberately absent: offers, ratings, reviews, BreadcrumbList —
+  // schema the audit's ground rules exclude, values the product does not have
+  // (a rating, an award), and, for the breadcrumb, a trail no page renders.
+  // Schema may only restate what is on the page.
+  //
+  // FAQPage has moved from that list to the graph, and only because the page
+  // moved first. It was excluded when there was no FAQ; there is now a visible
+  // one at the bottom of the landing document, rendered from the same `FAQ`
+  // array this node is built from, so the schema restates the page rather than
+  // describing a page that does not exist. That ordering is the whole rule:
+  // Google's FAQPage guidance requires the question and answer to be visible,
+  // and a build that emitted this node from a second copy of the strings would
+  // be one edit away from a manual action. It is on the landing page only,
+  // because that is the only document that renders the FAQ.
+  //
+  // SoftwareApplication is likewise landing-only now, where it used to appear
+  // on all eight. The node is referenced from every WebPage's `about`, so the
+  // ERP pages still point at the product — they simply no longer each carry a
+  // full copy of its declaration. One description of one application, at one
+  // @id, on the page that is about it.
+  //
+  // The WebPage node is per-page — its own @id and url — while Organization,
+  // WebSite and SoftwareApplication are one node each, referenced rather than
+  // re-declared. Eight documents all claiming to be `${SITE_ORIGIN}/#webpage`
+  // would describe one page eight times, which is worse than describing none.
+  const isLanding = page.slug === "";
+
   const jsonLd = {
     "@context": "https://schema.org",
     "@graph": [
+      {
+        "@type": "Organization",
+        "@id": `${SITE_ORIGIN}/#organization`,
+        name: "PIE",
+        url: `${SITE_ORIGIN}/`,
+        // The favicon is the only mark this repository has. Naming it is
+        // honest and useful — an SVG scales to whatever a consumer wants —
+        // and inventing a `/logo.png` that 404s would be worse than omitting
+        // the property, which is the real alternative here.
+        logo: `${SITE_ORIGIN}/favicon.svg`,
+        // TODO: add the real profile URLs once they exist — LinkedIn, GitHub,
+        // Crunchbase, an X handle. `sameAs` is how a knowledge graph decides
+        // that this Organization and a profile elsewhere are one entity, so
+        // an empty array is a genuine gap rather than a tidy default. It ships
+        // empty rather than guessed: a URL that does not resolve, or resolves
+        // to somebody else's account, is a worse answer than no answer.
+        sameAs: [],
+      },
       {
         "@type": "WebSite",
         "@id": `${SITE_ORIGIN}/#website`,
         url: `${SITE_ORIGIN}/`,
         name: "PIE",
+        publisher: { "@id": `${SITE_ORIGIN}/#organization` },
       },
       {
         "@type": "WebPage",
@@ -207,15 +263,36 @@ function documentFor(page) {
         isPartOf: { "@id": `${SITE_ORIGIN}/#website` },
         about: { "@id": `${SITE_ORIGIN}/#software` },
       },
-      {
-        "@type": "SoftwareApplication",
-        "@id": `${SITE_ORIGIN}/#software`,
-        name: "PIE",
-        url: `${SITE_ORIGIN}/`,
-        description: landingDescription,
-        applicationCategory: "BusinessApplication",
-        operatingSystem: "Web browser",
-      },
+      ...(isLanding
+        ? [
+            {
+              "@type": "SoftwareApplication",
+              "@id": `${SITE_ORIGIN}/#software`,
+              name: "PIE",
+              url: `${SITE_ORIGIN}/`,
+              // The landing page's own meta description, read back out of the
+              // built document rather than restated — so the sentence a search
+              // result shows and the sentence this node carries cannot drift
+              // apart. No `offers`, no `aggregateRating`: there is no public
+              // price and there are no reviews, and schema that invents either
+              // is the kind that gets a site's rich results turned off.
+              description: landingDescription,
+              applicationCategory: "BusinessApplication",
+              operatingSystem: "Web",
+              publisher: { "@id": `${SITE_ORIGIN}/#organization` },
+            },
+            {
+              "@type": "FAQPage",
+              "@id": `${url}#faq`,
+              isPartOf: { "@id": `${url}#webpage` },
+              mainEntity: faq.map((item) => ({
+                "@type": "Question",
+                name: item.question,
+                acceptedAnswer: { "@type": "Answer", text: item.answer },
+              })),
+            },
+          ]
+        : []),
     ],
   };
 
@@ -256,10 +333,104 @@ for (const page of pages) {
 // robots.txt can actually do. The document carries `noindex` itself as well,
 // because a crawler that ignores this file still reads that.
 // Assets and the public pages stay allowed.
+//
+// The named agents below are the ones that read a page on behalf of somebody
+// asking a question — ChatGPT's crawler and its search fetcher, Claude's,
+// Perplexity's, and the token Google honours for AI Overviews and Gemini
+// grounding. They are listed rather than left to `User-agent: *` for one
+// reason: `*` already allows them, so the block adds no permission — what it
+// adds is an unambiguous answer for an operator who checks, and a record that
+// the choice was made. Several of these agents are also known to read a named
+// group in preference to the wildcard, and a site that only ever answers `*`
+// is a site whose intent has to be inferred.
+//
+// Each group restates the same two Disallow lines. That is not redundancy to
+// remove: robots.txt has no inheritance, and a group with an `Allow:` and no
+// `Disallow:` would open /api/ and /operator.html to exactly the agents named
+// here — the opposite of what the block is for.
+const CRAWL_DISALLOW = ["/api/", "/operator.html"];
+
+// Google-Extended is not a crawler. It is a token that says whether Googlebot's
+// existing crawl may be used for AI Overviews and Gemini grounding, so it never
+// fetches anything itself and its own Disallow lines govern nothing. Listed
+// with the others because allowing it is the same decision.
+const AI_AGENTS = ["GPTBot", "OAI-SearchBot", "ChatGPT-User", "ClaudeBot",
+                   "Claude-User", "PerplexityBot", "Google-Extended"];
+
+function robotsGroup(agent) {
+  return `User-agent: ${agent}\n`
+    + CRAWL_DISALLOW.map((path) => `Disallow: ${path}\n`).join("")
+    + "Allow: /\n\n";
+}
+
 await writeFile(
   path.join(DIST, "robots.txt"),
-  `User-agent: *\nDisallow: /api/\nDisallow: /operator.html\n\n`
+  robotsGroup("*")
+  + AI_AGENTS.map(robotsGroup).join("")
   + `Sitemap: ${SITE_ORIGIN}/sitemap.xml\n`,
+);
+
+// llms.txt — what this site is, for a model that is answering a question about
+// it rather than a person browsing it.
+//
+// Generated rather than committed to public/, for the same two reasons
+// robots.txt and sitemap.xml are: every link in it carries the absolute origin,
+// which is a build-time setting, and the list of pages comes from `PAGES` — so
+// a connector added to `erp.ts` appears here without anybody remembering. A
+// hand-written copy in public/ would be a third list of the same seven systems
+// and the first one to go stale.
+//
+// Served as text/plain at /llms.txt by both edges without any extra rule: it is
+// a real file in dist/, Vercel checks the filesystem before it applies the SPA
+// rewrite, and the Caddyfile's `try_files {path}` finds it before the
+// `/index.html` fallback. That is the same mechanism that already serves
+// robots.txt and sitemap.xml, which is the evidence that it works.
+//
+// Every line below is a claim the site already makes — the definition is the
+// landing page's own meta description, the ERP list is `PAGES`, the FAQ is the
+// FAQ, and the differentiators are the TrustBand's bullets compressed. Nothing
+// is written for this file alone. A model reading this and a person reading the
+// page have to come away with the same understanding, and the way to guarantee
+// that is to have no sentence here that is not there.
+const erpPages = pages.filter((page) => page.slug.startsWith("erp/"));
+
+await writeFile(
+  path.join(DIST, "llms.txt"),
+  `# PIE\n\n`
+  + `> ${landingDescription}\n\n`
+  + `## Who it is for\n\n`
+  + `B2B distributors running one or more of the ERPs below, where somebody `
+  + `prices quotes by hand and margin is checked after the fact rather than `
+  + `before the quote goes out. Three roles use it: owners and finance, who set `
+  + `the margin floors and see cost and margin; approvers, who decide on lines `
+  + `that breached a floor; and the sales desk, which quotes against the floor `
+  + `and never receives a cost or margin field.\n\n`
+  + `## Supported ERPs\n\n`
+  + erpPages.map((page) => `- ${page.erp.name}\n`).join("")
+  + `\n## What is true of it\n\n`
+  + `- The AI never computes a number. Every figure is deterministic arithmetic `
+  + `on the customer's own records; turn the AI off and every number still `
+  + `works. The AI reads those numbers and explains them.\n`
+  + `- Same inputs, same answer, every time, with a paper trail. Every figure `
+  + `names the policy version that produced it, so a price quoted last quarter `
+  + `still explains itself.\n`
+  + `- Cost and margin never reach the sales desk. The fields are absent from `
+  + `the server's response, not hidden in the browser.\n`
+  + `- It works on top of the ERP and does not replace it. Four of the seven `
+  + `connectors can create an agreed quote back as an estimate or sales quote; `
+  + `the other three are read-only. Nothing else is ever written.\n`
+  + `- The first sync reads 18 months by default, and the customer can set an `
+  + `earlier date before it runs.\n`
+  + `- The customer's data is theirs: one export of everything the organization `
+  + `owns, and erasure that destroys the tenant key and issues a signed `
+  + `receipt naming what was and was not encrypted.\n`
+  + `\n## Pages\n\n`
+  + `- [PIE](${SITE_ORIGIN}/): ${landingTitle}\n`
+  + erpPages
+      .map((page) => `- [${page.erp.name}](${SITE_ORIGIN}/${page.slug}): ${page.description}\n`)
+      .join("")
+  + `\n## Questions\n\n`
+  + faq.map((item) => `### ${item.question}\n\n${item.answer}\n\n`).join(""),
 );
 
 // Generated from the same registry the documents are, so a page cannot exist
@@ -286,7 +457,7 @@ console.log(
       .map(({ page, size }) =>
         `/${page.slug} (${(size / 1024).toFixed(1)} kB${page.standalone ? ", no bundle" : ""})`)
       .join(", ") +
-    `; robots.txt + sitemap.xml written`,
+    `; robots.txt + sitemap.xml + llms.txt written`,
 );
 
 // What the site is still waiting for.

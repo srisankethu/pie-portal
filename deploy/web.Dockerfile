@@ -23,10 +23,12 @@ COPY frontend/ ./
 # into dist) — the same steps scripts/verify.sh runs, so a type error fails
 # the image build rather than shipping.
 #
-# SITE_ORIGIN is the one build-time setting the prerender reads: the absolute
-# origin written into the canonical tag, sitemap and robots.txt. The default
-# is the hosted deployment's URL; a self-host behind its own domain should
-# pass --build-arg SITE_ORIGIN=https://its.domain here.
+# SITE_ORIGIN overrides the absolute origin the prerender writes into the
+# canonical tag, og:url, robots.txt, sitemap.xml, the JSON-LD graph and
+# llms.txt. It is an override and not the source: the site's own address is
+# SITE_URL in frontend/src/landing/site.ts, and leaving this unset is the
+# correct thing to do for the public deployment. A self-host behind its own
+# domain passes --build-arg SITE_ORIGIN=https://its.domain here.
 ARG SITE_ORIGIN
 RUN SITE_ORIGIN="$SITE_ORIGIN" npm run build
 

@@ -2,6 +2,18 @@
   "buildCommand": "npm run build",
   "outputDirectory": "dist",
   "redirects": [
+    {
+      "source": "/(.*)",
+      "has": [{ "type": "host", "value": "pie-portal-seven.vercel.app" }],
+      "destination": "https://www.syncpie.com/$1",
+      "statusCode": 301
+    },
+    {
+      "source": "/(.*)",
+      "has": [{ "type": "host", "value": "syncpie.com" }],
+      "destination": "https://www.syncpie.com/$1",
+      "statusCode": 301
+    },
     { "source": "/erp/:slug/", "destination": "/erp/:slug", "permanent": true }
   ],
   "rewrites": [

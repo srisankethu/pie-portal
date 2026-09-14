@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { demoCta } from "./cta";
 import { ERP_PAGES } from "./erp";
+import { FAQ } from "./faq";
 import { caseStudy, complianceRows, hasProof, namedCustomers } from "./proof";
 import { DEMO_LENGTH, FooterBlurb, TrustBand } from "./shared";
 import { ContactModal } from "./ContactModal";
@@ -249,7 +250,7 @@ export function Landing({ onEnter, onDemo }: {
    *  worth writing. */
   const proofShown = hasProof();
   const sections = ["problem", "outcomes", "roles", "how", "worth", "ownership",
-                    ...(proofShown ? ["proof"] : []), "demo"];
+                    ...(proofShown ? ["proof"] : []), "demo", "faq"];
   const letter = (name: string) => String.fromCharCode(65 + sections.indexOf(name));
 
   const customers = namedCustomers();
@@ -1104,6 +1105,46 @@ export function Landing({ onEnter, onDemo }: {
                 <li><b>The look-back</b> — what your own history holds, and what it cannot say</li>
                 <li><b>No connection</b> to your books until you decide to make one</li>
               </ul>
+            </div>
+          </div>
+        </section>
+
+        {/* ── Questions ────────────────────────────────────────────────────
+            Last section before the closing band, and deliberately so: a reader
+            who has come this far has the objections, and a reader who scrolled
+            straight past everything else lands on the plainest statement of
+            what this is.
+
+            Rendered from `FAQ` in `./faq`, which is also what the prerenderer
+            builds the `FAQPage` JSON-LD from. One array, two renderers — the
+            schema cannot claim a question this page does not show, which is
+            both Google's rule for that schema and the only way the two stay
+            in step when somebody edits an answer.
+
+            Plain `<h3>` and `<p>`, not a `<details>` accordion. An accordion
+            would hide six of the seven answers behind a click: fine for a
+            person scanning, actively wrong for the readers this section is
+            for. A model extracting an answer, and a crawler weighing it, both
+            do better with the text simply present — and a reader who wanted to
+            skim has the question headings to skim.
+          */}
+        <div className="lp-dim"><b>Section {letter("faq")} — Questions</b></div>
+        <section id="faq">
+          <div className="lp-wrap">
+            <div className="lp-sec-head">
+              <h2>Questions we get asked</h2>
+              <p>
+                The short answers. Everything here is said at more length
+                somewhere above, or on the page for your own system.
+              </p>
+            </div>
+            <div className="lp-faq">
+              {FAQ.map((item) => (
+                <div className="lp-panel" key={item.question}>
+                  <h3>{item.question}</h3>
+                  <p>{item.answer}</p>
+                </div>
+              ))}
             </div>
           </div>
         </section>

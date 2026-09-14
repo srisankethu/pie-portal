@@ -67,10 +67,10 @@ import { useMeasure } from "./useMeasure";
 // marks below depend on two frames rather than one, which is where a playback
 // starts telling a story the data does not support.
 import {
-  MOVEMENT_LOOKBACK, PAD_L, PAD_R, TRAIL_MIN_PTS,
+  MOVEMENT_LOOKBACK, NAME_MAX_CHARS, PAD_L, PAD_R, TRAIL_MIN_PTS,
   anchored, counted, firstScored, frameLine, frameStory, laneTone, layout,
   num, packLanes, prepare, rows, signed, sinceFrom, toneOf, xOf,
-  type Lane, type Node, type PreparedSide, type Row,
+  type Lane, type Node, type Placement, type PreparedSide, type Row,
 } from "./bonds-layout";
 
 /** The five facets, in the order the score weights them. Named here so the
@@ -529,7 +529,7 @@ function BondStrip({
   reduced: boolean;
   selected: string | null;
   /** `side:id` keys allowed to carry a name. Fixed for the whole play. */
-  labels: Set<string>;
+  labels: Map<string, Placement>;
   sides: PreparedSide[];
   at: number;
   cramped: boolean;
@@ -580,8 +580,17 @@ function BondStrip({
                 <line x1={x0} x2={x0} y1={AXIS_H - 6} y2={height}
                       className="bond-edge" />
               )}
-              <text x={(x0 + x1) / 2} y={14} textAnchor="middle"
-                    className="bond-band-label">{e.label}</text>
+              {/* Named only where the band is wide enough to hold the name. At
+                  a phone's width "loosening" and "steady" are each wider than
+                  the region they label, so the two ran into one another and
+                  read as a single word belonging to neither — four band names
+                  and a dividing rule are worth nothing if what is printed is
+                  "LOOSENING STEADY". The rule stays either way, and the chip
+                  in the ledger names every band in full. */}
+              {x1 - x0 > e.label.length * BAND_CHAR_PX + 8 && (
+                <text x={(x0 + x1) / 2} y={14} textAnchor="middle"
+                      className="bond-band-label">{e.label}</text>
+              )}
             </g>
           );
         })}
@@ -691,15 +700,16 @@ function BondStrip({
       {!cramped && (
         <g aria-hidden="true">
           {nodes.map((n) => {
-            if (!labels.has(`${n.side}:${n.id}`)) return null;
-            const right = n.x > width * 0.75;
+            const at = labels.get(`${n.side}:${n.id}`);
+            if (!at) return null;
             return (
               <text key={`n${n.side}${n.id}`}
-                    x={right ? n.x - n.r - 4 : n.x + n.r + 4}
-                    y={tops[n.lane] + n.y + 3.5}
-                    textAnchor={right ? "end" : "start"}
+                    x={at.x}
+                    y={tops[n.lane] + at.y + 3.5}
+                    textAnchor={at.anchor}
                     className="bond-name viz-mark-halo">
-                {n.label.length > 22 ? `${n.label.slice(0, 21)}…` : n.label}
+                {n.label.length > NAME_MAX_CHARS
+                  ? `${n.label.slice(0, NAME_MAX_CHARS - 1)}…` : n.label}
               </text>
             );
           })}
@@ -710,6 +720,12 @@ function BondStrip({
 }
 
 const AXIS_H = 34;
+
+/** Width of one character of `.bond-band-label` — 10px uppercase at .08em of
+ *  tracking. Measuring the text properly means laying it out first, and a band
+ *  name is four fixed strings; this is the cheap estimate, rounded up so it
+ *  errs towards dropping a label rather than printing one that collides. */
+const BAND_CHAR_PX = 7.2;
 
 // ── the play ────────────────────────────────────────────────────────────────
 function Timeline({

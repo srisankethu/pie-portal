@@ -57,6 +57,16 @@ user-agent and none of the OS, so verifying a gesture in a browser is not
 verifying it on a device.** `ui-standards.md` §9 has the three rules and what
 each one cost.
 
+**A value a reader can only get from a chart mark comes from `kit.ChartTip`,
+and the mark's hit area is its whole column.** In the digest for the reason the
+grid rule is: `ChartTip` exists, its own doc explains at length why the SVG
+`<title>` element and the HTML `title` attribute are not usable tooltips — the
+browser owns the delay, they never fire on focus, and **on a phone they do not
+exist** — and seven charts were still on the native form anyway, including the
+waterfall on Today and a price history whose entire detail hung off a 2.5px dot.
+A rule that lives only in the file that implements it is a rule the next chart
+does not follow. `ui-standards.md` §13 has the list and what each one cost.
+
 **A standalone on/off is a `Switch`, never a `ToggleButton` and never a `Button`
 whose `variant` carries the state.** In the digest for the same reason the grid
 rule is: `ui-standards.md` §5 said "`ToggleButton` where a control genuinely

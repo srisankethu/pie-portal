@@ -28,8 +28,15 @@ const PASSWORD = "change-me-now";
 const parse = (c) => {
   const m = (c || "").match(/[\d.]+/g);
   if (!m) return null;
-  const [r, g, b] = m.slice(0, 3).map(Number);
+  let [r, g, b] = m.slice(0, 3).map(Number);
   const a = m.length > 3 ? Number(m[3]) : 1;
+  // `color(srgb 0.18 0.42 0.66)` is what Chrome computes a `color-mix()` to,
+  // and its channels run 0–1 rather than 0–255. Read as 0–255 they come out as
+  // near-black whatever the colour really is, so every mixed background
+  // reported a contrast figure with no relation to the pixels — which is worse
+  // than not checking, because it is a number somebody will act on. The
+  // journey chart's bands are mixed, and that is how this was found.
+  if (/^color\(/.test(c || "")) { r *= 255; g *= 255; b *= 255; }
   return { r, g, b, a };
 };
 const over = (fg, bg) => {

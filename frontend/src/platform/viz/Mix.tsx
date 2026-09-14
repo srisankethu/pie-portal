@@ -35,7 +35,7 @@ import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
 import { useGroupScope } from "../groupScope";
-import { Unavailable } from "../kit";
+import { ChartTip, Unavailable } from "../kit";
 import { EntityName } from "../EntityName";
 import { CompanyScope } from "../CompanyFilter";
 import type { CompanyScopeOption } from "../CompanyFilter";
@@ -265,14 +265,35 @@ export function MixScreen({
                 const state = String(cell?.state ?? "NEVER");
                 const meta = CELL[state] ?? CELL.NEVER;
                 return (
-                  <span className={`mix-cell ${meta.cls}`}
-                        title={state === "LAPSED" && cell?.last_traded
-                          ? `Last bought ${formatDate(String(cell.last_traded))}`
-                          : undefined}>
-                    {state === "BUYS" && num(cell?.revenue) > 0
-                      ? money(num(cell?.revenue))
-                      : meta.label}
-                  </span>
+                  /* `ChartTip` rather than the `title` attribute this cell
+                     carried: a native tooltip waits about a second, never
+                     appears on focus, and does not exist on a phone — so
+                     "lapsed" was a word with no date behind it for anybody
+                     reading this grid on the floor. */
+                  <ChartTip
+                    title={
+                      <>
+                        <strong>{String(p.data.label ?? "")}</strong> ·{" "}
+                        {String(c.label)}
+                        <br />
+                        {state === "BUYS"
+                          ? <>Buying{num(cell?.revenue) > 0
+                              ? <> — {money(num(cell?.revenue))} over the window</>
+                              : null}</>
+                          : state === "LAPSED"
+                            ? <>Bought before, not in this window{cell?.last_traded
+                                ? <> — last on {formatDate(String(cell.last_traded))}</>
+                                : null}</>
+                            : <>Never bought this line</>}
+                      </>
+                    }
+                  >
+                    <span className={`mix-cell ${meta.cls}`}>
+                      {state === "BUYS" && num(cell?.revenue) > 0
+                        ? money(num(cell?.revenue))
+                        : meta.label}
+                    </span>
+                  </ChartTip>
                 );
               },
             })),
@@ -340,6 +361,16 @@ function Heatmap({ rows: list, columns }: { rows: Row[]; columns: Row[] }) {
             const cell = cellOf(c, String(col.category));
             const state = String(cell?.state ?? "NEVER");
             return (
+              /* The one mark in this product that keeps a native `title`, and
+                 the reason is its size rather than an oversight. At three
+                 hundred customers a cell is two pixels tall: a tooltip on a
+                 two-pixel target is not an answer whatever draws it, and one
+                 MUI popper per cell is fifteen hundred of them on a book this
+                 view is built for. The shape is the point here — the comment
+                 above says so — and the grid below is the form that answers
+                 per customer, on touch and to a screen reader alike. The
+                 attribute stays because it costs nothing and helps a mouse on
+                 a small book. */
               <span key={`${c.customer_id}-${col.category}`}
                     className={`heat-cell heat-${state.toLowerCase()}`}
                     style={{ height: h }}

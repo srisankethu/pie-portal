@@ -86,15 +86,15 @@
 }
 
 /* ── waterfall ───────────────────────────────────────────────────────────── */
-.viz-waterfall { overflow: visible; }
-.viz-waterfall rect { rx: 2px; }
-.viz-bar-value {
-  font-size: 8px; fill: var(--color-text); font-weight: 600;
-  font-variant-numeric: tabular-nums;
-  /* The viewBox is non-uniform so text would stretch; this keeps it upright. */
-  transform-box: fill-box;
-}
-.viz-bar-label, .viz-bar-sub { font-size: 7px; fill: var(--color-neutral-600); }
+/* The type sizes live with the rest of the measured-chart rules further down.
+   They were declared twice: 8px and 7px here, from the era when the chart was a
+   100-unit viewBox stretched to the panel and every glyph was scaled up with
+   it, and 11px and 10px below, which is what a chart drawn in real pixels
+   actually renders. The later block wins, so the sizes on this page were never
+   the ones anybody read here — and a stylesheet that says a chart's labels are
+   7px is a stylesheet that sends the next reader hunting for a bug that was
+   fixed years ago. `.viz-waterfall` went the same way: no element has carried
+   that class since the chart was rewritten. */
 .viz-bar-clickable { cursor: pointer; }
 .viz-bar-clickable:hover rect { filter: brightness(1.08); }
 .viz-bar-clickable:focus-visible {
@@ -293,9 +293,15 @@
   gap: 2px; height: 100%; align-items: stretch;
 }
 .journey-seg { display: block; border-radius: 1px; min-height: 2px; }
-.journey-seg.pos { background: var(--viz-gain); }
-.journey-seg.neg { background: var(--viz-loss); }
-.journey-seg.flat { background: var(--viz-neutral); }
+/* `--shade` comes from the band's own state — see BUCKET_SHADE. Mixed towards
+   the panel rather than applied as opacity: an opaque background is what keeps
+   the count inside it at full strength, and what lets a contrast check read
+   the colour the numeral actually sits on. A `var()` holding the percentage
+   token, rather than `calc()` inside `color-mix`, because plain substitution
+   needs nothing of the browser beyond `color-mix` itself. */
+.journey-seg.pos { background: color-mix(in srgb, var(--viz-gain) var(--shade, 100%), var(--viz-surface)); }
+.journey-seg.neg { background: color-mix(in srgb, var(--viz-loss) var(--shade, 100%), var(--viz-surface)); }
+.journey-seg.flat { background: color-mix(in srgb, var(--viz-neutral) var(--shade, 100%), var(--viz-surface)); }
 .journey-label {
   font-size: 10.5px; color: var(--color-neutral-600); text-align: center;
   white-space: nowrap; height: 14px;
@@ -372,12 +378,20 @@
    proportion. Centred, and only rendered where the band is tall enough. */
 .journey-seg { position: relative; display: flex; align-items: center;
                justify-content: center; }
+/* Four of the six bands are pale steps, or the mid-grey neutral at full
+   strength, and white on any of them measured under 3:1 — so the count this
+   chart exists to state was the least legible mark on the page. Which band
+   takes which ink is `BUCKET_ON_DARK`, stated next to the shades it was
+   measured against. */
+.journey-seg { color: #fff; }
+.journey-seg.ink-light { color: var(--color-text); }
+/* At full strength whatever the band's shade is. */
 .journey-count {
-  font-size: 11px; font-weight: 600; color: #fff; line-height: 1;
+  position: relative; font-size: 11px; font-weight: 600; line-height: 1;
   font-variant-numeric: tabular-nums;
-  /* A dark halo so the numeral holds up on the lighter grey band too. */
-  text-shadow: 0 0 3px rgba(0, 0, 0, .45);
+  color: inherit; text-shadow: 0 0 3px rgba(0, 0, 0, .55);
 }
+.journey-seg.ink-light .journey-count { text-shadow: 0 0 3px rgba(255, 255, 255, .65); }
 /* A month nobody traded in is a fact worth drawing, not an absence. */
 .journey-none {
   display: block; height: 2px; align-self: flex-end; width: 100%;
@@ -1277,9 +1291,16 @@
   fill: none; stroke: var(--viz-gain); stroke-opacity: .28;
   transition: stroke-opacity .15s ease;
 }
+.flow-ribbon { cursor: pointer; }
 .flow-ribbon:hover { stroke-opacity: .6; }
 .flow-ribbon.dim { stroke-opacity: .06; }
 .flow-ribbon.residual { stroke: var(--viz-neutral); }
+/* A held band, like a held node, keeps its state after the pointer leaves.
+   Opacity alone would not say it: a pinned band and a hovered one would look
+   the same, and nothing on the picture would explain why the path is still
+   lit once the mouse has gone. */
+.flow-ribbon.pinned { stroke-opacity: .75; }
+.flow-ribbon:focus-visible { outline: 2px solid var(--color-accent); outline-offset: 2px; }
 .flow-bar { fill: var(--viz-gain); }
 .flow-bar.residual { fill: var(--viz-neutral); }
 .flow-node { cursor: pointer; transition: opacity .15s ease; }

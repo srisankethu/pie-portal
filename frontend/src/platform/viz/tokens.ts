@@ -106,6 +106,28 @@ export const BUCKET_SHADE: Record<string, number> = {
   LOST: 1,
 };
 
+/** Which ink a numeral printed *inside* a band needs to stay readable.
+ *
+ *  A band's fill is its hue at `BUCKET_SHADE`, and only two of the six come out
+ *  dark enough to carry white: the full-strength loss and the full-strength
+ *  gain. On the other four — the pale steps, and the neutral, which is a
+ *  mid-grey at full strength — white measured between 2.6 and 3.0 against a
+ *  4.5 floor, so the count the chart exists to state was the least legible
+ *  thing on it.
+ *
+ *  Stated as a map beside the shade it depends on, rather than derived at the
+ *  call site, because the two have to move together: change a shade and this is
+ *  the line that has to be re-measured with it.
+ */
+export const BUCKET_ON_DARK: Record<string, boolean> = {
+  NEW: true,
+  RECOVERED: false,
+  GROWN: false,
+  STABLE: false,
+  SHRUNK: false,
+  LOST: true,
+};
+
 /** Confidence is ordinal, so it gets one hue at three opacities plus a shape —
  *  never three hues, which would read as three unrelated categories. */
 export const CONFIDENCE_OPACITY: Record<string, number> = {

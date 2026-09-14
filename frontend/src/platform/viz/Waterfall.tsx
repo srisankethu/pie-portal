@@ -21,7 +21,7 @@
 import { scaleBand, scaleLinear } from "d3-scale";
 
 import { money } from "../../money";
-import { VarianceIndicator } from "../kit";
+import { ChartTip, VarianceIndicator } from "../kit";
 import { Figure, ValueAxis } from "./Panel";
 import { BUCKET_LABEL, BUCKET_SIGN } from "./tokens";
 import { compactMoney, useMeasure } from "./useMeasure";
@@ -244,9 +244,7 @@ function VerticalWaterfall({
               value={`${s.amount >= 0 ? "+" : "−"}${compactMoney(Math.abs(s.amount), currency)}`}
               full={`${s.amount >= 0 ? "+" : "−"}${money(Math.abs(s.amount))}`}
               sub={room.tight ? undefined : `${s.customers} customer${s.customers === 1 ? "" : "s"}`}
-              tooltip={s.top
-                .map((t) => `${t.label}: ${t.delta >= 0 ? "+" : "−"}${money(Math.abs(t.delta))}`)
-                .join("\n")}
+              detail={s.top.map((t) => ({ label: t.label, delta: t.delta }))}
               onClick={target && onDrill ? () => onDrill(target.customer_id) : undefined}
             />
           </g>
@@ -269,45 +267,84 @@ function VerticalWaterfall({
 }
 
 function Bar({
-  cx, w, top, bottom, fill, label, value, full, sub, tooltip, onClick,
+  cx, w, top, bottom, fill, label, value, full, sub, detail, onClick,
 }: {
   cx: number; w: number; top: number; bottom: number; fill: string;
   label: string; value: string; full: string; sub?: string;
-  tooltip?: string; onClick?: () => void;
+  /** The lines under the headline — who moved, and by how much. */
+  detail?: { label: string; delta: number }[];
+  onClick?: () => void;
 }) {
   const h = Math.max(Math.abs(bottom - top), MIN_BAR);
   const yTop = Math.min(top, bottom);
   const x = cx - w / 2;
   const interactive = Boolean(onClick);
   return (
-    <g
-      className={interactive ? "viz-bar viz-bar-clickable" : "viz-bar"}
-      onClick={onClick}
-      role={interactive ? "button" : undefined}
-      tabIndex={interactive ? 0 : undefined}
-      onKeyDown={
-        interactive
-          ? (e) => {
-              if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick?.(); }
-            }
-          : undefined
+    <ChartTip
+      title={
+        <>
+          <strong>{label}</strong>
+          <br />
+          {full}
+          {detail && detail.length > 0 && (
+            <>
+              <br />
+              <span style={{ opacity: 0.8 }}>
+                {detail.map((t) => (
+                  <span key={t.label} style={{ display: "block" }}>
+                    {t.label}: {t.delta >= 0 ? "+" : "−"}{money(Math.abs(t.delta))}
+                  </span>
+                ))}
+              </span>
+            </>
+          )}
+          {interactive && (
+            <>
+              <br />
+              <span style={{ opacity: 0.8 }}>Click to open the largest of them</span>
+            </>
+          )}
+        </>
       }
-      aria-label={interactive ? `${label}, ${full}. Open the largest contributor.` : undefined}
     >
-      <title>{tooltip ? `${label}\n${full}\n\n${tooltip}` : `${label}: ${full}`}</title>
-      <rect x={x} y={yTop} width={w} height={h} fill={fill} rx="2" />
-      <text x={cx} y={yTop - 8} className="viz-bar-value" textAnchor="middle">
-        {value}
-      </text>
-      <text x={cx} y={H - 30} className="viz-bar-label" textAnchor="middle">
-        {label}
-      </text>
-      {sub && (
-        <text x={cx} y={H - 15} className="viz-bar-sub" textAnchor="middle">
-          {sub}
+      <g
+        className={interactive ? "viz-bar viz-bar-clickable" : "viz-bar"}
+        onClick={onClick}
+        role={interactive ? "button" : undefined}
+        tabIndex={interactive ? 0 : undefined}
+        onKeyDown={
+          interactive
+            ? (e) => {
+                if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onClick?.(); }
+              }
+            : undefined
+        }
+        aria-label={interactive ? `${label}, ${full}. Open the largest contributor.` : undefined}
+      >
+        {/* The hit area is the whole column, not the bar. A bucket that barely
+            moved draws at `MIN_BAR` — three pixels — and three pixels is not
+            something a mouse finds and not something a finger can find at all,
+            so the smallest movements were exactly the ones whose detail could
+            not be read. Transparent rather than absent: `pointer-events` needs
+            a painted fill to hit-test against. */}
+        <rect
+          x={x} y={PAD.top} width={w} height={H - PAD.bottom - PAD.top}
+          fill="transparent"
+        />
+        <rect x={x} y={yTop} width={w} height={h} fill={fill} rx="2" />
+        <text x={cx} y={yTop - 8} className="viz-bar-value" textAnchor="middle">
+          {value}
         </text>
-      )}
-    </g>
+        <text x={cx} y={H - 30} className="viz-bar-label" textAnchor="middle">
+          {label}
+        </text>
+        {sub && (
+          <text x={cx} y={H - 15} className="viz-bar-sub" textAnchor="middle">
+            {sub}
+          </text>
+        )}
+      </g>
+    </ChartTip>
   );
 }
 
@@ -335,8 +372,35 @@ function HorizontalBars({
         const target = s.top[0];
         const clickable = Boolean(target && onDrill);
         return (
-          <div
+          /* The same detail the vertical form gives. This is the phone form,
+             so it is the one where a tooltip has to survive a finger rather
+             than a cursor — `ChartTip` opens on touch, which is the whole
+             reason the native `title` it replaced was worth nothing here. */
+          <ChartTip
             key={s.kind}
+            title={
+              <>
+                <strong>{BUCKET_LABEL[s.kind] ?? s.kind}</strong>
+                <br />
+                {s.amount >= 0 ? "+" : "−"}{money(Math.abs(s.amount))} across{" "}
+                {s.customers} customer{s.customers === 1 ? "" : "s"}
+                {s.top.length > 0 && (
+                  <>
+                    <br />
+                    <span style={{ opacity: 0.8 }}>
+                      {s.top.map((t) => (
+                        <span key={t.customer_id} style={{ display: "block" }}>
+                          {t.label}: {t.delta >= 0 ? "+" : "−"}
+                          {money(Math.abs(t.delta))}
+                        </span>
+                      ))}
+                    </span>
+                  </>
+                )}
+              </>
+            }
+          >
+          <div
             className={`wf-row${clickable ? " wf-row-clickable" : ""}`}
             role={clickable ? "button" : undefined}
             tabIndex={clickable ? 0 : undefined}
@@ -373,6 +437,7 @@ function HorizontalBars({
               <VarianceIndicator value={s.amount} />
             </span>
           </div>
+          </ChartTip>
         );
       })}
       <div className="wf-anchor">

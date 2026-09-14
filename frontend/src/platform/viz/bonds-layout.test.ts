@@ -16,7 +16,8 @@ import {
   MOVEMENT_LOOKBACK, TRAIL_MIN_PTS,
   arrivedAt, biggestMoney, buildIndex, firstScoredFrame, frameLine, frameStory,
   laneTone,
-  layout, movementOf, names, packLanes, prepare, presenceAt, radiusScale,
+  layout, movementOf, nameBox, names, packLanes, prepare, presenceAt,
+  radiusScale,
   sinceFrom,
   toneOf, trailFrom, xOf,
   type Row, type SideData,
@@ -302,6 +303,120 @@ describe("the fixed seat", () => {
     const big = prepare([side(many, 1)]);
     const packed = packLanes(big, identity, WIDTH, false);
     expect(packed.labels.size).toBeLessThanOrEqual(12);
+  });
+});
+
+// ── the name layer ──────────────────────────────────────────────────────────
+//
+// A chart is judged by looking at it, and this is the one part of the strip
+// where looking was not enough: the names were placed by a rule that tested a
+// label against other *labels* only, on the argument that a halo carries a name
+// across a mark. It does not. Three of four names on a four-customer book were
+// drawn through a dot, at 1440px, and that shipped — because every fixture here
+// described where a dot sits and none described where its name goes.
+//
+// These fixtures set each bond's own `score` to its last frame's, which the
+// ones above do not. `packLanes` reads the bond and `layout` reads the frame,
+// and the two are the same number on real data — the strip is packed from
+// today's scores. A fixture that leaves them apart stacks every dot at one x
+// and quietly stops testing placement at all.
+describe("where a name is drawn", () => {
+  function book(scores: Record<string, number>, money: Record<string, number>): SideData {
+    const s = side(Object.fromEntries(
+      Object.entries(scores).map(([id, v]) => [id, [v] as Point[]])), 1, money);
+    return {
+      ...s,
+      bonds: s.bonds.map((b) => ({
+        ...b, score: scores[String(b.counterparty_id)],
+      })),
+    };
+  }
+
+  /** Every labelled name, with the box it occupies and the dot it belongs to. */
+  function placeOf(sides: ReturnType<typeof prepare>) {
+    const { seat, labels } = packLanes(sides, identity, WIDTH, false);
+    const nodes = layout(sides, 0, identity, seat, WIDTH);
+    const placed = [...labels].map(([key, at]) => {
+      const node = nodes.find((n) => n.id === key.split(":")[1]);
+      if (!node) throw new Error(`labelled ${key} is not on the canvas`);
+      return { id: node.id, box: nameBox(node.label, at), node };
+    });
+    return { nodes, placed };
+  }
+
+  // Six counterparties bunched into the middle of the scale, which is where the
+  // mound packs tightest and where the old rule failed.
+  const crowd = placeOf(prepare([book(
+    { a: 62, b: 64, c: 66, d: 68, e: 70, f: 72 },
+    { a: 9000, b: 8000, c: 7000, d: 6000, e: 5000, f: 4000 })]));
+
+  it("still hands the names to the biggest, not to the loneliest", () => {
+    // The rule this replaced was written the other way once already — drop any
+    // candidate without vertical clearance — and it selected for loneliness
+    // while claiming to select for size. The crowd above is exactly the shape
+    // that catches it: the largest sit in the tightest part of the mound.
+    expect(crowd.placed.length).toBeGreaterThan(0);
+    expect(crowd.placed.map((p) => p.id)).toContain("a");
+  });
+
+  it("never draws a name across another counterparty's dot", () => {
+    for (const { box, node } of crowd.placed) {
+      for (const other of crowd.nodes) {
+        if (other.id === node.id) continue;
+        const hits = other.x + other.r > box.x0 && box.x1 > other.x - other.r
+          && other.y + other.r > box.y0 && box.y1 > other.y - other.r;
+        expect(`${node.id} over ${other.id}: ${hits}`).toBe(`${node.id} over ${other.id}: false`);
+      }
+    }
+  });
+
+  it("never draws one name across another", () => {
+    for (let i = 0; i < crowd.placed.length; i += 1) {
+      for (let j = i + 1; j < crowd.placed.length; j += 1) {
+        const a = crowd.placed[i].box, b = crowd.placed[j].box;
+        const hits = a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+        expect(hits).toBe(false);
+      }
+    }
+  });
+
+  it("still names the biggest on a book the size this runs at", () => {
+    // Every other fixture here is four to six dots, which is the demo book and
+    // not the product. At sixty counterparties the mound is packed tight
+    // enough that a placement search can fail on every candidate and hand out
+    // nothing at all — a chart that silently stops labelling above some size
+    // looks identical to one that has no labels. Scores spread across the
+    // upper half, which is where a healthy book actually sits.
+    const many = Object.fromEntries(
+      Array.from({ length: 60 }, (_, i) => [`p${i}`, 45 + (i % 50)]));
+    const money = Object.fromEntries(
+      Array.from({ length: 60 }, (_, i) => [`p${i}`, (60 - i) * 1000]));
+    const dense = placeOf(prepare([book(many, money)]));
+
+    expect(dense.placed.length).toBeGreaterThan(0);
+    // The per-lane cap, not the whole book — a wall of sixty names is the
+    // thing NAMES_PER_LANE exists to prevent.
+    expect(dense.placed.length).toBeLessThanOrEqual(5);
+    for (const { box, node } of dense.placed) {
+      for (const other of dense.nodes) {
+        if (other.id === node.id) continue;
+        const hits = other.x + other.r > box.x0 && box.x1 > other.x - other.r
+          && other.y + other.r > box.y0 && box.y1 > other.y - other.r;
+        expect(`${node.id} over ${other.id}: ${hits}`)
+          .toBe(`${node.id} over ${other.id}: false`);
+      }
+    }
+  });
+
+  it("never runs a name off either edge of the canvas", () => {
+    // The anchored end is the crowded one on a healthy book, and a name placed
+    // to the right of a dot at 99 has nowhere to go.
+    const edge = placeOf(prepare([book({ x: 99, y: 97, z: 2 },
+                                       { x: 9000, y: 8000, z: 7000 })]));
+    for (const { box } of edge.placed) {
+      expect(box.x0).toBeGreaterThanOrEqual(0);
+      expect(box.x1).toBeLessThanOrEqual(WIDTH);
+    }
   });
 });
 

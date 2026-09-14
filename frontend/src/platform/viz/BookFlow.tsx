@@ -65,7 +65,13 @@ type Focus =
   | { kind: "link"; source: string; target: string };
 
 const sameFocus = (a: Focus | null, b: Focus | null): boolean =>
-  a === b || (a?.kind === "node" && b?.kind === "node" && a.id === b.id);
+  a === b
+  || (a?.kind === "node" && b?.kind === "node" && a.id === b.id)
+  // Compared by the pair it names, not by object identity. It was identity
+  // only, so a pinned *band* could never be recognised as the one under the
+  // pointer — which is why nothing could pin a band even once the nodes could.
+  || (a?.kind === "link" && b?.kind === "link"
+      && a.source === b.source && a.target === b.target);
 
 export function BookFlow({ flow }: { flow: Row }) {
   const [ref, room] = useMeasure<HTMLDivElement>();
@@ -138,16 +144,46 @@ export function BookFlow({ flow }: { flow: Row }) {
               // the fixture that holds it, are in `flow-highlight.ts`.
               const on = lit === null
                 || (lit.has(r.source) && lit.has(r.target));
+              const self: Focus = {
+                kind: "link", source: r.source, target: r.target,
+              };
+              const held = sameFocus(pinned, self);
+              const pin = () => setPinned(held ? null : self);
+              // The caption tells the reader to hover a band, click to hold it
+              // and press Escape to release. The *nodes* did all three; the
+              // bands carried two mouse handlers and nothing else — no value
+              // to read, no click to hold, no focus to reach them by, and on a
+              // phone no interaction at all. A caption promising an
+              // interaction the mark does not have is worse than a caption
+              // promising nothing, because the reader blames themselves.
               return (
-                <path
+                <ChartTip
                   key={i}
-                  d={r.d}
-                  className={`flow-ribbon${on ? "" : " dim"}${r.residual ? " residual" : ""}`}
-                  style={{ strokeWidth: r.w }}
-                  onMouseEnter={() => setHovered(
-                    { kind: "link", source: r.source, target: r.target })}
-                  onMouseLeave={() => setHovered(null)}
-                />
+                  title={`${r.sourceLabel} → ${r.targetLabel} — ${money(r.money)}`
+                    + (total ? `, ${pct(r.money / total, 0)} of revenue` : "")}
+                >
+                  <path
+                    d={r.d}
+                    className={`flow-ribbon${on ? "" : " dim"}${r.residual ? " residual" : ""}`
+                      + (held ? " pinned" : "")}
+                    style={{ strokeWidth: r.w }}
+                    tabIndex={0}
+                    role="button"
+                    aria-pressed={held}
+                    aria-label={`${r.sourceLabel} to ${r.targetLabel}, ${money(r.money)}`}
+                    onMouseEnter={() => setHovered(self)}
+                    onMouseLeave={() => setHovered(null)}
+                    onFocus={() => setHovered(self)}
+                    onBlur={() => setHovered(null)}
+                    onClick={pin}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();   // Space would scroll the page.
+                        pin();
+                      }
+                    }}
+                  />
+                </ChartTip>
               );
             })}
           </g>
@@ -238,6 +274,7 @@ function ribbonGeometry(links: Row[], byId: Map<string, Box>) {
   const usedOut = new Map<string, number>();
   const usedIn = new Map<string, number>();
   const out: { d: string; w: number; source: string; target: string;
+               sourceLabel: string; targetLabel: string; money: number;
                residual: boolean }[] = [];
 
   for (const l of links) {
@@ -263,6 +300,8 @@ function ribbonGeometry(links: Row[], byId: Map<string, Box>) {
       d: `M${x0},${y0} C${mid},${y0} ${mid},${y1} ${x1},${y1}`,
       w: Math.max(1, Math.min(wa, wb)),
       source: a.id, target: b.id,
+      sourceLabel: a.label, targetLabel: b.label,
+      money: num(l.money),
       residual: a.residual || b.residual,
     });
   }

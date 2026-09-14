@@ -337,7 +337,36 @@ export function LandscapeScreen({
                     ? `stock?item=${encodeURIComponent(String(p.product_id))}`
                     : null;
                 return (
-                  <g key={i} className={target ? "dot dot-clickable" : "dot"}
+                  /* Every other chart in this file already answers on hover,
+                     on touch and on focus; this one was still on the SVG
+                     `<title>`, which does none of the three — and it is the
+                     chart whose dots carry no printed value at all, so a
+                     reader who waited too briefly concluded a scatter of
+                     unlabelled circles was all there was. */
+                  <ChartTip
+                    key={i}
+                    title={
+                      <>
+                        <strong>{String(p.label)}</strong>
+                        {p.sublabel ? <> / {String(p.sublabel)}</> : null}
+                        <br />
+                        {money(Number(p.x))} ·{" "}
+                        {y == null ? "no margin on record" : pct(y)}
+                        <br />
+                        <span style={{ opacity: 0.8 }}>
+                          {quadrants[String(p.quadrant)]?.label} · {String(p.size)}{" "}
+                          transactions
+                        </span>
+                        {target && (
+                          <>
+                            <br />
+                            <span style={{ opacity: 0.8 }}>Click to open</span>
+                          </>
+                        )}
+                      </>
+                    }
+                  >
+                  <g className={target ? "dot dot-clickable" : "dot"}
                      role={target ? "button" : undefined}
                      tabIndex={target ? 0 : undefined}
                      onClick={target ? () => onNavigate(target) : undefined}
@@ -349,11 +378,6 @@ export function LandscapeScreen({
                      aria-label={target
                        ? `${p.label}, ${money(Number(p.x))}, ${pct(y)}. Open.`
                        : undefined}>
-                    <title>
-                      {`${p.label}${p.sublabel ? " / " + p.sublabel : ""}\n`}
-                      {`${money(Number(p.x))} · ${y == null ? "no margin on record" : pct(y)}\n`}
-                      {`${quadrants[String(p.quadrant)]?.label} · ${p.size} transactions`}
-                    </title>
                     {/* A point with no vertical value sits on the axis as a
                         hollow ring: it is placed but not asserted. Shape, not
                         colour, because "unknown" must survive greyscale. */}
@@ -362,7 +386,13 @@ export function LandscapeScreen({
                               ? Math.min(pr(Number(p.size) || 1), 10)
                               : pr(Number(p.size) || 1)}
                             className={`dot-mark${y == null ? " dot-unknown" : ""}`} />
+                    {/* A one-transaction dot draws at a few pixels across. The
+                        mark stays that size — it is an encoding — and the
+                        target under it does not, so the smallest relationships
+                        are reachable by a finger as well as by a cursor. */}
+                    <circle cx={px(Number(p.x))} cy={cy} r={12} fill="transparent" />
                   </g>
+                  </ChartTip>
                 );
               })}
             </svg>

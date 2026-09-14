@@ -142,3 +142,31 @@ describe("what a role page may promise", () => {
     }
   });
 });
+
+describe("the first heading names what the page is about", () => {
+  // The rule the ERP family is already tested on, applied to this one.
+  // `erp.ts` states it: a distributor searching for their own system should
+  // land on a page that names it in the first line, because "Prophet 21" is
+  // what they call their problem and a page that says "your ERP" is a page
+  // about somebody else.
+  //
+  // This family shipped without that check and immediately broke it. The
+  // cutting tools page led with "Quote without losing the margin in the
+  // cross-reference" — true, well-formed, and it never said "cutting tools",
+  // so the one reader it was written for could not tell it was theirs.
+  it("puts the role in the h1 of every page", () => {
+    expect(ROLE_PAGES.length).toBeGreaterThan(0);
+    for (const page of ROLE_PAGES) {
+      const html = renderToStaticMarkup(RolePage({ page }));
+      // Tags stripped and whitespace collapsed: the headline puts one word in
+      // an <em>, so the raw markup reads "industrial and <em>MRO</em>" and a
+      // substring match on it fails for a heading that is perfectly correct.
+      // The rule is about the sentence a reader sees, not the elements it is
+      // built from.
+      const h1 = (html.match(/<h1[^>]*>(.*?)<\/h1>/s)?.[1] ?? "")
+        .replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
+      expect(h1, `/roles/${page.slug} h1 does not name ${page.noun}`)
+        .toContain(page.noun);
+    }
+  });
+});

@@ -143,7 +143,7 @@ export function IndustryPage({ page }: { page: IndustryPageData }) {
                       to prevent. */}
                   <p>
                     Cost, divided by one minus the margin floor your policy
-                    sets. Nothing is rounded in your favour: a floor rounded
+                    sets. Nothing is rounded in your favor: a floor rounded
                     down is a floor that has moved. The cost is the one on the
                     AP-invoice line your ERP already wrote, and the policy is
                     the one you set and can edit.

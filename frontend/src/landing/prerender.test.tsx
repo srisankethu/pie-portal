@@ -459,8 +459,24 @@ describe("the public pages name no single trade", () => {
   // price history; the trade never mattered.
   const TRADE = /\b(carbide|DNMG|CNMG|insert|end ?mill|drill bit|fastener|bearing|geometry|grade|machine shop|foundry|tool ?room)s?\b/i;
 
-  it("keeps the landing page's example free of a trade", () => {
+  /** The landing page with its registry-derived strips removed.
+   *
+   *  The rule this file states is that the front page must not *quietly pick*
+   *  a trade — the worked example, the attribute words, the buyer. A strip
+   *  listing every trade that has a page is the opposite of picking one: it is
+   *  the front page saying it serves all of them, and it is generated from
+   *  `INDUSTRY_PAGES` rather than written, so it cannot drift into a
+   *  preference. Scanning it was fine while two trades were listed and neither
+   *  matched the pattern, and became a false positive the moment "fasteners"
+   *  did. The check follows its own stated reason rather than its old blast
+   *  radius. */
+  function landingProse(): string {
     const landing = documents.find((d) => d.page.slug === "")!.html;
+    return landing.replace(/<div class="lp-sched">[\s\S]*?<\/div><\/div><\/div>/g, "");
+  }
+
+  it("keeps the landing page's example free of a trade", () => {
+    const landing = landingProse();
     const hit = landing.match(TRADE);
     expect(hit?.[0] ?? null,
       `the front page names a trade: “${hit?.[0]}”. The example has to read for `
@@ -732,6 +748,37 @@ describe("the landing page's own fragments", () => {
         expect(ids.has(frag), `${what}: the landing links to #${frag}, which no element carries`)
           .toBe(true);
       }
+    }
+  });
+});
+
+describe("the site spells things one way", () => {
+  // American, because that is what the existing pages already show a visitor:
+  // "catalog" appeared ten times across the landing and ERP documents and
+  // "catalogue" zero times, and the audience these pages are addressed to —
+  // Prophet 21, NetSuite and Acumatica distributors — reads it that way.
+  //
+  // This is here because the industry and role pages shipped with **both**:
+  // twenty-six of each, in the same family, sometimes in the same paragraph.
+  // Neither spelling is wrong in isolation, which is exactly why nothing
+  // caught it — a reader does not file it as an error, they file it as
+  // sloppiness, and sloppiness is the thing a page arguing for auditable
+  // numbers can least afford.
+  //
+  // Rendered markup only, deliberately. The source comments beside these
+  // strings sit next to backend prose that says "catalogue" throughout —
+  // `app/catalog.py`'s own docstring does — and rewriting those would make the
+  // files disagree with the modules they cite. What a visitor reads is what
+  // has to be consistent.
+  const BRITISH = /\b(catalogues?|organisations?|recognise[ds]?|normalise[ds]?|behaviour|favour|licence|centre|colour)\b/i;
+
+  it("uses no British variant in any served document", () => {
+    for (const { page, html } of documents) {
+      const hit = html.match(BRITISH);
+      expect(hit?.[0] ?? null,
+        `/${page.slug} carries the British spelling “${hit?.[0]}”. The site says `
+        + "catalog, organization, normalize — see the note above this test.")
+        .toBeNull();
     }
   });
 });

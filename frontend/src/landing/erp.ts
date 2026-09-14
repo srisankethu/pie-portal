@@ -232,7 +232,7 @@ export const ERP_PAGES: ErpPageData[] = [
           + "policy that judged it and carries the operands it was computed from.",
       },
       {
-        title: "Decline and payment behaviour",
+        title: "Decline and payment behavior",
         body:
           "Customer payments are read on a NetSuite book, so slipping payment and quiet "
           + "decline are both on the attention list from the first sync. What is not read "
@@ -255,7 +255,7 @@ export const ERP_PAGES: ErpPageData[] = [
       "A session sign-in as a dedicated integration user against the contract-based REST "
       + "API, from your site URL, the tenant's login name and — if you use them — a branch "
       + "and an endpoint version. A connection check and a quote write each sign out the "
-      + "moment they finish — Acumatica counts live sessions against your licence, and a "
+      + "moment they finish — Acumatica counts live sessions against your license, and a "
       + "leaked session is a seat you are paying for and nobody is sitting in.",
     reads: [
       { stage: "contacts", label: "Customers", source: "Customer" },
@@ -618,7 +618,7 @@ export const ERP_PAGES: ErpPageData[] = [
       + "list below, and PIE exchanges it for a short-lived access token as it works — no "
       + "browser round-trip on a sync and nothing to renew on a schedule. The form asks "
       + "for that refresh token, the client id and secret, your organization id and your "
-      + "data centre, and the connection is checked when you save it. One Zoho "
+      + "data center, and the connection is checked when you save it. One Zoho "
       + "organization is one connection; a group running several books connects each one "
       + "and sees them under a single view on the Platform plan.",
     reads: [

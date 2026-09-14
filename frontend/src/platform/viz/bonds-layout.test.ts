@@ -380,6 +380,34 @@ describe("where a name is drawn", () => {
     }
   });
 
+  it("still names the biggest on a book the size this runs at", () => {
+    // Every other fixture here is four to six dots, which is the demo book and
+    // not the product. At sixty counterparties the mound is packed tight
+    // enough that a placement search can fail on every candidate and hand out
+    // nothing at all — a chart that silently stops labelling above some size
+    // looks identical to one that has no labels. Scores spread across the
+    // upper half, which is where a healthy book actually sits.
+    const many = Object.fromEntries(
+      Array.from({ length: 60 }, (_, i) => [`p${i}`, 45 + (i % 50)]));
+    const money = Object.fromEntries(
+      Array.from({ length: 60 }, (_, i) => [`p${i}`, (60 - i) * 1000]));
+    const dense = placeOf(prepare([book(many, money)]));
+
+    expect(dense.placed.length).toBeGreaterThan(0);
+    // The per-lane cap, not the whole book — a wall of sixty names is the
+    // thing NAMES_PER_LANE exists to prevent.
+    expect(dense.placed.length).toBeLessThanOrEqual(5);
+    for (const { box, node } of dense.placed) {
+      for (const other of dense.nodes) {
+        if (other.id === node.id) continue;
+        const hits = other.x + other.r > box.x0 && box.x1 > other.x - other.r
+          && other.y + other.r > box.y0 && box.y1 > other.y - other.r;
+        expect(`${node.id} over ${other.id}: ${hits}`)
+          .toBe(`${node.id} over ${other.id}: false`);
+      }
+    }
+  });
+
   it("never runs a name off either edge of the canvas", () => {
     // The anchored end is the crowded one on a healthy book, and a name placed
     // to the right of a dot at 99 has nowhere to go.

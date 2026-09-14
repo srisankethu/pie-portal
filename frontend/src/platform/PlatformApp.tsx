@@ -3,7 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { DataGrid, numeric } from "./DataGrid";
 import { EntityName, EntitySource } from "./EntityName";
 import { CompanyFilter, useCompanyFilter } from "./CompanyFilter";
-import { GroupFilter, useGroupFilter } from "./GroupFilter";
+import { GroupScopeProvider, useGroupScope } from "./groupScope";
 import { EmptyState, ErrorState, FilterChip, FormDialog, HumanLog, InlineLink, LoadingState, PanelMark, SectionHeader, StatusChip, TOUCH } from "./kit";
 import { formatDate } from "../when";
 import {
@@ -1014,12 +1014,19 @@ export default function PlatformApp() {
         {error ? (
           <LoadFailed error={error} onRetry={load} busy={loading} />
         ) : (
-          /* One boundary for every route, rather than one per screen: the
-             fallback is only ever on screen for the moment a chunk is in
-             flight, and thirty boundaries would be thirty places to get the
-             shape of that moment wrong. `LoadingState` reserves height, so the
-             page does not jump when the chunk lands — the same reason
-             `DataGrid` sizes its own placeholder. */
+          /* One group selection per page, above everything on it, in the URL.
+             Here rather than inside a screen because that is the whole point:
+             the Payments page is three panels and two of them drew a
+             customer-group select of their own, so setting one left the other
+             answering about the whole book. `groupScope.tsx` declares which
+             pages take which kinds and renders the controls once. */
+          <GroupScopeProvider token={session.token}>
+          {/* One boundary for every route, rather than one per screen: the
+              fallback is only ever on screen for the moment a chunk is in
+              flight, and thirty boundaries would be thirty places to get the
+              shape of that moment wrong. `LoadingState` reserves height, so the
+              page does not jump when the chunk lands — the same reason
+              `DataGrid` sizes its own placeholder. */}
           <Suspense fallback={<LoadingState rows={3} label="Opening…" />}>
           <Routes>
             {/* ── TODAY: the triage console ──
@@ -1290,6 +1297,7 @@ export default function PlatformApp() {
             <Route path="*" element={<Navigate to={PATH.home} replace />} />
           </Routes>
           </Suspense>
+          </GroupScopeProvider>
         )}
       </div>
 
@@ -2042,23 +2050,25 @@ function CustomerScreen({
   // company that vanishes from the dropdown when you type is a company you
   // cannot get back to without clearing the box first.
   const accountCompany = useCompanyFilter(accounts ?? []);
-  // The group filter is a *request* parameter, unlike the company filter above
+  // The group scope is a *request* parameter, unlike the company filter above
   // it: the server narrows the directory to the group's members and resolves
-  // the trade figures for those rows only. Both controls sit in the same strip
-  // and mean different things, which `GroupFilter`'s own header explains.
-  const accountGroup = useGroupFilter(session.token, "CUSTOMER");
+  // the trade figures for those rows only. Its control is the page's, drawn
+  // once above this screen — see `groupScope.tsx`; the company filter stays in
+  // the strip below because it hides rows the browser already holds, and the
+  // two mean different things.
+  const accountGroup = useGroupScope("CUSTOMER");
 
   useEffect(() => {
     let cancelled = false;
     setAccounts(null);
     papi
-      .listAccounts(session.token, "", status, accountGroup.group)
+      .listAccounts(session.token, "", status, accountGroup)
       .then((a) => !cancelled && setAccounts(a))
       .catch((e) => !cancelled && setAccErr((e as Error).message));
     return () => {
       cancelled = true;
     };
-  }, [session.token, status, accountGroup.group]);
+  }, [session.token, status, accountGroup]);
 
   const openCountFor = (id: string) =>
     all.filter((d) => d.subject_entity_id === id && (d.status === "OPEN" || d.status === "VIEWED")).length;
@@ -2121,9 +2131,6 @@ function CustomerScreen({
           <Seg label="Sort by" value={sort}
                onChange={(v) => setSort(v as "name" | "recent" | "value")}
                options={[["name", "Name"], ["recent", "Last order"], ["value", "12-month value"]]} />
-          <GroupFilter label="Customer group" value={accountGroup.group}
-                       onChange={accountGroup.setGroup}
-                       options={accountGroup.options} show={accountGroup.show} />
           <CompanyFilter options={company.options} value={company.company}
                          onChange={company.setCompany} show={company.show} />
         </div>

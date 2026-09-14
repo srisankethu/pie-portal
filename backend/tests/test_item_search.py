@@ -32,6 +32,20 @@ from app.routers import platform_auth, quote
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 from app.zoho import MockZoho
 
+#: Every test here goes through the ``client`` fixture, and that fixture calls
+#: ``piesupport.give_company_a_catalogue`` — so every test in this file needs a
+#: decoded catalogue, and the requirement belongs to the module rather than to
+#: whoever remembers to decorate the next one.
+#:
+#: It was eight decorators on fifteen tests. The seven without one did not skip
+#: on a checkout with no engine; they raised out of ``_require_engine`` during
+#: fixture setup, which is that guard working exactly as designed — it refuses
+#: rather than skipping, precisely so an unmarked test cannot pass quietly here
+#: *and* go unselected by ``pytest -m requires_pie`` in the `pie-contract` job.
+#: A per-test marker on a shared fixture's requirement is a rule every future
+#: test has to be told; this one is structural.
+pytestmark = pytest.mark.requires_pie
+
 OWNER = "s.menon@pie.example"
 SALES = "r.nair@pie.example"
 
@@ -127,7 +141,6 @@ def _quote(c: TestClient, hdr: dict) -> str:
 
 # ── the catalogue half ───────────────────────────────────────────────────────
 
-@pytest.mark.requires_pie
 def test_the_catalogue_can_be_searched_by_designation(client):
     """A real corpus row, found by the words a person types."""
     found = pie_service.search_catalogue(IN_THE_CORPUS, COMPANY, limit=10)
@@ -137,7 +150,6 @@ def test_the_catalogue_can_be_searched_by_designation(client):
     assert any("CNMG" in (r["desc"] or "").upper() for r in found.records)
 
 
-@pytest.mark.requires_pie
 def test_a_catalogue_hit_carries_no_relationship_to_the_request(client):
     """Search returns records, never a ``rel``.
 
@@ -232,7 +244,6 @@ def test_an_exact_sku_leads_the_list(client):
 
 # ── the endpoint ─────────────────────────────────────────────────────────────
 
-@pytest.mark.requires_pie
 def test_the_endpoint_answers_both_halves(client):
     hdr = _hdr(client, OWNER)
     qid = _quote(client, hdr)
@@ -245,7 +256,6 @@ def test_the_endpoint_answers_both_halves(client):
         "CNMG120408-UC-D2 YC0014 TURNING INSERT"]
 
 
-@pytest.mark.requires_pie
 def test_the_search_carries_no_money_for_either_role(client):
     """§1's second invariant, checked on the bytes rather than on the screen.
 
@@ -279,7 +289,6 @@ def test_the_search_carries_no_money_for_either_role(client):
     assert bodies[0] == bodies[1], "the two roles must receive the same bytes"
 
 
-@pytest.mark.requires_pie
 def test_another_tenant_cannot_search_this_quote(client):
     """The search is scoped through the quote, so it inherits the quote's org
     check rather than restating one."""
@@ -291,7 +300,6 @@ def test_another_tenant_cannot_search_this_quote(client):
 
 # ── what selecting a searched code may and may not do ────────────────────────
 
-@pytest.mark.requires_pie
 def test_a_searched_code_can_be_put_on_a_line(client):
     """The point of the whole change: a line with no candidates gets an item."""
     hdr = _hdr(client, OWNER)
@@ -311,7 +319,6 @@ def test_a_searched_code_can_be_put_on_a_line(client):
     assert after["sel"] == "MANUAL"
 
 
-@pytest.mark.requires_pie
 def test_a_hand_picked_code_never_becomes_a_confirmed_identity(client):
     """A substitution on one quote stays one.
 
@@ -338,7 +345,6 @@ def test_a_hand_picked_code_never_becomes_a_confirmed_identity(client):
     s.close()
 
 
-@pytest.mark.requires_pie
 def test_an_identifier_is_found_under_its_own_id_and_listed_once(client):
     """Typing a catalogue number finds that row, once.
 

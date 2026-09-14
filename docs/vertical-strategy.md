@@ -1,7 +1,16 @@
 # Vertical strategy — who buys this, and which pages we build
 
-**Phase 1 research. No code was written for this.** Date: 2026-09-14.
-Second pass, deeper than the first; §12 records what the deeper research changed.
+**Research and the decision it produced.** Date: 2026-09-14. Second pass,
+deeper than the first; §12 records what the deeper research changed.
+
+**Status: built, in part.** The two pages this document approved outright are
+live — `/industries/industrial-mro` and `/industries/cutting-tools`, with the
+three `/roles/` pages that came with them. **Fluid power was not built**, and
+the reason is §8's own: its page is conditional on a question nobody has asked a
+fluid power distributor yet. That is the count this document argued for — two
+firm, one conditional — and the conditional one is still conditional rather than
+quietly dropped. `frontend/src/landing/industries.ts` is the registry, and its
+tests hold the site to the gate below rather than to this paragraph.
 
 This document answers one question: which trades inside B2B distribution should
 get a dedicated page on the marketing site, and which should be excluded on
@@ -590,9 +599,9 @@ reader, and what that segment needs is a pricing answer, not a trade page.
 
 | # | Vertical | Status | Why |
 |---|---|---|---|
-| 1 | **Industrial & MRO distribution** | **Firm** | Widest overlap with the P21 installed base; NetPlus alone is 410+ distributors of exactly this shape; the leakage mechanism we intervene on is documented for this segment specifically; every claim is true today with Speed scoped honestly. |
-| 2 | **Cutting tools & metalworking** | **Firm** | The only vertical where all four capability areas are fully true, the only one where we can show a decode rather than describe one, and — see below — the only one whose own professional norms match our architecture. |
-| 3 | **Fluid power, hose & fittings** | **Conditional on one technical question** | Named P21 core vertical, no Category A vendor apparently leading at it, FPDA as a channel. But see the question below. |
+| 1 | **Industrial & MRO distribution** | **Firm — shipped** | Widest overlap with the P21 installed base; NetPlus alone is 410+ distributors of exactly this shape; the leakage mechanism we intervene on is documented for this segment specifically; every claim is true today with Speed scoped honestly. |
+| 2 | **Cutting tools & metalworking** | **Firm — shipped** | The only vertical where all four capability areas are fully true, the only one where we can show a decode rather than describe one, and — see below — the only one whose own professional norms match our architecture. |
+| 3 | **Fluid power, hose & fittings** | **Conditional — not built** | Named P21 core vertical, no Category A vendor apparently leading at it, FPDA as a channel. But see the question below, which is still open. |
 
 **Two firm pages, not three.** I could not find a third vertical that passes the
 gate on evidence, and padding to three would mean shipping a page I already know
@@ -906,7 +915,13 @@ floor. The only page that gets to show both halves, and it should.
 
 ---
 
-### Page 3 — `/industries/fluid-power` *(do not build until §8's question is answered)*
+### Page 3 — `/industries/fluid-power` *(specified, not built)*
+
+This outline is kept rather than deleted: it is what somebody builds the day
+§8's question comes back favourably, and deleting it would lose the argument
+along with the page. Nothing in it has been written into the site, and
+`industries.test.ts` asserts the registry holds two entries — so adding a
+third is a deliberate act somebody has to come and make.
 
 - **H1:** A floor on every fluid power quote line, across every branch
 - **Meta title:** `PIE for fluid power, hose & fitting distributors · one floor across every branch`
@@ -1022,12 +1037,19 @@ page exists, would be the abstraction `CLAUDE.md` §7 warns against.
 belongs in a registry module like `erp.ts`, with no vertical facts in a
 component.
 
-**Invariants:** no code written, so none touched. Phase 2 has one that is easy
-to miss — `worked-example.ts`'s deliberate vertical neutrality applies to shared
-surfaces and must not be edited to serve a vertical page.
+**Invariants:** none touched by the research. The build that followed respected
+the one that was easy to miss — `worked-example.ts`'s deliberate vertical
+neutrality applies to *shared* surfaces, so the landing page's example item is
+untouched and each vertical page names its own trade through `DecisionCard`'s
+`item` prop. `prerender.test.tsx` still holds the front page to naming no trade.
 
-**Corpus / tests:** unchanged. Nothing was run because nothing was built.
+**Corpus / tests:** unchanged by the research itself. The pages it approved
+were built afterwards and carry their own suites — `industries.test.ts` and
+`roles.test.ts` — which hold the site to this document's gate rather than to
+its prose.
 
 **Verdict:** APPROVED WITH NOTED TRADE-OFF — two firm pages and one conditional,
 against the three to five requested. The shortfall is deliberate; §8 gives the
-gate that produced it and §11 gives the route to widening it.
+gate that produced it and §11 gives the route to widening it. Two shipped; the
+conditional one did not, which is the outcome this verdict described rather than
+a departure from it.

@@ -373,10 +373,10 @@ export function packLanes(
   apply: <R extends Sourced>(list: R[]) => R[],
   width: number,
   branch: boolean,
-): { lanes: Lane[]; seat: Map<string, Seat>; labels: Set<string> } {
+): { lanes: Lane[]; seat: Map<string, Seat>; labels: Map<string, Placement> } {
   const seat = new Map<string, Seat>();
   const lanes: Lane[] = [];
-  const perLane: { key: string; money: number }[] = [];
+  const perLane: { key: string; money: number; at: Placement }[] = [];
   // Pinned before any narrowing — see `radiusScale`. Per lane and per selection
   // this used to re-domain, so the same money drew at different sizes depending
   // on what else was on screen.
@@ -400,8 +400,9 @@ export function packLanes(
   // Trimmed globally as well as per lane, in the same money order: five names
   // in each of six lanes is thirty labels, which is the wall the per-lane cap
   // alone does not prevent.
-  const labels = new Set(
-    perLane.sort((a, b) => b.money - a.money).slice(0, NAMES_TOTAL).map((p) => p.key));
+  const labels = new Map(
+    perLane.sort((a, b) => b.money - a.money).slice(0, NAMES_TOTAL)
+      .map((p) => [p.key, p.at] as const));
   return { lanes, seat, labels };
 }
 
@@ -409,7 +410,7 @@ export function packLanes(
  *  candidates for a name. */
 function packOne(group: { label: string; rows: Row[] }, side: string,
                  seat: Map<string, Seat>, lanes: Lane[], width: number,
-                 biggest: number): { key: string; money: number }[] {
+                 biggest: number): { key: string; money: number; at: Placement }[] {
   // Ascending, so the packer places the crowded left end first and the sparse
   // right end settles around it rather than the other way round.
   const scored = group.rows.slice().sort((a, b) => num(a.score) - num(b.score));
@@ -440,27 +441,70 @@ function packOne(group: { label: string; rows: Row[] }, side: string,
     seat.set(`${side}:${String(b.counterparty_id)}`, { lane, y });
   }
 
-  lanes.push({
-    side, label: group.label, count: scored.length,
-    half: Math.max(extent + 6, 26),
-  });
+  const half = Math.max(extent + 6, 26);
+  lanes.push({ side, label: group.label, count: scored.length, half });
 
-  return pickLabels(scored, placed, side, width);
+  return pickLabels(scored, placed, side, width, half);
 }
 
-/** Which dots in this lane carry a name: the biggest, in money order.
+/** Where one name is drawn: resolved here, so the renderer places no geometry
+ *  of its own. It was computed in both places before — "flip left near the
+ *  right edge" lived in the collision test *and* in the `<text>` — which is the
+ *  shape of duplication that lets a chart's labels disagree with the check that
+ *  was supposed to keep them apart. */
+export interface Placement {
+  /** Lane-relative, like `Seat.y`. The renderer adds the lane's top. */
+  x: number; y: number; anchor: "start" | "middle" | "end";
+}
+
+/** Half the height a line of `bond-name` occupies around its baseline. 11px
+ *  text sits roughly 8 above the baseline and 3 below; 7 is the symmetric box
+ *  that covers it without claiming space the glyphs do not use. */
+const NAME_HALF_H = 7;
+
+/** Longest name drawn before it is cut. Exported because the renderer does the
+ *  cutting and this module does the measuring, and a name measured at one
+ *  length and drawn at another is a collision test that passes while the canvas
+ *  overlaps. */
+export const NAME_MAX_CHARS = 22;
+
+/** The box a name occupies once placed. One definition, used by the placement
+ *  search and by the test that holds it. */
+export function nameBox(label: string, at: Placement,
+                        ): { x0: number; x1: number; y0: number; y1: number } {
+  const run = Math.min(label.length, NAME_MAX_CHARS) * 6.2;
+  const x0 = at.anchor === "end" ? at.x - run
+    : at.anchor === "middle" ? at.x - run / 2
+      : at.x;
+  return { x0, x1: x0 + run, y0: at.y - NAME_HALF_H, y1: at.y + NAME_HALF_H };
+}
+
+/** Which dots in this lane carry a name, and where each name goes.
  *
- *  **The collision that matters is label against label, not label against dot.**
- *  That is what the halo is for — a name crossing a mark stays readable, and the
- *  mark under it is one of two hundred. Two names crossing each other are both
- *  destroyed, and no halo helps.
+ *  **Selection is by money; placement is what adapts.** Those are two different
+ *  questions and conflating them is how this was wrong twice:
  *
- *  This was written the other way first — drop any candidate whose seat has no
- *  vertical clearance from its neighbours — and rendering it showed the flaw at
- *  once: the largest counterparties sit in the crowded middle of the mound,
- *  precisely where clearance fails, so the rule filtered out every dot it
- *  existed to label and handed the names to small isolated ones instead. It
- *  selected for loneliness while claiming to select for size.
+ *  The first version dropped any candidate whose seat had no vertical clearance
+ *  from its neighbours, and rendering it showed the flaw at once — the largest
+ *  counterparties sit in the crowded middle of the mound, precisely where
+ *  clearance fails, so the rule filtered out every dot it existed to label and
+ *  handed the names to small isolated ones instead. It selected for loneliness
+ *  while claiming to select for size.
+ *
+ *  The second version fixed that by testing label against label only, on the
+ *  argument that a name crossing a *mark* stays readable behind its halo while
+ *  two names crossing each other are both destroyed. The first half of that is
+ *  false and a four-customer book showed it: a name starting 4px from a 20px
+ *  dot runs straight through the next one along the spine, and a halo cannot
+ *  separate 11px text from a filled circle the same tone. Three of four names
+ *  were unreadable at 1440px — on the sparsest book this product will ever be
+ *  pointed at.
+ *
+ *  So the biggest dots still get the names, and each name is then tried in four
+ *  slots — right of its dot, left of it, above, below — taking the first that
+ *  clashes with neither another name nor another dot nor the edge of the
+ *  canvas. A name with no free slot is dropped, which is the honest outcome:
+ *  the alternative is a name the reader cannot attribute to a mark.
  *
  *  Placement is judged at present-day x, the same trade the seat makes, with
  *  the same known limit: a labelled dot that slides a long way during the play
@@ -468,27 +512,49 @@ function packOne(group: { label: string; rows: Row[] }, side: string,
  *  frame would put back the flicker the fixed set exists to prevent.
  */
 function pickLabels(scored: Row[], placed: { x: number; y: number; r: number }[],
-                    side: string, width: number): { key: string; money: number }[] {
+                    side: string, width: number, half: number,
+                    ): { key: string; money: number; at: Placement }[] {
   const seatOf = new Map(scored.map((b, i) => [String(b.counterparty_id), placed[i]]));
   const taken: { x0: number; x1: number; y: number }[] = [];
-  const out: { key: string; money: number }[] = [];
+  const out: { key: string; money: number; at: Placement }[] = [];
 
   for (const b of [...scored].sort((a, z) => num(z.money) - num(a.money))) {
     if (out.length >= NAMES_PER_LANE) break;
     const mine = seatOf.get(String(b.counterparty_id));
     if (!mine) continue;
-    // The same box the renderer will draw: flipped to the left of the dot near
-    // the right edge, so a name never runs off the canvas.
     const text = String(b.label ?? "");
-    const run = Math.min(text.length, 22) * 6.2;
-    const right = mine.x > width * 0.75;
-    const x0 = right ? mine.x - mine.r - 4 - run : mine.x + mine.r + 4;
-    const box = { x0, x1: x0 + run, y: mine.y };
-    const clashes = taken.some((t) =>
-      Math.abs(t.y - box.y) < CLEAR_PX && t.x0 < box.x1 && box.x0 < t.x1);
-    if (clashes) continue;
-    taken.push(box);
-    out.push({ key: `${side}:${String(b.counterparty_id)}`, money: num(b.money) });
+
+    // Near the right edge the flipped slot is tried first, so a name never
+    // runs off the canvas when it could simply have sat on the other side.
+    const beside: Placement[] = mine.x > width * 0.75
+      ? [{ x: mine.x - mine.r - 4, y: mine.y, anchor: "end" },
+         { x: mine.x + mine.r + 4, y: mine.y, anchor: "start" }]
+      : [{ x: mine.x + mine.r + 4, y: mine.y, anchor: "start" },
+         { x: mine.x - mine.r - 4, y: mine.y, anchor: "end" }];
+    // Above and below clear the spine entirely, which is the only way out when
+    // a dot has neighbours on both sides. Offered only where the lane is tall
+    // enough to hold them — a name outside its lane reads as belonging to the
+    // one above.
+    const stacked: Placement[] = ([
+      { x: mine.x, y: mine.y - mine.r - NAME_HALF_H, anchor: "middle" },
+      { x: mine.x, y: mine.y + mine.r + NAME_HALF_H + 4, anchor: "middle" },
+    ] as Placement[]).filter((c) => Math.abs(c.y) + NAME_HALF_H <= half);
+
+    const at = [...beside, ...stacked].find((c) => {
+      const box = nameBox(text, c);
+      if (box.x0 < 2 || box.x1 > width - 2) return false;
+      const hitsName = taken.some((t) =>
+        Math.abs(t.y - c.y) < CLEAR_PX && t.x0 < box.x1 && box.x0 < t.x1);
+      if (hitsName) return false;
+      return !placed.some((d) =>
+        d !== mine
+        && d.x + d.r > box.x0 && box.x1 > d.x - d.r
+        && d.y + d.r > box.y0 && box.y1 > d.y - d.r);
+    });
+    if (!at) continue;
+
+    taken.push({ ...nameBox(text, at), y: at.y });
+    out.push({ key: `${side}:${String(b.counterparty_id)}`, money: num(b.money), at });
   }
   return out;
 }

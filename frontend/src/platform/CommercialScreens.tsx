@@ -3,11 +3,13 @@ import Button from "@mui/material/Button";
 import MenuItem from "@mui/material/MenuItem";
 import TextField from "@mui/material/TextField";
 import { useCallback, useEffect, useState } from "react";
+import { scaleLinear } from "d3-scale";
 import { pp } from "./viz/useInsight";
+import { ValueAxis } from "./viz/Panel";
 import { DataGrid, numeric, text } from "./DataGrid";
 import { formatDate } from "../when";
 import { papi } from "./api";
-import { EmptyState, ErrorState, LoadingState } from "./kit";
+import { ChartTip, EmptyState, ErrorState, LoadingState } from "./kit";
 import type {
   CustomerItemDetail,
   CustomerItemRow,
@@ -607,18 +609,31 @@ export function CustomerItemScreen({
  * line climbs while the price line stays flat.
  */
 function PriceCostChart({ series }: { series: CustomerItemDetail["series"] }) {
-  const W = 720, H = 200, PAD = 34;
+  const W = 720, H = 250;
+  // Room down the left for a real value axis and along the bottom for dates.
+  // The chart had neither: two labels, and both of them the *padded* domain
+  // endpoints — `max × 1.1` and `min × 0.9` — so the only two numbers printed
+  // on it were numbers nobody chose and that move whenever the data does. The
+  // horizontal carried no dates at all, which left "the cost line climbs while
+  // the price line stays flat" as a shape with no when and no how much.
+  // `top` clears the legend rather than sharing space with it: at 16 the
+  // legend sat on the price line, which on this chart is a flat line near the
+  // top of the domain almost by definition — the whole question is whether
+  // cost climbs while price holds.
+  const PAD = { top: 46, right: 16, bottom: 34, left: 64 };
   const points = series.filter((p) => p.net_sell_price != null);
   if (points.length < 2) return null;
 
   const values = points.flatMap((p) =>
     [p.net_sell_price, p.effective_cost].filter((v): v is number => v != null));
-  const max = Math.max(...values) * 1.1;
-  const min = Math.min(...values) * 0.9;
-  const span = max - min || 1;
-
-  const x = (i: number) => PAD + (i / (points.length - 1)) * (W - PAD * 2);
-  const y = (v: number) => H - PAD - ((v - min) / span) * (H - PAD * 2);
+  const y = scaleLinear()
+    .domain([Math.min(...values), Math.max(...values)])
+    .range([H - PAD.bottom, PAD.top])
+    // Rounds the domain out to whole tick boundaries, so the gridlines land on
+    // round money rather than on wherever the series happened to end.
+    .nice();
+  const x = (i: number) =>
+    PAD.left + (i / (points.length - 1)) * (W - PAD.left - PAD.right);
 
   const path = (pick: (p: typeof points[number]) => number | null) =>
     points
@@ -627,33 +642,66 @@ function PriceCostChart({ series }: { series: CustomerItemDetail["series"] }) {
       .map((d, n) => `${n === 0 ? "M" : "L"}${x(d.i).toFixed(1)},${y(d.v).toFixed(1)}`)
       .join(" ");
 
+  // One date label per ~90px, so they never collide however long the history.
+  const every = Math.max(1, Math.ceil(points.length / Math.floor((W - PAD.left) / 90)));
+  const colW = (W - PAD.left - PAD.right) / Math.max(points.length - 1, 1);
+
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="ci-chart" role="img"
          aria-label="Net selling price and effective cost per unit over time">
-      <line x1={PAD} y1={H - PAD} x2={W - PAD} y2={H - PAD} className="ci-axis" />
-      <line x1={PAD} y1={PAD} x2={PAD} y2={H - PAD} className="ci-axis" />
-      <text x={PAD - 6} y={PAD + 4} className="ci-axis-label" textAnchor="end">
-        {money(max)}
-      </text>
-      <text x={PAD - 6} y={H - PAD} className="ci-axis-label" textAnchor="end">
-        {money(min)}
-      </text>
+      <ValueAxis scale={y} x0={PAD.left} x1={W - PAD.right} format={(v) => money(v)} />
+      <line x1={PAD.left} y1={H - PAD.bottom} x2={W - PAD.right} y2={H - PAD.bottom}
+            className="ci-axis" />
       <path d={path((p) => p.net_sell_price)} className="ci-line ci-line-price" />
       <path d={path((p) => p.effective_cost)} className="ci-line ci-line-cost" />
       {points.map((p, i) =>
         p.net_sell_price == null ? null : (
           <circle key={`p${i}`} cx={x(i)} cy={y(p.net_sell_price)} r="2.5"
-                  className="ci-dot ci-dot-price">
-            <title>{`${when(p.date)} · price ${money(p.net_sell_price)}`}</title>
-          </circle>
+                  className="ci-dot ci-dot-price" />
         ))}
       {points.map((p, i) =>
         p.effective_cost == null ? null : (
           <circle key={`c${i}`} cx={x(i)} cy={y(p.effective_cost)} r="2.5"
-                  className="ci-dot ci-dot-cost">
-            <title>{`${when(p.date)} · cost ${money(p.effective_cost)}`}</title>
-          </circle>
+                  className="ci-dot ci-dot-cost" />
         ))}
+      {/* The first and last labels are anchored to their ends rather than
+          centred on their points, which sit on the plot's own edges — centred,
+          half of each ran outside the viewBox and the last date read as
+          "21 Jul 20". */}
+      {points.map((p, i) => (
+        i % every ? null : (
+          <text key={`d${i}`} x={x(i)} y={H - PAD.bottom + 16}
+                textAnchor={i === 0 ? "start"
+                  : i === points.length - 1 ? "end" : "middle"}
+                className="viz-axis">{when(p.date)}</text>
+        )
+      ))}
+      {/* The reading surface: one full-height column per period, carrying both
+          figures at once. The `<title>` this replaces hung off a 2.5px dot —
+          a target a mouse struggles to find, a finger cannot hit at all, and a
+          keyboard never reaches, on the one chart in the product whose whole
+          job is to be compared point against point. The dots stay as marks;
+          the column is what answers. */}
+      {points.map((p, i) => (
+        <ChartTip
+          key={`h${i}`}
+          title={
+            <>
+              <strong>{when(p.date)}</strong>
+              <br />
+              Price {money(p.net_sell_price as number)}
+              <br />
+              {p.effective_cost == null
+                ? <span style={{ opacity: 0.8 }}>No purchase cost on record</span>
+                : <>Cost {money(p.effective_cost)}</>}
+            </>
+          }
+        >
+          <rect x={x(i) - colW / 2} y={PAD.top} width={colW}
+                height={H - PAD.top - PAD.bottom}
+                className="ci-hit" fill="transparent" />
+        </ChartTip>
+      ))}
       <g className="ci-legend">
         <rect x={W - 168} y={8} width="10" height="3" className="ci-line-price" />
         <text x={W - 152} y={13}>Net selling price</text>

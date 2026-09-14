@@ -19,6 +19,7 @@
 import Button from "@mui/material/Button";
 import { MonthPicker as SharedMonthPicker } from "./Seg";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { CSSProperties } from "react";
 import { useSearchParams } from "react-router-dom";
 import { money } from "../../money";
 import { Tip } from "../../Tip";
@@ -30,7 +31,8 @@ import type { PlatformSession } from "../types";
 import { vizPath } from "../route";
 import { Figure, Panel, stateOf } from "./Panel";
 import {
-  BAND_COLOR, BUCKET_LABEL, BUCKET_MEANING, BUCKET_SHADE, BUCKET_SIGN,
+  BAND_COLOR, BUCKET_LABEL, BUCKET_MEANING, BUCKET_ON_DARK, BUCKET_SHADE,
+  BUCKET_SIGN,
   CONFIDENCE_LABEL, CONFIDENCE_OPACITY,
 } from "./tokens";
 import { type Envelope, useInsight } from "./useInsight";
@@ -405,10 +407,23 @@ export function JourneyScreen({
               const counts = p.counts as Record<string, number>;
               return (
                 <div className="journey-col" key={i}>
-                  <div className="journey-stack" title={`${p.label}`}>
+                  <div className="journey-stack">
+                    {/* A month with nothing in it is the one column whose
+                        meaning was carried by a native `title` alone — so the
+                        chart's most ambiguous mark, an empty slot, was the one
+                        a phone and a keyboard could not ask about. */}
                     {ORDER.every((k) => !Number(counts[k] ?? 0)) && (
-                      <span className="journey-none"
-                            title={`${p.label} · no customer activity`} />
+                      <ChartTip
+                        title={
+                          <>
+                            <strong>{String(p.label)}</strong>
+                            <br />
+                            No customer traded in this month
+                          </>
+                        }
+                      >
+                        <span className="journey-none" />
+                      </ChartTip>
                     )}
                     {ORDER.map((k) => {
                       const n = Number(counts[k] ?? 0);
@@ -442,14 +457,38 @@ export function JourneyScreen({
                             type="button"
                             aria-pressed={on}
                             aria-label={`${n} ${BUCKET_LABEL[k]} in ${String(p.label)}`}
+                            // The ink sits on the band rather than on the
+                            // numeral inside it, so the element carrying the
+                            // text and the element carrying the background are
+                            // the same one — which is what any contrast check,
+                            // this product's included, compares.
                             className={`journey-seg ${sign < 0 ? "neg" : sign > 0 ? "pos" : "flat"}`
+                              + `${BUCKET_ON_DARK[k] ? "" : " ink-light"}`
                               + `${on ? " on" : ""}`}
                             style={{
                               height: `${share * 100}%`,
+                              // The shade as a *mix*, not as opacity.
                               // Lightness separates the states inside one
-                              // direction; see BUCKET_SHADE.
-                              opacity: BUCKET_SHADE[k] ?? 1,
-                            }}
+                              // direction (see BUCKET_SHADE) and it used to be
+                              // `opacity` on this button — which fades
+                              // everything the button contains, so the count
+                              // printed inside a 0.48-shade band was itself
+                              // drawn at 0.48, halo and all. The band is pale
+                              // on purpose; the numeral on it was collateral,
+                              // and the numeral is what the chart exists to
+                              // state.
+                              //
+                              // Mixed towards the panel rather than made
+                              // translucent over it, so the band keeps an
+                              // opaque background colour. That is the same
+                              // pixel either way and not the same fact: a
+                              // translucent fill leaves `background-color`
+                              // reading as the hue at full strength, and the
+                              // contrast sweep in `e2e/.shots/a11y.mjs` — the
+                              // thing that found this — measures exactly that
+                              // property.
+                              "--shade": `${Math.round((BUCKET_SHADE[k] ?? 1) * 100)}%`,
+                            } as CSSProperties}
                             onClick={() => setFocus(
                               on ? null : { month: String(p.label), state: k })}
                           >

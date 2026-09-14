@@ -360,6 +360,48 @@ at length why naming a component nobody can import is worse than naming none.
 A standard that contradicts itself on an easy claim does not get read on the
 hard ones, so the two halves now agree.
 
+### A mark's value comes from `kit.ChartTip`, never from a `title`
+
+The SVG `<title>` element and the HTML `title` attribute are both technically
+tooltips and neither is a usable one: the browser owns the delay (around a
+second), the styling and the placement, they never appear on focus, and **on a
+phone they do not exist at all**. A reader who hovers a mark and gets nothing
+concludes the chart has no detail rather than that they waited too briefly.
+
+`ChartTip`'s own doc said this and seven charts still carried the native form,
+which is the ordinary way a rule stated in one file stays true in one file.
+They are converted. The ones worth naming, because they say what the cost was:
+
+- The **waterfall** on Today and the morning read — the most-looked-at chart in
+  the product, and the only way to see which customers were behind a bucket.
+- The **price-against-cost** chart on a customer-item, whose dots are `r=2.5`:
+  a five-pixel target carrying the only dates and figures on the chart.
+- The **landscape** scatter, where a dot carries no printed value at all.
+- The **book-flow** ribbons, under a caption telling the reader to hover a band
+  and click to hold it, when the band had neither a value nor a click.
+
+**The hit area is the column, not the mark.** A waterfall bucket that barely
+moved draws at three pixels and a one-transaction dot at four; the mark is an
+encoding and stays that size, and a transparent rect or circle over its whole
+column is what a pointer and a finger actually find. `viz/CashCycle.tsx`'s
+`cash-hit` is the pattern.
+
+One mark keeps the native form on purpose: `viz/Mix.tsx`'s whitespace heatmap,
+where a cell is two pixels tall on the book it is built for. A tooltip on a
+two-pixel target is not an answer whatever draws it, and the grid under it is
+what answers per customer. The comment at that line says so, because an
+exception nobody wrote down reads as the rule being ignored.
+
+**And a numeral printed inside a mark takes its ink from that mark.** The
+journey chart's bands are one hue at six lightnesses, and white sat on all six:
+on the four pale ones it measured between 2.6 and 3.0 against a 4.5 floor, so
+the count the chart exists to state was the least legible thing on the page.
+`tokens.ts` says which band takes which ink, next to the shades it was measured
+against. The shade is a `color-mix`, not an `opacity`: opacity on the band fades
+the numeral inside it too, and a translucent fill also leaves `background-color`
+reading as the hue at full strength — which is the property `e2e/.shots/a11y.mjs`
+measures, and the reason it could not see this until it was changed.
+
 ## 14. Code quality
 
 Small, focused components. Presentation separated from business logic. Extract

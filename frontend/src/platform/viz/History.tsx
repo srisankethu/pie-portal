@@ -12,7 +12,7 @@
 import { MonthPicker } from "./Seg";
 import { useState } from "react";
 import { money } from "../../money";
-import { InlineLink, Unavailable, VarianceIndicator } from "../kit";
+import { ChartTip, InlineLink, Unavailable, VarianceIndicator } from "../kit";
 import { Tip } from "../../Tip";
 import { papi } from "../api";
 import type { PlatformSession } from "../types";
@@ -162,12 +162,13 @@ export function CustomerHealthTimeline({
                     // screen launders a guess into a fact.
                     const partial = coverage != null && coverage < 0.999;
                     return (
-                      <span className="tl-slot" key={i}
+                      <ChartTip key={i}
                             title={m == null
                               ? `${p.label}: no margin — ${
                                 Number(p.revenue) > 0 ? "no cost on record" : "no trade"}`
                               : `${p.label}: ${pct(m)}${
                                 partial ? ` (from ${pct(coverage, 0)} of lines)` : ""}`}>
+                      <span className="tl-slot">
                         {m != null && (
                           <span
                             className={`tl-dot${partial ? " partial" : ""}`}
@@ -178,6 +179,7 @@ export function CustomerHealthTimeline({
                           />
                         )}
                       </span>
+                      </ChartTip>
                     );
                   })}
                 </div>
@@ -238,11 +240,18 @@ function TimelineRow({
         <span className="viz-muted">{peakLabel}</span>
       </div>
       <div className={short ? "tl-track tl-track-short" : "tl-track"}>
+        {/* `ChartTip`, not the `title` attribute these slots carried. This
+            timeline prints one figure per row — the peak — and every other
+            month's number lives only in the tooltip, so on a phone, and for a
+            keyboard, the row was a shape with one label and eleven silent
+            bars. */}
         {cells.map((c, i) => (
-          <span className="tl-slot" key={i} title={c.title}>
-            <span className={`tl-bar${c.dim ? " zero" : ""}`}
-                  style={{ height: `${Math.max(c.height * 100, c.dim ? 0 : 2)}%` }} />
-          </span>
+          <ChartTip key={i} title={c.title}>
+            <span className="tl-slot">
+              <span className={`tl-bar${c.dim ? " zero" : ""}`}
+                    style={{ height: `${Math.max(c.height * 100, c.dim ? 0 : 2)}%` }} />
+            </span>
+          </ChartTip>
         ))}
       </div>
     </div>

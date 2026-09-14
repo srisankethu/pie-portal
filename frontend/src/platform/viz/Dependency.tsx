@@ -38,7 +38,9 @@ import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
 import { EntityName } from "../EntityName";
-import { EmptyState, InlineLink, MetricCard, StatusChip, Unavailable } from "../kit";
+import {
+  ChartTip, EmptyState, InlineLink, MetricCard, StatusChip, Unavailable,
+} from "../kit";
 import { CompanyScope } from "../CompanyFilter";
 import type { CompanyScopeOption } from "../CompanyFilter";
 import { useNavigate } from "react-router-dom";
@@ -431,9 +433,12 @@ function TargetTrack({ target }: { target: Row }) {
       <span className="dep-target-track">
         <span className={`dep-target-fill${onPace ? " ok" : " behind"}`}
               style={{ width: `${Math.min(100, achieved * 100)}%` }} />
-        <span className="dep-target-pace"
-              style={{ left: `${Math.min(100, elapsed * 100)}%` }}
-              title={`${pct(elapsed, 0)} of the period gone`} />
+        <ChartTip
+          title={`Where the bar has to reach to be on time — ${pct(elapsed, 0)} of the period gone`}
+        >
+          <span className="dep-target-pace"
+                style={{ left: `${Math.min(100, elapsed * 100)}%` }} />
+        </ChartTip>
       </span>
       <span className="viz-muted">
         {pct(achieved, 0)} of {money(num(target.amount))}{" "}

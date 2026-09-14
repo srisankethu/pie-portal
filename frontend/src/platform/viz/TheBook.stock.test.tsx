@@ -27,6 +27,7 @@ import { MemoryRouter } from "react-router-dom";
 import { beforeEach, expect, it, vi } from "vitest";
 
 import { papi } from "../api";
+import { defineAbilityFor } from "../ability";
 import { GroupScopeProvider } from "../groupScope";
 import { PATH } from "../route";
 import { StockScreen } from "./TheBook";
@@ -79,7 +80,8 @@ function draw(body: Record<string, unknown>) {
       defaultOptions: { queries: { retry: false } },
     })}>
       <MemoryRouter initialEntries={[PATH.stock]}>
-        <GroupScopeProvider token={SESSION.token}>
+        <GroupScopeProvider token={SESSION.token}
+                            ability={defineAbilityFor("OWNER")}>
           <StockScreen session={SESSION} />
         </GroupScopeProvider>
       </MemoryRouter>

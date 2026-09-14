@@ -1020,7 +1020,7 @@ export default function PlatformApp() {
              customer-group select of their own, so setting one left the other
              answering about the whole book. `groupScope.tsx` declares which
              pages take which kinds and renders the controls once. */
-          <GroupScopeProvider token={session.token}>
+          <GroupScopeProvider token={session.token} ability={ability}>
           {/* One boundary for every route, rather than one per screen: the
               fallback is only ever on screen for the moment a chunk is in
               flight, and thirty boundaries would be thirty places to get the

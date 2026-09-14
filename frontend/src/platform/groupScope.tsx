@@ -50,9 +50,26 @@ import Typography from "@mui/material/Typography";
 import { useLocation, useSearchParams } from "react-router-dom";
 
 import { papi } from "./api";
+import type { AppAbility, Subject } from "./ability";
 import { ALL_GROUPS, GroupFilter } from "./GroupFilter";
 import { PATH, routeFor } from "./route";
 import type { EntityGroup, GroupKind } from "./types";
+
+/** A kind this page takes, and — where the half of the page that kind narrows
+ *  is not every role's — what the reader must be able to read for the control
+ *  to be offered at all.
+ *
+ *  Only two pages need the second form and both for the same reason: `/bonds`
+ *  and `/dependency` answer about both ends of the book in one response, and
+ *  the server omits the supplier end for a salesperson. Offered unconditionally,
+ *  a "Vendor group" select sat on their screen and changed nothing they could
+ *  see — the same defect as a tab that always 403s, which this product removes
+ *  rather than renders. `ability.ts` is where "may read supply" is already
+ *  decided, and it mirrors the `require_manager_or_owner` the endpoints use.
+ */
+type ScopedKind = GroupKind | readonly [GroupKind, Subject];
+
+const kindOf = (k: ScopedKind): GroupKind => (typeof k === "string" ? k : k[0]);
 
 /** Which kinds of group narrow each page, keyed by the address it answers on.
  *
@@ -73,7 +90,7 @@ import type { EntityGroup, GroupKind } from "./types";
  * routing table depend on the API's vocabulary to state something only this
  * file reads.
  */
-export const SCOPED_BY: Readonly<Record<string, readonly GroupKind[]>> = {
+export const SCOPED_BY: Readonly<Record<string, readonly ScopedKind[]>> = {
   /** The customer directory. */
   [PATH.customer]: ["CUSTOMER"],
   /** Revenue mix and order flow. "Which customers buy this line" is a customer
@@ -100,9 +117,10 @@ export const SCOPED_BY: Readonly<Record<string, readonly GroupKind[]>> = {
    *  narrows either subject. */
   [PATH.landscape]: ["CUSTOMER", "PRODUCT"],
   [PATH.opportunities]: ["CUSTOMER"],
-  /** Both ends of the book, measured the same way and returned together. */
-  [PATH.bonds]: ["CUSTOMER", "VENDOR"],
-  [PATH.dependency]: ["CUSTOMER", "VENDOR"],
+  /** Both ends of the book, measured the same way and returned together — and
+   *  the supplier end is manager and above, so its control is too. */
+  [PATH.bonds]: ["CUSTOMER", ["VENDOR", "supply"]],
+  [PATH.dependency]: ["CUSTOMER", ["VENDOR", "supply"]],
   /** Who takes which lines. The item side is the *columns* of this grid rather
    *  than a filter over it, so only the customer kind narrows it. */
   [PATH.mix]: ["CUSTOMER"],
@@ -132,8 +150,16 @@ const PARAM: Readonly<Record<GroupKind, string>> = {
 const NONE: readonly GroupKind[] = [];
 
 interface ScopeValue {
-  /** What this page accepts, in the order the controls are drawn. */
+  /** What this page **offers this reader**, in the order the controls are drawn. */
   kinds: readonly GroupKind[];
+  /** What the page names in `SCOPED_BY`, before the role filter.
+   *
+   *  Two fields rather than one, because the two silences mean different
+   *  things. A panel asking for a kind this page never declares is a wiring
+   *  mistake worth saying out loud. A panel asking for one the page declares
+   *  and this reader may not use is correct code on a screen whose server
+   *  response has no such half — it should get the whole book and no noise. */
+  declared: readonly GroupKind[];
   /** The selected slug for one kind, or `ALL_GROUPS` for the whole book. */
   slugOf: (kind: GroupKind) => string;
 }
@@ -149,14 +175,16 @@ const ScopeContext = createContext<ScopeValue | null>(null);
  *  complains in development. That is a wiring mistake — a panel asking for a
  *  scope with no control on screen to set it — and the honest behaviour is the
  *  unscoped answer it would have given before, said out loud rather than
- *  silently.
+ *  silently. A kind the page declares but withholds from this reader returns
+ *  the same value in silence: `BondsScreen` asks for a vendor group on every
+ *  role, and for a salesperson the response has no supplier half to narrow.
  */
 export function useGroupScope(kind: GroupKind): string {
   const scope = useContext(ScopeContext);
   if (!scope) {
     throw new Error("useGroupScope outside a GroupScopeProvider");
   }
-  if (!scope.kinds.includes(kind) && import.meta.env.DEV) {
+  if (!scope.declared.includes(kind) && import.meta.env.DEV) {
     // eslint-disable-next-line no-console
     console.error(
       `useGroupScope("${kind}") on a page that does not declare it. ` +
@@ -173,10 +201,25 @@ export function useGroupScope(kind: GroupKind): string {
  *  "All" in it is a control that cannot do anything.
  */
 export function GroupScopeProvider({
-  token, children,
-}: { token: string; children: ReactNode }) {
+  token, ability, children,
+}: { token: string; ability: AppAbility; children: ReactNode }) {
   const { pathname } = useLocation();
-  const kinds = SCOPED_BY[routeFor(pathname)] ?? NONE;
+  const page = SCOPED_BY[routeFor(pathname)] ?? NONE;
+
+  // Two lists, and both are derived through a joined string rather than held as
+  // arrays. `ability` is rebuilt on every render of the shell, so an array
+  // computed from it has a fresh identity each time — and this one is a
+  // `useEffect` dependency, which would mean re-fetching every group list on
+  // every render. The key only changes when the set of kinds actually does.
+  const declaredKey = page.map(kindOf).join(",");
+  const offeredKey = page
+    .filter((k) => typeof k === "string" || ability.can("read", k[1]))
+    .map(kindOf).join(",");
+  const asKinds = (key: string) =>
+    (key ? key.split(",") as GroupKind[] : NONE);
+  const declared = useMemo(() => asKinds(declaredKey), [declaredKey]);
+  const kinds = useMemo(() => asKinds(offeredKey), [offeredKey]);
+
   const [params, setParams] = useSearchParams();
   const [options, setOptions] = useState<Partial<Record<GroupKind, EntityGroup[]>>>({});
   /** Which `(token, kind)` lists have already been asked for, so walking
@@ -223,7 +266,8 @@ export function GroupScopeProvider({
     setParams(next, { replace: true });
   }, [params, setParams]);
 
-  const value = useMemo<ScopeValue>(() => ({ kinds, slugOf }), [kinds, slugOf]);
+  const value = useMemo<ScopeValue>(
+    () => ({ kinds, declared, slugOf }), [kinds, declared, slugOf]);
 
   const drawn = kinds.filter((k) => (options[k]?.length ?? 0) > 0);
   const chosen = kinds.filter((k) => slugOf(k) !== ALL_GROUPS);

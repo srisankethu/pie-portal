@@ -459,8 +459,24 @@ describe("the public pages name no single trade", () => {
   // price history; the trade never mattered.
   const TRADE = /\b(carbide|DNMG|CNMG|insert|end ?mill|drill bit|fastener|bearing|geometry|grade|machine shop|foundry|tool ?room)s?\b/i;
 
-  it("keeps the landing page's example free of a trade", () => {
+  /** The landing page with its registry-derived strips removed.
+   *
+   *  The rule this file states is that the front page must not *quietly pick*
+   *  a trade — the worked example, the attribute words, the buyer. A strip
+   *  listing every trade that has a page is the opposite of picking one: it is
+   *  the front page saying it serves all of them, and it is generated from
+   *  `INDUSTRY_PAGES` rather than written, so it cannot drift into a
+   *  preference. Scanning it was fine while two trades were listed and neither
+   *  matched the pattern, and became a false positive the moment "fasteners"
+   *  did. The check follows its own stated reason rather than its old blast
+   *  radius. */
+  function landingProse(): string {
     const landing = documents.find((d) => d.page.slug === "")!.html;
+    return landing.replace(/<div class="lp-sched">[\s\S]*?<\/div><\/div><\/div>/g, "");
+  }
+
+  it("keeps the landing page's example free of a trade", () => {
+    const landing = landingProse();
     const hit = landing.match(TRADE);
     expect(hit?.[0] ?? null,
       `the front page names a trade: “${hit?.[0]}”. The example has to read for `

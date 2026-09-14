@@ -29,15 +29,32 @@ const rendered = INDUSTRY_PAGES.map((page) => ({
 
 describe("the industry registry", () => {
   it("has an entry for every trade that passed the gate, and no others", () => {
-    // Two, and the number is the point rather than a coincidence.
-    // `docs/vertical-strategy.md` scores sixteen trades and passes two; the
-    // rest are deferred for named capability reasons. This is not a check that
-    // two is the right number forever — it is a check that adding a third is a
-    // deliberate act somebody had to come here and make, rather than something
-    // that happens because a page looked easy to copy.
+    // Seven, and the list is the point rather than the count.
+    // `docs/vertical-strategy.md` scores sixteen trades. Two hard gates decide
+    // this list: is there per-line pricing discretion, and is the typical ERP
+    // one of the seven we read? Everything else — rebates, interchange,
+    // fabricated assemblies — is a disclosure on the page rather than a reason
+    // to withhold it, which is the same trade `/erp/sage-100` makes on a book
+    // with no purchase cost at all.
+    //
+    // What stays out: packaging and building products fail the ERP gate
+    // (Amtech, ePS, BisTrack, DMSi); safety, JanSan, lab and medical, food
+    // service and pharma fail the discretion gate, because a GPO contract or a
+    // weekly price file has already removed the decision this product acts on.
+    // Welding and gas is held for a third reason — half that trade is cylinder
+    // rental, a recurring-revenue model nothing here represents.
+    //
+    // This is not a check that seven is right forever. It is a check that an
+    // eighth is a deliberate act somebody came here to make, rather than
+    // something that happened because a page looked easy to copy.
     expect(INDUSTRY_PAGES.map((p) => p.slug)).toEqual([
       "industrial-mro",
       "cutting-tools",
+      "fasteners",
+      "bearings-power-transmission",
+      "fluid-power",
+      "electrical",
+      "plumbing-pvf",
     ]);
   });
 

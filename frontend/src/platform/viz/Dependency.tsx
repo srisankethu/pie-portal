@@ -37,6 +37,7 @@ import { useState, type ReactNode } from "react";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
+import { useGroupScope } from "../groupScope";
 import { EntityName } from "../EntityName";
 import { EmptyState, InlineLink, MetricCard, StatusChip, Unavailable } from "../kit";
 import { CompanyScope } from "../CompanyFilter";
@@ -62,9 +63,15 @@ export function DependencyScreen({
   // Server-side, because this screen's output is shares of a total: a row
   // filter would put one company's list under three companies' arithmetic.
   const [scope, setScope] = useState("");
+  // Both ends of the book, each a set somebody drew, each intersected with the
+  // company bound rather than replacing it.
+  const customerGroup = useGroupScope("CUSTOMER");
+  const vendorGroup = useGroupScope("VENDOR");
   const { data, loading, error, reload } = useInsight(
-    "dependency", () => papi.dependency(session.token, scope || undefined),
-    [session.token, scope]);
+    "dependency",
+    () => papi.dependency(session.token, scope || undefined,
+                          customerGroup, vendorGroup),
+    [session.token, scope, customerGroup, vendorGroup]);
 
   const customers = (data?.customers as Row | undefined) ?? {};
   const receivables = (data?.receivables as Row | undefined) ?? {};

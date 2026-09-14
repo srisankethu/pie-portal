@@ -29,7 +29,10 @@ const BASE = process.env.SHOT_BASE_URL ?? "http://127.0.0.1:5173";
 const CHROME = process.env.PLAYWRIGHT_CHROMIUM_PATH ||
   "/opt/pw-browsers/chromium-1194/chrome-linux/chrome";
 const DEVICES = { desktop: { width: 1440, height: 1000 }, phone: { width: 390, height: 844 } };
-const PAGES = ["/payments", "/composition", "/customers", "/supply", "/item-lines", "/cadence"];
+const PAGES = ["/payments", "/composition", "/customers", "/supply",
+               "/item-lines", "/cadence", "/landscape", "/opportunities",
+               "/bonds", "/dependency", "/mix", "/stock", "/gmroi",
+               "/quote-outcomes", "/payables"];
 
 fs.mkdirSync(OUT, { recursive: true });
 const browser = await chromium.launch({ executablePath: CHROME });

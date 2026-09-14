@@ -34,6 +34,7 @@ import { useMemo, useState } from "react";
 import { money } from "../../money";
 import { formatDate } from "../../when";
 import { papi } from "../api";
+import { useGroupScope } from "../groupScope";
 import { Unavailable } from "../kit";
 import { EntityName } from "../EntityName";
 import { CompanyScope } from "../CompanyFilter";
@@ -71,9 +72,14 @@ export function MixScreen({
   // screen, so scoping has to recompute them rather than hide rows underneath
   // a headline that still describes all three books.
   const [scope, setScope] = useState("");
+  // The page's customer group, beside the company bound above and intersected
+  // with it on the server — a group narrows what you are looking at and never
+  // what you may see.
+  const group = useGroupScope("CUSTOMER");
   const { data, loading, error, reload } = useInsight(
-    "mix", () => papi.mix(session.token, Number(months), by, scope || undefined),
-    [session.token, months, by, scope]);
+    "mix",
+    () => papi.mix(session.token, Number(months), by, scope || undefined, group),
+    [session.token, months, by, scope, group]);
 
   const columns = rows(data?.categories);
   const customers = rows(data?.customers);

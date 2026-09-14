@@ -76,8 +76,8 @@ import type { EntityGroup, GroupKind } from "./types";
 export const SCOPED_BY: Readonly<Record<string, readonly GroupKind[]>> = {
   /** The customer directory. */
   [PATH.customer]: ["CUSTOMER"],
-  /** Revenue mix and order flow — the one page that crosses two kinds. "Which
-   *  customers buy this line" is a customer question with an item group. */
+  /** Revenue mix and order flow. "Which customers buy this line" is a customer
+   *  question with an item group, which is why this page takes both. */
   [PATH.composition]: ["CUSTOMER", "PRODUCT"],
   [PATH.cadence]: ["CUSTOMER"],
   [PATH.lostRevenue]: ["CUSTOMER"],
@@ -89,6 +89,30 @@ export const SCOPED_BY: Readonly<Record<string, readonly GroupKind[]>> = {
   [PATH.supply]: ["VENDOR"],
   /** Item lines. */
   [PATH.catalogue]: ["PRODUCT"],
+
+  // The analyses. Each reads a set of counterparties or items and publishes
+  // shares, medians and rankings over them, which is the test for whether a
+  // page belongs here at all: a figure that is a proportion of what was read
+  // has to be recomputed inside a group, and one that is a plain per-row fact
+  // does not need a group to be correct.
+  //
+  /** A point is a relationship — a customer *and* an item — so either kind
+   *  narrows either subject. */
+  [PATH.landscape]: ["CUSTOMER", "PRODUCT"],
+  [PATH.opportunities]: ["CUSTOMER"],
+  /** Both ends of the book, measured the same way and returned together. */
+  [PATH.bonds]: ["CUSTOMER", "VENDOR"],
+  [PATH.dependency]: ["CUSTOMER", "VENDOR"],
+  /** Who takes which lines. The item side is the *columns* of this grid rather
+   *  than a filter over it, so only the customer kind narrows it. */
+  [PATH.mix]: ["CUSTOMER"],
+  [PATH.stock]: ["PRODUCT"],
+  [PATH.gmroi]: ["PRODUCT"],
+  /** Two panels — the win rate, and the pricing behind the losses for a manager
+   *  — and one selection between them. */
+  [PATH.quoteOutcomes]: ["CUSTOMER"],
+  /** How long we take to pay, per supplier. */
+  [PATH.payables]: ["VENDOR"],
 };
 
 /** The query parameter each kind is carried on.

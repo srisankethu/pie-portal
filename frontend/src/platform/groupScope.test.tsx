@@ -16,9 +16,10 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { defineAbilityFor } from "./ability";
 import { GroupScopeProvider, SCOPED_BY, useGroupScope } from "./groupScope";
 import { PATH } from "./route";
-import type { GroupKind } from "./types";
+import type { GroupKind, Role } from "./types";
 import { aGroup } from "../test/groups";
 
 const listGroups = vi.fn();
@@ -46,10 +47,10 @@ function Address() {
   return <div data-testid="url">{pathname + search}</div>;
 }
 
-function mount(at: string, panels: ReactNodeLike) {
+function mount(at: string, panels: ReactNodeLike, role: Role = "OWNER") {
   return render(
     <MemoryRouter initialEntries={[at]}>
-      <GroupScopeProvider token="tok">
+      <GroupScopeProvider token="tok" ability={defineAbilityFor(role)}>
         <Address />
         {panels}
       </GroupScopeProvider>
@@ -220,6 +221,61 @@ describe("when there is nothing to choose from", () => {
     expect(screen.getByTestId("journey")).toHaveTextContent("whole book");
   });
 });
+
+describe("a kind this reader cannot use", () => {
+  // `/bonds` answers about both ends of the book in one response and the server
+  // omits the supplier end for a salesperson. A "Vendor group" select on their
+  // screen would change nothing they could see — the same defect as a tab that
+  // always 403s, which this product removes rather than renders.
+  it("is not drawn for a salesperson", async () => {
+    listGroups.mockImplementation((_t: string, kind: GroupKind) =>
+      Promise.resolve(oneGroup(kind)));
+    mount(PATH.bonds, <>
+      <Probe kind="CUSTOMER" name="customers" />
+      <Probe kind="VENDOR" name="vendors" />
+    </>, "SALESPERSON");
+
+    await screen.findByRole("combobox", { name: "Customer group" });
+    expect(screen.queryByRole("combobox", { name: "Vendor group" })).toBeNull();
+    expect(screen.getAllByRole("combobox")).toHaveLength(1);
+  });
+
+  it("is drawn for a manager, who has the half it narrows", async () => {
+    listGroups.mockImplementation((_t: string, kind: GroupKind) =>
+      Promise.resolve(oneGroup(kind)));
+    mount(PATH.bonds, <Probe kind="VENDOR" name="vendors" />, "SALES_MANAGER");
+
+    expect(await screen.findByRole("combobox", { name: "Vendor group" }))
+      .toBeTruthy();
+  });
+
+  it("is not fetched for a salesperson either", async () => {
+    // Not merely hidden: a list nobody can act on is a request nobody needs.
+    listGroups.mockImplementation((_t: string, kind: GroupKind) =>
+      Promise.resolve(oneGroup(kind)));
+    mount(PATH.bonds, <Probe kind="CUSTOMER" name="customers" />, "SALESPERSON");
+
+    await screen.findByRole("combobox", { name: "Customer group" });
+    expect(listGroups.mock.calls.map((c: unknown[]) => c[1])).toEqual(["CUSTOMER"]);
+  });
+
+  it("answers the whole book without complaining about the wiring", async () => {
+    // The distinction this pins: a declared-but-withheld kind is correct code
+    // on a screen whose response has no such half, so it is silent. Only an
+    // undeclared kind is a wiring mistake worth saying out loud.
+    const complained = vi.spyOn(console, "error").mockImplementation(() => {});
+    listGroups.mockImplementation((_t: string, kind: GroupKind) =>
+      Promise.resolve(oneGroup(kind)));
+
+    mount(`${PATH.bonds}?vendors=aerospace`,
+          <Probe kind="VENDOR" name="vendors" />, "SALESPERSON");
+
+    expect(screen.getByTestId("vendors")).toHaveTextContent("whole book");
+    expect(complained).not.toHaveBeenCalled();
+    complained.mockRestore();
+  });
+});
+
 
 describe("a kind the page does not declare", () => {
   it("answers the whole book, and says so to whoever wired it", async () => {

@@ -55,17 +55,27 @@
 		# sees. The rule this replaces named `/index.html`, an address no
 		# browser ever asks for here — `try_files` resolves `/` to that file
 		# internally — so it had never once fired.
-		@html path / /erp/*
+		@html path / /erp/* /industries/* /roles/*
 		header @html Cache-Control "no-cache"
 
 		# One address per page. Without this, /erp/prophet-21/ misses every
 		# candidate below and falls through to the shell, which answers the
 		# landing page at HTTP 200 — a soft 404, and a second URL for a page
 		# whose canonical tag names the first.
+		#
+		# One matcher per family rather than a single `^/(erp|industries|roles)/`
+		# alternation: Caddy names the capture after the matcher, so a shared
+		# pattern would need the family group in the redirect target and the two
+		# would have to stay in step. Three lines that each say one thing.
 		@erp_slash path_regexp erpslash ^/erp/([^/]+)/$
 		redir @erp_slash /erp/{re.erpslash.1} 308
+		@ind_slash path_regexp indslash ^/industries/([^/]+)/$
+		redir @ind_slash /industries/{re.indslash.1} 308
+		@role_slash path_regexp roleslash ^/roles/([^/]+)/$
+		redir @role_slash /roles/{re.roleslash.1} 308
 
-		# The ERP pages are real documents at /erp/{system}, baked by
+		# The sub-pages are real documents — /erp/{system},
+		# /industries/{trade} and /roles/{role} — baked by
 		# scripts/prerender.mjs as flat .html files. `{path}.html` is what
 		# resolves an extensionless address to one of them; without it the
 		# fallback below would answer /erp/prophet-21 with the landing page at

@@ -22,6 +22,10 @@ import { DEMO_BOOKING_URL } from "./cta";
 import { ERP_PAGES } from "./erp";
 import { caseStudy, complianceRows, namedCustomers } from "./proof";
 import { ErpPage } from "./ErpPage";
+import { INDUSTRY_PAGES } from "./industries";
+import { IndustryPage } from "./IndustryPage";
+import { ROLE_PAGES } from "./roles";
+import { RolePage } from "./RolePage";
 import { Landing } from "./Landing";
 
 /** The landing exactly as `PlatformApp` mounts it for a signed-out visitor.
@@ -88,12 +92,22 @@ export function landingTokenCss(): string {
  *
  * `standalone` says the document ships without the module script. See
  * `ErpPage.tsx` for why that is the design and not a limitation.
+ *
+ * `faq` is the page's question-and-answer pairs, and it exists here so that
+ * `scripts/prerender.mjs` can emit `FAQPage` JSON-LD **from the same array the
+ * component rendered**. That direction is the whole rule: schema may only
+ * restate what is on the page, which is why the Aug 2026 audit recorded
+ * FAQPage as "not claimed" — no page rendered an FAQ, so none could be
+ * described. A page that renders one earns the schema; a page that does not
+ * leaves this empty and gets no node. There is deliberately no way to declare
+ * an FAQ here that the page does not show.
  */
 export interface PrerenderPage {
   slug: string;
   title: string | null;
   description: string | null;
   standalone: boolean;
+  faq?: { q: string; a: string }[];
   render: () => string;
 }
 
@@ -111,6 +125,22 @@ export const PAGES: PrerenderPage[] = [
     description: page.description,
     standalone: true,
     render: () => renderToStaticMarkup(<ErpPage page={page} />),
+  })),
+  ...INDUSTRY_PAGES.map((page) => ({
+    slug: `industries/${page.slug}`,
+    title: page.title,
+    description: page.description,
+    standalone: true,
+    faq: page.faq,
+    render: () => renderToStaticMarkup(<IndustryPage page={page} />),
+  })),
+  ...ROLE_PAGES.map((page) => ({
+    slug: `roles/${page.slug}`,
+    title: page.title,
+    description: page.description,
+    standalone: true,
+    faq: page.faq,
+    render: () => renderToStaticMarkup(<RolePage page={page} />),
   })),
 ];
 

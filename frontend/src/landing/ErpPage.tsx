@@ -1,7 +1,8 @@
 import { filled } from "./content";
 import { demoCta } from "./cta";
-import { DEMO_LENGTH, FooterBlurb, TrustBand } from "./shared";
+import { DEMO_LENGTH, FooterBlurb, SubPageNav, TrustBand } from "./shared";
 import { ERP_PAGES, type ErpPageData } from "./erp";
+import { INDUSTRY_PAGES } from "./industries";
 import "./landing.css";
 
 /**
@@ -65,53 +66,7 @@ export function ErpPage({ page }: { page: ErpPageData }) {
   return (
     <div className="pie-landing">
       <div className="lp-sheet">
-        <nav className="lp-nav">
-          <div className="lp-wrap lp-nav-inner">
-            <a className="lp-logo" href="/">PIE<span>.</span></a>
-            {/* The menu is a `<details>`, and that is the whole point: a
-                disclosure opens without JavaScript, so a page that ships none
-                can still have the same collapsed bar the landing page has.
-
-                It used to be a flat row carrying `lp-nav-static`, written that
-                way because "a burger that cannot open is worse than four links
-                that wrap" — the ordinary `.lp-nav-links` is display:none below
-                640px until a JS toggle adds `.open`, so without a modifier a
-                phone got the logo and nothing else. The premise was wrong: a
-                burger *can* open with no script behind it. What the flat row
-                cost, measured in Chromium at 320–430px, was a sticky bar
-                **131px tall** against the landing page's 71px — a fifth of a
-                phone screen, on every one of these pages — whose links were
-                **17px** high, where the landing page's own mobile menu was
-                already giving each one 44+ and `e2e/.shots/a11y.mjs` holds the
-                signed-in app to the same number. Both panels are one rule, so
-                both are 44 now; `e2e/.shots/public-a11y.mjs` measures it.
-
-                Above 640px the summary is hidden and the panel is forced
-                visible, so the bar is the row it always was. If a browser ever
-                refused that override the page degrades to a menu button that
-                opens — not to a broken nav. */}
-            {/* These are cross-document links, which is why they are worth a
-                note: the landing page's section ids are this file's
-                dependency, and nothing here fails when one of them is renamed.
-                `/#product` and `/#plans` both dangled for exactly that reason
-                — the first was renamed to `#outcomes` and the second deleted
-                with the plans section — and a sub-page whose nav scrolls to
-                the top of the front page is a dead link that looks like a
-                working one. */}
-            <details className="lp-nav-menu">
-              <summary className="lp-nav-toggle" aria-label="Menu">
-                <span className="lp-burger" aria-hidden="true" />
-              </summary>
-              <div className="lp-nav-links">
-                <a href="/#outcomes">Outcomes</a>
-                <a href="/#how">How it works</a>
-                <a href="/#worth">What it&rsquo;s worth</a>
-                <a className="lp-nav-signin" href="/#signin">Sign in</a>
-                <a className="lp-btn solid lp-nav-cta" href="/#talk">Book a demo</a>
-              </div>
-            </details>
-          </div>
-        </nav>
+        <SubPageNav />
 
         {/* One region for the document's own content — see the note on the
             same element in Landing.tsx. */}
@@ -334,6 +289,22 @@ export function ErpPage({ page }: { page: ErpPageData }) {
                 </span>
               ))}
               <a href="/">Everything else</a>
+            </div>
+            {/* And the other direction: an ERP page answers "will it work with
+                my system", a trade page answers "will it work for my trade",
+                and a reader arriving on one is usually about to ask the other.
+                Linking only one way would make the second family reachable
+                from the front page alone. */}
+            <div className="lp-footer-erp">
+              {INDUSTRY_PAGES.map((industry) => (
+                <span key={industry.slug}>
+                  <a href={`/industries/${industry.slug}`}>
+                    PIE for {industry.short}
+                  </a>
+                  <span className="lp-sep" aria-hidden="true"> · </span>
+                </span>
+              ))}
+              <a href="/roles/salesperson">For your desk</a>
             </div>
           </div>
         </footer>

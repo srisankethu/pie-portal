@@ -179,11 +179,18 @@ function documentFor(page) {
   }
 
   // WebSite + WebPage + SoftwareApplication, every value true of the product
-  // and already stated on the page. Deliberately absent: offers, ratings,
-  // reviews, FAQPage — schema the audit's ground rules exclude, and values
-  // (a rating, an award) the product simply does not have. BreadcrumbList is
-  // absent for the same reason it always was: no page here renders a visible
-  // breadcrumb, and schema may only restate what is on the page.
+  // and already stated on the page. Deliberately absent: offers, ratings and
+  // reviews — values (a rating, an award) the product simply does not have.
+  // BreadcrumbList is absent for the reason it always was: no page here
+  // renders a visible breadcrumb, and schema may only restate what is on the
+  // page.
+  //
+  // FAQPage was on that excluded list until the industry and role pages
+  // arrived, and it came off it in the only way the rule allows: those pages
+  // render a visible FAQ, so there is now something to restate. It is emitted
+  // from `page.faq` — the same array the component mapped over — and a page
+  // that renders no FAQ still gets no node, because the field is what the
+  // component read. The rule did not move; the pages did.
   //
   // The WebPage node is per-page — its own @id and url — while WebSite and
   // SoftwareApplication are one node each, referenced rather than re-declared.
@@ -218,6 +225,22 @@ function documentFor(page) {
       },
     ],
   };
+
+  // Only for a page that rendered one. `q`/`a` are page copy and land inside a
+  // JSON string, so `JSON.stringify` on the whole graph is what escapes them —
+  // the same path every other value here takes.
+  if (page.faq?.length) {
+    jsonLd["@graph"].push({
+      "@type": "FAQPage",
+      "@id": `${url}#faq`,
+      isPartOf: { "@id": `${url}#webpage` },
+      mainEntity: page.faq.map(({ q, a }) => ({
+        "@type": "Question",
+        name: q,
+        acceptedAnswer: { "@type": "Answer", text: a },
+      })),
+    });
+  }
 
   const headInjection =
     `    <style id="pie-tokens">${tokenCss}</style>\n` +

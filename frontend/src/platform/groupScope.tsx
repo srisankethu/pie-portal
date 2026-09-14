@@ -52,6 +52,7 @@ import { useLocation, useSearchParams } from "react-router-dom";
 import { papi } from "./api";
 import type { AppAbility, Subject } from "./ability";
 import { ALL_GROUPS, GroupFilter } from "./GroupFilter";
+import { StatusChip } from "./kit";
 import { PATH, routeFor } from "./route";
 import type { EntityGroup, GroupKind } from "./types";
 
@@ -191,6 +192,48 @@ export function useGroupScope(kind: GroupKind): string {
       "Add the kind to SCOPED_BY in platform/groupScope.tsx.");
   }
   return scope.kinds.includes(kind) ? scope.slugOf(kind) : ALL_GROUPS;
+}
+
+/** A panel on a scoped page that the page's scope deliberately does not reach.
+ *
+ *  Two panels on `/payments` are whole-book by construction and stay that way:
+ *  the cash projection reads receivables *and* payables, so narrowing the
+ *  inflow half by a customer group while the outflow half stayed whole would
+ *  net to a figure that answers no question — the reasoning `/cashflow`'s own
+ *  docstring gives for why it is scoped by role rather than half-stripped. And
+ *  whether growth was paid for out of what the book kept is a question about
+ *  the legal entity, not about a set of customers.
+ *
+ *  **Both are correct and both look like the defect.** A reader with a group
+ *  selected sees the settlements narrow and these two not, and the honest
+ *  reading of that is "the filter is broken". So the panel says so itself, in
+ *  the place the figure is — the same argument `/stock` makes for carrying
+ *  `gmroi.withheld()` in its `unavailable` list rather than leaving a column
+ *  missing with no explanation beside it.
+ *
+ *  Renders nothing until a group of `kind` is actually selected, because until
+ *  then there is nothing to explain.
+ */
+export function NotNarrowedByGroup({ kind, why }: {
+  kind: GroupKind;
+  /** Why this panel is the whole book, in the words the panel would use. */
+  why: string;
+}) {
+  const scope = useContext(ScopeContext);
+  if (!scope || !scope.kinds.includes(kind)
+      || scope.slugOf(kind) === ALL_GROUPS) {
+    return null;
+  }
+  // "Not narrowed" rather than "Whole book", which is what the bar's own clear
+  // button says. The two mean different things — one is a state of this panel,
+  // the other an action over the page — and two controls wearing the same words
+  // on one screen is a reader working out which is which.
+  return (
+    <p className="viz-muted" style={{ marginTop: 0 }}>
+      <StatusChip label="Not narrowed" tone="neutral" dense />{" "}
+      {why}
+    </p>
+  );
 }
 
 /** Holds the page's selection and draws the control for it, above the page.

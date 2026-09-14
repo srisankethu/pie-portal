@@ -11,13 +11,23 @@
 // The rest pins the decisions that are easy to undo by accident: the table is
 // keyed by address rather than by screen, the selection lives in the URL, and a
 // list that will not load leaves the page working.
+//
+// **The same defect has now been found three times and it is always a sibling
+// panel.** Payments drew two selects; `/quote-outcomes` and `/quote-pricing`
+// are one page and only the first was scoped; `/journey`, `/customers` and
+// `/payables` each had a second panel fetching on its own. Adding a page to
+// `SCOPED_BY` is therefore not the whole job — every panel the route renders
+// has to read the scope or say why it does not, and the last of those is what
+// `NotNarrowedByGroup` is for.
 
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { MemoryRouter, useLocation } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { defineAbilityFor } from "./ability";
-import { GroupScopeProvider, SCOPED_BY, useGroupScope } from "./groupScope";
+import {
+  GroupScopeProvider, NotNarrowedByGroup, SCOPED_BY, useGroupScope,
+} from "./groupScope";
 import { PATH } from "./route";
 import type { GroupKind, Role } from "./types";
 import { aGroup } from "../test/groups";
@@ -221,6 +231,46 @@ describe("when there is nothing to choose from", () => {
     expect(screen.getByTestId("journey")).toHaveTextContent("whole book");
   });
 });
+
+describe("a panel the scope deliberately does not reach", () => {
+  // Two panels on `/payments` are whole-book by construction — the cash
+  // projection reads both sides of the ledger, and self-funding is a question
+  // about the legal entity. Both are correct and both look like the filter is
+  // broken, which is the whole reason this renders anything at all.
+  it("says nothing at all while the page is the whole book", async () => {
+    listGroups.mockResolvedValue(oneGroup("CUSTOMER"));
+    const { container } = mount(
+      PATH.payments, <NotNarrowedByGroup kind="CUSTOMER" why="Because." />);
+
+    await screen.findByRole("combobox", { name: "Customer group" });
+    expect(container.textContent).not.toContain("Because.");
+  });
+
+  it("says so once a group is selected", async () => {
+    listGroups.mockResolvedValue(oneGroup("CUSTOMER"));
+    mount(`${PATH.payments}?customers=aerospace`,
+          <NotNarrowedByGroup kind="CUSTOMER" why="Both sides of the ledger." />);
+
+    expect(await screen.findByText(/Both sides of the ledger\./)).toBeTruthy();
+    // Not "Whole book" — that is the bar's clear button, and the two saying the
+    // same words on one screen is the collision this wording avoids.
+    expect(screen.getByText("Not narrowed")).toBeTruthy();
+    expect(screen.getByRole("button", { name: /whole book/i })).toBeTruthy();
+  });
+
+  it("stays quiet for a kind this page does not offer", async () => {
+    // A vendor note on a customer-only page would be an explanation of
+    // something nobody is doing.
+    listGroups.mockResolvedValue(oneGroup("CUSTOMER"));
+    const { container } = mount(
+      `${PATH.payments}?customers=aerospace&vendors=aerospace`,
+      <NotNarrowedByGroup kind="VENDOR" why="Not applicable here." />);
+
+    await screen.findByRole("combobox", { name: "Customer group" });
+    expect(container.textContent).not.toContain("Not applicable here.");
+  });
+});
+
 
 describe("a kind this reader cannot use", () => {
   // `/bonds` answers about both ends of the book in one response and the server

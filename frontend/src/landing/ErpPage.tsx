@@ -1,8 +1,8 @@
 import { filled } from "./content";
 import { demoCta } from "./cta";
 import { DEMO_LENGTH, FooterBlurb, SubPageNav, TrustBand } from "./shared";
-import { ERP_PAGES, type ErpPageData } from "./erp";
 import { INDUSTRY_PAGES } from "./industries";
+import { ERP_PAGES, type ErpPageData } from "./erp";
 import "./landing.css";
 
 /**

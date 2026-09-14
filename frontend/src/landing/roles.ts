@@ -33,10 +33,7 @@
  *     what these pages say.
  */
 
-export interface RoleFaq {
-  q: string;
-  a: string;
-}
+import { type FaqItem } from "./faq";
 
 export interface RolePageData {
   /** The URL segment: `/roles/{slug}`. */
@@ -67,7 +64,7 @@ export interface RolePageData {
   fit: { title: string; body: string }[];
   /** What PIE does not do for this person today. */
   notServed: string[];
-  faq: RoleFaq[];
+  faq: FaqItem[];
 }
 
 export const ROLE_PAGES: RolePageData[] = [
@@ -165,8 +162,8 @@ export const ROLE_PAGES: RolePageData[] = [
     ],
     faq: [
       {
-        q: "Can I work out the cost from the floor?",
-        a:
+        question: "Can I work out the cost from the floor?",
+        answer:
           "With algebra, partly — the floor and the recommended price are both "
           + "cost times a policy multiplier, which leaves two equations in three "
           + "unknowns. That is an accepted, documented trade-off rather than an "
@@ -174,31 +171,35 @@ export const ROLE_PAGES: RolePageData[] = [
           + "use to decide. What is ruled out is a cost or margin field, a count "
           + "or flag that answers a margin question, and any rule you could walk "
           + "a price against to find where the answer changes.",
+        source: "CLAUDE.md §1, the accepted residual; the withheld column above",
       },
       {
-        q: "Does it work on a phone, in a customer's factory?",
-        a:
+        question: "Does it work on a phone, in a customer's factory?",
+        answer:
           "Customer lookup, customer context, product lookup, price and "
           + "availability are the tasks built for that, one-handed and on poor "
           + "signal. The full quote-building flow is a desk task.",
+        source: "PRODUCT.md, Field sales — the five tasks built for it",
       },
       {
-        q: "Will it tell me which substitute to offer?",
-        a:
+        question: "Will it tell me which substitute to offer?",
+        answer:
           "It ranks what it found and shows which attribute contributed what. It "
           + "does not decide, and where nothing discriminates between the "
           + "candidates it abstains rather than returning the least-bad one. On a "
           + "catalogue whose designations it does not decode it will find the "
           + "line in your own book by description, which is not the same thing as "
           + "proposing an equivalent.",
+        source: "/industries/cutting-tools; the abstention rule in the engine",
       },
       {
-        q: "Is my quote going to be second-guessed?",
-        a:
+        question: "Is my quote going to be second-guessed?",
+        answer:
           "Only where it breaches a floor somebody set on purpose, and then by a "
           + "named person against a written policy rather than by whoever happens "
           + "to look. The sign-off is append-only and carries the policy version "
           + "in force when it was given, so the reasoning survives the quarter.",
+        source: "this page's “Held, not blocked” panel",
       },
     ],
   },
@@ -288,37 +289,41 @@ export const ROLE_PAGES: RolePageData[] = [
     ],
     faq: [
       {
-        q: "What stops a salesperson simply overriding the floor?",
-        a:
+        question: "What stops a salesperson simply overriding the floor?",
+        answer:
           "They cannot. The line is held by the platform rather than flagged to "
           + "the person pricing it, and it routes to somebody with the authority "
           + "to sign — a manager, or the owner where the line is below cost and "
           + "your policy requires it. The salesperson is not asked to decide and "
           + "is not told which cost-based rule fired.",
+        source: "the withheld column on /roles/salesperson; approvals.can_decide",
       },
       {
-        q: "Can I edit the margin policy?",
-        a:
+        question: "Can I edit the margin policy?",
+        answer:
           "The policy is owner-editable. You approve against it. That split is "
           + "deliberate — the person who signs an exception is not the person who "
           + "moves the line the exception is measured from.",
+        source: "/roles/owner — the policy is owner-editable",
       },
       {
-        q: "What happens to old numbers when the policy changes?",
-        a:
+        question: "What happens to old numbers when the policy changes?",
+        answer:
           "Anything a human signed keeps the version that was in force when they "
           + "signed it — approvals, signals and quote snapshots are append-only. "
           + "Derived metrics are upserted and carry the stamp of the policy that "
           + "judged the value they currently hold; a full re-sync rebuilds them "
           + "from your ERP.",
+        source: "the determinism band; CLAUDE.md §1, thresholds carry a version",
       },
       {
-        q: "Does the AI decide what to escalate?",
-        a:
+        question: "Does the AI decide what to escalate?",
+        answer:
           "No. The detectors are deterministic arithmetic over persisted rows "
           + "against thresholds you set. A model may phrase a finding in plain "
           + "words; it never produces a number and it never decides one is worth "
           + "raising. Turn it off and the same list appears.",
+        source: "the determinism band",
       },
     ],
   },
@@ -404,41 +409,45 @@ export const ROLE_PAGES: RolePageData[] = [
     ],
     faq: [
       {
-        q: "How do I know the AI is not quietly setting a price?",
-        a:
+        question: "How do I know the AI is not quietly setting a price?",
+        answer:
           "Because the deterministic packages cannot import the AI one, and a "
           + "test parses the imports rather than grepping them, so a package "
           + "mentioned in a comment cannot pass it. Turn the AI off and every "
           + "number on every screen still computes. That is a structural claim "
           + "rather than a policy one.",
+        source: "the determinism band; tests/decision_platform/test_layer_boundaries.py",
       },
       {
-        q: "What does PIE do to my ERP?",
-        a:
+        question: "What does PIE do to my ERP?",
+        answer:
           "Reads it, over the permissions you grant, and each system's page "
           + "lists them exactly. Three of the seven connectors cannot write at "
           + "all. Nothing is created without a permission granted separately for "
           + "that purpose.",
+        source: "the `/erp/` pages' permission lists",
       },
       {
-        q: "Can we get our data out, or erased?",
-        a:
+        question: "Can we get our data out, or erased?",
+        answer:
           "Yes to both — export and erasure are mechanisms in the product rather "
           + "than clauses in a contract, and erasure produces a receipt. Every "
           + "row carries the connector, the connection and the id it came from, "
           + "so what is held is enumerable rather than a matter of trust.",
+        source: "the determinism band's “Your data” bullet",
       },
       {
-        q: "What is it going to cost?",
-        a:
+        question: "What is it going to cost?",
+        answer:
           "That depends on how many companies you connect, which ERP each one "
           + "sits on and how much catalogue there is to build, so this site "
           + "states no price rather than printing one that is wrong for you. It "
           + "is a conversation, and a short one.",
+        source: "docs/marketing-placeholders.md §1 — the site states no price, deliberately",
       },
       {
-        q: "What is the honest reason this might not work for us?",
-        a:
+        question: "What is the honest reason this might not work for us?",
+        answer:
           "Three, in order. If a large share of your purchases is claimed back "
           + "through special pricing agreements, the floor PIE computes is not "
           + "your real floor and it will hold profitable lines. If your value is "
@@ -446,6 +455,7 @@ export const ROLE_PAGES: RolePageData[] = [
           + "will find lines in your own book and will not propose equivalents. "
           + "And nothing resolves until somebody has uploaded your price lists "
           + "and confirmed how each is read — that is real work, done once.",
+        source: "the limits section on each /industries/ page",
       },
     ],
   },

@@ -1,4 +1,7 @@
+import { type FaqItem } from "./faq";
 import { marginPct, unitPrice, type RegionExample } from "./worked-example";
+
+import { hasProof } from "./proof";
 
 /** The blocks the landing page and the ERP pages both carry.
  *
@@ -89,6 +92,71 @@ export function TrustBand({ system }: { system?: string }) {
    waiting: a correct, tested, importable component is the one somebody adds
    back to a page without asking whether the page should be making the offer.
    `entitlements` is where that rule lives; this was only ever its shop window. */
+
+/** The section links in the bar, once, for both public pages.
+ *
+ * They were two hand-kept lists — one in `Landing.tsx` as `#id`, one in
+ * `ErpPage.tsx` as `/#id` — and they had already drifted: the ERP bar omitted
+ * "Who it's for" for no reason anybody chose, and neither bar offered "What you
+ * own" or the FAQ at all, so two substantial sections were reachable only by
+ * scrolling past everything above them.
+ *
+ * The worse half is the failure mode `ErpPage.tsx` documents against itself:
+ * those hrefs are cross-document, so a renamed section id does not break a
+ * build, a type-check or a test — it produces a link that scrolls to the top of
+ * the front page and looks like it worked. `/#product` and `/#plans` both
+ * dangled that way, and both were found by a person rather than a check.
+ *
+ * One array fixes the drift; `nav.test.tsx` fixes the dangling, by rendering the
+ * landing page and asserting every id below is a section on it. That test is the
+ * point of this constant — a shared list that nothing verifies would dangle in
+ * both bars at once instead of one.
+ */
+export interface NavItem {
+  /** The landing page's section id. `#id` on the landing, `/#id` from an ERP
+   *  page — the only difference between the two bars, and the reason this is a
+   *  list of ids rather than a list of hrefs. */
+  id: string;
+  label: string;
+}
+
+/** Which sections earn a place in the bar.
+ *
+ * Not every section does, and the ones left out are left out for a reason:
+ *
+ * - `problem` opens the page directly under the hero. A link that scrolls a
+ *   reader to what is already on their screen teaches them the bar is decorative.
+ * - `talk` is in the bar already, as the "Book a demo" button. A text link to
+ *   the same anchor beside it would be the same offer made twice, and the
+ *   weaker of the two would be the one people read.
+ * - `proof` is here but conditional — `navItems()` drops it when there is
+ *   nothing to show, which is the same `hasProof()` the section itself asks.
+ *   A bar advertising a section that did not render is the dangling link this
+ *   file exists to prevent, arriving from the inside.
+ *
+ * `trust` and `faq` are the two additions. Data ownership — export, erasure,
+ * what a customer keeps — is a question a buyer asks in the first meeting, and
+ * the FAQ answers seven more; neither had any route from the bar.
+ */
+const ALL_NAV_ITEMS: NavItem[] = [
+  { id: "outcomes", label: "Outcomes" },
+  { id: "roles", label: "Who it\u2019s for" },
+  { id: "how", label: "How it works" },
+  { id: "worth", label: "What it\u2019s worth" },
+  // `trust`, not `ownership`: the DOM id is what an href needs, and the id on
+  // that section has always been `trust` even though the page letters it "What
+  // you own". Naming the constant after the heading would have produced a link
+  // that compiles, reads correctly, and goes nowhere.
+  { id: "trust", label: "What you own" },
+  { id: "proof", label: "Proof" },
+  { id: "faq", label: "Questions" },
+];
+
+/** The bar's links for this render. Both pages call it, so neither can offer a
+ *  route to a section the other's content decisions removed. */
+export function navItems(): NavItem[] {
+  return ALL_NAV_ITEMS.filter((item) => item.id !== "proof" || hasProof());
+}
 
 /** The footer's one-line statement of what PIE is. */
 export function FooterBlurb() {
@@ -276,11 +344,19 @@ export function DecisionCard(
  * worse than four links that wrap" — was simply wrong: a burger *can* open
  * with no script behind it.
  *
+ * The list itself is `navItems()`, shared with the landing page's own bar, so
+ * neither can offer a route to a section the other's content decisions removed
+ * — `proof` drops out of both together when there is nothing to show. This
+ * component owns the *shape* of the bar and none of its contents, which is the
+ * split that matters: two families of sub-page render the same collapsed bar,
+ * and all three public surfaces agree about what is in it.
+ *
  * Every link is absolute. A bare `#outcomes` on a sub-page is a fragment that
  * goes nowhere, and these are cross-document links to the landing page's own
- * section ids — `prerender.test.tsx` holds each one against a section that
- * exists, because `/#product` and `/#plans` both dangled once for exactly that
- * reason.
+ * section ids — `nav.test.tsx` renders the landing and asserts every id in the
+ * list is a section on it, and `prerender.test.tsx` holds every emitted href
+ * against the same thing. `/#product` and `/#plans` both dangled once for
+ * exactly that reason, and both were found by a person rather than a check.
  */
 export function SubPageNav() {
   return (
@@ -292,9 +368,9 @@ export function SubPageNav() {
             <span className="lp-burger" aria-hidden="true" />
           </summary>
           <div className="lp-nav-links">
-            <a href="/#outcomes">Outcomes</a>
-            <a href="/#how">How it works</a>
-            <a href="/#worth">What it&rsquo;s worth</a>
+            {navItems().map((item) => (
+              <a key={item.id} href={`/#${item.id}`}>{item.label}</a>
+            ))}
             <a className="lp-nav-signin" href="/#signin">Sign in</a>
             <a className="lp-btn solid lp-nav-cta" href="/#talk">Book a demo</a>
           </div>
@@ -320,7 +396,7 @@ export function SubPageNav() {
  * declare an FAQ that the page does not show.
  */
 export function FaqSection(
-  { heading, faq }: { heading: string; faq: { q: string; a: string }[] },
+  { heading, faq }: { heading: string; faq: FaqItem[] },
 ) {
   return (
     <>
@@ -332,9 +408,9 @@ export function FaqSection(
           </div>
           <div className="lp-two">
             {faq.map((entry) => (
-              <div className="lp-panel" key={entry.q}>
-                <h3>{entry.q}</h3>
-                <p>{entry.a}</p>
+              <div className="lp-panel" key={entry.question}>
+                <h3>{entry.question}</h3>
+                <p>{entry.answer}</p>
               </div>
             ))}
           </div>

@@ -86,12 +86,9 @@ export const ERP_PAGES: ErpPageData[] = [
     costed: true,
     name: "Epicor Prophet 21",
     short: "Prophet 21",
-    title: "PIE for Epicor Prophet 21 · margin control on the book you already run",
+    title: "Margin control for Epicor Prophet 21 | PIE",
     description:
-      "PIE reads your Prophet 21 middleware's OData views — customers, suppliers, the "
-      + "item master, invoices and AP invoices with their lines, and orders — then checks "
-      + "every new quote line against your own margin floor before it goes out. Read-only: "
-      + "nothing is ever created in Prophet 21.",
+      "PIE reads your Prophet 21 OData views and checks every quote line against your own margin floor before it goes out. Read-only: nothing is written back.",
     connects:
       "A token sign-in as an API-enabled Prophet 21 user, against your middleware's "
       + "OData views, re-minted hourly and paged 500 rows at a time. The form asks for "
@@ -168,12 +165,9 @@ export const ERP_PAGES: ErpPageData[] = [
     costed: true,
     name: "Oracle NetSuite",
     short: "NetSuite",
-    title: "PIE for Oracle NetSuite · margin control on the book you already run",
+    title: "Margin control for Oracle NetSuite | PIE",
     description:
-      "PIE reads your NetSuite book over SuiteQL — customers, vendors, items, invoices, "
-      + "bills, customer payments and orders — checks every new quote line against your own "
-      + "margin floor, and can create the quote back in NetSuite as an estimate. Nothing "
-      + "else is ever written.",
+      "PIE reads your NetSuite book over SuiteQL, checks every quote line against your own margin floor, and can write the agreed quote back as an estimate.",
     connects:
       "Token-based authentication: an administrator creates one integration record and "
       + "one access token for a role with query permission, and every request carries an "
@@ -254,12 +248,9 @@ export const ERP_PAGES: ErpPageData[] = [
     costed: true,
     name: "Acumatica",
     short: "Acumatica",
-    title: "PIE for Acumatica · margin control on the book you already run",
+    title: "Margin control for Acumatica | PIE",
     description:
-      "PIE reads your Acumatica tenant over the contract-based REST API — customers, "
-      + "vendors, stock items with quantities, invoices, bills, payments and orders — checks "
-      + "every new quote line against your own margin floor, and can create the quote back "
-      + "as a sales quote. Nothing else is ever written.",
+      "PIE reads your Acumatica tenant over the REST API, checks every quote line against your own margin floor, and can write the quote back as a sales quote.",
     connects:
       "A session sign-in as a dedicated integration user against the contract-based REST "
       + "API, from your site URL, the tenant's login name and — if you use them — a branch "
@@ -335,13 +326,9 @@ export const ERP_PAGES: ErpPageData[] = [
     costed: true,
     name: "Microsoft Dynamics 365 Business Central",
     short: "Dynamics 365 BC",
-    title:
-      "PIE for Microsoft Dynamics 365 Business Central · margin control on the book you already run",
+    title: "Margin control for Dynamics 365 BC | PIE",
     description:
-      "PIE reads your Dynamics 365 BC company over the standard API v2.0 — customers, "
-      + "vendors, items, sales and purchase invoices with their lines, and orders — checks "
-      + "every new quote line against your own margin floor, and can create the agreed "
-      + "quote back in Business Central as a sales quote. Nothing else is ever written.",
+      "PIE reads your Dynamics 365 BC company over the standard API v2.0, checks every quote line against your own margin floor, and writes agreed quotes back.",
     connects:
       "An Entra ID app registration on the client-credentials grant: an administrator "
       + "registers one app, consents to the Business Central API permission and creates "
@@ -440,12 +427,9 @@ export const ERP_PAGES: ErpPageData[] = [
     costed: true,
     name: "Sage X3",
     short: "Sage X3",
-    title: "PIE for Sage X3 · margin control on the book you already run",
+    title: "Margin control for Sage X3 | PIE",
     description:
-      "PIE reads your Sage X3 folder over its SData service — customers, suppliers, the "
-      + "item master, sales and purchase invoices with their lines, and orders — then "
-      + "checks every new quote line against your own margin floor before it goes out. "
-      + "Read-only: nothing is ever created in Sage X3.",
+      "PIE reads your Sage X3 folder over SData and checks every quote line against your own margin floor before it goes out. Read-only: nothing is written back.",
     connects:
       "A sign-in as a dedicated integration user against your Syracuse server's SData "
       + "service, scoped to one X3 folder. The form asks for the Syracuse URL, that "
@@ -534,13 +518,9 @@ export const ERP_PAGES: ErpPageData[] = [
     costed: false,
     name: "Sage 100",
     short: "Sage 100",
-    title: "PIE for Sage 100 · price discipline on the book you already run",
+    title: "Price discipline for Sage 100 | PIE",
     description:
-      "PIE reads your Sage 100 company over its SData feed — customers, vendors, the item "
-      + "master, invoice history with its lines, and open orders. Sage 100 records AP "
-      + "history as GL distributions rather than item lines, so purchase cost is not read "
-      + "and margin is reported unknown rather than estimated: what this book gives you is "
-      + "price history, demand and decline, not a margin floor.",
+      "PIE reads your Sage 100 company over SData. Purchase cost is not read there, so margin stays unknown: you get price history, demand and decline.",
     connects:
       "A sign-in as a Sage 100 user with SData access, against the server your "
       + "eBusiness/SData provider runs on, scoped to one three-character company code. The "
@@ -630,13 +610,9 @@ export const ERP_PAGES: ErpPageData[] = [
     costed: true,
     name: "Zoho Books",
     short: "Zoho Books",
-    title: "PIE for Zoho Books · margin control on the book you already run",
+    title: "Margin control for Zoho Books | PIE",
     description:
-      "PIE reads your Zoho Books organization in full — customers, vendors, the item "
-      + "master, invoices, bills, credit notes, vendor credits, customer and vendor "
-      + "payments, sales and purchase orders, estimates, warehouses and per-location "
-      + "stock — checks every new quote line against your own margin floor, and can write "
-      + "the quote back as an estimate.",
+      "PIE reads your Zoho Books organization in full, checks every quote line against your own margin floor, and can write the quote back as an estimate.",
     connects:
       "A Zoho Self Client: an administrator mints one refresh token against the scope "
       + "list below, and PIE exchanges it for a short-lived access token as it works — no "

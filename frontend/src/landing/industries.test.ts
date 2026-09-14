@@ -117,9 +117,9 @@ describe("what an industry page may claim", () => {
     // restate what is on the page and nothing else.
     for (const { page, html } of rendered) {
       expect(page.faq.length).toBeGreaterThan(0);
-      for (const { q } of page.faq) {
+      for (const { question } of page.faq) {
         expect(html, `/industries/${page.slug} declares a question it does not render`)
-          .toContain(escapeForMarkup(q));
+          .toContain(escapeForMarkup(question));
       }
     }
   });

@@ -3,41 +3,26 @@
   "outputDirectory": "dist",
   "redirects": [
     {
-      "source": "/erp/:slug/",
-      "destination": "/erp/:slug",
-      "permanent": true
+      "source": "/(.*)",
+      "has": [{ "type": "host", "value": "pie-portal-seven.vercel.app" }],
+      "destination": "https://www.syncpie.com/$1",
+      "statusCode": 301
     },
     {
-      "source": "/industries/:slug/",
-      "destination": "/industries/:slug",
-      "permanent": true
+      "source": "/(.*)",
+      "has": [{ "type": "host", "value": "syncpie.com" }],
+      "destination": "https://www.syncpie.com/$1",
+      "statusCode": 301
     },
-    {
-      "source": "/roles/:slug/",
-      "destination": "/roles/:slug",
-      "permanent": true
-    }
+    { "source": "/erp/:slug/", "destination": "/erp/:slug", "permanent": true },
+    { "source": "/industries/:slug/", "destination": "/industries/:slug", "permanent": true },
+    { "source": "/roles/:slug/", "destination": "/roles/:slug", "permanent": true }
   ],
   "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/proxy?__path=$1"
-    },
-    {
-      "source": "/erp/([^/]+)",
-      "destination": "/erp/$1.html"
-    },
-    {
-      "source": "/industries/([^/]+)",
-      "destination": "/industries/$1.html"
-    },
-    {
-      "source": "/roles/([^/]+)",
-      "destination": "/roles/$1.html"
-    },
-    {
-      "source": "/((?!api/).*)",
-      "destination": "/index.html"
-    }
+    { "source": "/api/(.*)", "destination": "/api/proxy?__path=$1" },
+    { "source": "/erp/([^/]+)", "destination": "/erp/$1.html" },
+    { "source": "/industries/([^/]+)", "destination": "/industries/$1.html" },
+    { "source": "/roles/([^/]+)", "destination": "/roles/$1.html" },
+    { "source": "/((?!api/).*)", "destination": "/index.html" }
   ]
 }

@@ -19,7 +19,8 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { CSS_VARS } from "../theme";
 import { isPlaceholder } from "./content";
 import { DEMO_BOOKING_URL } from "./cta";
-import { ERP_PAGES } from "./erp";
+import { ERP_PAGES, type ErpPageData } from "./erp";
+import { FAQ, type FaqItem } from "./faq";
 import { caseStudy, complianceRows, namedCustomers } from "./proof";
 import { ErpPage } from "./ErpPage";
 import { INDUSTRY_PAGES } from "./industries";
@@ -93,21 +94,30 @@ export function landingTokenCss(): string {
  * `standalone` says the document ships without the module script. See
  * `ErpPage.tsx` for why that is the design and not a limitation.
  *
- * `faq` is the page's question-and-answer pairs, and it exists here so that
- * `scripts/prerender.mjs` can emit `FAQPage` JSON-LD **from the same array the
- * component rendered**. That direction is the whole rule: schema may only
- * restate what is on the page, which is why the Aug 2026 audit recorded
- * FAQPage as "not claimed" — no page rendered an FAQ, so none could be
- * described. A page that renders one earns the schema; a page that does not
- * leaves this empty and gets no node. There is deliberately no way to declare
- * an FAQ here that the page does not show.
+ * `erp` is the connector entry a sub-page is about, and `undefined` on the
+ * landing page. It is here so `scripts/prerender.mjs` can write llms.txt — a
+ * flat list of the systems PIE connects to, with a link to each — from this
+ * registry rather than from a second list of the same seven names. The build
+ * already generates robots.txt and sitemap.xml from `PAGES` for exactly that
+ * reason: a hand-kept list is the one that goes stale when a connector is
+ * added, silently, in the file nobody opens.
  */
 export interface PrerenderPage {
   slug: string;
   title: string | null;
   description: string | null;
   standalone: boolean;
-  faq?: { q: string; a: string }[];
+  erp?: ErpPageData;
+  /** The questions this page renders, for the `FAQPage` node the build emits.
+   *
+   *  Present only where the component actually shows them, which is the whole
+   *  rule and the reason this is a field rather than a lookup: schema may
+   *  restate what is on the page and nothing else. Google's FAQPage guidance
+   *  requires the question and answer to be visible, so a build that emitted
+   *  the node from a second copy of the strings would be one edit away from a
+   *  manual action. One array, two renderers — the same contract `faq.ts`
+   *  states for the landing page, now held by every page that has one. */
+  faq?: FaqItem[];
   render: () => string;
 }
 
@@ -117,6 +127,11 @@ export const PAGES: PrerenderPage[] = [
     title: null,
     description: null,
     standalone: false,
+    // The landing renders `FAQ` at the bottom of the document, so it declares
+    // it here like every other page that has one. It used to be the build's
+    // only `isLanding` special case; three more families render an FAQ now,
+    // and a rule with one exception in it is a rule that grows a second.
+    faq: FAQ,
     render: renderLandingMarkup,
   },
   ...ERP_PAGES.map((page) => ({
@@ -124,6 +139,7 @@ export const PAGES: PrerenderPage[] = [
     title: page.title,
     description: page.description,
     standalone: true,
+    erp: page,
     render: () => renderToStaticMarkup(<ErpPage page={page} />),
   })),
   ...INDUSTRY_PAGES.map((page) => ({

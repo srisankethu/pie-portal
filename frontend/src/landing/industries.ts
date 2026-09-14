@@ -62,10 +62,7 @@
  */
 export type SpeedReach = "decoded" | "matched";
 
-export interface IndustryFaq {
-  q: string;
-  a: string;
-}
+import { type FaqItem } from "./faq";
 
 export interface IndustryPageData {
   /** The URL segment: `/industries/{slug}`. */
@@ -117,7 +114,7 @@ export interface IndustryPageData {
    *  rule: schema may only restate what is on the page. The SEO audit recorded
    *  FAQPage as "not claimed, because no visible FAQ exists"; this earns it
    *  rather than overriding it. */
-  faq: IndustryFaq[];
+  faq: FaqItem[];
   /** ERP pages worth reading next, most likely first. Slugs in `erp.ts`;
    *  `industries.test.ts` holds every one against that registry, so a renamed
    *  ERP page cannot leave a dead link here. */
@@ -232,46 +229,51 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
     ],
     faq: [
       {
-        q: "Does PIE write anything back to my ERP?",
-        a:
+        question: "Does PIE write anything back to my ERP?",
+        answer:
           "On Prophet 21, Sage X3 and Sage 100, nothing — those connectors are "
           + "read-only and there is no method in them that creates a record. On "
           + "NetSuite, Acumatica, Dynamics 365 Business Central and Zoho Books, "
           + "the one thing PIE can create is the quote itself, and only if you "
           + "grant that permission separately. Everything else is read.",
+        source: "erp.ts — each connector's `writes`; three of seven are null",
       },
       {
-        q: "How far back does the first sync read?",
-        a:
+        question: "How far back does the first sync read?",
+        answer:
           "The first pull is offered from the first day of the month 18 months "
           + "back, and you choose the date before it starts. It commits as it "
           + "goes, so you can watch it move — and the screens then report the span "
           + "the rows actually cover, not the window that was asked for.",
+        source: "the `/erp/` pages' “What the first pull reads” panel; connections.DEFAULT_HISTORY_MONTHS",
       },
       {
-        q: "Can a salesperson see cost or margin?",
-        a:
+        question: "Can a salesperson see cost or margin?",
+        answer:
           "No, and not because a screen hides it. The server omits those fields "
           + "from the response, so there is nothing to read out of a network tab, "
           + "and a rule whose boundary is cost is withheld too and replaced with a "
           + "single approval-required marker. What the desk does get is the floor, "
           + "the recommended price and this customer's own history.",
+        source: "the landing page's Who it's for section; CLAUDE.md §1, quote_service.project",
       },
       {
-        q: "Does the AI set the prices?",
-        a:
+        question: "Does the AI set the prices?",
+        answer:
           "No. Prices, margins, floors and thresholds are computed "
           + "deterministically from your persisted rows. A model may read those "
           + "numbers and phrase them; it never produces one. Turn the AI off "
           + "entirely and every figure on every screen still works.",
+        source: "the determinism band on every public page",
       },
       {
-        q: "We already have a pricing matrix in our ERP. Why add this?",
-        a:
+        question: "We already have a pricing matrix in our ERP. Why add this?",
+        answer:
           "A matrix decides what price to offer. PIE checks what was actually "
           + "typed on the line against the floor your policy sets, at the moment "
           + "it is typed, and holds a breach for a named approver. The two answer "
           + "different questions and PIE does not replace the matrix.",
+        source: "this page's own “Where PIE intervenes” panel",
       },
     ],
     erpSlugs: ["prophet-21", "acumatica", "dynamics-365-business-central"],
@@ -384,47 +386,52 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
     ],
     faq: [
       {
-        q: "Which manufacturers' nomenclature does PIE decode?",
-        a:
+        question: "Which manufacturers' nomenclature does PIE decode?",
+        answer:
           "Whichever ones you upload a price list for. Each list is analysed on "
           + "its own to find the shapes of description it contains, a person "
           + "confirms what the varying parts mean, and the catalogue is built from "
           + "that. There is no shipped list of supported brands and no default "
           + "decoder — a decoder that guessed would be a wrong number with a real "
           + "provenance stamp on it.",
+        source: "this page's resolution section; app/decoding/ has no default decoder",
       },
       {
-        q: "Will it pick a substitute for me?",
-        a:
+        question: "Will it pick a substitute for me?",
+        answer:
           "It will rank candidates on the attributes it decoded and show which "
           + "field contributed what. It will not decide. Where nothing "
           + "discriminates it abstains, and a scored suggestion is never written "
           + "down as an identity — that stays a person's call, which is also how "
           + "your applications engineer would want it.",
+        source: "this page's “a cross-reference is a starting point” panel",
       },
       {
-        q: "Can a salesperson see cost or margin?",
-        a:
+        question: "Can a salesperson see cost or margin?",
+        answer:
           "No. The server omits those fields from the response rather than the "
           + "screen hiding them, and a rule whose boundary is cost is withheld too. "
           + "The desk gets the floor, the recommended price and this customer's own "
           + "history — enough to negotiate, without the cost basis.",
+        source: "the landing page's Who it's for section; CLAUDE.md §1, quote_service.project",
       },
       {
-        q: "Does the AI read the enquiry?",
-        a:
+        question: "Does the AI read the enquiry?",
+        answer:
           "The resolution does not. It is a deterministic parser with a versioned "
           + "rule set, and identical input produces identical bytes — which is what "
           + "makes a resolution auditable months later. A model may phrase what was "
           + "found; it never decides what was found and never produces a number.",
+        source: "the determinism band; pie-parser resolves before any model is asked",
       },
       {
-        q: "What happens when we rebuild the catalogue?",
-        a:
+        question: "What happens when we rebuild the catalogue?",
+        answer:
           "Resolutions carry the catalogue's ruleset version, so a line that "
           + "resolved differently before the rebuild can say which edition answered "
           + "it. That is deliberate: a rebuilt catalogue decoding differently is "
           + "exactly the fact that explains an old answer.",
+        source: "this page's third fit panel — the catalogue's ruleset version is in the record",
       },
     ],
     erpSlugs: ["prophet-21", "zoho-books", "dynamics-365-business-central"],

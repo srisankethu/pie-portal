@@ -120,8 +120,8 @@ describe("what a role page may promise", () => {
   it("renders every question it declares, so the FAQ schema restates the page", () => {
     for (const { page, html } of rendered) {
       expect(page.faq.length).toBeGreaterThan(0);
-      for (const { q } of page.faq) {
-        const escaped = q
+      for (const { question } of page.faq) {
+        const escaped = question
           .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
           .replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
         expect(html, `/roles/${page.slug} declares a question it does not render`)

@@ -233,6 +233,12 @@ describe("the set of pages", () => {
     expect(() => erpPage("epicor-kinetic")).toThrow(/no ERP page/);
   });
 
+  /** A literal string as a regex fragment. `Sage X3` and `Prophet 21` need no
+   *  escaping today, but a vendor with a `.` or a `+` in its name would match
+   *  far more than intended, and silently — the assertion would pass on a
+   *  title that did not contain the name at all. */
+  const escapeRe = (value: string) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
   it("gives every page its own title and description", () => {
     const titles = new Set(ERP_PAGES.map((p) => p.title));
     const descriptions = new Set(ERP_PAGES.map((p) => p.description));
@@ -241,10 +247,34 @@ describe("the set of pages", () => {
     for (const page of ERP_PAGES) {
       // The system's name in the first words of both: a distributor searching
       // for their own ERP has to see it in the result, not after a clause.
-      expect(page.title).toContain(page.name);
+      //
+      // `name` OR `short`, where it used to be `name` alone. The intent is
+      // that the reader recognises their own system in a search result, and
+      // "Dynamics 365 BC" does that as well as "Microsoft Dynamics 365
+      // Business Central" does — while the full form spends 39 of the 60
+      // characters a title gets before it is truncated, which is the opposite
+      // of being recognised. Both forms are the vendor's own; neither is
+      // invented here.
+      expect(page.title).toMatch(
+        new RegExp(`${escapeRe(page.name)}|${escapeRe(page.short)}`),
+      );
       expect(page.description).toContain(page.short);
       // Long enough to be a description, short enough not to be truncated.
+      //
+      // The upper bounds are new, and they are the reason this comment was
+      // wrong for as long as it stood: it said "short enough not to be
+      // truncated" while asserting only a floor, and every one of these seven
+      // titles was over 60 characters and every description over 265 — so
+      // Google rewrote all fourteen strings and the page never said what it
+      // had been written to say. A bound nobody asserts is a bound nobody has.
+      //
+      // 60 and 155 are where desktop SERP truncation starts. They are not
+      // exact — the real limit is pixel width, and a title of narrow letters
+      // survives longer than one of wide ones — so treat them as a budget
+      // rather than a guarantee, which is what a round number in a test is.
+      expect(page.title.length).toBeLessThan(60);
       expect(page.description.length).toBeGreaterThan(80);
+      expect(page.description.length).toBeLessThan(155);
     }
   });
 });

@@ -3,14 +3,18 @@
 **Research and the decision it produced.** Date: 2026-09-14. Second pass,
 deeper than the first; §12 records what the deeper research changed.
 
-**Status: built, in part.** The two pages this document approved outright are
-live — `/industries/industrial-mro` and `/industries/cutting-tools`, with the
-three `/roles/` pages that came with them. **Fluid power was not built**, and
-the reason is §8's own: its page is conditional on a question nobody has asked a
-fluid power distributor yet. That is the count this document argued for — two
-firm, one conditional — and the conditional one is still conditional rather than
-quietly dropped. `frontend/src/landing/industries.ts` is the registry, and its
-tests hold the site to the gate below rather than to this paragraph.
+**Status: seven trade pages live, and the gate that produced them has been
+revised once since this document first argued for two.** See §14 — the short
+version is that the original fourth condition was stricter than the rule this
+repository already applies to its ERP pages, and `/erp/sage-100` is the proof:
+it ships for a book with no purchase cost at all, under a different headline,
+with the gap printed prominently rather than the page withheld.
+
+Live now: industrial & MRO, cutting tools, fasteners, bearings & power
+transmission, fluid power, electrical, plumbing & PVF, plus the three `/roles/`
+pages. `frontend/src/landing/industries.ts` is the registry, and its tests hold
+the site to the gate below rather than to this paragraph — including one that
+pins the list, so an eighth page is a deliberate act rather than a copy.
 
 This document answers one question: which trades inside B2B distribution should
 get a dedicated page on the marketing site, and which should be excluded on
@@ -589,23 +593,49 @@ reader, and what that segment needs is a pricing answer, not a trade page.
 
 ### The gate
 
-1. Real per-line pricing discretion, **and**
-2. cost in the ERP that is actually true cost — no SPA/rebate distortion, **and**
-3. an ERP we connect to, **and**
-4. no dependence on a capability we have not built, **for the vertical's
-   headline pain**.
+Two conditions, both binary, both checkable:
+
+1. **Is there real per-line pricing discretion?** Where a GPO contract or a
+   weekly price file sets the price, the core loop has nothing to act on.
+2. **Is the typical ERP one of the seven we read?** Where it is BisTrack or
+   Amtech, we cannot read the book at all.
+
+**Everything else is a disclosure on the page, not a reason to withhold it** —
+rebate economics, cross-manufacturer interchange, a fabricated assembly that
+carries no cost. That is the trade `/erp/sage-100` already makes, and §14
+records why this document originally got it wrong.
+
+The two conditions that used to sit here — true cost, and no dependence on an
+unbuilt capability for the headline pain — were not deleted for convenience.
+They are now what each page's `notServed` list is *for*, and
+`industries.test.ts` requires the rebate disclosure on every page rather than
+trusting an author to remember it.
 
 ### Build these
 
-| # | Vertical | Status | Why |
-|---|---|---|---|
-| 1 | **Industrial & MRO distribution** | **Firm — shipped** | Widest overlap with the P21 installed base; NetPlus alone is 410+ distributors of exactly this shape; the leakage mechanism we intervene on is documented for this segment specifically; every claim is true today with Speed scoped honestly. |
-| 2 | **Cutting tools & metalworking** | **Firm — shipped** | The only vertical where all four capability areas are fully true, the only one where we can show a decode rather than describe one, and — see below — the only one whose own professional norms match our architecture. |
-| 3 | **Fluid power, hose & fittings** | **Conditional — not built** | Named P21 core vertical, no Category A vendor apparently leading at it, FPDA as a channel. But see the question below, which is still open. |
+Seven, all live. The status column is what each page actually does, because a
+page that partly serves a trade is the norm here rather than the exception.
 
-**Two firm pages, not three.** I could not find a third vertical that passes the
-gate on evidence, and padding to three would mean shipping a page I already know
-the risk of.
+| # | Vertical | What its page leads with | What it prints as a limit |
+|---|---|---|---|
+| 1 | **Industrial & MRO** | The last-price ratchet — a discount becomes the default nobody set | Rebates; no interchange outside metalworking |
+| 2 | **Cutting tools & metalworking** | The twenty-minute cross-reference, and the floor on the line it resolves | Rebates; the parser carries no price or stock |
+| 3 | **Fasteners** | Line count — nobody audits line 174 of a 200-line RFQ | **Cross-referencing, which is the trade's defining task** |
+| 4 | **Bearings & power transmission** | Urgency — the price agreed on the phone while a plant is down | **Interchange, likewise the defining task** |
+| 5 | **Fluid power, hose & fittings** | One floor across every branch | **A fabricated assembly may carry no cost — UNKNOWN, not a guess** |
+| 6 | **Electrical** | Decline and dormancy, which need no cost at all | **SPA-claimed cost inflates the floor; the margin half is unproven here** |
+| 7 | **Plumbing & PVF** | A bid priced against a cost that has since moved | Same SPA caveat on the branded half |
+
+Three of those pages lead with a limit in the first two sentences, and the
+electrical one is mostly about what does not work. That is deliberate and it is
+`/erp/sage-100`'s design: a page for a reader we can half-serve is worth more
+than no page, **provided the half we cannot do is the part they read first**.
+
+The pages are held apart by a test rather than by intention —
+`industries.test.ts` fails the build on pairwise sentence overlap above 25%, and
+on a repeated title, description, lead or problem. Seven pages differing only in
+a trade noun is the doorway pattern, and it arrives the ordinary way: page five
+written by find-and-replace on page one.
 
 #### Why cutting tools is the strongest page even though it is the smallest audience
 
@@ -674,28 +704,31 @@ probably beat three landing pages.** That is outside what was asked for and I am
 not acting on it, but it should not go unsaid in a document that was asked to
 weight toward that installed base.
 
-### DEFER — the product would have to change first
+### DEFER — the ERP gate, which is the one we cannot disclose our way past
 
-| Vertical | Reason, and the change that would move it |
+| Vertical | Reason, and what would move it |
 |---|---|
-| **Fasteners** | Scores second and fails gate 4: the headline pain *is* cross-reference. Needs thread, pitch, length, grade-class, drive, head and finish slots in `CORE_SLOTS` and matching gate/dimension fields in `equivalence/distance.py`. **Highest-value defer on this list** — best combination of ERP overlap, discretion and decodability once the slots exist. |
-| **Bearings / power transmission** | Interchange is the entire job and designations are rigidly structured — the cleanest second nomenclature pack we could build. Needs bore, OD, width, seal and clearance slots. Smaller base than fasteners (PTDA: 131 distributor members). |
-| **Electrical** | ~30% of revenue on SPA accounts means an inflated cost, an inflated floor, and systematic over-holding until the desk overrides everything. Needs a rebate/SPA cost layer. Also the densest Category A competition (epaCUBE, Zilliant, Ximple, Epicor Strategic Pricing). |
-| **Plumbing / PVF** | Same rebate machinery as electrical, plus commodity pipe that reprices faster than any synced cost. |
-| **Welding & gas** | The hardgoods half is Industrial/MRO and is already served by page 1; the gas and cylinder-rental half is recurring revenue and rental we model nothing of. Half the business invisible. |
-| **Packaging** | Converted product is quoted per specification — dimensions, board grade, quantity breaks, freight — not per catalogue code, and the ERP base is industry-specific (Amtech, Advantive, ePS, CBS) rather than one of our seven. Two gates fail. |
-| **Automation & controls** | The work before the price is configuration and BOM building, which we do not do. |
-| **Building products / LBM** | Real negotiation, but the ERP base is BisTrack, DMSi Agility and similar — outside our seven. Connector work before page work. |
+| **Packaging** | Converted product is quoted per specification, and the ERP base is industry-specific — Amtech, Advantive, ePS, CBS — rather than one of our seven. **Connector work before page work.** |
+| **Building products / LBM** | Real negotiation and violent commodity movement, on BisTrack, DMSi Agility and similar. Same answer: a connector, then a page. |
+| **Welding & gas** | Passes both hard gates on its hardgoods half, which page 1 already serves. Held because the other half is cylinder rental and gas contracts — recurring revenue and rental, a model nothing here represents. A page would be about half a company. |
+| **Automation & controls** | Passes both gates, and the work that decides the price is configuration and BOM building, which happens before any line exists. Closest to the line of anything on this list; revisit if a distributor asks. |
 
-### EXCLUDE — do not revisit without a change in the market, not in us
+**What is no longer a defer reason.** Rebate economics moved electrical and
+plumbing onto the page list with a disclosure rather than off it, and the
+absence of interchange did the same for fasteners and bearings. §14 has the
+argument. Those pages exist because a reader who can be half-served is better
+served by an honest page than by no page — and because withholding one was, on
+inspection, a stricter rule than this repository applies to its own ERP pages.
+
+### EXCLUDE — the discretion gate, and it is not close
 
 | Vertical | Reason |
 |---|---|
-| **Lab & medical supply** | GPO and IDN contracts set price in tiers keyed to compliance percentage. The per-line discretion the core loop acts on has been contracted away. A floor check has nothing to check. |
+| **Lab & medical supply** | GPO and IDN contracts set price in tiers keyed to compliance percentage. The per-line decision this product acts on has been contracted away. |
 | **Pharma** | WAC, contract and regulated pricing. No discretion, and a compliance surface we have no business near. |
-| **Food service** | Weekly price files and cost-plus formulas, on food-service-specific ERPs we do not connect to. Both gates fail. |
-| **JanSan** | Recurring contract replenishment; discretion sits at annual contract negotiation, not on the line. |
-| **Safety supply** | National accounts, GPO and vending programmes, clean part numbers, thin per-line discretion — and a segment where the nationals (Grainger, Fastenal, White Cap, MSC, Uline, Zoro) set the terms. Little for Control or Speed to do. |
+| **Food service** | Weekly price files and cost-plus formulas, on food-service-specific ERPs. Both gates fail. |
+| **JanSan** | Recurring contract replenishment; the discretion sits at annual negotiation, not on the line. |
+| **Safety supply** | National accounts, GPO and vending programmes, and a segment where the nationals set the terms. Thin per-line discretion. |
 
 ### One option that is not a vertical
 
@@ -944,25 +977,36 @@ If it comes back unfavourably, the page is not built.
 
 ---
 
-## 11. What would move a deferred vertical onto the page list
+## 11. What would turn a disclosure into a capability
 
-Ordered by expected value, so this reads as a roadmap rather than a list of
-apologies.
+Ordered by expected value. **This is no longer a list of what unlocks a page** —
+§14 changed that, and four of the trades below already have one. It is now the
+list of limits those pages currently print, ranked by what closing each is
+worth.
 
 1. **Fastener slots** — add thread, pitch, length, grade class, drive, head and
    finish to `CORE_SLOTS`, and the corresponding gate/dimension/soft fields in
-   `pie-parser/equivalence/distance.py`. **Fasteners is the only vertical
-   scoring a clean 21/21 against the owner's own ICP (§4), and this is the
-   single change standing between that score and a page.** Best ERP overlap on
-   the list too — P21 names "Industrial & Fasteners" as a core vertical. An
-   engine change in both repositories plus a nomenclature pack.
+   `pie-parser/equivalence/distance.py`. The fasteners page exists and leads its
+   limits section with the admission that PIE will not cross-reference, which is
+   the task that trade would name first. Closing this turns the weakest sentence
+   on that page into its strongest. Best ERP overlap on the list — P21 names
+   "Industrial & Fasteners" as a core vertical. An engine change in both
+   repositories plus a nomenclature pack.
 2. **A rebate / SPA cost layer** — a sourced adjustment between invoiced cost
    and effective cost, versioned like everything else, refusing to estimate
-   where no agreement is on record. Unlocks electrical and plumbing/PVF
-   together, the two densest P21 verticals. Largest build on this list, and the
-   one with the largest unlock.
+   where no agreement is on record. The electrical page currently tells its
+   reader in the second sentence that the margin half of this product is
+   unproven on their book; this is what retires that sentence, for electrical
+   and plumbing/PVF together — the two densest P21 verticals. Largest build on
+   this list and the largest unlock.
 3. **Bearing slots** — bore, OD, width, seal, clearance. Same shape of change as
-   (1), smaller audience.
+   (1), smaller audience, and the same relationship to its page: interchange is
+   what that trade does all day and the page opens its limits with not doing it.
+
+   Between (1) and (3) sits the question of whether `CORE_SLOTS` should stay one
+   flat metalworking vocabulary at all, or become per-trade the way `packs/`
+   already is for nomenclature. Adding two more trades' fields to one tuple is
+   the point at which that stops being a refactor and starts being the design.
 4. **The `quotes` read stage on any connector** — not a vertical unlock, but it
    is the denominator every Evidence claim currently lacks, on every page.
 5. **Stock and customer payments from Prophet 21** — closes two of the seven
@@ -1053,3 +1097,47 @@ against the three to five requested. The shortfall is deliberate; §8 gives the
 gate that produced it and §11 gives the route to widening it. Two shipped; the
 conditional one did not, which is the outcome this verdict described rather than
 a departure from it.
+
+---
+
+## 14. Why the gate moved, after two pages had shipped
+
+Recorded rather than edited into §8, because a decision record that quietly
+rewrites its own reasoning to match the outcome is worth nothing.
+
+**What the first two passes said.** Four conditions, the fourth being "no
+dependence on a capability we have not built, *for the vertical's headline
+pain*". That cut sixteen trades to two. Fasteners scored a clean 21/21 against
+the owner's own ICP and was deferred anyway, because cross-referencing is what a
+fastener distributor would name first if asked what hurts.
+
+**What was wrong with it.** `/erp/sage-100` ships in this repository for a
+system that reads **no purchase cost at all** — no floor, no margin, no drift,
+which means the headline claim of the entire site is false on that book. It gets
+a page: different `h1`, an honest lead, and `erp.test.ts` enforcing that it
+*cannot* claim a floor. The established answer to "we serve part of this" is a
+page with a different headline and the gap printed prominently. I applied a
+stricter rule to trades than the repo applies to ERPs and did not notice.
+
+**And it was already inconsistent.** The industrial & MRO page shipped carrying
+the SPA disclosure, with a test requiring it on every page in the family. So
+rebate-exposed readers were already being accepted with a disclosure, while
+electrical — the same exposure, more of it — was excluded for having it.
+
+**What replaced it.** Two hard gates, both binary (§8). Everything else is a
+disclosure, and each page's `notServed` list is where it goes. Three of the five
+new pages lead with their limit inside two sentences; the electrical page is
+mostly about what does not work, and says so before it says anything else.
+
+**What this does not change.** The excludes in §8 are unchanged and are now
+cleaner, because they rest on the two gates alone: five trades have no per-line
+discretion to act on, and two run on ERPs we cannot read. Those are not
+disclosures. A page cannot honestly disclose its way past "we cannot connect to
+your system" or "your prices are set by a contract you signed last year".
+
+**The risk this created, and the guard on it.** Seven pages differing only in a
+trade noun is a doorway-page pattern. `industries.test.ts` fails the build on
+pairwise sentence overlap above 25% and on a repeated title, description, lead
+or problem — with `notServed` deliberately outside the check, because two trades
+genuinely share a limitation and rewording the same truth per page is how a
+limits section turns into copy.

@@ -25,7 +25,7 @@ import { Tip } from "../../Tip";
 import { ChartTip, InlineLink, Unavailable, VarianceIndicator } from "../kit";
 import { DataGrid, numeric } from "../DataGrid";
 import { papi } from "../api";
-import { GroupFilter, useGroupFilter } from "../GroupFilter";
+import { useGroupScope } from "../groupScope";
 import type { PlatformSession } from "../types";
 import { vizPath } from "../route";
 import { Figure, Panel, stateOf } from "./Panel";
@@ -212,12 +212,12 @@ export function LostRevenueScreen({ session }: { session: PlatformSession }) {
   // Server-side: the per-cause totals are sums over the customers read, so the
   // group has to bound the read rather than trim the bars under an unchanged
   // headline.
-  const group = useGroupFilter(session.token, "CUSTOMER");
+  const group = useGroupScope("CUSTOMER");
   const [months, setMonths] = useState(3);
   const { data, loading, error, reload } = useInsight(
     "lostRevenue",
-    () => papi.lostRevenue(session.token, months, group.group),
-    [session.token, months, group.group]);
+    () => papi.lostRevenue(session.token, months, group),
+    [session.token, months, group]);
 
   const causes = (data?.causes as Record<string, unknown>[] | undefined) ?? [];
   const total = Number(data?.total_lost ?? 0);
@@ -239,12 +239,7 @@ export function LostRevenueScreen({ session }: { session: PlatformSession }) {
       onRetry={reload}
       wide
       actions={
-        <div className="seg-controls">
-          <GroupFilter label="Customer group" value={group.group}
-                       onChange={group.setGroup} options={group.options}
-                       show={group.show} minWidth={170} />
-          <MonthPicker value={months} onChange={setMonths} id="lost-months" />
-        </div>
+        <MonthPicker value={months} onChange={setMonths} id="lost-months" />
       }
     >
       <div className="story-hero">
@@ -315,11 +310,11 @@ export function JourneyScreen({
   // Server-side: each month's state counts are over the customers read, so the
   // group is "how is the PSU book ageing" rather than the whole book's chart
   // with fewer bars drawn.
-  const group = useGroupFilter(session.token, "CUSTOMER");
+  const group = useGroupScope("CUSTOMER");
   const { data, loading, error, reload } = useInsight(
     "journey",
-    () => papi.journey(session.token, months, group.group),
-    [session.token, months, group.group]);
+    () => papi.journey(session.token, months, group),
+    [session.token, months, group]);
   const [ref, room] = useMeasure<HTMLDivElement>();
   /** Which band is open, as (month label, state). One at a time — two open
    *  drill-downs is two tables nobody asked to compare. */
@@ -358,13 +353,8 @@ export function JourneyScreen({
       onRetry={reload}
       wide
       actions={
-        <div className="seg-controls">
-          <GroupFilter label="Customer group" value={group.group}
-                       onChange={group.setGroup} options={group.options}
-                       show={group.show} minWidth={170} />
-          <MonthPicker value={months} onChange={setMonths} id="journey-months"
-                       options={[6, 12, 24]} />
-        </div>
+        <MonthPicker value={months} onChange={setMonths} id="journey-months"
+                     options={[6, 12, 24]} />
       }
     >
       <div ref={ref}>

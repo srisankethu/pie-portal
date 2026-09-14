@@ -19,7 +19,6 @@ import MenuItem from "@mui/material/MenuItem";
 import Stack from "@mui/material/Stack";
 import TextField from "@mui/material/TextField";
 import { useMemo, useState } from "react";
-import type { ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { money } from "../../money";
 import { formatDate } from "../../when";
@@ -29,7 +28,7 @@ import { EntityName } from "../EntityName";
 import { InlineLink, MetricCard, StatusChip } from "../kit";
 import type { Tone } from "../kit";
 import { CompanyFilter, useCompanyFilter } from "../CompanyFilter";
-import { GroupFilter, useGroupFilter } from "../GroupFilter";
+import { useGroupScope } from "../groupScope";
 import { DataGrid, numeric } from "../DataGrid";
 import type { ColDef } from "../DataGrid";
 import type { EntityOrigin, PlatformSession, Sourced } from "../types";
@@ -208,20 +207,19 @@ type LedgerSide = {
   href: ((id: string) => string) | null;
 };
 
+/* No `actions` slot. It existed so the receivable side could hand this panel a
+ * customer-group select while the payable side handed it nothing — the panel
+ * serves both sides of the ledger and could not pick a kind for itself. The
+ * selection is the page's now and is drawn above the screen, so the slot had no
+ * filler left: a prop with one caller is a seam, a prop with none is scaffolding
+ * around a decision already made. */
 function SettlementPanel({
-  data, loading, error, reload, side, onNavigate, actions,
+  data, loading, error, reload, side, onNavigate,
 }: {
   data: Record<string, unknown> | null;
   loading: boolean; error: string | null; reload: () => void;
   side: LedgerSide;
   onNavigate: (r: string) => void;
-  /** A control the *screen* owns, rendered in this panel's header.
-   *
-   *  A slot rather than a group filter of its own, because this panel is both
-   *  sides of the ledger: the receivable side takes a customer group and the
-   *  payable side does not take one at all, and a hook in here would have to
-   *  know which side it was on to pick a kind. The screen already knows. */
-  actions?: ReactNode;
 }) {
   const parties = rows(data?.[side.parties]);
   const distribution = rows(data?.distribution);
@@ -243,7 +241,6 @@ function SettlementPanel({
       question={side.question}
       state={stateOf(loading, error, data?.empty_reason as string)}
       error={error} emptyReason={data?.empty_reason as string} onRetry={reload} wide
-      actions={actions}
     >
       <p className="viz-headline">
         Half of all {docs} are settled within{" "}
@@ -663,10 +660,16 @@ const STATUS_TONE: Record<string, "neutral" | "good" | "warn" | "bad"> = {
 function CreditPanel({ session }: { session: PlatformSession }) {
   // Server-side: the exposure totals below are computed over the accounts in
   // scope, so narrowing has to move them rather than hide rows beneath them.
-  const group = useGroupFilter(session.token, "CUSTOMER");
+  //
+  // The page's group, not this panel's. This panel and `PaymentsScreen` above
+  // it each held a customer-group select of their own, on one page — set the
+  // settlements to the aerospace book and the exposure table below stayed on
+  // the whole book, under a control that looked applied. `groupScope.tsx` has
+  // the rest of that story.
+  const group = useGroupScope("CUSTOMER");
   const { data, loading, error, reload } = useInsight(
-    "credit", () => papi.credit(session.token, group.group),
-    [session.token, group.group]);
+    "credit", () => papi.credit(session.token, group),
+    [session.token, group]);
   const [busy, setBusy] = useState<string | null>(null);
   const [failed, setFailed] = useState<string | null>(null);
   const [owner, setOwner] = useState<string>(ANYONE);
@@ -863,8 +866,17 @@ function CreditPanel({ session }: { session: PlatformSession }) {
           {maySet && people.length > 0 && (
             <TextField
               select size="small" value={owner}
-              aria-label="Show one person's book"
+              label="Whose book"
               onChange={(e) => setOwner(e.target.value)}
+              // `displayEmpty`, and the shrunk label with it. Without them MUI
+              // reads `""` as "nothing selected" and draws the field blank
+              // however many items carry that value — so this control showed an
+              // empty box beside "Credit and exposure" while the grid below it
+              // was correctly showing everyone's accounts. `GroupFilter`'s
+              // header records the same trap; this is the second control in the
+              // codebase to have fallen into it.
+              slotProps={{ select: { displayEmpty: true },
+                           inputLabel: { shrink: true } }}
               sx={{ minWidth: 160,
                     "& .MuiInputBase-input": { py: 0.5, fontSize: 12.5 } }}
             >
@@ -875,9 +887,6 @@ function CreditPanel({ session }: { session: PlatformSession }) {
               <MenuItem value={NOBODY}>Unassigned</MenuItem>
             </TextField>
           )}
-          <GroupFilter label="Customer group" value={group.group}
-                       onChange={group.setGroup} options={group.options}
-                       show={group.show} minWidth={170} />
           <CompanyFilter options={filter.options} value={filter.company}
                          onChange={filter.setCompany} show={filter.show} />
         </Stack>
@@ -928,11 +937,11 @@ export function PaymentsScreen({
   // pay and the bands are proportions, both computed over the settlements the
   // endpoint is handed. Trimming the rows afterwards would leave those two
   // figures describing the whole book under a chip naming a segment.
-  const group = useGroupFilter(session.token, "CUSTOMER");
+  const group = useGroupScope("CUSTOMER");
   const { data, loading, error, reload } = useInsight(
     "payments",
-    () => papi.payments(session.token, group.group),
-    [session.token, group.group]);
+    () => papi.payments(session.token, group),
+    [session.token, group]);
 
   // The projection is manager-and-above because half of it is what we owe
   // suppliers. Omitted rather than rendered and then 403'd — a panel that
@@ -959,13 +968,7 @@ export function PaymentsScreen({
       {mayReadEntityEconomics && <SelfFunding session={session} />}
       <SettlementPanel data={data} loading={loading} error={error}
                        reload={reload} side={RECEIVABLE_SIDE}
-                       onNavigate={onNavigate}
-                       actions={
-                         <GroupFilter label="Customer group" value={group.group}
-                                      onChange={group.setGroup}
-                                      options={group.options} show={group.show}
-                                      minWidth={170} />
-                       } />
+                       onNavigate={onNavigate} />
       {/* The same settlements one level up. It reads the response the panel
           above already fetched — a second request for a second grouping of
           rows the browser is holding would be a second answer waiting to
@@ -1582,17 +1585,19 @@ export function StockScreen({ session }: { session: PlatformSession }) {
 // a tab reading `Vendors` opening a screen titled `Suppliers`, and no such door
 // exists into `#/cash-cycle`.
 export function SupplyScreen({ session }: { session: PlatformSession }) {
-  // Two filters on this screen, and they work in opposite directions on
+  // Two narrowings on this screen, and they work in opposite directions on
   // purpose. The company filter below narrows the *list* and deliberately never
   // touches the shares, because those are the server's and computed over the
-  // whole book. The group filter is part of the request: the server recomputes
+  // whole book. The vendor group is part of the request: the server recomputes
   // concentration inside the group, so the shares that come back are the
-  // group's own and the denominator moved with them.
-  const groupFilter = useGroupFilter(session.token, "VENDOR");
+  // group's own and the denominator moved with them. That is also why the two
+  // controls are no longer side by side — the group is the page's, above the
+  // screen, and the company filter stays with the list it hides rows from.
+  const vendorGroup = useGroupScope("VENDOR");
   const { data, loading, error, reload } = useInsight(
     "supply",
-    () => papi.supply(session.token, groupFilter.group),
-    [session.token, groupFilter.group]);
+    () => papi.supply(session.token, vendorGroup),
+    [session.token, vendorGroup]);
 
   const suppliers = rows(data?.suppliers);
   const vendorSourcesDiffer = Boolean(data?.sources_differ);
@@ -1628,9 +1633,6 @@ export function SupplyScreen({ session }: { session: PlatformSession }) {
         <h4>Where the spend goes</h4>
         {/* The tail is deliberately not folded — see supply.py. Every name on a
             vendor list is somebody with a phone number. */}
-        <GroupFilter label="Vendor group" value={groupFilter.group}
-                     onChange={groupFilter.setGroup} options={groupFilter.options}
-                     show={groupFilter.show} />
         <CompanyFilter options={vendorCompany.options} value={vendorCompany.company}
                        onChange={vendorCompany.setCompany} show={vendorCompany.show} />
         <ul className="dist">

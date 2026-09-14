@@ -1,7 +1,7 @@
 # Vertical strategy — who buys this, and which pages we build
 
 **Phase 1 research. No code was written for this.** Date: 2026-09-14.
-Second pass, deeper than the first; §11 records what the deeper research changed.
+Second pass, deeper than the first; §12 records what the deeper research changed.
 
 This document answers one question: which trades inside B2B distribution should
 get a dedicated page on the marketing site, and which should be excluded on
@@ -17,7 +17,7 @@ Two constraints run through every section:
   and `erp.test.ts` fails a floor claim on a connector with no cost. A vertical
   page is a narrower, more checkable claim than the landing page, and it gets
   held to the same standard.
-- **Capability fit is assessed against code, not against the pitch.** §5 is
+- **Capability fit is assessed against code, not against the pitch.** §6 is
   grounded in named modules and named constants. Where the answer is "we do not
   do that", it says so.
 
@@ -65,10 +65,10 @@ sits under is wrong. They deserve a human's verification before spend follows.
    rebate programs, including SPAs"** (attributed in the relay to Sikich).
    Supports the same defer.
 4. **"41% of the top 50 largest distributors rely on Epicor Prophet 21."**
-   Supports the P21 ranking weight in §7. Vendor-adjacent source.
+   Supports the P21 ranking weight in §8. Vendor-adjacent source.
 5. **"Margins on hose assembly typically run 35–50% gross, versus 20–30% on pure
    distribution"** in fluid power. This is what turned the fluid power page from
-   "validate the pain" into a specific technical question (§7).
+   "validate the pain" into a specific technical question (§8).
 
 Sources surfaced (**not opened**): erpresearch.com, estesgrp.com, top10erp.org,
 epicor.com, epacube.com, mdm.com, zilliant.com, vendavo.com, pricefx.com,
@@ -199,7 +199,7 @@ Two consequences:
 
 1. **Competitive density should be scored per size band, not per vertical.** The
    vertical determines the *shape* of the pain; the revenue band determines
-   whether anyone else is selling into it. §4 scores density with this in mind.
+   whether anyone else is selling into it. §5 scores density with this in mind.
 2. **The vertical pages are addressed to independents under roughly $50M**, and
    their voice, worked examples and proof should assume that reader. A page
    written at a $200M distributor is a page written for a Zilliant evaluation we
@@ -211,7 +211,136 @@ low software budgets. Whitespace is not the same as demand.
 
 ---
 
-## 4. Fit scoring
+## 4. The stated ICP, scored against every vertical
+
+The owner stated the ideal customer as seven properties. This section scores
+every vertical against them, unmodified. It is the primary ranking in this
+document; §5 is the commercial overlay that sits beside it.
+
+| # | Criterion |
+|---|---|
+| **C1** | Thousands of SKUs, or a complex technical catalog |
+| **C2** | Multiple suppliers and changing purchase costs |
+| **C3** | Salespeople who prepare frequent quotations |
+| **C4** | Customer-specific prices, discounts and negotiated margins |
+| **C5** | Technical product specifications or compatibility requirements |
+| **C6** | An ERP containing product, purchase, sales and pricing history |
+| **C7** | A meaningful risk of margin leakage or incorrect quotations |
+
+Scale 0–3: 0 absent, 1 weak, 2 solid, 3 defining. Max 21.
+
+| Vertical | C1 | C2 | C3 | C4 | C5 | C6 | C7 | **/21** |
+|---|:--:|:--:|:--:|:--:|:--:|:--:|:--:|:--:|
+| **Fasteners** | 3 | 3 | 3 | 3 | 3 | 3 | 3 | **21** |
+| **Cutting tools / metalworking** | 3 | 3 | 3 | 3 | 3 | 2 | 3 | **20** |
+| **Bearings / power transmission** | 3 | 3 | 3 | 3 | 3 | 2 | 3 | **20** |
+| **Industrial / MRO** | 3 | 3 | 3 | 3 | 2 | 3 | 3 | **20** |
+| **Electrical** | 3 | 3 | 3 | 3 | 2 | 3 | 3 | **20** |
+| **Plumbing / PVF** | 3 | 3 | 3 | 3 | 2 | 3 | 3 | **20** |
+| **Automation & controls** | 3 | 2 | 3 | 3 | 3 | 2 | 3 | **19** |
+| **Fluid power / hose & fittings** | 2 | 2 | 3 | 2 | 3 | 2 | 3 | **17** |
+| **Building products / LBM** | 1 | 3 | 3 | 3 | 1 | 1 | 3 | **15** |
+| **Welding & gas** | 2 | 2 | 2 | 2 | 2 | 2 | 2 | **14** |
+| **Packaging** | 2 | 2 | 3 | 2 | 2 | 1 | 2 | **14** |
+| **Safety supply** | 2 | 2 | 1 | 2 | 2 | 2 | 1 | **12** |
+| **Lab & medical supply** | 3 | 2 | 1 | 1 | 2 | 2 | 1 | **12** |
+| **JanSan** | 2 | 2 | 1 | 2 | 0 | 2 | 1 | **10** |
+| **Food service** | 2 | 3 | 1 | 1 | 0 | 1 | 1 | **9** |
+| **Pharma** | 2 | 1 | 0 | 0 | 0 | 2 | 0 | **5** |
+
+Evidence carries over from §1 and §6 rather than being restated per cell: C1,
+C3, C4 and C5 are SEARCH for the top eight and INFERRED below them; C6 is CODE
+where one of our seven connectors is the typical system and SEARCH otherwise;
+C7 is SEARCH for industrial/MRO, cutting tools, electrical, plumbing/PVF and
+fasteners, INFERRED elsewhere.
+
+### What this ranking does and does not measure
+
+**Every one of the seven criteria is a property of the customer. None is a
+property of us.** So this is a clean measure of *who has the problem* and says
+nothing about *whom we can serve today*. That is not a criticism of the ICP —
+it is the right shape for an ICP — but the two rankings must be read together,
+because they disagree at the top.
+
+Six verticals sit within one point of each other at 20–21, which is the real
+finding: **the ICP does not discriminate among the top six.** What separates
+them is §6, and the separator is almost entirely **C5**.
+
+### C5 is where the ICP and the product diverge
+
+C5 asks whether the trade has technical specification or **compatibility**
+requirements. Compatibility is interchange, and interchange is precisely the
+capability that `CORE_SLOTS` and `equivalence/distance.py` only carry for
+metalworking (§6, fact 4).
+
+So C5 is the one criterion where a score of 3 is simultaneously the strongest
+buying signal and, outside cutting tools, the clearest statement of what we
+cannot yet do:
+
+| Vertical | C5 = 3 because | Can we serve that today? |
+|---|---|---|
+| Cutting tools | ISO 1832 designations, grade systems, cross-brand equivalence at ISO application position | **Yes** — the only one |
+| Fasteners | Thread, pitch, grade class, drive, head, finish; DIN/ISO/ASTM/SAE cross-reference | No — no slots |
+| Bearings / PT | Bore, OD, width, seal, clearance; manufacturer interchange | No — no slots |
+| Automation & controls | Configuration and BOM compatibility | No — we do not configure |
+| Fluid power | Dash size, thread standard (JIC/NPT/ORFS/BSPP), pressure rating | No — no slots |
+
+**The eighth criterion the list is missing** is therefore: *can PIE read this
+trade's compatibility requirement, or only its description text?* Add it and
+the top six separates immediately — cutting tools stays at the top, industrial
+and MRO holds because C5 was never its headline, and fasteners, bearings,
+automation and fluid power drop to where §6 already puts them.
+
+### Two criteria where we are stronger than the ICP implies
+
+**C2 — changing purchase costs — is a detector we already ship.**
+`signals/cost_pass_through.py` raises `COST_PASS_THROUGH`, and
+`CI_COST_NOT_PASSED` exists at the customer×item grain. A vertical scoring 3 on
+C2 is not just a good prospect; it is one where a named, built feature has
+something to find on day one. **CODE.**
+
+**C7 — margin leakage — is the whole of Control plus Retention**, and the
+mechanism is documented in this segment's own literature: a rep discounts, the
+discount becomes last price paid, the system defaults to it next time (§5).
+
+### One criterion where we are weaker than the ICP implies
+
+**C6 asks for "pricing history". We read realised prices, never quoted ones.**
+Our connectors read `contacts`, `vendors`, `items`, `invoices`, `bills`,
+`sales_orders`, `purchase_orders` and — on some systems — `customer_payments`.
+`READ_STAGES` includes `quotes` and **no connector declares it** (§6, fact 2).
+
+So on a fresh connection we can see every price that was *charged* and no price
+that was *quoted and lost*. Everything about won/lost behaviour, quote-to-order
+conversion and discount-at-the-point-of-quote is invisible until the customer
+starts quoting inside PIE. A C6 score of 3 above should be read as "full
+purchase and sales history, realised pricing only".
+
+### What the ICP scoring changes
+
+It does not move the page list — §8's gate is unchanged and the two firm pages
+stand. It changes two things:
+
+1. **It re-orders the roadmap in §11.** Fasteners scores a clean 21/21 against
+   the owner's own ICP and is blocked by one specific, boundable change: slots
+   in `CORE_SLOTS` and matching fields in `equivalence/distance.py`. That is a
+   stronger argument for doing the fastener slot work first than anything in
+   the previous draft, and it moves that item from "highest-value defer" to the
+   thing most worth scheduling.
+2. **It confirms Industrial & MRO as page one on a second, independent basis.**
+   It is the only vertical scoring 3 on C1, C2, C3, C4, C6 and C7 whose *sole*
+   2 is the one criterion we cannot serve outside metalworking anyway. Nothing
+   is lost by its C5 score, because the page was never going to claim
+   interchange.
+
+---
+
+## 5. Fit scoring — the commercial overlay
+
+§4 scores the owner's ICP, which is entirely about the customer. This scores
+what the ICP does not: how contested the vertical is, and whether the buyer can
+pay. Read the two together — this one is not a second opinion on the same
+question.
 
 Scores 1–5, higher is better *for us*. Competitive density is inverted (5 = open
 field) and is now scored **for an under-$50M distributor in that vertical**, per
@@ -236,9 +365,9 @@ field) and is now scored **for an under-$50M distributor in that vertical**, per
 | **Pharma** | 1 INFERRED | 1 INFERRED | 1 INFERRED | 5 INFERRED | 5 INFERRED | 3 INFERRED | **16** |
 | **Food service** | 1 INFERRED | 1 INFERRED | 1 INFERRED | 5 INFERRED | 3 INFERRED | 4 INFERRED | **15** |
 
-**The total is not the decision, and §5 is why.** Fasteners scores second and is
+**The total is not the decision, and §6 is why.** Fasteners scores second and is
 still deferred, because the thing that earns it a 5 on messiness is the thing we
-cannot do. A score measures the size of the prize; §5 measures whether we can
+cannot do. A score measures the size of the prize; §6 measures whether we can
 collect it.
 
 ### Notes on the columns
@@ -264,18 +393,18 @@ pitch that I found anywhere — in a competitor's marketing.
 **Part-number messiness.** Scored on *decodability by us*, not on difficulty.
 Cutting tools scores 5 CODE because pie-parser demonstrably decodes it —
 6,717 corpus rows, eleven families, 100% classified, zero quarantine. Fasteners
-and bearings score 5 on the trade's difficulty and are disqualified in §5, not
+and bearings score 5 on the trade's difficulty and are disqualified in §6, not
 here.
 
 **Ability to pay.** Mostly INFERRED. Anchors: P21 from ~$75/user/month (SEARCH);
 the nearest adjacent tool at $399/month (SEARCH); Zoho Books India free below
 ₹25 lakh revenue, Professional ₹1,499/month, Ultimate ₹9,999/month (SEARCH) —
-see §6 on why that matters. PTDA distributor members employ 39,211 people across
+see §7 on why that matters. PTDA distributor members employ 39,211 people across
 2,570 locations, which averages small (SEARCH), so bearings/PT is scored 3.
 
 ---
 
-## 5. Reality check — what we actually serve
+## 6. Reality check — what we actually serve
 
 The four capability areas are the landing page's own
 (`frontend/src/landing/Landing.tsx`, `#outcomes`): **Control** (every quote line
@@ -341,7 +470,7 @@ otherwise.
 
 | | Industrial / MRO | Cutting tools | Fluid power |
 |---|---|---|---|
-| **Control** | ✅ Full | ✅ Full | ⚠️ **Full on stocked components; unknown on fabricated assemblies** — see §7 |
+| **Control** | ✅ Full | ✅ Full | ⚠️ **Full on stocked components; unknown on fabricated assemblies** — see §8 |
 | **Speed** | ⚠️ **Partial.** Enquiry → lines → exact and nearest-neighbour match against their own catalogue: yes. Attribute-ranked alternatives: **no**. The page must not claim cross-reference. | ✅ Full, and the only vertical where it is | ⚠️ Partial, as Industrial/MRO |
 | **Retention** | ✅ Full — `CUSTOMER_DECLINE`, `CUSTOMER_DORMANCY`, `MARGIN_DETERIORATION`, `COST_PASS_THROUGH` plus six customer×item detectors, all over persisted rows | ✅ Full | ✅ Full |
 | **Evidence** | ✅ Full, with the standing rule that a month with no detection reads UNKNOWN, not zero | ✅ Full | ✅ Full |
@@ -397,7 +526,7 @@ exposure too — less than electrical, not zero.
 
 ---
 
-## 6. Channel — where these distributors actually congregate
+## 7. Channel — where these distributors actually congregate
 
 This section did not exist in the first pass and is more actionable than half of
 the scoring. All figures **SEARCH**.
@@ -447,7 +576,7 @@ reader, and what that segment needs is a pricing answer, not a trade page.
 
 ---
 
-## 7. Recommendation
+## 8. Recommendation
 
 ### The gate
 
@@ -573,7 +702,7 @@ document. Raised so the option is visible, not to be actioned here.
 
 ---
 
-## 8. Personas and pain — shortlist only
+## 9. Personas and pain — shortlist only
 
 ### Industrial / MRO distribution
 
@@ -640,12 +769,12 @@ spreadsheet of past quotes; re-keying the enquiry into the ERP by hand.
 - **The three pains:** the same three as Industrial/MRO, one register down —
   below-cost lines found at month end, inconsistent pricing between branches,
   quiet account decline. **I am not claiming a distinct fluid-power pain**, and
-  the assembly-costing question in §7 may turn out to be the real one.
+  the assembly-costing question in §8 may turn out to be the real one.
 - **What they do today:** INFERRED — ERP reports and rep judgement.
 
 ---
 
-## 9. Page outlines
+## 10. Page outlines
 
 ### Shared decisions
 
@@ -683,7 +812,7 @@ linking leaks.
 The `/erp/` pages already do this and `erp.ts` explains why at length: a
 distributor who has survived one ERP implementation does not believe a
 capability list, they believe a vendor who volunteers the gaps. Each vertical
-page's list is drawn from §5 plus that vertical's own — and the Industrial/MRO
+page's list is drawn from §6 plus that vertical's own — and the Industrial/MRO
 page must name SPA and rebate economics.
 
 **A collision Phase 2 will hit.** `worked-example.ts` deliberately made the
@@ -777,7 +906,7 @@ floor. The only page that gets to show both halves, and it should.
 
 ---
 
-### Page 3 — `/industries/fluid-power` *(do not build until §7's question is answered)*
+### Page 3 — `/industries/fluid-power` *(do not build until §8's question is answered)*
 
 - **H1:** A floor on every fluid power quote line, across every branch
 - **Meta title:** `PIE for fluid power, hose & fitting distributors · one floor across every branch`
@@ -800,16 +929,18 @@ If it comes back unfavourably, the page is not built.
 
 ---
 
-## 10. What would move a deferred vertical onto the page list
+## 11. What would move a deferred vertical onto the page list
 
 Ordered by expected value, so this reads as a roadmap rather than a list of
 apologies.
 
 1. **Fastener slots** — add thread, pitch, length, grade class, drive, head and
    finish to `CORE_SLOTS`, and the corresponding gate/dimension/soft fields in
-   `pie-parser/equivalence/distance.py`. Unlocks the second-highest-scoring
-   vertical, with the best ERP overlap on the list. An engine change in both
-   repositories plus a nomenclature pack.
+   `pie-parser/equivalence/distance.py`. **Fasteners is the only vertical
+   scoring a clean 21/21 against the owner's own ICP (§4), and this is the
+   single change standing between that score and a page.** Best ERP overlap on
+   the list too — P21 names "Industrial & Fasteners" as a core vertical. An
+   engine change in both repositories plus a nomenclature pack.
 2. **A rebate / SPA cost layer** — a sourced adjustment between invoiced cost
    and effective cost, versioned like everything else, refusing to estimate
    where no agreement is on record. Unlocks electrical and plumbing/PVF
@@ -824,7 +955,7 @@ apologies.
 
 ---
 
-## 11. What the second research pass changed
+## 12. What the second research pass changed
 
 Recorded because a document that quietly overwrites its own conclusions is not
 worth re-reading.
@@ -836,7 +967,7 @@ worth re-reading.
    §2 is new.
 2. **Competitive density was the wrong axis.** It is far more a function of
    revenue band than of vertical: nothing in Category A is addressed below $50M.
-   §3 is new and it re-scored the density column throughout §4.
+   §3 is new and it re-scored the density column throughout §5.
 3. **The SPA argument was directionally wrong.** The first pass said an inflated
    cost gives "a wrong number". It gives an inflated *floor* and therefore
    systematic **over-holding** — a control that objects wrongly to a third of
@@ -858,10 +989,16 @@ worth re-reading.
    brief asked for.
 7. **Fluid power moved from "recommended third" to "conditional third", and
    nothing was promoted to replace it.** Two firm pages is the honest count.
+8. **The owner's seven-point ICP was scored separately (§4), after the second
+   pass.** It does not move the page list, and it sharpens the roadmap: the ICP
+   does not discriminate among its top six verticals, the criterion that does
+   is C5 (compatibility), and C5 is exactly where `CORE_SLOTS` runs out. The
+   missing eighth criterion — *can PIE read this trade's compatibility
+   requirement, or only its description text?* — separates the six.
 
 ---
 
-## 12. Self-review
+## 13. Self-review
 
 **Capability search run:** yes — searched `docs/` for an existing market,
 vertical, segment, ICP or GTM document (none), and read the public-page
@@ -892,5 +1029,5 @@ surfaces and must not be edited to serve a vertical page.
 **Corpus / tests:** unchanged. Nothing was run because nothing was built.
 
 **Verdict:** APPROVED WITH NOTED TRADE-OFF — two firm pages and one conditional,
-against the three to five requested. The shortfall is deliberate; §7 gives the
-gate that produced it and §10 gives the route to widening it.
+against the three to five requested. The shortfall is deliberate; §8 gives the
+gate that produced it and §11 gives the route to widening it.

@@ -19,7 +19,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { CSS_VARS } from "../theme";
 import { isPlaceholder } from "./content";
 import { DEMO_BOOKING_URL } from "./cta";
-import { ERP_PAGES } from "./erp";
+import { ERP_PAGES, type ErpPageData } from "./erp";
 import { caseStudy, complianceRows, namedCustomers } from "./proof";
 import { ErpPage } from "./ErpPage";
 import { Landing } from "./Landing";
@@ -88,12 +88,21 @@ export function landingTokenCss(): string {
  *
  * `standalone` says the document ships without the module script. See
  * `ErpPage.tsx` for why that is the design and not a limitation.
+ *
+ * `erp` is the connector entry a sub-page is about, and `undefined` on the
+ * landing page. It is here so `scripts/prerender.mjs` can write llms.txt — a
+ * flat list of the systems PIE connects to, with a link to each — from this
+ * registry rather than from a second list of the same seven names. The build
+ * already generates robots.txt and sitemap.xml from `PAGES` for exactly that
+ * reason: a hand-kept list is the one that goes stale when a connector is
+ * added, silently, in the file nobody opens.
  */
 export interface PrerenderPage {
   slug: string;
   title: string | null;
   description: string | null;
   standalone: boolean;
+  erp?: ErpPageData;
   render: () => string;
 }
 
@@ -110,6 +119,7 @@ export const PAGES: PrerenderPage[] = [
     title: page.title,
     description: page.description,
     standalone: true,
+    erp: page,
     render: () => renderToStaticMarkup(<ErpPage page={page} />),
   })),
 ];

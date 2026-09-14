@@ -985,3 +985,18 @@
     display: inline-flex; align-items: center; min-height: 44px;
   }
 }
+
+/* The FAQ, above the closing band.
+   
+   Two columns rather than `.lp-grid3`'s three: these panels are paragraphs,
+   and a paragraph in a 290px column is a column of six-word lines. The
+   `minmax` floor is therefore higher than the grid rule's, and the whole thing
+   collapses to one column on a phone by the same auto-fit mechanism every
+   other grid on this page uses — no second breakpoint to keep in step. */
+.pie-landing .lp-faq {
+  display: grid; gap: 22px;
+  grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr));
+}
+/* A question is a question, not a headline. `.lp-panel h3` is 20px, which at
+   this length reads as a section title and competes with the h2 above it. */
+.pie-landing .lp-faq h3 { font-size: 17px; line-height: 1.35; }

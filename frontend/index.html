@@ -13,8 +13,9 @@
          mirrors the landing page's audited copy (src/landing/Landing.tsx keeps
          the honesty rule; every claim below is a checkable product property).
          Origin-dependent head tags — canonical, og:url, JSON-LD — are injected
-         at build time by scripts/prerender.mjs from one SITE_ORIGIN setting,
-         so a future custom domain is a one-line change, not an edit here.
+         at build time by scripts/prerender.mjs from SITE_URL in
+         src/landing/site.ts, which is the one place this site's address is
+         written down. Changing domain is an edit there, not here.
 
          These are the *landing page's* strings, and only its. Each ERP page
          carries its own title and description from its entry in

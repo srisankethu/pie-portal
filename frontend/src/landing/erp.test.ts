@@ -28,6 +28,9 @@ import sageSource from "../../../backend/app/ingestion/erp/sage.py?raw";
 import zohoSource from "../../../backend/app/ingestion/zoho_client.py?raw";
 
 import { ERP_PAGES, erpPage } from "./erp";
+import { INDUSTRY_PAGES } from "./industries";
+import { ErpPage } from "./ErpPage";
+import { renderToStaticMarkup } from "react-dom/server";
 
 const SOURCE: Record<string, string> = {
   prophet21: prophet21Source,
@@ -275,6 +278,76 @@ describe("the set of pages", () => {
       expect(page.title.length).toBeLessThan(60);
       expect(page.description.length).toBeGreaterThan(80);
       expect(page.description.length).toBeLessThan(155);
+    }
+  });
+});
+
+describe("the back-links to the trade pages", () => {
+  // The other half of the routing between the two families. A trade page links
+  // all seven systems; an ERP page links the trades that system's distributors
+  // most often run. Linking one way only would make the second family reachable
+  // from the front page alone, which is the orphan every derived list on this
+  // site exists to prevent.
+  it("names only trades that have a page", () => {
+    // The link that rots: a renamed trade slug leaves valid markup pointing at
+    // a 404, and nothing else on the site would notice. `industries.test.ts`
+    // runs the mirror of this check in the other direction.
+    const known = new Set(INDUSTRY_PAGES.map((trade) => trade.slug));
+    for (const page of ERP_PAGES) {
+      for (const slug of page.industrySlugs) {
+        expect(known.has(slug), `/erp/${page.slug} links /industries/${slug}, which does not exist`)
+          .toBe(true);
+      }
+    }
+  });
+
+  it("names each trade at most once per page", () => {
+    for (const page of ERP_PAGES) {
+      expect(new Set(page.industrySlugs).size, `/erp/${page.slug} repeats a trade`)
+        .toBe(page.industrySlugs.length);
+    }
+  });
+
+  it("renders a link for every trade it names", () => {
+    for (const page of ERP_PAGES) {
+      const html = renderToStaticMarkup(ErpPage({ page }));
+      for (const slug of page.industrySlugs) {
+        expect(html, `/erp/${page.slug} declares /industries/${slug} and does not link it`)
+          .toContain(`href="/industries/${slug}"`);
+      }
+    }
+  });
+
+  it("says so plainly where it names no trade, rather than guessing one", () => {
+    // Two of the seven are empty, and that is the evidence being honest rather
+    // than a gap somebody forgot. A page that invented a trade here would be
+    // fabricating exactly the research this field carries — the same reason
+    // `evidence` ships as a visible placeholder. This test exists so that
+    // filling one in requires a reason, and so that an empty list still
+    // produces a page that reads as finished.
+    const silent = ERP_PAGES.filter((page) => page.industrySlugs.length === 0);
+    expect(silent.length, "no ERP page names zero trades; check this is still true")
+      .toBeGreaterThan(0);
+    for (const page of silent) {
+      const html = renderToStaticMarkup(ErpPage({ page }));
+      expect(html, `/erp/${page.slug} names no trade and does not say so`)
+        .toContain("names no trade as typically running");
+      // And it still routes: the footer row carries all seven regardless.
+      for (const trade of INDUSTRY_PAGES) {
+        expect(html, `/erp/${page.slug} leaves /industries/${trade.slug} unreachable`)
+          .toContain(`href="/industries/${trade.slug}"`);
+      }
+    }
+  });
+
+  it("reaches every trade page from at least one ERP page", () => {
+    // The orphan check, from this side. Every trade has to be findable by a
+    // reader who arrived on an ERP page, which is the commonest entry point the
+    // site has.
+    const named = new Set(ERP_PAGES.flatMap((page) => page.industrySlugs));
+    for (const trade of INDUSTRY_PAGES) {
+      expect(named.has(trade.slug),
+        `no /erp/ page names ${trade.slug} as a trade it serves`).toBe(true);
     }
   });
 });

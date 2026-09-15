@@ -71,6 +71,28 @@ export interface ErpPageData {
   gaps: string[];
   /** The three things PIE does with what it read here. */
   fit: { title: string; body: string }[];
+  /** The trades whose distributors most often run this system, most likely
+   *  first, and **empty where this site's own research names none**.
+   *
+   *  The back-link half of the routing between the two families. An `/erp/` page
+   *  answers "will this work with the system I run" and a trade page answers
+   *  "will this work for the trade I'm in", and a reader arriving on one is
+   *  usually about to ask the other — so the link has to go both ways or the
+   *  second family is reachable from the front page alone.
+   *
+   *  Every slug here is sourced from `docs/vertical-strategy.md` §1's "Typical
+   *  ERP" column, which is tagged SEARCH in that document: relayed by a search
+   *  tool from pages nobody opened. So this is *which trades a page may point
+   *  at*, not a claim about market share, and the sentence it renders under says
+   *  as much. `erp.test.ts` holds every slug against `INDUSTRY_PAGES`.
+   *
+   *  Two of the seven are empty, and that is the honest answer rather than a
+   *  gap to fill: §1 names neither Sage X3 nor Sage 100 as typical for any of
+   *  the seven trades that have a page. Guessing one would be inventing the
+   *  evidence this field exists to carry, and the page prints a sentence saying
+   *  so instead — which is the same trade `evidence` makes two fields down. */
+  industrySlugs: string[];
+
   /** PLACEHOLDER — real language from real distributors running this system:
    *  what they say about margin on their own quote desk, in their words, with
    *  permission to print it. Nothing in this repository knows what a Prophet 21
@@ -157,6 +179,15 @@ export const ERP_PAGES: ErpPageData[] = [
           + "needed, nothing to configure.",
       },
     ],
+    industrySlugs: [
+      "industrial-mro",
+      "fasteners",
+      "electrical",
+      "plumbing-pvf",
+      "fluid-power",
+      "bearings-power-transmission",
+      "cutting-tools",
+    ],
     evidence: "{{PROPHET21_DISTRIBUTOR_EVIDENCE}}",
   },
   {
@@ -240,6 +271,7 @@ export const ERP_PAGES: ErpPageData[] = [
           + "have used it rather than estimated around.",
       },
     ],
+    industrySlugs: ["industrial-mro"],
     evidence: "{{NETSUITE_DISTRIBUTOR_EVIDENCE}}",
   },
   {
@@ -318,6 +350,7 @@ export const ERP_PAGES: ErpPageData[] = [
           + "attention list from the first sync.",
       },
     ],
+    industrySlugs: ["industrial-mro", "cutting-tools", "bearings-power-transmission"],
     evidence: "{{ACUMATICA_DISTRIBUTOR_EVIDENCE}}",
   },
   {
@@ -419,6 +452,7 @@ export const ERP_PAGES: ErpPageData[] = [
           + "stated on the screen that would have used it rather than approximated.",
       },
     ],
+    industrySlugs: ["industrial-mro", "cutting-tools", "bearings-power-transmission"],
     evidence: "{{DYNAMICS365_DISTRIBUTOR_EVIDENCE}}",
   },
   {
@@ -502,6 +536,7 @@ export const ERP_PAGES: ErpPageData[] = [
           + "needed, nothing to configure.",
       },
     ],
+    industrySlugs: [],
     evidence: "{{SAGEX3_DISTRIBUTOR_EVIDENCE}}",
   },
   {
@@ -595,6 +630,7 @@ export const ERP_PAGES: ErpPageData[] = [
           + "record item lines — that is the conversation worth having before you connect.",
       },
     ],
+    industrySlugs: [],
     evidence: "{{SAGE100_DISTRIBUTOR_EVIDENCE}}",
   },
   {
@@ -726,6 +762,7 @@ export const ERP_PAGES: ErpPageData[] = [
           + "and phrases them; it never produces one.",
       },
     ],
+    industrySlugs: ["cutting-tools"],
     evidence: "{{ZOHO_DISTRIBUTOR_EVIDENCE}}",
   },
 ];

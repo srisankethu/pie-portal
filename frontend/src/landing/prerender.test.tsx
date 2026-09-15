@@ -472,7 +472,12 @@ describe("the public pages name no single trade", () => {
    *  radius. */
   function landingProse(): string {
     const landing = documents.find((d) => d.page.slug === "")!.html;
-    return landing.replace(/<div class="lp-sched">[\s\S]*?<\/div><\/div><\/div>/g, "");
+    // Attributes tolerated in the opening tag: the trades strip carries an
+    // `id` now, because the trade pages' breadcrumbs point back at it, and a
+    // regex that only matched a bare `class` silently stopped stripping the one
+    // strip this function exists to strip — which fails as "the front page
+    // names a trade: fasteners", a long way from the edit that caused it.
+    return landing.replace(/<div class="lp-sched"[^>]*>[\s\S]*?<\/div><\/div><\/div>/g, "");
   }
 
   it("keeps the landing page's example free of a trade", () => {

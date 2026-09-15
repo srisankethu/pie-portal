@@ -23,7 +23,7 @@ import { ERP_PAGES, type ErpPageData } from "./erp";
 import { FAQ, type FaqItem } from "./faq";
 import { caseStudy, complianceRows, namedCustomers } from "./proof";
 import { ErpPage } from "./ErpPage";
-import { INDUSTRY_PAGES, type IndustryPageData } from "./industries";
+import { INDUSTRY_PAGES, verticalTrail, type Crumb, type IndustryPageData } from "./industries";
 import { IndustryPage } from "./IndustryPage";
 import { ROLE_PAGES } from "./roles";
 import { RolePage } from "./RolePage";
@@ -119,6 +119,16 @@ export interface PrerenderPage {
    *  site's own summary does not mention, is the same orphan the footers exist
    *  to prevent, one layer further out. */
   industry?: IndustryPageData;
+  /** The trail this page renders, for the `BreadcrumbList` node the build emits.
+   *
+   *  Present only where the component actually draws one, which is the same rule
+   *  `faq` follows and for the same reason: schema may restate what is on the
+   *  page and nothing else. `scripts/prerender.mjs` deliberately emitted no
+   *  BreadcrumbList for as long as no page rendered a trail, and that was the
+   *  correct call — the node is earned by the markup, not declared beside it.
+   *  One array, two consumers, so a trail that changes shape cannot leave a
+   *  schema node describing the old one. */
+  breadcrumb?: Crumb[];
   /** The questions this page renders, for the `FAQPage` node the build emits.
    *
    *  Present only where the component actually shows them, which is the whole
@@ -160,6 +170,7 @@ export const PAGES: PrerenderPage[] = [
     standalone: true,
     faq: page.faq,
     industry: page,
+    breadcrumb: verticalTrail(page),
     render: () => renderToStaticMarkup(<IndustryPage page={page} />),
   })),
   ...ROLE_PAGES.map((page) => ({

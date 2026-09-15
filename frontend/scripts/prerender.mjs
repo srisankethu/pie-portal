@@ -294,6 +294,27 @@ function documentFor(page) {
             },
           ]
         : []),
+      // BreadcrumbList, on the pages that draw a trail. It joined the graph the
+      // way FAQPage did — the page moved first. The comment above listed it as
+      // deliberately absent because "a trail no page renders", which was true
+      // of all eighteen documents until `/industries/*` grew one; the rule did
+      // not change, the number of pages satisfying it did. Built from
+      // `verticalTrail`, the same array the component maps over, so the node
+      // cannot describe a trail the reader is not shown.
+      ...(page.breadcrumb?.length
+        ? [
+            {
+              "@type": "BreadcrumbList",
+              "@id": `${url}#breadcrumb`,
+              itemListElement: page.breadcrumb.map((crumb, i) => ({
+                "@type": "ListItem",
+                position: i + 1,
+                name: crumb.name,
+                item: `${SITE_ORIGIN}${crumb.path}`,
+              })),
+            },
+          ]
+        : []),
       ...(page.faq?.length
         ? [
             {

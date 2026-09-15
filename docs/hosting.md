@@ -438,11 +438,56 @@ ALERT_WEBHOOK=https://ntfy.sh/your-private-topic-name
 ALERT_WEBHOOK_HEADERS={"Authorization":"Bearer …"}
 ```
 
-Email is deliberately not supported directly: there is no SMTP anywhere in this
-application, and adding a dependency, a credential, a sender domain and a
-deliverability problem to reach one person who has a phone is the wrong trade.
-Point the webhook at a relay (Zapier, Make, or a Resend/Mailgun API call behind
-three lines of your own) if email is what you want.
+There is still no SMTP anywhere in this application, and there will not be. Mail
+goes out through Resend's API instead — see the next section — which is a
+different trade from running a mail server: a key and a verified domain, no
+port 25.
+
+### The enquiry email
+
+The same news as the webhook, by a route you can answer. Every message sets
+`Reply-To` to the prospect, so replying reaches the buyer rather than the
+sending domain — which is the half a webhook cannot do.
+
+The two channels are **independent**. Set either, both or neither; each
+announces every enquiry exactly once, and turning this on does not switch the
+webhook off.
+
+```bash
+RESEND_API_KEY=re_…                      # server-side secret — never commit it
+RESEND_FROM=PIE <hello@syncpie.com>      # must be a domain verified with Resend
+RESEND_TO=sales@syncpie.com              # comma-separated for several people
+# RESEND_TIMEOUT_SECONDS=10
+```
+
+**All three are required before anything is sent.** With any of them empty the
+app uses an offline sender that records and sends nothing, and says so in the
+log. That is deliberate: a deployment halfway through configuring mail must not
+look finished.
+
+**The key is read by the backend only.** It never appears in a response and
+cannot reach the browser bundle — Vite exposes only `VITE_`-prefixed variables
+to client code. `app/mailer.py` logs exception *classes* rather than messages,
+because an SDK error string can quote the request it failed on and that request
+carries the credential.
+
+**A demo request is never lost to a mail problem.** The row is written to the
+database and committed *before* the provider is contacted, so the visitor's
+"thanks, we will come back to you" is earned by the database alone. If the send
+fails, the enquiry is on the queue with `notification_status = FAILED`, and the
+same `*/15` cron entry above retries it — `python -m app.contact alert` sweeps
+both channels. The visitor is told the same thing either way; the difference is
+for the operator, not for them.
+
+**Before the first run,** a deployment that already has a backlog marks it as
+history on both channels at once — this is the same flag as above, and it now
+covers mail:
+
+```bash
+docker compose --env-file .env.production exec -T api python -m app.contact alert --mark-only
+```
+
+Those rows are recorded `SKIPPED` rather than `SENT`, because nothing was sent.
 
 **What a failure costs.** Nothing but the announcement. `notified_at` is stamped
 only after a delivery succeeds, so a webhook that was down leaves the rows

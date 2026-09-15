@@ -509,10 +509,17 @@ TSDB: one time series per quote id.
 
 ### There is no alerting here, and that is a decision
 
-No SMTP, no webhook, no alert rules as code. There is no notification
-destination anywhere in this repository, and a threshold with no destination is
-a threshold nobody acts on — it would be configuration that looks like a
-control. What is worth watching is written down instead, so that whoever wires
+No alert rules as code, and nothing here routes a metric anywhere. A threshold
+with no destination is a threshold nobody acts on — it would be configuration
+that looks like a control.
+
+The claim this paragraph used to make — that there is no notification
+destination anywhere in the repository — was too broad even when it was written,
+and is now wrong twice over: `app/alerts.py` posts to a webhook and
+`app/mailer.py` sends mail. Both are about *an enquiry arriving*, not about this
+subsystem: they are told by the code that a demo request landed, and neither
+reads a metric or a threshold. Nothing in `observability/` has a destination,
+which is the part that is actually a decision. What is worth watching is written down instead, so that whoever wires
 up an Alertmanager has the conditions rather than having to invent them:
 
 | SLI | Expression | Fires when | Why it matters |

@@ -37,3 +37,15 @@ pytest>=8.0
 # what a hand-rolled sixty lines gets wrong. 2.4 is the floor that requires
 # `algorithms=` explicitly (CVE-2022-29217); this asks for more than that.
 PyJWT>=2.7
+
+# Transactional email — telling a person a demo request arrived (app/mailer.py).
+# The official SDK, which is a deliberate exception to this repository's habit
+# of talking to providers over plain httpx (Anthropic, OpenAI, Gemini,
+# OpenRouter, Zoho and every ERP connector are hand-rolled). It is confined
+# behind `mailer.EmailSender`, a one-method Protocol with an offline mock, so
+# the exception stays one file wide.
+#
+# NOTE it brings `requests` with it — the second HTTP client in this process,
+# after httpx. That is the real cost of the SDK over a single POST, and it is
+# written down here rather than discovered in a dependency tree later.
+resend>=2.45

@@ -7,12 +7,20 @@ thing standing between a buyer and silence was somebody remembering to run a
 command. The operator console made that queue visible; it did not make it
 noticed, and those are different problems.
 
-**A webhook, not a mail server.** There is no SMTP anywhere in this application
-and this is not the change that should add one: mail means a dependency, a
-credential, a sender domain and a deliverability problem, in exchange for
-reaching one person who already has a phone. A URL reaches Slack, Telegram,
-ntfy, a WhatsApp provider or a two-line relay, and which one is a deployment's
-choice rather than this module's.
+**A webhook, not a mail server.** There is still no SMTP anywhere in this
+application. A URL reaches Slack, Telegram, ntfy, a WhatsApp provider or a
+two-line relay, and which one is a deployment's choice rather than this
+module's.
+
+This paragraph used to end by arguing that mail should not be added at all —
+a dependency, a credential, a sender domain and a deliverability problem, in
+exchange for reaching one person who already has a phone. That argument was
+answered rather than overturned: ``app/mailer.py`` sends through a provider's
+API, so the cost is a key and a verified domain and not a mail server, and it
+buys the one thing a webhook cannot do, which is be *replied to*. The two are
+independent channels with a key each — this module still owns ``notified_at``
+and knows nothing about the other — so a deployment may run either, both or
+neither, and enabling one does not quietly disable the other.
 
 **The body is Slack-shaped**, `{"text": …}`, because that shape is accepted
 unchanged by Slack, Mattermost and most relays, and because a body somebody has

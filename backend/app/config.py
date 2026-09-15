@@ -467,11 +467,13 @@ class Settings:
     # string here is a deployment that has not chosen a destination, and
     # inventing one for it would be worse than saying so.
     #
-    # A URL rather than a mail server, because there is no SMTP in this
-    # application and adding one to reach a single person who has a phone is
-    # the wrong trade — `app/alerts.py` argues it. Slack, Mattermost, ntfy and
-    # most relays take the `{"text": …}` body it sends unchanged;
-    # `docs/hosting.md` has the two lines for Telegram.
+    # A URL rather than a mail server: there is still no SMTP in this
+    # application, and the mail that does go out goes through a provider's API
+    # instead — see the RESEND_* block below, and `app/mailer.py`. The two are
+    # independent channels with a key each, so either, both or neither may be
+    # set. Slack, Mattermost, ntfy and most relays take the `{"text": …}` body
+    # this one sends unchanged; `docs/hosting.md` has the two lines for
+    # Telegram.
     ALERT_WEBHOOK: str = os.environ.get("ALERT_WEBHOOK", "")
     #: A JSON object of extra headers, for a destination that authenticates
     #: with one. Holds secrets; never logged.
@@ -480,6 +482,40 @@ class Settings:
     #: database sweep; a webhook that hangs must not hold the job open.
     ALERT_TIMEOUT_SECONDS: float = float(
         os.environ.get("ALERT_TIMEOUT_SECONDS", "10"))
+
+    # ── Email (app/mailer.py) ───────────────────────────────────────────────
+    # Transactional mail through Resend, which is what tells a person a demo
+    # request arrived without them having to open anything.
+    #
+    # This sits beside the webhook above rather than replacing it: they answer
+    # the same question by different routes and a deployment may set either,
+    # both or neither. The webhook reaches a phone within seconds; mail is
+    # answerable — `Reply-To` is the prospect, so replying reaches the buyer
+    # rather than the sending domain — and that is the half a webhook cannot do.
+    #
+    # EMPTY MEANS MOCK. `mailer.select_sender()` returns a sender that records
+    # and sends nothing unless all three of the values below are set, which is
+    # why the test suite cannot reach a provider by accident and why a fresh
+    # clone runs with no mail configuration at all.
+    #
+    # A SERVER-SIDE SECRET. It is read here and nowhere else, never returned by
+    # an endpoint, and cannot reach the browser bundle: Vite exposes only
+    # `VITE_`-prefixed variables to client code. `observability/logs.redact`
+    # lists `api_key` among the keys it blanks, and `mailer.py` logs exception
+    # classes rather than messages so a provider error cannot carry it out.
+    RESEND_API_KEY: str = os.environ.get("RESEND_API_KEY", "")
+    #: The From address. Must be on a domain verified with Resend, or every
+    #: send fails at the provider. No default: inventing one would produce a
+    #: deployment that looks configured and bounces everything.
+    RESEND_FROM: str = os.environ.get("RESEND_FROM", "")
+    #: Who is told. Comma-separated, so a second address needs no second
+    #: setting.
+    RESEND_TO: str = os.environ.get("RESEND_TO", "")
+    #: Short, for the reason ALERT_TIMEOUT_SECONDS is short and then some: this
+    #: one runs *inside* an HTTP request that a stranger is waiting on. A
+    #: provider having a slow day must not become a form that appears to hang.
+    RESEND_TIMEOUT_SECONDS: float = float(
+        os.environ.get("RESEND_TIMEOUT_SECONDS", "10"))
 
     # ── The public resolution API (app/routers/resolve.py) ───────────────────
     # The default allowance a newly minted API key carries, per minute, per

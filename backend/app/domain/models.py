@@ -618,9 +618,13 @@ class ContactRequest(Base):
     is what somebody asked for and when.
 
     It grants nothing, exactly like the plan-request row above it. Writing here
-    creates no account, licenses no plan and sends no mail — it records an ask
-    that ``python -m app.contact`` (and ``python -m app.entitlements requests``,
+    creates no account and licenses no plan — it records an ask that
+    ``python -m app.contact`` (and ``python -m app.entitlements requests``,
     which lists all three queues together) puts in front of an operator.
+
+    It does now *announce* itself, which is a different thing from granting
+    something: ``app/alerts.py`` by webhook and ``app/mailer.py`` by email, each
+    once, tracked by ``notified_at`` and ``notification_status`` below.
     """
 
     __tablename__ = "contact_requests"
@@ -661,6 +665,33 @@ class ContactRequest(Base):
     #: `contact list` has always shown it.
     notified_at: Mapped[Optional[datetime]] = mapped_column(
         DateTime(timezone=True), index=True)
+
+    #: How the last attempt to *email* this went. NULL (never attempted), SENT,
+    #: or FAILED.
+    #:
+    #: The email channel's once-only key, and deliberately not ``notified_at``
+    #: above — that one is the webhook's. Two channels, two keys: sharing one
+    #: would mean a deployment that turned mail on quietly stopped getting its
+    #: Slack message, because the row would already be stamped by the time the
+    #: sweep composed one. They are independent, and each announces an enquiry
+    #: exactly once.
+    #:
+    #: A message goes out for any row that is not SENT, which covers both
+    #: "never attempted" and "tried and failed" — the two states a retry should
+    #: pick up. ``app/contact.unemailed`` is that query.
+    notification_status: Mapped[Optional[str]] = mapped_column(
+        String(16), nullable=True)
+    #: The provider's own id for the message. The only handle that ties this row
+    #: to a delivery in the provider's dashboard — without it, "we sent it" is
+    #: an assertion nobody can check.
+    notification_message_id: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True)
+    #: Why the last attempt failed: an exception class name or a short reason.
+    #: Never a provider message and never a key — an SDK error string can quote
+    #: the request it failed on, and that request carries the credential.
+    #: ``app/mailer.py`` is where that rule is enforced.
+    notification_error: Mapped[Optional[str]] = mapped_column(
+        String(255), nullable=True)
 
     #: NEW until somebody replies. Then HANDLED, with who and when. There is no
     #: third state and no way back: a second enquiry is a second row.

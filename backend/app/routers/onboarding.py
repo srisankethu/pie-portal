@@ -242,13 +242,29 @@ def contact_us(body: ContactRequestBody, request: Request,
             "Too many enquiries from here in the last hour. Try again later, "
             "or write to us directly.")
     try:
-        contact.capture(
+        row = contact.capture(
             session, company=body.company, name=body.name, email=body.email,
             phone=body.phone, plan=body.plan, erp=body.erp,
             message=body.message)
     except contact.ContactRefused as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e)) from e
+    # The enquiry is durable from here. Everything below is about telling
+    # somebody, and nothing below may put this row at risk.
     session.commit()
+
+    # Announce it now rather than at the next sweep. Deliberately after the
+    # commit and deliberately not in a `try` of its own: `notify_one` returns
+    # rather than raising, for exactly this caller, and a mail provider having a
+    # bad afternoon is not a reason to tell a stranger their enquiry failed.
+    #
+    # A send that does not happen is not lost — the row stays unstamped and
+    # `python -m app.contact alert` picks it up on its next run. What the
+    # visitor is told does not depend on it, and must not: the two failures are
+    # distinguished for the *operator* (`notification_status`, and the log),
+    # never for the person filling in the form, who has nothing to do with the
+    # difference and should not be handed a detail about our infrastructure.
+    contact.notify_one(session, row)
+
     return {"received": True,
             "note": "Thanks — we will come back to you at that address."}
 

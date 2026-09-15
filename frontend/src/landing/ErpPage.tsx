@@ -1,7 +1,7 @@
 import { filled } from "./content";
 import { demoCta } from "./cta";
 import { DEMO_LENGTH, FooterBlurb, SubPageNav, TrustBand } from "./shared";
-import { INDUSTRY_PAGES } from "./industries";
+import { INDUSTRY_PAGES, verticalLabel } from "./industries";
 import { ERP_PAGES, type ErpPageData } from "./erp";
 import "./landing.css";
 
@@ -62,6 +62,15 @@ export function ErpPage({ page }: { page: ErpPageData }) {
   const evidence = filled(page.evidence);
   const heroDemo = demoCta({ href: "/#talk", label: "Book a demo" });
   const closingDemo = demoCta({ href: "/#talk", label: "Book a demo" });
+  /** The trades this system's distributors most often run — the other half of
+   *  the routing the trade pages do in their own ERP section.
+   *
+   *  Resolved from `page.industrySlugs` against `INDUSTRY_PAGES` rather than
+   *  written out, so a renamed trade slug cannot leave valid markup pointing at
+   *  a 404. Empty on two of the seven, deliberately: see `industrySlugs`. */
+  const trades = page.industrySlugs
+    .map((slug) => INDUSTRY_PAGES.find((trade) => trade.slug === slug))
+    .filter((trade): trade is (typeof INDUSTRY_PAGES)[number] => trade !== undefined);
 
   return (
     <div className="pie-landing">
@@ -243,6 +252,65 @@ export function ErpPage({ page }: { page: ErpPageData }) {
 
         <TrustBand system={page.short} />
 
+        {/* Which trades run this system, and a route to each of their pages.
+            The back-link half of the routing the trade pages already do — an
+            `/erp/` page answers "will this work with the system I run" and a
+            trade page answers "will this work for the trade I'm in", and a
+            reader on one is usually about to ask the other.
+
+            It says which trades, and nothing about what PIE does for them: that
+            is each trade page's job, and a summary of seven of them on seven ERP
+            pages is forty-nine places for one claim to go stale. Two systems
+            name no trade at all, and the page says that rather than guessing —
+            see `industrySlugs` in `erp.ts`. */}
+        <div className="lp-dim"><b>Which trades run {page.short}</b></div>
+        <section id="trades">
+          <div className="lp-wrap">
+            <div className="lp-sec-head">
+              <h2>The trades this book usually belongs to</h2>
+              <p>
+                {trades.length > 0 ? (
+                  <>
+                    Each page below is about the trade rather than the system:
+                    what goes wrong on that book, what it costs, and what PIE
+                    does and does not do about it. This is a route to them, not a
+                    summary — and it is drawn from desk research into which
+                    systems each trade typically runs, so read it as where to
+                    look first rather than as a claim about market share.
+                  </>
+                ) : (
+                  <>
+                    This site&rsquo;s own research names no trade as typically
+                    running {page.short}, so this page will not guess at one —
+                    inventing the answer is the one thing that would make the
+                    rest of the page worth less. PIE reads a {page.short} book
+                    the same way it reads any of the seven. All seven trade pages
+                    are linked at the foot of this page, and each states what PIE
+                    does and does not do on that book.
+                  </>
+                )}
+              </p>
+            </div>
+            {trades.length > 0 && (
+              <div className="lp-sched">
+                <div className="lp-sched-row">
+                  <span className="lp-sched-label">Most often</span>
+                  {trades.map((trade) => (
+                    <a className="lp-sys" key={trade.slug} href={`/industries/${trade.slug}`}>
+                      {verticalLabel(trade)}
+                    </a>
+                  ))}
+                  <span className="lp-sched-note">
+                    Every trade page names the limits of what PIE can do on that
+                    book before it names the capabilities, which is the fastest
+                    way to find out whether this is for you.
+                  </span>
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+
         <div className="lp-final">
           <div className="lp-wrap">
             <h2>
@@ -299,7 +367,7 @@ export function ErpPage({ page }: { page: ErpPageData }) {
               {INDUSTRY_PAGES.map((industry) => (
                 <span key={industry.slug}>
                   <a href={`/industries/${industry.slug}`}>
-                    PIE for {industry.short}
+                    PIE for {verticalLabel(industry)}
                   </a>
                   <span className="lp-sep" aria-hidden="true"> · </span>
                 </span>

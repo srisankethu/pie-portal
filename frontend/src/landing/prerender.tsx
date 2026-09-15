@@ -23,7 +23,7 @@ import { ERP_PAGES, type ErpPageData } from "./erp";
 import { FAQ, type FaqItem } from "./faq";
 import { caseStudy, complianceRows, namedCustomers } from "./proof";
 import { ErpPage } from "./ErpPage";
-import { INDUSTRY_PAGES } from "./industries";
+import { INDUSTRY_PAGES, verticalTrail, type Crumb, type IndustryPageData } from "./industries";
 import { IndustryPage } from "./IndustryPage";
 import { ROLE_PAGES } from "./roles";
 import { RolePage } from "./RolePage";
@@ -108,6 +108,27 @@ export interface PrerenderPage {
   description: string | null;
   standalone: boolean;
   erp?: ErpPageData;
+  /** The trade a sub-page is about, and `undefined` everywhere else.
+   *
+   *  Here for the reason `erp` is: `scripts/prerender.mjs` writes llms.txt from
+   *  this registry rather than from a second list of the same names, and the
+   *  trade pages were missing from that file entirely — seven documents in
+   *  sitemap.xml and in the footers of every other family, and not one line of
+   *  them in the one file written for a model answering a question about this
+   *  site. A page a crawler is told about and a reader is routed to, that the
+   *  site's own summary does not mention, is the same orphan the footers exist
+   *  to prevent, one layer further out. */
+  industry?: IndustryPageData;
+  /** The trail this page renders, for the `BreadcrumbList` node the build emits.
+   *
+   *  Present only where the component actually draws one, which is the same rule
+   *  `faq` follows and for the same reason: schema may restate what is on the
+   *  page and nothing else. `scripts/prerender.mjs` deliberately emitted no
+   *  BreadcrumbList for as long as no page rendered a trail, and that was the
+   *  correct call — the node is earned by the markup, not declared beside it.
+   *  One array, two consumers, so a trail that changes shape cannot leave a
+   *  schema node describing the old one. */
+  breadcrumb?: Crumb[];
   /** The questions this page renders, for the `FAQPage` node the build emits.
    *
    *  Present only where the component actually shows them, which is the whole
@@ -148,6 +169,8 @@ export const PAGES: PrerenderPage[] = [
     description: page.description,
     standalone: true,
     faq: page.faq,
+    industry: page,
+    breadcrumb: verticalTrail(page),
     render: () => renderToStaticMarkup(<IndustryPage page={page} />),
   })),
   ...ROLE_PAGES.map((page) => ({

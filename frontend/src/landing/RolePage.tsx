@@ -2,7 +2,7 @@ import { demoCta } from "./cta";
 import {
   DEMO_LENGTH, FaqSection, FooterBlurb, LimitsSection, SubPageNav, TrustBand,
 } from "./shared";
-import { INDUSTRY_PAGES } from "./industries";
+import { INDUSTRY_PAGES, verticalLabel } from "./industries";
 import { ROLE_PAGES, type RolePageData } from "./roles";
 import "./landing.css";
 
@@ -208,7 +208,7 @@ export function RolePage({ page }: { page: RolePageData }) {
               ))}
               {INDUSTRY_PAGES.map((industry) => (
                 <span key={industry.slug}>
-                  <a href={`/industries/${industry.slug}`}>{industry.short}</a>
+                  <a href={`/industries/${industry.slug}`}>{verticalLabel(industry)}</a>
                   <span className="lp-sep" aria-hidden="true"> · </span>
                 </span>
               ))}

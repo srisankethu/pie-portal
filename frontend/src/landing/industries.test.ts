@@ -1,7 +1,7 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { ERP_PAGES } from "./erp";
-import { INDUSTRY_PAGES } from "./industries";
+import { INDUSTRY_PAGES, verticalLabel, verticalTrail } from "./industries";
 import { IndustryPage } from "./IndustryPage";
 
 /** What `renderToStaticMarkup` does to page copy on the way into the document.
@@ -56,6 +56,32 @@ describe("the industry registry", () => {
       "electrical",
       "plumbing-pvf",
     ]);
+  });
+
+  it("writes every trade's label in sentence case with its acronyms intact", () => {
+    // The seven strings, written out. `verticalLabel` derives them from `short`
+    // by capitalising one character, which is enough only while every acronym
+    // in this registry is already upper-case inside the string — so the check
+    // that matters is not "the function runs" but "the seven results are the
+    // seven labels". A trade added as "hvac and refrigeration" would come back
+    // "Hvac and refrigeration" and fail here rather than ship.
+    expect(INDUSTRY_PAGES.map(verticalLabel)).toEqual([
+      "Industrial and MRO",
+      "Cutting tools",
+      "Fasteners",
+      "Bearings and power transmission",
+      "Fluid power",
+      "Electrical",
+      "Plumbing and PVF",
+    ]);
+  });
+
+  it("keeps the label out of the URL", () => {
+    // Casing is a rendering decision and a slug is an address. A slug that
+    // followed the label would be a redirect nobody wrote.
+    for (const page of INDUSTRY_PAGES) {
+      expect(page.slug).toBe(page.slug.toLowerCase());
+    }
   });
 
   it("gives every page a unique slug", () => {
@@ -142,6 +168,156 @@ describe("what an industry page may claim", () => {
   });
 });
 
+describe("the page argues problem-first", () => {
+  /** The rendered text of one `<section id="...">`, tags stripped.
+   *
+   *  Measured off the markup rather than off the registry, because the question
+   *  is what a reader is given rather than what an author wrote: a field can be
+   *  long and rendered in a collapsed block, or short and repeated three times.
+   *  Length is a crude proxy for weight and it is the right one here — the
+   *  failure this guards against is a page whose product sections have quietly
+   *  grown past its problem sections, and that shows up as characters. */
+  function sectionText(html: string, id: string): string {
+    const start = html.indexOf(`<section id="${id}">`);
+    expect(start, `no <section id="${id}"> in the rendered page`).toBeGreaterThan(-1);
+    const rest = html.slice(start);
+    const end = rest.indexOf("</section>");
+    return rest.slice(0, end).replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+  }
+
+  it("puts the problem sections before the product sections, in the document", () => {
+    // Source order, which on a document that ships no JavaScript is also
+    // reading order and also the order a crawler sees. The whole remodel is
+    // this assertion: a reader who searched for their own trouble meets the
+    // trouble, not a screenshot.
+    const order = ["wrong", "cost", "today", "intervenes", "worked", "gaps", "faq", "systems"];
+    for (const { page, html } of rendered) {
+      const at = order.map((id) => html.indexOf(`<section id="${id}">`));
+      for (const [i, index] of at.entries()) {
+        expect(index, `/industries/${page.slug} is missing <section id="${order[i]}">`)
+          .toBeGreaterThan(-1);
+      }
+      for (let i = 1; i < at.length; i += 1) {
+        expect(at[i], `/industries/${page.slug} renders ${order[i]} before ${order[i - 1]}`)
+          .toBeGreaterThan(at[i - 1]);
+      }
+    }
+  });
+
+  it("keeps the limits above the FAQ, which is what the vocabulary check assumes", () => {
+    // Not a duplicate of the order test above: that one reads as editorial and
+    // this one is load-bearing. The interchange screen further down scans
+    // everything before `<section id="gaps">`, so a FAQ that moved above the
+    // limits would take four pages' worth of disclaimed vocabulary with it and
+    // turn a real check into a vacuous one.
+    for (const { page, html } of rendered) {
+      expect(html.indexOf('<section id="gaps">'),
+        `/industries/${page.slug} renders its FAQ above its limits`)
+        .toBeLessThan(html.indexOf('<section id="faq">'));
+    }
+  });
+
+  it("makes the problem the longest single section on the page", () => {
+    // The measurement that says whether the remodel held, and it is two
+    // measurements because the brief is two claims. First: section 2 is the
+    // longest thing on the page, full stop.
+    //
+    // This failed when it was written, which is the reason it exists. `worked`
+    // came out longer than `wrong` on all seven pages — the worked line had five
+    // steps and the decision card's own text inside the same section, against
+    // four problems of one paragraph each. The problems were the section the
+    // page is *for* and the third-longest thing on it.
+    for (const { page, html } of rendered) {
+      const sections = ["wrong", "cost", "today", "intervenes", "worked", "gaps", "faq", "systems"]
+        .map((id) => ({ id, length: sectionText(html, id).length }));
+      const longest = sections.reduce((a, b) => (b.length > a.length ? b : a));
+      expect(longest.id,
+        `/industries/${page.slug}'s longest section is "${longest.id}" at `
+        + `${longest.length} characters, against ${sections[0].length} for the `
+        + "problems. Section 2 is meant to be the longest thing on the page.")
+        .toBe("wrong");
+    }
+  });
+
+  it("spends more of the page on the problem than on the product", () => {
+    // And second: the three problem sections together outweigh the two that
+    // describe the product. `wrong` winning on its own is not sufficient — a
+    // page could lead with four strong problems and then spend twice the room
+    // answering them, which is the shape this family already had.
+    for (const { page, html } of rendered) {
+      const problem = ["wrong", "cost", "today"]
+        .reduce((n, id) => n + sectionText(html, id).length, 0);
+      const product = ["intervenes", "worked"]
+        .reduce((n, id) => n + sectionText(html, id).length, 0);
+      expect(problem,
+        `/industries/${page.slug} spends ${problem} characters on the problem and `
+        + `${product} on the product.`).toBeGreaterThan(product);
+    }
+  });
+
+  it("names three or four concrete problems, each with a heading of its own", () => {
+    for (const { page } of rendered) {
+      expect(page.wrong.length,
+        `/industries/${page.slug} names ${page.wrong.length} problems; the brief is 3-4`)
+        .toBeGreaterThanOrEqual(3);
+      expect(page.wrong.length).toBeLessThanOrEqual(4);
+      for (const item of page.wrong) {
+        // A problem stated in under forty characters of body is a category with
+        // a heading on it, which is the thing this section exists not to be.
+        expect(item.body.length, `${page.slug}: “${item.title}” is too thin to be concrete`)
+          .toBeGreaterThan(200);
+      }
+    }
+  });
+
+  it("shows no product screen above the first problem", () => {
+    // The decision card is the one worked example this site argues from and it
+    // belongs in section six. This is the assertion that stops it drifting back
+    // into the hero, which is where it was and where it looked fine.
+    for (const { page, html } of rendered) {
+      const card = html.indexOf('class="lp-card-cell"');
+      expect(card, `/industries/${page.slug} renders no decision card at all`)
+        .toBeGreaterThan(-1);
+      expect(card, `/industries/${page.slug} puts the decision card above its problems`)
+        .toBeGreaterThan(html.indexOf('<section id="wrong">'));
+    }
+  });
+
+  it("states what it costs as a mechanism rather than as a figure", () => {
+    // No invented numbers, which on these pages means no numbers at all in the
+    // cost section: the only figures a trade page may show are the worked
+    // card's, which `worked-example.ts` derives and its own test re-derives. A
+    // percentage here would be an industry average nothing in this repository
+    // can source. Written-out quantities ("two hundred lines") are prose and
+    // are not what this is looking for.
+    for (const { page, html } of rendered) {
+      const cost = sectionText(html, "cost");
+      const figures = cost.match(/\d+(\.\d+)?\s*%|[$£₹]\s*\d/g);
+      expect(figures, `/industries/${page.slug} puts a figure in its cost section: ${figures}`)
+        .toBeNull();
+    }
+  });
+
+  it("renders a trail whose last step is where the reader is", () => {
+    for (const { page, html } of rendered) {
+      const trail = verticalTrail(page);
+      const here = trail[trail.length - 1];
+      expect(here.name).toBe(verticalLabel(page));
+      expect(html).toContain('aria-label="Breadcrumb"');
+      // The first two steps are links and the last is not, because a page does
+      // not link to itself. `aria-current` is what tells a screen reader the
+      // difference, since the styling cannot.
+      for (const crumb of trail.slice(0, -1)) {
+        expect(html, `/industries/${page.slug} does not link the “${crumb.name}” crumb`)
+          .toContain(`href="${crumb.path}"`);
+      }
+      expect(html).toContain(`<span aria-current="page">${here.name}</span>`);
+      expect(html, `/industries/${page.slug} links its trail's last step to itself`)
+        .not.toContain(`href="${here.path}"`);
+    }
+  });
+});
+
 describe("query intent, against the /erp/ family", () => {
   it("names no ERP in a title, description or h1", () => {
     // The two families answer different questions — "will it work with my
@@ -196,11 +372,14 @@ describe("the pages stay distinct from each other", () => {
   function narrative(page: (typeof INDUSTRY_PAGES)[number]): string[] {
     return [
       page.sub,
-      page.problem.body,
-      page.problem.detail,
-      page.resolution.body,
-      ...page.resolution.points,
-      ...page.fit.map((f) => f.body),
+      ...page.wrong.flatMap((w) => [w.title, w.body, ...w.notes]),
+      page.cost.lead,
+      page.cost.compounds,
+      page.cost.invisible,
+      ...page.today.flatMap((t) => [t.practice, t.body]),
+      ...page.intervenes.map((i) => i.body),
+      ...page.worked.steps.map((s) => s.body),
+      page.erpLead,
       ...page.faq.map((f) => f.answer),
     ]
       .flatMap((text) => text.split(/(?<=[.?])\s+/))
@@ -216,7 +395,12 @@ describe("the pages stay distinct from each other", () => {
       const values = INDUSTRY_PAGES.map((p) => p[field]);
       expect(new Set(values).size, `two pages share a ${field}`).toBe(values.length);
     }
-    const problems = INDUSTRY_PAGES.map((p) => p.problem.title);
+    // Every named problem on the site, across all seven pages, not just the
+    // first of each. The anti-boilerplate failure is not two pages opening the
+    // same way — the overlap check below would catch that — it is page five
+    // reusing page one's third problem with a noun swapped, where nothing about
+    // the top of either page looks copied.
+    const problems = INDUSTRY_PAGES.flatMap((p) => p.wrong.map((w) => w.title));
     expect(new Set(problems).size, "two pages state the same problem").toBe(problems.length);
   });
 
@@ -259,8 +443,12 @@ describe("the first heading names what the page is about", () => {
       const html = renderToStaticMarkup(IndustryPage({ page }));
       const h1 = (html.match(/<h1[^>]*>(.*?)<\/h1>/s)?.[1] ?? "")
         .replace(/<[^>]+>/g, "").replace(/\s+/g, " ").trim();
-      expect(h1, `/industries/${page.slug} h1 does not name ${page.short}`)
-        .toContain(page.short);
+      // The label, not `short`: a trade name in a heading is a name, and the
+      // h1 is one of the places this site renders it capitalised. Asserting the
+      // lower-case fragment here would pass on "Quote cutting tools" and on
+      // nothing the reader is actually shown.
+      expect(h1, `/industries/${page.slug} h1 does not name ${verticalLabel(page)}`)
+        .toContain(verticalLabel(page));
     }
   });
 });

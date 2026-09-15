@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { demoCta } from "./cta";
 import { ERP_PAGES } from "./erp";
-import { INDUSTRY_PAGES } from "./industries";
+import { INDUSTRY_PAGES, verticalLabel } from "./industries";
 import { ROLE_PAGES } from "./roles";
 import { FAQ } from "./faq";
 import { caseStudy, complianceRows, hasProof, namedCustomers } from "./proof";
@@ -464,12 +464,17 @@ export function Landing({ onEnter, onDemo }: {
             `docs/vertical-strategy.md` is the gate — a trade whose headline
             pain this product does not serve does not get a page just because
             it is a plausible buyer. */}
-        <div className="lp-sched">
+        {/* `id`, because this strip is the index of the `/industries/` family
+            and its pages' breadcrumbs point back at it. There is no
+            `/industries` listing document; this row is the listing, so a crumb
+            reading "Trades" resolves to a real place on a real page rather than
+            to the top of this one. See `verticalTrail` in `industries.ts`. */}
+        <div className="lp-sched" id="trades">
           <div className="lp-wrap lp-sched-row">
             <span className="lp-sched-label">Written for your trade</span>
             {INDUSTRY_PAGES.map((page) => (
               <a className="lp-sys" key={page.slug} href={`/industries/${page.slug}`}>
-                {page.short}
+                {verticalLabel(page)}
               </a>
             ))}
             <span className="lp-sched-note">

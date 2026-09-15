@@ -75,7 +75,7 @@ const vite = await createServer({
   appType: "custom",
   logLevel: "error",
 });
-let pages, tokenCss, gaps, siteUrl, faq;
+let pages, tokenCss, gaps, siteUrl, faq, verticalLabel;
 try {
   const mod = await vite.ssrLoadModule("/src/landing/prerender.tsx");
   pages = mod.PAGES;
@@ -90,6 +90,11 @@ try {
   // point of reading it here is that the JSON-LD cannot say something the
   // document does not — see the FAQPage note in `documentFor`.
   ({ FAQ: faq } = await vite.ssrLoadModule("/src/landing/faq.ts"));
+  // How a trade is written as a label, from the one function the chips, the
+  // footers and llms.txt all render it through. Loaded rather than restated
+  // here for the reason `SITE_URL` is: a second capitalisation rule in a script
+  // nothing type-checks is the copy that goes stale.
+  ({ verticalLabel } = await vite.ssrLoadModule("/src/landing/industries.ts"));
 } finally {
   await vite.close();
 }
@@ -289,6 +294,27 @@ function documentFor(page) {
             },
           ]
         : []),
+      // BreadcrumbList, on the pages that draw a trail. It joined the graph the
+      // way FAQPage did — the page moved first. The comment above listed it as
+      // deliberately absent because "a trail no page renders", which was true
+      // of all eighteen documents until `/industries/*` grew one; the rule did
+      // not change, the number of pages satisfying it did. Built from
+      // `verticalTrail`, the same array the component maps over, so the node
+      // cannot describe a trail the reader is not shown.
+      ...(page.breadcrumb?.length
+        ? [
+            {
+              "@type": "BreadcrumbList",
+              "@id": `${url}#breadcrumb`,
+              itemListElement: page.breadcrumb.map((crumb, i) => ({
+                "@type": "ListItem",
+                position: i + 1,
+                name: crumb.name,
+                item: `${SITE_ORIGIN}${crumb.path}`,
+              })),
+            },
+          ]
+        : []),
       ...(page.faq?.length
         ? [
             {
@@ -403,6 +429,7 @@ await writeFile(
 // page have to come away with the same understanding, and the way to guarantee
 // that is to have no sentence here that is not there.
 const erpPages = pages.filter((page) => page.slug.startsWith("erp/"));
+const industryPages = pages.filter((page) => page.industry !== undefined);
 
 await writeFile(
   path.join(DIST, "llms.txt"),
@@ -417,6 +444,11 @@ await writeFile(
   + `and never receives a cost or margin field.\n\n`
   + `## Supported ERPs\n\n`
   + erpPages.map((page) => `- ${page.erp.name}\n`).join("")
+  + `\n## Trades it is written for\n\n`
+  + `Each trade below has a page of its own, and each of those pages prints what `
+  + `PIE does not do on that book beside what it does. A trade absent from this `
+  + `list does not have a page, and that is a decision rather than an omission.\n\n`
+  + industryPages.map((page) => `- ${verticalLabel(page.industry)}\n`).join("")
   + `\n## What is true of it\n\n`
   + `- The AI never computes a number. Every figure is deterministic arithmetic `
   + `on the customer's own records; turn the AI off and every number still `
@@ -438,6 +470,10 @@ await writeFile(
   + `- [PIE](${SITE_ORIGIN}/): ${landingTitle}\n`
   + erpPages
       .map((page) => `- [${page.erp.name}](${SITE_ORIGIN}/${page.slug}): ${page.description}\n`)
+      .join("")
+  + industryPages
+      .map((page) =>
+        `- [${verticalLabel(page.industry)}](${SITE_ORIGIN}/${page.slug}): ${page.description}\n`)
       .join("")
   + `\n## Questions\n\n`
   + faq.map((item) => `### ${item.question}\n\n${item.answer}\n\n`).join(""),

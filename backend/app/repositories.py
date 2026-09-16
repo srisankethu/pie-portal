@@ -23,7 +23,7 @@ from . import clock
 # rows are the same part.
 from .identity.matchers import normalize_sku
 from .domain import models
-from .domain.enums import DecisionStatus, HumanAction
+from .domain.enums import CLOSED_DECISION_STATUSES, DecisionStatus, HumanAction
 from .domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
                             CreditNoteIn, CustomerIn, DocumentApplicationIn,
                             InvoiceIn, LocationIn, PaymentReceiptIn, ProductIn,
@@ -1319,6 +1319,41 @@ class DecisionRepository:
                 models.Decision.decision_key == decision_key,
             )
         )
+
+    def live_for_subject(self, decision_type: str, subject_entity_id: str, *,
+                         origin: str) -> list[models.Decision]:
+        """Cards about one situation that are still on somebody's queue, newest
+        first.
+
+        The situation is ``(type, subject)`` — what a producer re-detects — and
+        not ``decision_key``, which also carries the window the card was opened
+        in. Asking by key answers "did *this window* open a card", and a
+        producer that asks only that opens a second card for the same unchanged
+        situation every time the window rolls over.
+
+        Live rather than ``OPEN``: a card somebody has read is ``VIEWED`` and
+        one handed upward is ``ESCALATED``, and neither is finished.
+        Duplicating a card the moment it is looked at is the same defect wearing
+        a different status, so the test is the complement of
+        ``CLOSED_DECISION_STATUSES`` and moves with it.
+
+        Ordered on ``created_at`` with the id breaking ties: two rows written in
+        one flush share a timestamp, and "newest" must not come out of whatever
+        order the database felt like returning.
+        """
+        return list(self.s.scalars(
+            select(models.Decision)
+            .where(
+                models.Decision.organization_id == self.org,
+                models.Decision.origin == origin,
+                models.Decision.decision_type == decision_type,
+                models.Decision.subject_entity_id == subject_entity_id,
+                models.Decision.status.notin_(
+                    sorted(s.value for s in CLOSED_DECISION_STATUSES)),
+            )
+            .order_by(models.Decision.created_at.desc(),
+                      models.Decision.decision_id.desc())
+        ).all())
 
     def add(self, decision: models.Decision) -> models.Decision:
         assert decision.organization_id == self.org, "cross-org write blocked"

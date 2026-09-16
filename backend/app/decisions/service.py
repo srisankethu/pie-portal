@@ -2,8 +2,15 @@
 
 For each latest signal per (type, subject): assemble permission-scoped context,
 interpret via the AI layer (validated), finalize priority, and persist a Decision
-— routed to the right role, deduped by ``decision_key``, and cost-guarded by a
+— routed to the right role, one card per situation, and cost-guarded by a
 context hash (unchanged context ⇒ no re-inference).
+
+**One card per situation, not one per window.** A situation is ``(type,
+subject)``: while a card for it is still live it is refreshed, whatever week it
+was opened in. ``opportunities.py``, the deterministic producer, says the same
+thing about a re-fold of an unchanged shelf — both producers write the same
+table and a queue cannot mean two different things about what a second card
+implies.
 """
 from __future__ import annotations
 
@@ -16,12 +23,14 @@ from sqlalchemy.orm import Session
 from ..ai.interpret import interpret
 from ..ai.provider import AIProvider, select_provider
 from ..trust import disclosure, rehydrate
+from ..clock import now as utc_now
 from ..config import settings
 from ..context.assembler import assemble_from_signal
 from ..domain import models
 from ..domain.enums import (
     RESTRICTED_DECISION_TYPES,
     AiStatus,
+    DecisionOrigin,
     DecisionStatus,
     DecisionType,
     PriorityBand,
@@ -49,6 +58,14 @@ def _recipient_role(decision_type: str) -> Role:
 
 
 def _decision_key(org: str, dtype: str, subject_id: str, signal: models.Signal) -> str:
+    """The key for a **new** card. See ``DecisionService.generate`` for why a
+    situation that already has a live card never reaches this.
+
+    The window bucket is what lets a situation somebody has already dealt with
+    come back as a fresh card later rather than reopening the dismissed one. It
+    is not, and never was, the test for "has this been decided already" — a
+    detector that fires in two consecutive weeks is still one situation.
+    """
     bucket = signal.detected_at.strftime("%Y-%W")  # open-window bucket (§17)
     blob = f"{org}|{dtype}|{subject_id}|{bucket}".encode()
     return "dk_" + hashlib.sha256(blob).hexdigest()[:16]
@@ -124,8 +141,28 @@ class DecisionService:
             return owner.user_id if owner else None
         return None  # restricted/team decisions are not owned by a salesperson
 
+    def _collapse(self, older: list[models.Decision]) -> int:
+        """Close the extra cards a situation had already accumulated.
+
+        One situation, one live card. Rows an earlier window opened for it are
+        the same reading of the same numbers, and the newest is the one
+        ``generate`` is about to refresh — so the rest are SUPERSEDED, which is
+        the detector's verb for "a later card replaced this" and takes them off
+        the queue without claiming anybody dealt with them.
+
+        This runs on every generate rather than as a one-off repair because the
+        rows it finds were created by the defect above it: a book synced weekly
+        for a month is holding four copies of every standing situation, and a
+        fix that only stops the fifth leaves the queue exactly as unusable as
+        the person reported it.
+        """
+        for row in older:
+            row.status = DecisionStatus.SUPERSEDED.value
+            row.updated_at = utc_now()
+        return len(older)
+
     def generate(self) -> dict:
-        created = refreshed = skipped = 0
+        created = refreshed = skipped = superseded = 0
         # Counted separately from created/refreshed: a decision whose narrative
         # call failed still lands (with its deterministic signal), so the run
         # "succeeds" — but a summary that only says so reads as all-clear while
@@ -138,7 +175,22 @@ class DecisionService:
             role = _recipient_role(dtype)
             bundle = assemble_from_signal(self.s, signal, role, self.th)
             key = _decision_key(self.org, dtype, signal.subject_entity_id, signal)
-            existing = self.repo.get_by_key(key)
+            # The card this situation already has, whichever window opened it.
+            # Keying the lookup on the window instead — which is all
+            # ``get_by_key`` can answer — is what made an unchanged situation
+            # open a second card every ISO week and leave the first one sitting
+            # OPEN beside it: five standing situations came back as ten cards
+            # after a fortnight and fifteen after three weeks, all identical.
+            #
+            # ``get_by_key`` is still the fallback, and it covers the one case
+            # the subject lookup cannot see: a card already *closed* in this
+            # window. That row is refreshed in place and stays closed, so a
+            # dismissal is not undone by the next sync.
+            live = self.repo.live_for_subject(
+                dtype, signal.subject_entity_id,
+                origin=DecisionOrigin.SIGNAL.value)
+            existing = live[0] if live else self.repo.get_by_key(key)
+            superseded += self._collapse(live[1:])
 
             # cost control: unchanged context *and* unchanged reader on an open
             # decision ⇒ no re-inference. See is_reusable for why the reader is
@@ -217,7 +269,8 @@ class DecisionService:
             by_type[dtype] = by_type.get(dtype, 0) + 1
 
         return {"organization_id": self.org, "created": created, "refreshed": refreshed,
-                "skipped": skipped, "ai_failed": ai_failed, "by_type": by_type,
+                "skipped": skipped, "superseded": superseded,
+                "ai_failed": ai_failed, "by_type": by_type,
                 "provider": getattr(self.provider, "name", ""),
                 "model": getattr(self.provider, "model", "")}
 

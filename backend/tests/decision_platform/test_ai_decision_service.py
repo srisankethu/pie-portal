@@ -2,16 +2,20 @@
 injection containment, organization isolation, and endpoint RBAC."""
 from __future__ import annotations
 
+from datetime import timedelta
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
 import dbsupport
+from app import clock
 from app.ai.mock_provider import MockProvider
 from app.db import get_session
 from app.decisions.service import DecisionService
 from app.domain import models
+from app.domain.enums import CLOSED_DECISION_STATUSES
 from app.routers import internal, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 from app.signals.engine import run_detectors
@@ -98,6 +102,174 @@ def test_idempotent_regeneration_skips(session):
     # no duplicate decisions
     keys = [d.decision_key for d in session.query(models.Decision).all()]
     assert len(keys) == len(set(keys))
+
+
+def _resync(session, *, days_on: int = 0) -> None:
+    """What a sync actually does between two generates: detect again.
+
+    The distinction the test above cannot make. It regenerates over the *same*
+    signal rows, and no sync ever does — `execute_analysis` runs the detectors
+    first, and the signal table is append-only, so the second generate reads a
+    new row for the same situation. ``days_on`` pushes those new rows forward so
+    a test can put two syncs in different ISO weeks, which is the case that used
+    to open a second card.
+    """
+    before = {s.signal_id for s in session.query(models.Signal).all()}
+    run_detectors(session, ORG)
+    session.flush()
+    for row in session.query(models.Signal).all():
+        if row.signal_id not in before:
+            row.detected_at = clock.aware(row.detected_at) + timedelta(days=days_on)
+    session.flush()
+
+
+def _situations(session) -> list[tuple[str, str]]:
+    return [(d.decision_type, d.subject_entity_id)
+            for d in session.query(models.Decision).all()
+            if d.status not in {s.value for s in CLOSED_DECISION_STATUSES}]
+
+
+def test_a_later_window_refreshes_the_card_rather_than_opening_a_second(session):
+    """The defect a user reported as "every sync doubles the decisions".
+
+    `_decision_key` buckets on the ISO week of the signal's `detected_at`, so an
+    unchanged situation detected again next week hashed to a key nothing had
+    written yet — a second card, identical to the first, which stayed OPEN
+    beside it because nothing in this producer ever closed anything. Five
+    standing situations came back as ten cards after a fortnight and fifteen
+    after three weeks.
+    """
+    _seed_readmodel(session)
+    run_detectors(session, ORG)
+    session.commit()
+    first = DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+    session.commit()
+    assert first["created"] >= 4
+    opened = _situations(session)
+
+    for week in range(1, 4):
+        _resync(session, days_on=7 * week)
+        later = DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+        session.commit()
+        assert later["created"] == 0, "the same situation is not a new decision"
+
+    live = _situations(session)
+    assert sorted(live) == sorted(opened)
+    assert len(live) == len(set(live)), "one live card per situation"
+
+
+def test_the_copies_an_earlier_window_left_behind_are_superseded(session):
+    """Stopping the next duplicate is not the fix a person with four of them
+    wants. The rows already in their queue were made by this defect, so the run
+    that stops making them closes them: SUPERSEDED, the detector's verb, never
+    DISMISSED — nobody dealt with these."""
+    _seed_readmodel(session)
+    run_detectors(session, ORG)
+    session.commit()
+    DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+    session.commit()
+
+    original = session.query(models.Decision).first()
+    for i in range(3):                                   # three earlier weeks
+        session.add(models.Decision(
+            organization_id=ORG, decision_key=f"dk_earlier_{i}", origin="SIGNAL",
+            decision_type=original.decision_type,
+            subject_entity_type=original.subject_entity_type,
+            subject_entity_id=original.subject_entity_id,
+            assigned_role=original.assigned_role, status="OPEN",
+            created_at=clock.aware(original.created_at) - timedelta(days=7 * (i + 1))))
+    session.commit()
+
+    _resync(session, days_on=7)
+    report = DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+    session.commit()
+
+    assert report["superseded"] == 3
+    copies = session.query(models.Decision).filter_by(
+        decision_type=original.decision_type,
+        subject_entity_id=original.subject_entity_id).all()
+    assert [d for d in copies if d.status == "OPEN"] == [original]
+    assert {d.status for d in copies if d is not original} == {"SUPERSEDED"}
+
+    # and it does not keep finding work to do on a queue that is already clean
+    _resync(session, days_on=14)
+    assert DecisionService(session, ORG, provider=MockProvider("ok")).generate()[
+        "superseded"] == 0
+
+
+def test_a_card_somebody_has_read_is_refreshed_rather_than_duplicated(session):
+    """VIEWED and ESCALATED are not finished states. Keying the reuse test on
+    `status == OPEN` would have opened a second card the week after anybody
+    looked at the first one, which is the same defect wearing a nicer status."""
+    _seed_readmodel(session)
+    run_detectors(session, ORG)
+    session.commit()
+    DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+    session.commit()
+    read = session.query(models.Decision).first()
+    read.status = "VIEWED"
+    session.commit()
+
+    _resync(session, days_on=7)
+    DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+    session.commit()
+
+    same = session.query(models.Decision).filter_by(
+        decision_type=read.decision_type,
+        subject_entity_id=read.subject_entity_id).all()
+    assert [d.decision_key for d in same] == [read.decision_key]
+    assert read.status == "VIEWED", "a refresh is not a reopen"
+
+
+def test_a_dismissed_card_stays_dismissed_and_the_situation_returns_once(session):
+    """The window bucket's real job, kept. A dismissal is not a fix, so a
+    situation still firing next week is a new conversation and gets one new
+    card — not a reopened old one, and not one per sync."""
+    _seed_readmodel(session)
+    run_detectors(session, ORG)
+    session.commit()
+    DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+    session.commit()
+    done = session.query(models.Decision).first()
+    done.status = "DISMISSED"
+    session.commit()
+    situation = {"decision_type": done.decision_type,
+                 "subject_entity_id": done.subject_entity_id}
+
+    _resync(session)                       # same week: refreshed in place
+    DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+    session.commit()
+    assert session.query(models.Decision).filter_by(**situation).count() == 1
+    assert done.status == "DISMISSED"
+
+    _resync(session, days_on=7)            # next week: one fresh card
+    DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+    session.commit()
+    cards = session.query(models.Decision).filter_by(**situation).all()
+    assert len(cards) == 2
+    assert {d.status for d in cards} == {"DISMISSED", "OPEN"}
+
+    for week in range(2, 5):               # and not one per sync after that
+        _resync(session, days_on=7 * week)
+        DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+        session.commit()
+    assert session.query(models.Decision).filter_by(**situation).count() == 2
+
+
+def test_a_re_detected_situation_costs_nothing_to_leave_alone(session):
+    """The cost guard, exercised the way a sync exercises it. The existing
+    version regenerates over one signal row; this one re-detects first, which is
+    what made the guard miss every time in production."""
+    _seed_readmodel(session)
+    run_detectors(session, ORG)
+    session.commit()
+    first = DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+    session.commit()
+
+    _resync(session, days_on=7)
+    second = DecisionService(session, ORG, provider=MockProvider("ok")).generate()
+    session.commit()
+    assert second["skipped"] == first["created"] and second["refreshed"] == 0
 
 
 def test_switching_the_provider_re_infers_rather_than_keeping_the_mocks_words(session):

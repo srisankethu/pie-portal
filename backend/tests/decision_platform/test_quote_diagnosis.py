@@ -17,7 +17,8 @@ from decimal import Decimal
 from app.commercial import dispersion
 from app.commercial.config import CommercialThresholds
 from app.commercial.quantity import band_for, bands
-from app.commercial.quote_diagnosis import baselines, comparables, evidence, rules
+from app.commercial.quote_diagnosis import (baselines, comparables, cutover,
+                                            evidence, opportunity, render, rules)
 
 TH = CommercialThresholds()
 
@@ -562,3 +563,198 @@ def test_the_trim_names_direction_and_distance_for_every_row_it_drops():
     directions = {d.direction for d in result.excluded}
     assert directions == {dispersion.LOW, dispersion.HIGH}
     assert all(d.deviations > 3 for d in result.excluded)
+
+
+# ── phase 6: opportunity is potential, never missed ──────────────────────────
+
+def test_the_opportunity_is_a_range_from_the_band_bottom_to_its_median():
+    rows = _steady(12, price="1000")
+    rows[3] = dataclasses.replace(rows[3], unit_price=Decimal("980"))
+    rows[7] = dataclasses.replace(rows[7], unit_price=Decimal("1020"))
+    out = _run(rows, quoted="850", costs=[cost("c1", unit_cost="600",
+                                               day=date(2026, 1, 10))])
+
+    opp = opportunity.compute(out, th=TH)
+
+    assert opp.exists
+    assert opp.per_unit_low == out.price.band.low - Decimal("850")
+    assert opp.per_unit_high == out.price.band.median - Decimal("850")
+    assert opp.low == opp.per_unit_low * out.qty
+    assert opp.cost_on_record is True
+
+
+def test_no_opportunity_is_asserted_on_a_line_inside_its_band():
+    out = _run(_steady(12), quoted="1000")
+
+    assert opportunity.compute(out, th=TH).exists is False
+
+
+def test_a_cost_driven_line_gets_no_opportunity_figure():
+    """§10: cost-driven erosion is not pricing leakage, and a money figure under
+    the word "opportunity" would send somebody to renegotiate the wrong thing."""
+    rows = _steady(10)
+    costs = [cost("c1", unit_cost="700", day=date(2026, 1, 10)),
+             cost("c2", unit_cost="700", day=date(2026, 2, 10)),
+             cost("c3", unit_cost="700", day=date(2026, 3, 10)),
+             cost("c4", unit_cost="900", day=date(2026, 5, 10))]
+    out = _run(rows, quoted="1000", costs=costs)
+
+    assert rules.COST_DRIVEN_MARGIN_RISK in out.codes
+    assert opportunity.compute(out, th=TH).exists is False
+
+
+def test_an_opportunity_without_a_cost_baseline_is_shown_and_qualified():
+    """Half of one live item master has no usable cost. Withholding the figure
+    there would silence the engine on half the catalogue; asserting it without
+    the qualifier would call a cost-driven line an opportunity."""
+    out = _run(_steady(12), quoted="850", costs=[])
+
+    opp = opportunity.compute(out, th=TH)
+
+    assert opp.exists is True
+    assert opp.cost_on_record is False
+    assert "cost-driven cause cannot be ruled out" in opp.basis
+    sentence = render._opportunity_sentence(opp, th=TH)
+    assert "cannot be ruled out" in sentence
+
+
+def test_the_opportunity_is_never_worded_as_a_loss():
+    out = _run(_steady(12), quoted="850")
+    sentence = render._opportunity_sentence(opportunity.compute(out, th=TH), th=TH)
+
+    assert "potential" in sentence
+    assert "not profit forgone" in sentence
+    for forbidden in ("you lost", "lost ", "missed", "forgone profit"):
+        assert forbidden not in sentence.lower().replace("not profit forgone", "")
+
+
+# ── phase 5: the two renderings ──────────────────────────────────────────────
+
+def test_the_operations_card_reads_like_the_specification():
+    rows = _steady(12, price="1000")
+    rows[3] = dataclasses.replace(rows[3], unit_price=Decimal("980"))
+    rows[7] = dataclasses.replace(rows[7], unit_price=Decimal("1020"))
+    out = _run(rows, quoted="850")
+
+    card = render.render_operations(rules.operations_view(out), th=TH)
+
+    assert card.renders is True
+    assert card.headline == "Below this customer's historical pricing"
+    assert card.quoted.endswith("850")
+    assert "–" in card.historical
+    assert card.evidence in ("Strong", "Moderate")
+    assert "comparable transactions" in card.evidence_detail
+    assert "purchased this item" in card.why
+    # Prose, not the labelled field: "between X – Y" reads as a typo.
+    assert " and " in card.why and " – " not in card.why
+    assert card.qualification == render.QUALIFICATION
+    assert card.actions == (render.REVIEW_PRICE, render.DISMISS)
+
+
+def test_the_cost_driven_card_carries_the_sentence_and_no_figure():
+    rows = _steady(10)
+    costs = [cost("c1", unit_cost="700", day=date(2026, 1, 10)),
+             cost("c2", unit_cost="700", day=date(2026, 2, 10)),
+             cost("c3", unit_cost="700", day=date(2026, 3, 10)),
+             cost("c4", unit_cost="900", day=date(2026, 5, 10))]
+    out = _run(rows, quoted="1000", costs=costs)
+
+    card = render.render_operations(rules.operations_view(out), th=TH)
+
+    assert card.headline == ("Margin on this line is compressed by supply cost, "
+                            "not by your price. No price change needed.")
+    rendered = str(dataclasses.asdict(card))
+    assert "700" not in rendered and "900" not in rendered
+
+
+def test_the_operations_renderer_cannot_be_handed_an_owner_diagnosis():
+    """The structural half of I3: the desk's renderer takes the desk's type.
+
+    If it could accept the owner object it would only be a filter again, and a
+    filter is what was wrong both times this repository leaked a boundary.
+    """
+    import inspect
+    sig = inspect.signature(render.render_operations)
+    annotation = sig.parameters["ops"].annotation
+
+    assert annotation in (rules.OperationsDiagnosis, "OperationsDiagnosis")
+
+
+def test_every_dismissal_reason_is_aggregatable():
+    """Free text tunes nothing. The vocabulary is the point."""
+    reasons = dict(render.dismissal_reasons())
+
+    assert "PRICE_IS_CORRECT" in reasons
+    assert "COMPARISON_IS_WRONG" in reasons
+    assert all(code.isupper() for code in reasons)
+
+
+def test_the_owner_report_says_what_the_desk_is_not_told():
+    own = _steady(10, price="800")
+    peers = [row(f"p{i}", price="1000", day=date(2026, 3, 1),
+                 customer=f"cst_{i}") for i in range(4)]
+    out = _run(own + peers, quoted="800", peer_rows=own + peers)
+
+    report = render.render_owner(out, opportunity.compute(out, th=TH), th=TH)
+    body = " ".join(report.lines)
+
+    assert rules.BELOW_PEER_BAND_STRUCTURAL in report.codes
+    assert "account-level pricing question" in body
+    assert "not shown to the salesperson" in body
+
+
+def test_the_owner_report_names_the_gap_when_no_cost_is_knowable():
+    out = _run(_steady(10), quoted="850", costs=[])
+    report = render.render_owner(out, opportunity.compute(out, th=TH), th=TH)
+
+    assert any("withheld rather than" in ln for ln in report.lines)
+
+
+def test_an_evidence_summary_with_no_outcomes_says_so():
+    """§8: if outcome data is absent, say so rather than letting a band of
+    realized prices imply that all history is acceptance."""
+    out = _run(_steady(10), quoted="850")
+    report = render.render_owner(out, opportunity.compute(out, th=TH), th=TH)
+
+    assert "no quote outcomes recorded" in report.evidence
+
+
+# ── the migration cut-over, detected and never applied ───────────────────────
+
+def test_a_bulk_load_is_detected_with_the_counts_behind_it():
+    from datetime import timedelta
+    loaded = [cutover.Observation(
+        event_date=date(2025, 4, 1) + timedelta(days=i),
+        recorded_at=datetime(2026, 3, 18, tzinfo=timezone.utc)) for i in range(200)]
+    live = [cutover.Observation(
+        event_date=date(2026, 4, 1) + timedelta(days=i),
+        recorded_at=_at(date(2026, 4, 4) + timedelta(days=i))) for i in range(60)]
+
+    found = cutover.detect(loaded + live)
+
+    assert found.peak_month == "2026-03"
+    assert found.peak_count == 200
+    assert found.suggested == date(2026, 4, 1)
+    assert "migration, not a month of work" in found.reason
+
+
+def test_a_busy_month_of_live_entry_is_not_a_migration():
+    """Either half alone is unremarkable: a busy month is just a busy month."""
+    from datetime import timedelta
+    busy = [cutover.Observation(
+        event_date=date(2026, 3, 1) + timedelta(days=i % 28),
+        recorded_at=_at(date(2026, 3, 3) + timedelta(days=i % 28)))
+        for i in range(200)]
+
+    found = cutover.detect(busy)
+
+    assert found.peak_share > cutover.BULK_MONTH_SHARE
+    assert found.suggested is None
+    assert "busy month, not a load" in found.reason
+
+
+def test_no_creation_stamps_says_what_to_do_about_it():
+    found = cutover.detect([])
+
+    assert found.suggested is None
+    assert "re-sync" in found.reason

@@ -506,14 +506,20 @@ CLAUDE.md §2 is about.
 
 ## 6. Open questions (§2.5)
 
+**Four of these were answered at the Phase 4 gate; the answers are recorded
+against them below and in §9.** The rest are still open.
+
+
 1. **UPS.** Is it a separate Zoho organization? The `ZohoUPS` connector returns SLS's
    org id. If it exists, it needs a connection and a re-measure; if it does not, the
    "three legal entities" framing in `CLAUDE.md` needs correcting for this engine's scope.
 
-2. **The SLS migration window.** March 2026 is what the data shows (1,632 bills, 2,483
-   invoices created that month). **Please confirm the exact cut-over date**, because it
-   becomes configuration that decides which rows are `MIGRATED` and therefore which
-   quotes can be backtested at all. My working assumption is *before 2026-04-01 = migrated*.
+2. ~~**The SLS migration window.**~~ **Answered: it depends on the connection's own sync
+   history, so it is not a constant.** `history_loaded_before` stays a per-connection,
+   human-settable date, and `quote_diagnosis/cutover.py` reads the boundary off that
+   connection's creation stamps and *reports* it with the counts behind it. It never
+   applies what it finds — see §9. Still to do: set the column on each live connection
+   from what the detector shows.
 
 3. **Was there a legacy entry-time record?** If the pre-Zoho system (Tally?) can export a
    voucher entry date, the migrated cohort becomes usable and the backtest window goes
@@ -533,14 +539,14 @@ CLAUDE.md §2 is about.
    peer segment, or does the peer axis ship in "all other customers" mode until somebody
    draws them?
 
-6. **The absolute floors in §11.** "A configurable absolute floor per unit" and "a total
-   line opportunity floor" need starting values. `min_quote_exception_impact` is ₹500 for
-   the existing exception engine. Same number, or is a diagnosis card a higher bar than
-   an exception?
+6. ~~**The absolute floors in §11.**~~ **Answered: keep as set** — ≥5% of the band
+   median, ≥₹25 per unit, ≥₹500 on the line. The ₹500 matches
+   `min_quote_exception_impact` so the two engines cannot argue about the same line.
 
-7. **Does the live quote screen move to `recorded_at` filtering too** (§4.5), or only the
-   diagnosis engine? Both defensible. The screen's question is "what does this cost now";
-   the diagnosis's is "what could we have known then".
+7. ~~**Does the live quote screen move to `recorded_at` filtering too**~~ (§4.5)
+   **Answered: no — the diagnosis engine only.** `cost_basis_asof` is untouched and keeps
+   answering "what does this cost now"; `costs_knowable_at` answers "what could we have
+   known then". Two functions, two questions, neither pretending to be the other.
 
 8. **Bill lines with no item (11% on 4U).** Excluded from cost evidence and counted, or
    matched by description? I plan to exclude and count — guessing an item from free text
@@ -690,3 +696,71 @@ plan survived contact is worth less on the second reading than the first.
   `docs/connectors.md` names the field each vendor calls it.
 - **Phases 5–8** — renderer, opportunity, outcome layer, UI — are not started.
   Phase 6 is the next stop gate.
+
+---
+
+## 9. Phases 5 and 6, and the four answers
+
+### Built
+
+| Layer | Module | What it does |
+|---|---|---|
+| Phase 5 | `quote_diagnosis/render.py` | `OperationsCard` and `OwnerReport`, template-assembled, plus the dismissal vocabulary |
+| Phase 6 | `quote_diagnosis/opportunity.py` | The potential range, truncated by resistance, qualified when cost is unknown |
+| — | `quote_diagnosis/cutover.py` | Detects a connection's bulk load and reports it. Never applies it |
+
+`render_operations` takes `OperationsDiagnosis` and nothing else — not an owner
+diagnosis it filters, not a pair it chooses between. If it needed the owner
+object for anything, that would be the bug, and a test reads its signature.
+
+### The four answers, and what each one changed
+
+1. **Opportunity shows with a qualifier, rather than being withheld.** The range
+   is `(band low − quoted)` to `(band median − quoted)` × qty and touches no cost
+   at any point, so it is computable on the half of a catalogue that has no
+   usable cost. What it cannot do without a cost baseline is rule out a
+   cost-driven cause, so `cost_on_record` travels with it and the sentence says
+   so. Owner-only either way: `OperationsDiagnosis` has no field for it.
+
+2. **The cut-over is per-connection and comes from that connection's own
+   history.** `cutover.detect` looks for the shape a migration has and live entry
+   does not — a large share of a book's documents created inside one month,
+   describing events spread across the months before it. Both halves are
+   required: a busy month is just a busy month, and a few late entries are
+   ordinary. It suggests the first day of the month *after* the peak, with the
+   counts, and a person confirms. **Nothing falls back to a detected value**: a
+   boundary inferred from row counts moves every time the counts do, and a band
+   that changed shape after a sync would be unexplainable.
+
+3. **The live quote screen keeps `cost_basis_asof`.** See open question 7.
+
+4. **The surfacing floors stay where they were set.** See open question 6.
+
+### Two things the wording has to keep doing
+
+**Potential, never missed.** `_opportunity_sentence` says "historical evidence
+suggests a potential margin opportunity of ₹X–₹Y … an estimate of what was
+plausibly achievable, not profit forgone", and a test asserts the loss
+vocabulary never appears. The difference is not politeness: nobody knows what
+this customer would have paid, and a tool that claims to lose its reader the
+first time a salesperson can explain one of those lines.
+
+**A cost-driven card carries no figure at all.** The specification's own example
+template printed "historical acquisition cost was ₹700, current cost is ₹900" on
+a salesperson's screen. The replacement is one sentence — *"Margin on this line
+is compressed by supply cost, not by your price. No price change needed."* — and
+a test serialises the whole card and asserts neither number appears in it.
+
+### Still not built
+
+- **Quote line ingestion** (§4.2), so `QUOTED_WON` / `QUOTED_LOST` still have no
+  producer and every band is `REALIZED` only. §8's resistance truncation is
+  coded and tested against constructed rows; under the current band construction
+  it is a guard rather than an active adjustment, and `opportunity._target` says
+  why it is there anyway.
+- **`history_loaded_before` is unset on every live connection.** The detector
+  exists; nobody has run it against a real book and confirmed a date. Until then
+  the engine reports `backfill_cutover_unknown` on every diagnosis and bulk-loaded
+  rows are not excluded.
+- **Phases 7 and 8** — the outcome layer (`rediagnose`, the evidence hash, the
+  `diagnosis_vs_outcome` view, dismissal persistence) and the UI.

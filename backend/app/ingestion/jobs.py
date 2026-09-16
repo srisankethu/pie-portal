@@ -1134,7 +1134,11 @@ def execute_analysis(session: Session, run: models.SyncRun, organization_id: str
     phase("Generating decisions")
     with _isolated(session, "Generating decisions", notes):
         generated = DecisionService(session, org).generate()
-        run.decisions_created = generated.get("created", 0)
+        # Added to, not assigned: both producers write the `decisions` table and
+        # the run row reports the cycle, not the phase. Assigning here discarded
+        # every state decision the phase above had just counted, so a sync that
+        # opened eleven and no signal decisions reported zero.
+        run.decisions_created += generated.get("created", 0)
 
     phase("Measuring what PIE changed")
     notes["attribution"] = _run_attribution(session, org)

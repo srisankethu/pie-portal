@@ -136,12 +136,24 @@ class ContextBundle:
         return out
 
     def context_hash(self) -> str:
-        """Stable hash for idempotency — same inputs ⇒ skip re-inference."""
+        """Stable hash for idempotency — same inputs ⇒ skip re-inference.
+
+        The signals enter it by **content**, never by id. A signal row is
+        append-only and the detectors run on every sync, so the same unchanged
+        situation arrives with a fresh uuid each time: hashing the id made this
+        move on every single sync, the cost guard never once fired, and every
+        open decision was re-interpreted — real provider spend for a narrative
+        that could not differ. The reason is the one already written above
+        ``display_names``: what the model is told is the facts, so what
+        identifies a context is the facts.
+        """
         blob = json.dumps({
             "type": self.decision_type, "subject": self.subject_ref,
             "role": self.recipient_role,
             "facts": sorted((f.label, f.value) for f in self.facts),
-            "signals": sorted(self.signal_ids()),
+            "signals": sorted((s.signal_type, s.subject_entity_type,
+                               s.subject_entity_id, s.severity_base)
+                              for s in self.signals),
         }, sort_keys=True, default=str).encode()
         return "cx_" + hashlib.sha256(blob).hexdigest()[:12]
 

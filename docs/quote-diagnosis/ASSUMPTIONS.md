@@ -609,3 +609,84 @@ Phase-1 decisions to be re-reviewed when code exists.
 `main` and prove nothing about this commit. It runs at the end of Phase 1, against code.
 
 **Verdict:** APPROVED — Phase 0 deliverable, stopping for review as §2 requires.
+
+---
+
+## 8. What phases 1–4 built, and where they departed from this audit
+
+Added after the Phase 4 stop gate, because an audit that does not say how its own
+plan survived contact is worth less on the second reading than the first.
+
+### Built
+
+| Layer | Module | What it does |
+|---|---|---|
+| Capture | `domain/schemas.SourceRef.recorded_at`, `ingestion/normalize._recorded_at`, migration `n2recorded` | The ERP's own `created_time`, through the normalizer, promoted to a queryable column |
+| Phase 1 | `commercial/quote_diagnosis/evidence.py` | Evidence classes, unit canonicalisation, the `knowable_at` filter, the exclusion ledger |
+| Phase 2 | `commercial/quote_diagnosis/comparables.py` | Six customer tiers, the band as a hard filter on 1–3, the independent peer axis |
+| Phase 3 | `commercial/dispersion.py`, `.../baselines.py` | One shared MAD/quantile primitive; price and cost baselines, trimmed symmetrically |
+| Phase 4 | `.../rules.py` | Strength, the diagnosis codes, the surfacing gate, `OwnerDiagnosis` / `OperationsDiagnosis` |
+
+### Departures, with reasons
+
+1. **`source_recorded_at` went on three tables, not five.** `sales_txns`,
+   `cost_records` and `erp_quotes` have readers; the invoice and bill *headers*
+   do not — they answer accounts payable and receivable, which are not
+   point-in-time questions. A column with no reader is one the next migration
+   has to explain.
+
+2. **No `recorded_at_provenance` column.** §4.1 proposed one. Instead the
+   migration cohort is derived at read time from
+   `ZohoConnection.history_loaded_before`, which is the idiom `Product.category`
+   and `manufacturer` already follow: a value rewritten at sync time could never
+   be re-read under a corrected cut-over date without a full re-sync, and the
+   cut-over is exactly the kind of fact a human corrects.
+
+3. **A zero MAD needed a fallback, and the tests found it.** More than half the
+   observations being identical is what a stable price history *is*, not an edge
+   case, and it drives the MAD to zero. Declining to trim then left a ₹100 and a
+   ₹9,000 sitting in a band of ₹1,000s as its own low and high. So with a zero
+   MAD the scale comes from the median itself — `diagnosis_degenerate_band_pct`,
+   default 10% — and `zero_spread_fallback` records that it happened.
+
+4. **Baseline *selection* is asymmetric, and the trim is not.** §7's symmetry is
+   about which observations are representative, and it holds exactly. Which
+   *level* a quote faces is a different question: a single purchase above the
+   rest is indistinguishable by spread from a genuine step up, so the latest
+   purchase may raise `expected_cost` and may **never** lower it. Raising it
+   risks saying "no price change needed" when nothing was wrong; lowering it is
+   §9's unexplained cheap purchase, which makes every later normal purchase read
+   as erosion. `baselines.cost_baseline` states the asymmetry where it happens.
+
+5. **No FX layer, deliberately.** `ingestion.sync._refuses_currency` rejects a
+   foreign document at the seam, so every row reaching the engine is in the
+   book's own currency by construction — stronger than an as-of conversion, and
+   an FX layer here would be code that can never run. Test 29 asserts the
+   *type* has no currency field rather than asserting a conversion.
+
+6. **Units are canonicalised, never converted.** No conversion factor exists
+   anywhere in these books, so §5 applied literally excludes every row. Equal
+   canonical labels are comparable, unequal ones are excluded and counted, and
+   no magnitude is ever invented. `pcs` and `nos` fold together; `metre` and
+   `each` do not.
+
+7. **A missing cost baseline is a qualifier, not a veto.** `NO_COST_EVIDENCE`
+   sits in `context`, so the price-side finding still stands and still surfaces —
+   §9's "still producing a price-side diagnosis if the price evidence is sound".
+   What it must block is a *money* figure, and that restraint belongs in the
+   opportunity layer (Phase 6), not in the gate.
+
+### Not built, and therefore not working yet
+
+- **Quote line items are still not ingested** (§4.2). `QuoteDoc` remains
+  header-grain, so nothing produces `QUOTED_WON` or `QUOTED_LOST` evidence
+  today. The classes, the baseline exclusion and the resistance rule are all in
+  place and tested against constructed rows; they will stay inert until the sync
+  pulls estimate lines. Until then every band is built from `REALIZED` alone —
+  which is the survivorship bias §8 exists to correct, still uncorrected.
+- **The `created_time` key is Zoho-only.** The six `ingestion/erp/` connectors
+  do not supply it and none is guessed at in code; a book on one of them
+  diagnoses nothing rather than diagnosing from evidence it could not have had.
+  `docs/connectors.md` names the field each vendor calls it.
+- **Phases 5–8** — renderer, opportunity, outcome layer, UI — are not started.
+  Phase 6 is the next stop gate.

@@ -462,7 +462,13 @@ class ReadModelRepository:
         row.line_revenue = t.line_revenue
         row.rate = t.rate
         row.discount_percent = t.discount_percent
-        row.source_ref = t.source_ref.model_dump()
+        # Promoted out of source_ref so the point-in-time evidence builder can
+        # filter on it in SQL. Assigned unconditionally, unlike vendor_id below:
+        # this one is read straight off the payload every sync, so a null here
+        # means the source sent no placeable created_time, not that the caller
+        # could not resolve one.
+        row.source_recorded_at = t.source_ref.recorded_at
+        row.source_ref = t.source_ref.model_dump(mode="json")
         return row
 
     def upsert_cost_record(self, r: CostRecordIn, product_id: str,
@@ -486,7 +492,8 @@ class ReadModelRepository:
         row.unit_cost = r.unit_cost
         row.rate = r.rate
         row.discount_percent = r.discount_percent
-        row.source_ref = r.source_ref.model_dump()
+        row.source_recorded_at = r.source_ref.recorded_at
+        row.source_ref = r.source_ref.model_dump(mode="json")
         return row
 
     def count_cost_records_pending_discount_backfill(self) -> int:
@@ -1005,7 +1012,8 @@ class ReadModelRepository:
         row.salesperson_external_id = q.salesperson_external_id
         row.client_viewed_at = q.client_viewed_at
         row.attributes = dict(q.attributes)
-        row.source_ref = q.source_ref.model_dump()
+        row.source_recorded_at = q.source_ref.recorded_at
+        row.source_ref = q.source_ref.model_dump(mode="json")
         return row
 
     def upsert_bill(self, vendor_id: Optional[str], b: BillIn) -> models.BillDoc:

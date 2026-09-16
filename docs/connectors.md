@@ -146,6 +146,18 @@ names each skipped row. Nothing estimates around a gap.
 - **Sage 100**: purchase costs — its AP history carries GL distributions, not
   item lines, so margin stays UNKNOWN for a Sage 100 book.
 - **All six**: credit notes and per-location stock (Zoho-only today).
+- **All six**: `created_time` — *when the source system recorded the document*,
+  which is a different fact from its date and from when this platform synced it.
+  Only the Zoho pull supplies it today. Every translator in `ingestion/erp/`
+  already maps `last_modified_time`; this is the key beside it, and each one
+  needs the field its own system calls it (NetSuite `datecreated`, Business
+  Central `systemCreatedAt`, Acumatica `CreatedDateTime`, and so on — none of
+  them verified against a live tenant here, which is why none is guessed at in
+  code). The degradation is deliberate and safe: `normalize._recorded_at`
+  returns `None` when the key is absent, and a row with no recorded time is
+  **excluded from quote-diagnosis evidence and counted**, never imputed from its
+  own date. A book on one of these connectors therefore diagnoses nothing rather
+  than diagnosing from evidence it could not have had.
 
 A US client organization sets its own `currency` (e.g. USD) and timezone; a
 document denominated in anything else is refused at the seam and named on the

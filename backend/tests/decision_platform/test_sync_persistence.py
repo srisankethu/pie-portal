@@ -138,12 +138,57 @@ def test_provenance_source_refs_present(session):
     SyncService(session, _good_source(), "org_a").run()
     session.commit()
     txn = session.query(models.SalesTxn).one()
+    # ``recorded_at`` is None here because this source sends no ``created_time``
+    # — which is the honest answer and not a defect. A row without it is
+    # excluded from point-in-time evidence and counted, never imputed from its
+    # own date; the case below is the one where the source does say.
     assert txn.source_ref == {"system": "zoho", "record_type": "invoice",
-                              "record_id": "inv1", "line_id": "l1"}
+                              "record_id": "inv1", "line_id": "l1",
+                              "recorded_at": None}
+    assert txn.source_recorded_at is None
     cust = session.query(models.Customer).one()
     assert cust.source_ref["record_id"] == "c1"
     cost = session.query(models.CostRecord).one()
     assert cost.source_ref["record_type"] == "bill"
+
+
+def test_the_sources_own_creation_stamp_reaches_the_column(session):
+    """The third clock, end to end: payload -> normalize -> upsert -> column.
+
+    Worth a full pass for the reason the taxonomy test above is: the value of
+    this field is that it is *stored and queryable*. A quote diagnosis filters
+    evidence on it, so a creation stamp that stopped at the normalizer would
+    leave every row looking like one the business could not have known about.
+
+    Note it is neither of the other two timestamps. ``date`` is 2026-06-01 and
+    the row's own ``created_at`` is now; this is what Zoho said.
+    """
+    src = _Source(
+        contacts=[{"contact_id": "c1", "contact_name": "Acme", "status": "active"}],
+        items=[{"item_id": "i1", "name": "Insert", "unit": "pcs", "status": "active"}],
+        invoices=[{"invoice_id": "inv1", "customer_id": "c1", "date": "2026-06-01",
+                   "created_time": "2026-06-04T11:30:00+0530",
+                   "line_items": [{"line_item_id": "l1", "item_id": "i1",
+                                   "quantity": 10, "rate": 500,
+                                   "item_total": 5000}]}],
+        bills=[{"bill_id": "b1", "date": "2026-05-01",
+                "created_time": "2026-05-20T09:00:00+0530",
+                "line_items": [{"line_item_id": "l1", "item_id": "i1",
+                                "quantity": 100, "rate": 400}]}],
+    )
+    SyncService(session, src, "org_a").run()
+    session.commit()
+
+    txn = session.query(models.SalesTxn).one()
+    assert txn.source_recorded_at is not None
+    assert txn.source_recorded_at.date() == date(2026, 6, 4)
+    assert txn.date == date(2026, 6, 1)
+
+    # The buy side is where the lag lives: this bill was dated 1 May and keyed
+    # in on the 20th, so a quote written in between could not have used it.
+    cost = session.query(models.CostRecord).one()
+    assert cost.source_recorded_at.date() == date(2026, 5, 20)
+    assert cost.date == date(2026, 5, 1)
 
 
 def test_malformed_rows_are_skipped_not_dropped_silently(session):

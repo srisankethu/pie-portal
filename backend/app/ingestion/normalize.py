@@ -116,6 +116,7 @@ def normalize_invoice(raw: dict[str, Any], *, system: str = ZOHO) -> list[SalesT
     inv_id = str(_require(raw, "invoice_id", "invoice"))
     customer_ext = str(_require(raw, "customer_id", f"invoice {inv_id}"))
     when = _parse_date(_require(raw, "date", f"invoice {inv_id}"), f"invoice {inv_id}")
+    recorded = _recorded_at(raw, f"invoice {inv_id}")
     lines = raw.get("line_items") or []
     if not lines:
         raise NormalizationError("NO_LINES", f"invoice {inv_id}: no line_items")
@@ -137,7 +138,9 @@ def normalize_invoice(raw: dict[str, Any], *, system: str = ZOHO) -> list[SalesT
             product_external_id=product_ext,
             date=when, qty=qty, unit_price=net_price, line_revenue=revenue,
             rate=rate, discount_percent=discount_pct,
-            source_ref=SourceRef(system=system, record_type="invoice", record_id=inv_id, line_id=line_id),
+            source_ref=SourceRef(system=system, record_type="invoice",
+                                 record_id=inv_id, line_id=line_id,
+                                 recorded_at=recorded),
         ))
     return out
 
@@ -220,6 +223,7 @@ def normalize_bill(raw: dict[str, Any], *, system: str = ZOHO) -> list[CostRecor
     # vendor pull did not return is still a cost, and dropping the line would
     # understate what an item cost in order to say who sold it.
     vendor_ext = str(raw["vendor_id"]) if raw.get("vendor_id") else None
+    recorded = _recorded_at(raw, f"bill {bill_id}")
     lines = raw.get("line_items") or []
     if not lines:
         raise NormalizationError("NO_LINES", f"bill {bill_id}: no line_items")
@@ -237,7 +241,9 @@ def normalize_bill(raw: dict[str, Any], *, system: str = ZOHO) -> list[CostRecor
             vendor_external_id=vendor_ext,
             date=when, qty=qty, unit_cost=unit_cost, rate=rate,
             discount_percent=discount_pct,
-            source_ref=SourceRef(system=system, record_type="bill", record_id=bill_id, line_id=line_id),
+            source_ref=SourceRef(system=system, record_type="bill",
+                                 record_id=bill_id, line_id=line_id,
+                                 recorded_at=recorded),
         ))
     return out
 
@@ -541,6 +547,30 @@ def _viewed_at(value: Any, ctx: str) -> Optional[datetime]:
         return None
 
 
+def _recorded_at(raw: dict[str, Any], ctx: str) -> Optional[datetime]:
+    """When the source system recorded this document — its ``created_time``.
+
+    The third clock, and the only one that answers "could the business have
+    known this yet". The document's own ``date`` is when the commercial fact
+    happened; the row's ``created_at`` is when *this platform* synced it, which
+    a backfill stamps identically across years of history. Neither substitutes.
+
+    Degrades to ``None`` rather than raising, the same bargain ``_viewed_at``
+    makes and for the same reason: a document whose creation stamp cannot be
+    placed is still a document, and losing an invoice over its provenance field
+    is the larger loss. The degradation is safe in the direction that matters —
+    ``None`` makes the row unusable as point-in-time evidence and it is counted
+    as such, never imputed from ``date``. Evidence is discarded, not invented.
+    """
+    value = raw.get("created_time")
+    if not value:
+        return None
+    try:
+        return _parse_timestamp(value, ctx, "created_time")
+    except NormalizationError:
+        return None
+
+
 def unreadable_view_stamp(raw: dict[str, Any]) -> bool:
     """True when the source sent a ``client_viewed_time`` nothing could place.
 
@@ -680,7 +710,8 @@ def normalize_quote_document(raw: dict[str, Any], *, system: str = ZOHO) -> Quot
         # unclassified quote sharing a bucket called "other".
         attributes={k: raw[k] for k in _QUOTE_ATTRIBUTE_KEYS
                     if raw.get(k) not in (None, "")},
-        source_ref=SourceRef(system=system, record_type="quote", record_id=qid),
+        source_ref=SourceRef(system=system, record_type="quote", record_id=qid,
+                             recorded_at=_recorded_at(raw, ctx)),
     )
 
 

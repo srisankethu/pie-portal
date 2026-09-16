@@ -283,6 +283,29 @@ class ZohoConnection(Base):
     #
     # NULL means nobody has checked this connection yet — not that it agrees.
     base_currency: Mapped[Optional[str]] = mapped_column(String(8))
+    #: The moment this book stopped being a migration and started being a
+    #: record. Documents the source system recorded *before* it were bulk-loaded
+    #: from a prior system, so their ``source_recorded_at`` is the load time and
+    #: says nothing about when the business knew the fact — it happened in a
+    #: system this one never read.
+    #:
+    #: This is why it is a stored date rather than something inferred from a
+    #: burst in the data. It is a human's statement about one company's history,
+    #: it is correctable, and a cohort boundary guessed from row counts would
+    #: move every time the counts did. Measured on the live books it is stark:
+    #: 1,632 of 2,419 bills and 2,483 of 3,625 invoices on one of them were
+    #: created in a single month.
+    #:
+    #: It lives on the connection, not the organization, for the reason
+    #: ``base_currency`` does — one organization holds several connected
+    #: companies and they migrated on different days.
+    #:
+    #: NULL means nobody has said, and NULL is read as "no migration" rather
+    #: than as a date: assuming an unstated cut-over would silently discard
+    #: genuine history. The cost of the other error is the opposite and worse,
+    #: which is why ``pack_coverage``-style reporting names how many rows sit
+    #: before it rather than leaving it to be discovered.
+    history_loaded_before: Mapped[Optional[date]] = mapped_column(Date)
     # Last time this connection was actually reachable, and what Zoho said.
     # Held per connection because "the org is connected" stops meaning anything
     # once there are three of them and one has a revoked token.
@@ -1949,6 +1972,22 @@ class SalesTxn(Base):
     # re-fetched from Zoho (a full re-sync) — see docs/zoho-setup.md.
     rate: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
     discount_percent: Mapped[Optional[Any]] = mapped_column(Numeric(9, 4))
+    #: When the SOURCE SYSTEM recorded this line's document — Zoho's
+    #: ``created_time``. Promoted out of ``source_ref`` into a column because
+    #: the point-in-time evidence builder filters on it on every diagnosis, and
+    #: a JSON predicate on a hot path is a table scan. The same promotion, for
+    #: the same reason, as ``CostRecord.vendor_id``.
+    #:
+    #: **Not ``date`` and not ``created_at``.** ``date`` is when the commercial
+    #: fact happened; ``created_at`` is when *this platform* synced the row, and
+    #: a backfill stamps years of history with one value. Only this column
+    #: answers "could a quote written that morning have known about this".
+    #:
+    #: NULL on every row written before this existed, and never backfilled from
+    #: the other two — a guess here would be indistinguishable from evidence.
+    #: A full re-sync fills it from Zoho.
+    source_recorded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), index=True)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -2009,6 +2048,15 @@ class CostRecord(Base):
     # so a re-sync is the only way to recover it for historical bills).
     rate: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
     discount_percent: Mapped[Optional[Any]] = mapped_column(Numeric(9, 4))
+    #: When the source system recorded the bill this line came from. See
+    #: ``SalesTxn.source_recorded_at`` for the argument; it matters more here.
+    #: A sale is *authored* in the ERP, so its record time and its date agree
+    #: almost always; a bill is *transcribed* from a supplier's document that
+    #: arrived later, so it does not. Measured on the live books: 99.5% of
+    #: invoices carry zero lag, while bills run a 3-day median and a 7-day p90 —
+    #: and that is the whole of this engine's look-ahead exposure.
+    source_recorded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), index=True)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
@@ -4155,6 +4203,15 @@ class QuoteDoc(Base):
     #: every connector has to share, and an absent key stays absent: "not set" is
     #: not a category.
     attributes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: When the source system recorded this quote. See
+    #: ``SalesTxn.source_recorded_at``. Here it does double duty: it is the
+    #: visibility stamp when this quote is *evidence* for a later one, and it is
+    #: the ``knowable_by`` moment when this quote is the one being diagnosed.
+    #: A quote is authored in the ERP, so it is almost always the quote's own
+    #: date — but "almost always" is not a rule an engine may assume, and 9.6%
+    #: of the quotes on one live book were created before their own date.
+    source_recorded_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime(timezone=True), index=True)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,

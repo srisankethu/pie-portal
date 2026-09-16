@@ -46,7 +46,10 @@ import math
 import statistics
 from dataclasses import dataclass
 from datetime import date
+from decimal import Decimal
 from typing import Iterable, Optional
+
+from .. import dispersion
 
 #: Fewer settled documents than this and an "average days to pay" is one
 #: transaction wearing a suit. Matches the spirit of the cadence floor.
@@ -236,11 +239,20 @@ def _spread(days: list[int]) -> Optional[float]:
     One invoice settled nine months late is a story about that invoice. A
     standard deviation would let it redefine the customer; the MAD does not,
     which is the same reason the headline figure is a median.
+
+    Delegates to ``commercial.dispersion.mad`` rather than computing it here.
+    This was the first MAD in the codebase and the quote-diagnosis outlier rule
+    needed a second — over money, with the excluded rows named — so the decision
+    moved to one place and this kept its name. Two MADs disagreeing about the
+    middle of a distribution is the semantic duplication the working agreement
+    is about, and the risk is real: the same days would be summarised one way on
+    the payments screen and another in a band.
+
+    The round-trip through ``Decimal`` is exact for whole days, so the number
+    this returns is the number it always returned.
     """
-    if len(days) < 2:
-        return None
-    mid = statistics.median(days)
-    return round(statistics.median([abs(d - mid) for d in days]), 1)
+    _, spread = dispersion.mad([Decimal(d) for d in days])
+    return round(float(spread), 1) if spread is not None else None
 
 
 def _trend(settled: list[Settlement]) -> str:

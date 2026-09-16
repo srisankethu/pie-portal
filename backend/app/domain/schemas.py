@@ -38,6 +38,20 @@ class SourceRef(BaseModel):
     record_type: str            # contact | item | invoice | bill
     record_id: str
     line_id: Optional[str] = None
+    #: When the **source system** recorded this document — Zoho's
+    #: ``created_time``, not the document's own date and not when this platform
+    #: synced it. Three clocks, and only this one answers "when could the
+    #: business have known".
+    #:
+    #: It belongs on the provenance object rather than on each DTO because it is
+    #: a fact about the source record, uniform across every kind of document,
+    #: and it has to survive the event log: ``record`` dumps the payload with
+    #: ``mode="json"``, so this travels as an ISO string and parses back exactly.
+    #:
+    #: Optional because a connector may not expose one. A row without it is not
+    #: usable as point-in-time evidence and is counted rather than imputed at
+    #: this layer — see ``commercial/quote_diagnosis/evidence.py``.
+    recorded_at: Optional[datetime] = None
 
 
 class CustomerIn(BaseModel):

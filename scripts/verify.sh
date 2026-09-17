@@ -26,6 +26,58 @@ step() { printf '\n\033[1m── %s\033[0m\n' "$1"; }
 fail() { printf '\033[31mFAIL\033[0m  %s\n' "$1"; FAILED+=("$1"); }
 pass() { printf '\033[32mok\033[0m    %s\n' "$1"; }
 
+# Run a step once, keeping its output, and show *that* output if it failed.
+#
+# Six checks here used to `>/dev/null 2>&1` and then, on failure, run the whole
+# thing a second time to show what went wrong. That is fine for a deterministic
+# failure and actively misleading for any other kind: a frontend run exited
+# non-zero on CI, the re-run passed, and the log printed 902 passing tests under
+# a FAIL header. The evidence of the failure was discarded by the thing whose
+# job is to report it, and nobody could diagnose it from the build.
+#
+#   run_step "<label>" <command...>
+#
+# stdout and stderr are interleaved into one file so ordering survives, and the
+# file is removed on the way out either way.
+run_step() {
+  local label="$1"; shift
+  local log
+  log="$(mktemp)"
+  if "$@" >"$log" 2>&1; then
+    pass "$label"
+    rm -f "$log"
+    return 0
+  fi
+  printf '      the failing run said:\n'
+  tail -40 "$log"
+  rm -f "$log"
+  fail "$label"
+  return 1
+}
+
+# The same, for a step that needs a subshell, a `cd` and environment variables.
+# `run_step` takes a command; this takes a fragment of shell.
+#
+#   run_sh "<ok label>" "<shell>" ["<fail label>"]
+#
+# Several checks word the two differently on purpose — "row-level security is
+# fail-closed" reads as a result, and the failure wants to name the command.
+run_sh() {
+  local label="$1" script="$2" onfail="${3:-$1}"
+  local log
+  log="$(mktemp)"
+  if bash -c "$script" >"$log" 2>&1; then
+    pass "$label"
+    rm -f "$log"
+    return 0
+  fi
+  printf '      the failing run said:\n'
+  tail -40 "$log"
+  rm -f "$log"
+  fail "$onfail"
+  return 1
+}
+
 PY="${PYTHON:-python3}"
 
 # pie-parser is imported in-process (backend/app/pie_service.py) from a pinned
@@ -114,21 +166,9 @@ else
   # neither appears. The server omitting them is the real guarantee and is
   # tested in the backend suite; this catches the other way it could break — a
   # component rendering whatever it is handed.
-  if (cd frontend && npm test >/dev/null 2>&1); then
-    pass "vitest"
-  else
-    printf '      re-running to show the failure:\n'
-    (cd frontend && npm test 2>&1 | tail -30)
-    fail "frontend tests"
-  fi
+  run_step "vitest" env -C frontend npm test
 
-  if (cd frontend && npm run build >/dev/null 2>&1); then
-    pass "tsc -b + vite build"
-  else
-    printf '      re-running to show the error:\n'
-    (cd frontend && npm run build 2>&1 | tail -30)
-    fail "frontend build"
-  fi
+  run_step "tsc -b + vite build" env -C frontend npm run build
 
   # ── 5. Migrations, on an EMPTY database ────────────────────────────────────
   # CLAUDE.md §6 step 5, and the one check that would have caught the incident
@@ -195,15 +235,9 @@ else
     printf '      To cover it: install postgresql (the server), or point\n'
     printf '      PG_VERIFY_URL at a disposable database.\n'
   else
-    # One script for the quiet run and the show-the-failure rerun — two inline
-    # copies would be this file's own §6 drift story all over again.
-    if (cd backend && DATABASE_URL="$PG_URL" $PY ../scripts/verify_pg_migrations.py) >/dev/null 2>&1; then
-      pass "empty Postgres database migrates to head, no drift"
-    else
-      printf '      re-running to show the failure:\n'
-      (cd backend && DATABASE_URL="$PG_URL" $PY ../scripts/verify_pg_migrations.py) 2>&1 | tail -25
-      fail "Postgres: alembic upgrade head on an empty database, or drift"
-    fi
+    run_sh "empty Postgres database migrates to head, no drift" \
+      "cd backend && DATABASE_URL='$PG_URL' $PY ../scripts/verify_pg_migrations.py" \
+      "Postgres: alembic upgrade head on an empty database, or drift"
 
     # Row-level security, which cannot be exercised anywhere else in this gate.
     # Step 3 runs the suite on SQLite, which has no policies and no connection
@@ -221,15 +255,10 @@ else
     # on, so that path skips with a note rather than guessing a username.
     if [ "$PG_SANDBOX_STARTED" = 1 ]; then
       RLS_URL="$(./scripts/pg_sandbox.sh app-url)"
-      if (cd backend && PIE_TEST_RLS_URL="$RLS_URL" PIE_TEST_RLS_OWNER_URL="$PG_URL" \
-            $PY -m pytest tests/decision_platform/test_row_level_security.py -q) >/dev/null 2>&1; then
-        pass "row-level security is fail-closed for a non-bypassing role"
-      else
-        printf '      re-running to show the failure:\n'
-        (cd backend && PIE_TEST_RLS_URL="$RLS_URL" PIE_TEST_RLS_OWNER_URL="$PG_URL" \
-           $PY -m pytest tests/decision_platform/test_row_level_security.py -q) 2>&1 | tail -25
-        fail "row-level security"
-      fi
+      run_sh "row-level security is fail-closed for a non-bypassing role" \
+        "cd backend && PIE_TEST_RLS_URL='$RLS_URL' PIE_TEST_RLS_OWNER_URL='$PG_URL' \
+           $PY -m pytest tests/decision_platform/test_row_level_security.py -q" \
+        "row-level security"
     else
       RLS_COVERED=0
       printf '\033[33mnote:\033[0m PG_VERIFY_URL points at a server this script did not\n'
@@ -247,17 +276,11 @@ else
     # Only the messaging suites, not the whole backend: `docs/postgres.md` has
     # the loop for running everything on Postgres, and adding four minutes to
     # every gate run is how a gate stops being run.
-    if (cd backend && PIE_TEST_DATABASE_URL="$PG_URL" $PY -m pytest -q \
-          tests/decision_platform/test_message_queue.py \
-          tests/decision_platform/test_queue_operations.py) >/dev/null 2>&1; then
-      pass "queue behaves on Postgres, concurrent claim included"
-    else
-      printf '      re-running to show the failure:\n'
-      (cd backend && PIE_TEST_DATABASE_URL="$PG_URL" $PY -m pytest -q \
-          tests/decision_platform/test_message_queue.py \
-          tests/decision_platform/test_queue_operations.py) 2>&1 | tail -25
-      fail "queue suites on Postgres"
-    fi
+    run_sh "queue behaves on Postgres, concurrent claim included" \
+      "cd backend && PIE_TEST_DATABASE_URL='$PG_URL' $PY -m pytest -q \
+         tests/decision_platform/test_message_queue.py \
+         tests/decision_platform/test_queue_operations.py" \
+      "queue suites on Postgres"
   fi
 
   # ── 7. The documented backup, actually performed ───────────────────────────
@@ -279,7 +302,11 @@ else
   if [ -z "$PG_URL" ]; then
     printf '\033[33mnote:\033[0m no PostgreSQL server — the restore drill will SKIP too.\n'
   else
-    PG_VERIFY_URL="$PG_URL" ./scripts/restore_drill.py >/dev/null 2>&1
+    # Kept, not discarded: this one branches on the exit code (3 means "no
+    # pg_dump here"), so it cannot use `run_sh` — but it must still be able to
+    # show the run that failed rather than a second, different one.
+    DRILL_LOG="$(mktemp)"
+    PG_VERIFY_URL="$PG_URL" ./scripts/restore_drill.py >"$DRILL_LOG" 2>&1
     DRILL_RC=$?
     # 3 is "no pg_dump here", not "the backup is broken". Reporting that as a
     # failure would make this the check people learn to re-run and then ignore,
@@ -295,10 +322,11 @@ else
       printf '\033[33mnote:\033[0m the restore drill SKIPPED — no pg_dump/psql on this\n'
       printf '      machine. CI covers it.\n'
     else
-      printf '      re-running to show the failure:\n'
-      PG_VERIFY_URL="$PG_URL" ./scripts/restore_drill.py 2>&1 | tail -30
+      printf '      the failing run said:\n'
+      tail -40 "$DRILL_LOG"
       fail "restore drill: the documented backup procedure did not round-trip"
     fi
+    rm -f "$DRILL_LOG"
   fi
 
   [ "$PG_SANDBOX_STARTED" = "1" ] && ./scripts/pg_sandbox.sh stop >/dev/null 2>&1

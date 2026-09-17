@@ -7,7 +7,7 @@ import Typography from "@mui/material/Typography";
 import type { Quote } from "../types";
 import type { Blocker } from "./lineProblems";
 import { Tip } from "../Tip";
-import { CurrencyValue, TOUCH } from "../platform/kit";
+import { Stat, TOUCH } from "../platform/kit";
 
 /** What the quote comes to, and the one action that sends it.
  *
@@ -229,29 +229,9 @@ export function SummaryBar({
 
 /** One figure in the bar. `CurrencyValue` rather than a bare `money()` so the
  *  three of them line up on the decimal, which is the whole reason it exists. */
-function Stat({ label, value, strong = false, note }: {
-  label: string; value: number; strong?: boolean;
-  /** What this figure does not yet account for. */
-  note?: string | null;
-}) {
-  return (
-    <Box>
-      <Typography variant="overline" color="text.secondary" sx={{ display: "block", lineHeight: 1.3 }}>
-        {label}
-      </Typography>
-      <CurrencyValue
-        value={value}
-        bold={strong}
-        sx={{ fontFamily: "var(--font-heading)", fontSize: 20 }}
-      />
-      {note && (
-        <Typography variant="caption" color="text.secondary" sx={{ display: "block", lineHeight: 1.3 }}>
-          {note}
-        </Typography>
-      )}
-    </Box>
-  );
-}
+/* `Stat` was defined here and is `kit.Stat` now: the ERP quote page needed the
+   same label/figure/note block under its own line grid, and a second copy is
+   how two summaries come to disagree about what an em dash means. */
 
 /** What the subtotal is not counting, or has not been looked at.
  *

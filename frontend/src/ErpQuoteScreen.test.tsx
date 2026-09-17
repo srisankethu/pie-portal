@@ -88,11 +88,57 @@ function draw() {
     </MemoryRouter>);
 }
 
+/** Every diagnosis the stubbed engine will return, by line id. */
+let diagnoses: Record<string, unknown> = {};
+/** What the screen actually posted to `/assess`. */
+let assessed: Record<string, unknown> | null = null;
+/** Make `/assess` fail, with the server's own sentence. */
+let assessFails: string | null = null;
+
+function stubFetch() {
+  return vi.fn(async (url: string, init?: RequestInit) => {
+    if (String(url).includes("/quote-diagnosis/reasons")) {
+      return { ok: true, json: async () => ({ reasons: [] }) } as Response;
+    }
+    if (String(url).includes("/quote-diagnosis/assess")) {
+      assessed = JSON.parse(String(init?.body ?? "{}"));
+      if (assessFails) {
+        return { ok: false, statusText: "Unprocessable Content",
+                 text: async () => JSON.stringify({ detail: assessFails }) } as Response;
+      }
+      return { ok: true, json: async () => ({
+        quote_id: REF,
+        lines: Object.values(diagnoses),
+      }) } as Response;
+    }
+    throw new Error(`unexpected fetch: ${url}`);
+  });
+}
+
+/** One diagnosis, in the shape `/assess` projects. */
+function diagnosis(over: Record<string, unknown> = {}) {
+  return {
+    quote_diagnosis_id: null, line_id: "0", renders: true,
+    headline: "Below this customer's historical pricing",
+    quoted: "₹450", historical: "₹500 – ₹520",
+    evidence: "Strong", evidence_detail: "14 comparable transactions",
+    why: "This customer has purchased this item 14 times.",
+    note: "", qualification: "", actions: [],
+    ...over,
+  };
+}
+
 beforeEach(() => {
   listErpQuotes.mockResolvedValue({ quotes_listed: [quote()] });
   erpQuoteLines.mockResolvedValue(lines());
+  diagnoses = {};
+  assessed = null;
+  assessFails = null;
+  vi.stubGlobal("fetch", stubFetch());
 });
-afterEach(() => { listErpQuotes.mockReset(); erpQuoteLines.mockReset(); });
+afterEach(() => {
+  listErpQuotes.mockReset(); erpQuoteLines.mockReset(); vi.unstubAllGlobals();
+});
 
 describe("the quote", () => {
   it("shows its header", async () => {
@@ -220,5 +266,181 @@ describe("the organization's own fields", () => {
 
     await waitFor(() => expect(screen.getByText("cf_something_new")).toBeTruthy());
     expect(screen.getByText("Yes")).toBeTruthy();
+  });
+});
+
+describe("the identity strip", () => {
+  it("carries the quote, the customer and the book", () => {
+    // The Quote Builder opens with the same three facts in the same place. A
+    // reader should not have to re-learn where a quote's number lives because
+    // this one came out of the ERP.
+    draw();
+
+    return waitFor(() => {
+      expect(screen.getByText("Quote")).toBeTruthy();
+      expect(screen.getByText("QT FY27-013")).toBeTruthy();
+      expect(screen.getByText("Book")).toBeTruthy();
+      expect(screen.getByText("SLS Engineers")).toBeTruthy();
+    });
+  });
+
+  it("does not print the quote number twice", async () => {
+    // It did: once as the page heading and once in the strip, ten millimetres
+    // apart. The heading names the page now, as the Builder's does.
+    draw();
+
+    await waitFor(() => expect(screen.getByText("QT FY27-013")).toBeTruthy());
+    expect(screen.getAllByText("QT FY27-013")).toHaveLength(1);
+  });
+});
+
+describe("what the quote comes to", () => {
+  it("adds the lines up, which this page never used to do at all", async () => {
+    // Fourteen priced lines and nowhere on the screen saying what they came
+    // to. 4500 + 500.
+    draw();
+
+    await waitFor(() => expect(screen.getByText("Lines total")).toBeTruthy());
+    expect(screen.getByText("₹5,000")).toBeTruthy();
+  });
+
+  it("shows the ERP's own total for the document beside it", async () => {
+    // Two different numbers on purpose: the lines are pre-tax and this is the
+    // whole document. The page says so rather than computing the gap and
+    // calling it tax, which is a thing this pull does not hold.
+    draw();
+
+    await waitFor(() => expect(screen.getByText("Quotation total")).toBeTruthy());
+    expect(screen.getByText("₹1,01,139")).toBeTruthy();
+  });
+
+  it("leaves an unpriced line out of the total and says how many", async () => {
+    // `sum(… or 0)` is the CLAUDE.md §1 tell. A line the ERP never priced is a
+    // line nobody priced; adding it as zero puts a figure on screen that looks
+    // complete and is not, with nothing saying so.
+    //
+    // The two priced amounts are chosen so their sum appears nowhere else on
+    // the page — the grid renders every rate and every amount, so asserting a
+    // total that equals one of them proves nothing about the total.
+    erpQuoteLines.mockResolvedValue(lines({
+      lines: [
+        { line_number: 0, item_code: "A", description: "priced", product_id: null,
+          qty: 1, unit: "pcs", rate: 6000, amount: 6000 },
+        { line_number: 1, item_code: "B", description: "priced", product_id: null,
+          qty: 1, unit: "pcs", rate: 1500, amount: 1500 },
+        { line_number: 2, item_code: "C", description: "never priced",
+          product_id: null, qty: 1, unit: "pcs", rate: null, amount: null },
+      ],
+    }));
+    draw();
+
+    await waitFor(() => expect(screen.getByText("₹7,500")).toBeTruthy());
+    expect(screen.getByText(/1 line the ERP did not price/)).toBeTruthy();
+  });
+
+  it("invents no total when the breakdown was never read", async () => {
+    // An absent breakdown is not a quote worth nothing, and the difference
+    // between those two is the whole reason `lines_held` is on the wire.
+    erpQuoteLines.mockResolvedValue(lines({
+      lines: [], lines_held: false, empty_reason: "not read yet",
+    }));
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText(/breakdown has not been read yet/)).toBeTruthy());
+    expect(document.body.textContent).not.toMatch(/₹0(?!\d)/);
+  });
+
+  it("renders a total the ERP never gave as a dash, never as zero", async () => {
+    listErpQuotes.mockResolvedValue({ quotes_listed: [quote({ value: null })] });
+    erpQuoteLines.mockResolvedValue(lines({ lines: [], lines_held: false,
+                                            empty_reason: "not read yet" }));
+    draw();
+
+    await waitFor(() => expect(screen.getByText("Quotation total")).toBeTruthy());
+    expect(document.body.textContent).not.toMatch(/₹0(?!\d)/);
+  });
+});
+
+describe("the diagnosis", () => {
+  it("is on the page — the whole engine had no mount on this screen", async () => {
+    diagnoses = { "0": diagnosis() };
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Below this customer's historical pricing/))
+        .toBeTruthy());
+    expect(screen.getByText(/14 comparable transactions/)).toBeTruthy();
+  });
+
+  it("judges the quote as of the day it went out, never as of today", async () => {
+    // Invariant I1, and the reason a historical document cannot simply be
+    // handed to the engine with today's date: a quote sent in July priced
+    // against August evidence is the look-ahead the whole engine refuses. This
+    // quote was raised on 2026-07-23.
+    draw();
+
+    await waitFor(() => expect(assessed).not.toBeNull());
+    expect(assessed).toMatchObject({ quote_id: REF, as_of: "2026-07-23" });
+  });
+
+  it("records nothing, because this page cannot write", async () => {
+    // The page's whole promise is that the next sync overwrites anything typed
+    // on it. A screen that says so while appending a diagnosis row on every
+    // visit is lying about the cheapest thing to be honest about.
+    draw();
+
+    await waitFor(() => expect(assessed).not.toBeNull());
+    expect(assessed).toMatchObject({ record: false });
+  });
+
+  it("asks only about lines that name a product and carry a price", async () => {
+    // A line with neither cannot be compared against anything. `Freight` is the
+    // second fixture line and has no item code.
+    draw();
+
+    await waitFor(() => expect(assessed).not.toBeNull());
+    expect((assessed as { lines: unknown[] }).lines).toHaveLength(1);
+    expect((assessed as { lines: Record<string, unknown>[] }).lines[0])
+      .toMatchObject({ line_id: "0", product_id: "CNMG120408",
+                       quoted_unit_price: 450 });
+  });
+
+  it("says the check ran when it flagged nothing, rather than vanishing", async () => {
+    // On the Builder an empty panel is right — a row reading "no findings" on
+    // every ordinary quote is noise while somebody is pricing. On a finished
+    // document a reader asking "was this checked?" cannot tell silence from a
+    // panel that was never mounted, and that question is why this screen was
+    // asked about twice.
+    diagnoses = { "0": diagnosis({ renders: false }) };
+    draw();
+
+    await waitFor(() => expect(screen.getByText(/Nothing on this quote stood out/))
+      .toBeTruthy());
+    expect(screen.getByText(/paid by 2026-07-23/)).toBeTruthy();
+  });
+
+  it("says so when the check could not run, and never reads as clean", async () => {
+    // `absence of evidence is not a pass`, on a screen. A panel quiet because
+    // it could not ask looks exactly like one quiet because there was nothing
+    // to say, and the server's own sentence is the only thing that separates
+    // them — here, the window it refuses to diagnose outside of.
+    assessFails = "A diagnosis date must be within 90 days of today.";
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText(/within 90 days of today/)).toBeTruthy());
+    expect(screen.queryByText(/Nothing on this quote stood out/)).toBeNull();
+  });
+
+  it("asks nothing at all when the breakdown was never read", async () => {
+    erpQuoteLines.mockResolvedValue(lines({ lines: [], lines_held: false,
+                                            empty_reason: "not read yet" }));
+    draw();
+
+    await waitFor(() => expect(screen.getByText("Quotation total")).toBeTruthy());
+    expect(assessed).toBeNull();
+    // And no claim that the check found nothing — it was never put the question.
+    expect(screen.queryByText(/Nothing on this quote stood out/)).toBeNull();
   });
 });

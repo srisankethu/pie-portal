@@ -33,8 +33,10 @@
 import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
+import Paper from "@mui/material/Paper";
 import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
+import Typography from "@mui/material/Typography";
 import ArrowBackOutlined from "@mui/icons-material/ArrowBackOutlined";
 import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
@@ -44,10 +46,12 @@ import { money } from "./money";
 import { DataGrid, numeric, text } from "./platform/DataGrid";
 import type { ColDef } from "./platform/DataGrid";
 import {
-  EmptyState, ErrorState, FactTable, FieldLabel, LoadingState, Meta,
-  SectionHeader, StatusChip, TOUCH, type Tone,
+  EmptyState, ErrorState, FactTable, FieldLabel, IdentityStrip, LoadingState,
+  Meta, Section, SectionHeader, Stat, StatusChip, TOUCH, type Tone,
 } from "./platform/kit";
 import { pathFor } from "./platform/route";
+import { QuoteDiagnosisPanel, useDismissReasons } from "./components/QuoteDiagnosisPanel";
+import { useErpQuoteDiagnosis } from "./useQuoteDiagnosis";
 import type { PlatformSession } from "./platform/types";
 import type { ErpQuote, ErpQuoteLine, ErpQuoteLines } from "./types";
 
@@ -92,6 +96,21 @@ const FIELD_LABEL: Record<string, string> = {
   cf_procurement_type: "Procurement type",
   branch_id: "Branch",
 };
+
+/** The page's own name, used by all four of its states so the heading does not
+ *  change under a reader while the same page loads, fails, or resolves. */
+const TITLE = "Quote from your ERP";
+
+/** What this screen is, in the shape the Quote Builder's own sub-heading takes.
+ *
+ *  It says read-only up front rather than only in the small print at the foot,
+ *  because "why can I not edit this" is the question the page was opened with
+ *  the first three times it was looked at. */
+const SUB =
+  "A quote your ERP raised, as it was issued — the lines, what they came to, "
+  + "and how the ERP recorded the outcome. Read-only for everybody: this "
+  + "document lives in another system, and a change typed here would be "
+  + "overwritten by the next sync.";
 
 function dash(value: string | null | undefined): string {
   return value || "—";
@@ -153,7 +172,7 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   if (error) {
     return (
       <Box>
-        <SectionHeader title="Quote from your ERP" actions={back} />
+        <SectionHeader title={TITLE} actions={back} />
         <ErrorState error={error} onRetry={() => navigate(0)} />
       </Box>
     );
@@ -161,7 +180,7 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   if (quote === undefined) {
     return (
       <Box>
-        <SectionHeader title="Quote from your ERP" actions={back} />
+        <SectionHeader title={TITLE} actions={back} />
         <LoadingState rows={4} label="Reading the quote…" />
       </Box>
     );
@@ -169,7 +188,7 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   if (quote === null) {
     return (
       <Box>
-        <SectionHeader title="Quote from your ERP" actions={back} />
+        <SectionHeader title={TITLE} actions={back} />
         <EmptyState
           title="No such quote"
           reason="This reference does not name a quote on your list. A quote
@@ -182,48 +201,78 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
 
   const o = outcomeOf(quote.outcome);
   const fields = Object.entries(quote.attributes ?? {});
+  const heading = (t: string) => (
+    <Typography sx={{ fontFamily: "var(--font-heading)", fontWeight: 600 }}>
+      {t}
+    </Typography>
+  );
 
   return (
     <Box>
-      <SectionHeader
-        title={dash(quote.number)}
-        sub={quote.customer_label}
-        actions={back}
-      />
+      {/* The page is titled for what it is, not for which quote it is — the
+          Builder's own arrangement, and the reason for it here is that the
+          strip below already says the number. Titling this "QT FY27-018"
+          printed the number twice, ten millimetres apart, and left this screen
+          the only one of its four states with a different heading. */}
+      <SectionHeader title={TITLE} sub={SUB} actions={back} />
 
-      <Stack direction="row" spacing={1} sx={{ alignItems: "center", mb: 2 }}>
-        <StatusChip label={o.label} tone={o.tone} tip={o.tip} />
-        <Meta>{`ERP status: ${sourceWord(quote.source_status)}`}</Meta>
-      </Stack>
-
-      {/* A label and a value, seven rows — the case `ui-standards` §3 keeps a
-          fact panel for. Its row count is fixed by the document, not by the
-          size of the business. */}
-      <FactTable
-        label={`Quote ${dash(quote.number)}`}
-        rows={[
-          ["Value", quote.value === null ? "—" : money(quote.value)],
-          ["Raised", quote.raised_on],
-          ["Expires", dash(quote.expires_on)],
-          ["Decided", dash(quote.decided_on)],
-          ["Customer opened", dash(quote.opened_at)],
-          ["Book", quote.company],
-          ["ERP reference", quote.quote_document_ref],
+      {/* The same strip the Quote Builder opens with, and the reason it is a
+          `kit` component rather than markup in one file: a person reading a
+          quote should not have to re-learn where its number, its customer and
+          its standing are because this one came out of the ERP instead of the
+          desk. The Builder's third field is the owner and this one's is the
+          book — an ERP quote carries `salesperson_external_id` and this
+          platform holds no name for it, so the honest third fact is which set
+          of books raised the document. */}
+      <IdentityStrip
+        fields={[
+          { label: "Quote", value: heading(dash(quote.number)) },
+          { label: "Customer", value: heading(quote.customer_label) },
+          { label: "Book", value: heading(quote.company) },
         ]}
+        aside={
+          <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+            <StatusChip label={o.label} tone={o.tone} tip={o.tip} />
+            <Meta>{`ERP status: ${sourceWord(quote.source_status)}`}</Meta>
+          </Stack>
+        }
       />
 
-      {fields.length > 0 && (
-        <Box sx={{ mt: 3 }}>
-          <FieldLabel>Your fields on this quote</FieldLabel>
-          <Box sx={{ mt: 0.5 }}>
-            <FactTable
-              prose
-              label="Fields this organization set on the quote"
-              rows={fields.map(([k, v]) => [FIELD_LABEL[k] ?? k, v])}
-            />
+      {/* What the Builder bands as QUOTE DETAILS. Not collapsible, which is the
+          one place this deliberately departs from it: there the band holds a
+          form somebody fills in and folding it away is how you get past it;
+          here it is five facts, and a page whose whole promise is that there is
+          nothing to press should not open with something to press. */}
+      <Section title="Quote details" level="widget" dense>
+        {/* A label and a value, five rows — the case `ui-standards` §3 keeps a
+            fact panel for. Its row count is fixed by the document, not by the
+            size of the business. `Value` has moved to the summary at the foot,
+            where the Builder puts a total and where it can be read against
+            what the lines come to. */}
+        <FactTable
+          label={`Quote ${dash(quote.number)}`}
+          rows={[
+            ["Raised", quote.raised_on],
+            ["Expires", dash(quote.expires_on)],
+            ["Decided", dash(quote.decided_on)],
+            ["Customer opened", dash(quote.opened_at)],
+            ["ERP reference", quote.quote_document_ref],
+          ]}
+        />
+
+        {fields.length > 0 && (
+          <Box sx={{ mt: 3 }}>
+            <FieldLabel>Your fields on this quote</FieldLabel>
+            <Box sx={{ mt: 0.5 }}>
+              <FactTable
+                prose
+                label="Fields this organization set on the quote"
+                rows={fields.map(([k, v]) => [FIELD_LABEL[k] ?? k, v])}
+              />
+            </Box>
           </Box>
-        </Box>
-      )}
+        )}
+      </Section>
 
       <Box sx={{ mt: 3 }}>
         <FieldLabel>What was quoted</FieldLabel>
@@ -232,14 +281,124 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
         </Box>
       </Box>
 
-      <Box sx={{ mt: 3 }}>
-        <Meta>
-          Nothing on this page can be edited: a change typed here would be
-          overwritten by the next sync.
-        </Meta>
-      </Box>
+      {/* The diagnosis, against what this customer had paid *by the day this
+          quote went out* — not against today. It is the same engine and the
+          same endpoint the Quote Builder asks; what differs is that this
+          document has already been answered, so the cards read as "what the
+          evidence said at the time" beside an outcome the ERP recorded.
+
+          Dismissal and "review the price" are both absent, and neither is an
+          oversight: nothing here was recorded, so there is no diagnosis to
+          dismiss, and an issued document cannot be re-priced from this screen. */}
+      <ErpQuoteDiagnosis quote={quote} lines={lines} token={session.token} />
+
+      <ErpQuoteSummary quote={quote} lines={lines} />
     </Box>
   );
+}
+
+/** The diagnosis cards for a quote the ERP already issued.
+ *
+ *  A component rather than three lines inline because the hook must not run
+ *  until the quote is loaded — `ErpQuoteScreen` returns early on four states
+ *  before it has one, and a hook cannot live behind an early return. */
+function ErpQuoteDiagnosis({ quote, lines, token }: {
+  quote: ErpQuote; lines?: ErpQuoteLines; token: string;
+}) {
+  const held = lines?.lines ?? [];
+  const diagnosis = useErpQuoteDiagnosis(
+    quote.quote_document_ref, quote.customer_label, quote.raised_on, held,
+    token);
+  const dismissReasons = useDismissReasons(token);
+
+  // Nothing to ask about. The breakdown has not been read, or no line on it
+  // names a product and a price — and "the check found nothing" would be a
+  // claim about evidence that was never put to it.
+  if (held.length === 0) return null;
+
+  return (
+    <QuoteDiagnosisPanel
+      lineIds={held.map((l) => String(l.line_number))}
+      diagnosis={diagnosis}
+      dismissReasons={dismissReasons}
+      title="How this was priced against the customer's own history"
+      clean={`Checked against what this customer had paid by ${quote.raised_on}. `
+             + "Nothing on this quote stood out."}
+    />
+  );
+}
+
+/** What the lines come to, beside what the ERP says the document came to.
+ *
+ *  The screen had no total at all: fourteen priced lines and nowhere on the
+ *  page saying what they add up to, which is the first thing anybody reads a
+ *  quote for. This is the Builder's summary strip, with the two figures an
+ *  issued document actually has.
+ *
+ *  **They are two different numbers and the difference is not an error.** The
+ *  lines are pre-tax; the quotation total is the ERP's own figure for the whole
+ *  document and includes tax and anything charged against the quote rather than
+ *  against a line. The gap is deliberately *not* computed and labelled "tax" —
+ *  this pull holds no tax row, and naming a subtraction after the thing it is
+ *  usually made of is how a screen states something it does not know. */
+function ErpQuoteSummary({ quote, lines }: {
+  quote: ErpQuote; lines?: ErpQuoteLines;
+}) {
+  const held = lines !== undefined && lines.lines_held;
+  const sum = sumOfLines(lines);
+
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        mt: 3, p: 1.5,
+        display: "flex", alignItems: "center", flexWrap: "wrap",
+        gap: 3, rowGap: 1.5,
+        bgcolor: "var(--color-neutral-100)",
+      }}
+    >
+      <Stat
+        label="Lines total"
+        value={sum.total}
+        note={held ? sum.note : "the breakdown has not been read yet"}
+      />
+      <Stat label="Quotation total" value={quote.value} strong />
+      <Box sx={{ flex: 1 }} />
+      <Typography variant="body2" color="text.secondary" sx={{ maxWidth: "52ch" }}>
+        The quotation total is the ERP&rsquo;s own figure for the whole document,
+        including tax and anything charged against the quote rather than against
+        a line. Nothing on this page can be edited: a change typed here would be
+        overwritten by the next sync.
+      </Typography>
+    </Paper>
+  );
+}
+
+/** Σ of the line amounts, and what the sum left out.
+ *
+ *  A line the ERP never priced is excluded and counted, never added as zero —
+ *  the `sum(… or 0)` tell CLAUDE.md §1 names, which would put a total on screen
+ *  that looks complete and is not. Where nothing was priced, or the breakdown
+ *  was never read, there is no total: `null`, which `CurrencyValue` renders as
+ *  an em dash. A quote whose lines this platform has not read is not a quote
+ *  worth nothing. */
+export function sumOfLines(lines?: ErpQuoteLines):
+    { total: number | null; note: string | null } {
+  if (lines === undefined || lines.lines.length === 0) {
+    return { total: null, note: null };
+  }
+  let total = 0;
+  let priced = 0;
+  let unpriced = 0;
+  for (const ln of lines.lines) {
+    if (ln.amount === null || ln.amount === undefined) unpriced += 1;
+    else { total += ln.amount; priced += 1; }
+  }
+  return {
+    total: priced === 0 ? null : total,
+    note: unpriced === 0 ? null
+      : `${unpriced} line${unpriced === 1 ? "" : "s"} the ERP did not price`,
+  };
 }
 
 /** The lines, in a grid — the shape a draft's lines are in, because this is the
@@ -265,6 +424,14 @@ export function ErpQuoteLineGrid({ lines }: { lines?: ErpQuoteLines }) {
   }
 
   const columns: ColDef<ErpQuoteLine>[] = [
+    // The position the ERP wrote the line at, counted from one as the document
+    // itself does. `line_number` is zero-based on the wire because it is an
+    // index; a reader comparing this against the PDF in their other hand is
+    // not reading indices.
+    text("line_number", "#", {
+      width: 70, flex: 0,
+      valueGetter: (p) => String((p.data?.line_number ?? 0) + 1),
+    }),
     text("item_code", "Item", {
       minWidth: 180,
       valueGetter: (p) => p.data?.item_code || "—",

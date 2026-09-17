@@ -16,15 +16,8 @@ import { describe, expect, it, vi } from "vitest";
 import { QuoteDiagnosisPanel } from "./QuoteDiagnosisPanel";
 import type { DiagnosisView } from "./DiagnosisCard";
 import type { QuoteDiagnosisState } from "../useQuoteDiagnosis";
-import type { Line } from "../types";
 
 const REASONS = [{ code: "PRICE_IS_CORRECT", label: "The price is right" }];
-
-function line(id: string): Line {
-  // Only the field the panel reads. The panel maps lines to diagnoses by id and
-  // touches nothing else on them.
-  return { id } as Line;
-}
 
 function view(over: Partial<DiagnosisView> = {}): DiagnosisView {
   return {
@@ -51,7 +44,7 @@ function state(over: Partial<QuoteDiagnosisState> = {}): QuoteDiagnosisState {
 describe("a diagnosis the server surfaced", () => {
   it("is on the screen — the assertion whose absence hid the whole feature", () => {
     render(<QuoteDiagnosisPanel
-      lines={[line("L1")]}
+      lineIds={["L1"]}
       diagnosis={state({ byLineId: { L1: view() } })}
       dismissReasons={REASONS}
       onReviewPrice={vi.fn()} />);
@@ -62,7 +55,7 @@ describe("a diagnosis the server surfaced", () => {
 
   it("appears once per line that surfaced, and not for the others", () => {
     render(<QuoteDiagnosisPanel
-      lines={[line("L1"), line("L2"), line("L3")]}
+      lineIds={["L1", "L2", "L3"]}
       diagnosis={state({ byLineId: {
         L1: view({ line_id: "L1" }),
         L2: view({ line_id: "L2", renders: false }),
@@ -78,7 +71,7 @@ describe("a diagnosis the server surfaced", () => {
     // A card about a line somebody has filtered away is a card about something
     // they cannot see.
     render(<QuoteDiagnosisPanel
-      lines={[line("L1")]}
+      lineIds={["L1"]}
       diagnosis={state({ byLineId: {
         L1: view(), L2: view({ line_id: "L2", headline: "Hidden line" }),
       } })}
@@ -94,7 +87,7 @@ describe("nothing worth saying", () => {
     // The default state on an ordinary quote. A heading over nothing is
     // furniture on every screen where the engine correctly stayed quiet.
     const { container } = render(<QuoteDiagnosisPanel
-      lines={[line("L1")]}
+      lineIds={["L1"]}
       diagnosis={state({ byLineId: { L1: view({ renders: false }) } })}
       dismissReasons={REASONS}
       onReviewPrice={vi.fn()} />);
@@ -104,7 +97,7 @@ describe("nothing worth saying", () => {
 
   it("renders nothing when the server surfaced nothing", () => {
     const { container } = render(<QuoteDiagnosisPanel
-      lines={[line("L1")]} diagnosis={state()}
+      lineIds={["L1"]} diagnosis={state()}
       dismissReasons={REASONS} onReviewPrice={vi.fn()} />);
 
     expect(container).toBeEmptyDOMElement();
@@ -117,7 +110,7 @@ describe("could not ask", () => {
     // nothing to say, and silence because the check never ran. Only one of
     // those is good news, and a reader cannot tell them apart unless told.
     render(<QuoteDiagnosisPanel
-      lines={[line("L1")]}
+      lineIds={["L1"]}
       diagnosis={state({ error: "network down" })}
       dismissReasons={REASONS}
       onReviewPrice={vi.fn()} />);
@@ -128,7 +121,7 @@ describe("could not ask", () => {
 
   it("is careful to say the quote itself is not what failed", () => {
     render(<QuoteDiagnosisPanel
-      lines={[line("L1")]}
+      lineIds={["L1"]}
       diagnosis={state({ error: "500" })}
       dismissReasons={REASONS}
       onReviewPrice={vi.fn()} />);
@@ -140,7 +133,7 @@ describe("could not ask", () => {
 describe("still asking", () => {
   it("shows a loading state rather than an answer it does not have", () => {
     render(<QuoteDiagnosisPanel
-      lines={[line("L1")]} diagnosis={state({ loading: true })}
+      lineIds={["L1"]} diagnosis={state({ loading: true })}
       dismissReasons={REASONS} onReviewPrice={vi.fn()} />);
 
     expect(document.querySelector(".MuiSkeleton-root")).toBeTruthy();
@@ -151,7 +144,7 @@ describe("still asking", () => {
     // keystroke would make the findings flicker in and out under the price
     // somebody is typing.
     render(<QuoteDiagnosisPanel
-      lines={[line("L1")]}
+      lineIds={["L1"]}
       diagnosis={state({ loading: true, byLineId: { L1: view() } })}
       dismissReasons={REASONS}
       onReviewPrice={vi.fn()} />);

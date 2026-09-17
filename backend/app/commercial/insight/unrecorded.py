@@ -66,6 +66,7 @@ from sqlalchemy.orm import Session
 
 from ...domain import models
 from ...domain.enums import QuoteDocOutcome, QuoteOutcomeStatus
+from . import quote_book
 
 #: A quote is off this list once *somebody* has said how it ended — either
 #: source. These are the human table's endings; ``QuoteDocOutcome`` covers the
@@ -263,8 +264,11 @@ def build(session: Session, org: str, *, as_of: date,
             # answer than ``label_for``'s "Unnamed customer (id …)": on this
             # table an unresolved ``customer_id`` usually means a walk-in or a
             # spelling the contact pull did not match, not a missing master row.
-            customer_label=(customer_names.get(row.customer_id or "")
-                            or row.customer_ref or "Unattributed"),
+            # The rule lives in ``quote_book`` because that module lists the
+            # same table: two screens spelling one customer two ways is a
+            # difference nobody reports and everybody distrusts.
+            customer_label=quote_book.customer_label(
+                row.customer_id, row.customer_ref, customer_names),
             source_status=row.source_status,
             raised_on=row.date,
             expires_on=row.expires_on,

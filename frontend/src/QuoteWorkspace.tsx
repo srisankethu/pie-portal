@@ -23,12 +23,15 @@
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import Card from "@mui/material/Card";
+import Chip from "@mui/material/Chip";
 import Dialog from "@mui/material/Dialog";
 import DialogActions from "@mui/material/DialogActions";
 import DialogContent from "@mui/material/DialogContent";
 import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import Stack from "@mui/material/Stack";
+import Tab from "@mui/material/Tab";
+import Tabs from "@mui/material/Tabs";
 import TextField from "@mui/material/TextField";
 import Typography from "@mui/material/Typography";
 import { useSnackbar } from "notistack";
@@ -38,17 +41,18 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { CompanyRequired, api, forgetLegacyDraft } from "./api";
 import type { QuoteCompany } from "./api";
 import { CompanyPicker } from "./components/CompanyPicker";
+import { ErpQuoteList } from "./components/ErpQuoteList";
 import { money } from "./money";
 import { DataGrid, numeric, text } from "./platform/DataGrid";
 import type { ColDef } from "./platform/DataGrid";
 import {
   CurrencyValue, EmptyState, ErrorState, FilterChip, FilterPanel, LoadingState,
-  SectionHeader, StatusChip, TOUCH, type Tone,
+  Meta, SectionHeader, StatusChip, TOUCH, type Tone,
 } from "./platform/kit";
 import { pathFor } from "./platform/route";
 import type { PlatformSession } from "./platform/types";
 import { since } from "./when";
-import type { QuoteDraftSummary, QuoteReadiness } from "./types";
+import type { ErpQuoteBook, QuoteDraftSummary, QuoteReadiness } from "./types";
 
 const SUB =
   "Every quote the desk is working on, shared across the organization. Open a "
@@ -142,9 +146,25 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
     useState<{ id: string; name: string } | null>(null);
   const [toDelete, setToDelete] = useState<QuoteDraftSummary | null>(null);
 
+  /** The two lists this screen shows, and they are fetched independently.
+   *
+   *  A failure reading the ERP book must not blank the drafts: the drafts are
+   *  this desk's own work in progress and the book is a read of somebody else's
+   *  system, so one being unavailable is not a reason to hide the other. The
+   *  tab carries its own error for the same reason. */
+  const [tab, setTab] = useState<"drafts" | "erp">("drafts");
+  const [book, setBook] = useState<ErpQuoteBook | null>(null);
+  const [bookError, setBookError] = useState<string | null>(null);
+
   const load = useCallback(() => {
     setError(null);
     return api.listQuotes(t).then(setRows).catch((e) => setError((e as Error).message));
+  }, [t]);
+
+  const loadBook = useCallback(() => {
+    setBookError(null);
+    return api.listErpQuotes(t).then(setBook)
+      .catch((e) => setBookError((e as Error).message));
   }, [t]);
 
   useEffect(() => {
@@ -152,7 +172,11 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
     // definition now — the server holds every draft — so it goes.
     forgetLegacyDraft();
     void load();
-  }, [load]);
+    // Fetched on arrival rather than on first tab click, so the count on the
+    // tab is true before somebody presses it. A tab labelled with a count it
+    // only learns after being opened is a tab nobody opens.
+    void loadBook();
+  }, [load, loadBook]);
 
   /* Arriving from an account page: `?customer=<id>&name=<label>` means "start
    * one for them". The parameters are cleared before the draft is asked for,
@@ -325,6 +349,60 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
         }
       />
 
+      {/* Two panels of one screen, so a tab list rather than a `FilterChip` row
+          — `ui-standards` §9, and the same idiom `IdentityScreen` uses. The
+          chips below narrow *within* the drafts; this switches between the
+          desk's own work and what the connected books hold, which are two
+          different things and were never both visible here before. */}
+      <Tabs
+        value={tab}
+        onChange={(_e, v) => setTab(v as "drafts" | "erp")}
+        aria-label="Which quotes"
+        sx={{ mb: 2 }}
+      >
+        <Tab
+          value="drafts" id="q-tab-drafts" aria-controls="q-panel-drafts"
+          label={
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+              <span>Drafts</span>
+              {rows !== null && <Chip size="small" label={rows.length} />}
+            </Stack>
+          }
+        />
+        <Tab
+          value="erp" id="q-tab-erp" aria-controls="q-panel-erp"
+          label={
+            <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
+              <span>From your ERP</span>
+              {book !== null && <Chip size="small" label={book.count} />}
+            </Stack>
+          }
+        />
+      </Tabs>
+
+      {tab === "erp" ? (
+        <Box role="tabpanel" id="q-panel-erp" aria-labelledby="q-tab-erp">
+          {bookError ? (
+            <ErrorState error={bookError} onRetry={() => void loadBook()} />
+          ) : book === null ? (
+            <LoadingState rows={4} label="Reading the connected books…" />
+          ) : (
+            <>
+              {/* Said in words because the grid cannot: the page is capped, and
+                  a reader who cannot tell a full book from a first page cannot
+                  tell this screen from the bug it was built to fix. */}
+              {book.listed < book.count && (
+                <Meta>
+                  Showing the {book.listed} most recent of {book.count}.
+                </Meta>
+              )}
+              <ErpQuoteList quotes={book.quotes_listed}
+                            emptyReason={book.empty_reason} />
+            </>
+          )}
+        </Box>
+      ) : (
+      <Box role="tabpanel" id="q-panel-drafts" aria-labelledby="q-tab-drafts">
       {error ? (
         <ErrorState error={error} onRetry={() => void load()} />
       ) : rows === null ? (
@@ -390,6 +468,8 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
             )}
           />
         </>
+      )}
+      </Box>
       )}
 
       {companyChoice && (

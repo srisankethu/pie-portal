@@ -9,8 +9,8 @@
  * on one request is how a screen ends up displaying one person's name while
  * deciding what to show from another's role.
  */
-import type { EstimateResult, ItemSearch, Quote, QuoteDraftSummary, QuoteFieldDefinition,
-  QuoteOwner, RfqDocument } from "./types";
+import type { ErpQuoteBook, EstimateResult, ItemSearch, Quote, QuoteDraftSummary,
+  QuoteFieldDefinition, QuoteOwner, RfqDocument } from "./types";
 import { authInit } from "./authFetch";
 
 /** The key the builder used to keep one draft under in `localStorage`.
@@ -141,6 +141,12 @@ export const api = {
   listQuotes: (t: string) =>
     req<{ quotes: QuoteDraftSummary[] }>("/api/v1/quotes", {}, t)
       .then((r) => r.quotes),
+
+  /** Every quote the connected ERP raised — read-only, and a different list
+   *  from `listQuotes` above. Served by the insight router because that is
+   *  where the role scoping and the other reads of this table live. */
+  listErpQuotes: (t: string, limit = 200) =>
+    req<ErpQuoteBook>(`/api/v1/insight/quote-book?limit=${limit}`, {}, t),
 
   getQuote: (t: string, id: string) => req<Quote>(`/api/v1/quotes/${id}`, {}, t),
 

@@ -30,6 +30,8 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Iterable, Optional
 
+from ...clock import aware
+
 # ── evidence classes (§8) ────────────────────────────────────────────────────
 #
 # Realized prices are survivorship-biased: they are, by definition, the prices a
@@ -297,12 +299,21 @@ def is_knowable(recorded_at: Optional[datetime], *, knowable_by: datetime,
     Strictly ``<``: a row recorded in the same instant as the quote was written
     is not evidence the quoter had. The boundary has to fall somewhere and it
     falls on the conservative side.
+
+    Both sides go through ``clock.aware`` first. SQLite hands back a naive
+    datetime from a ``DateTime(timezone=True)`` column, so a stored stamp and a
+    caller's ``knowable_by`` are not comparable as they arrive — and the failure
+    is a ``TypeError`` at the exact comparison the engine's integrity rests on.
+    ``clock.aware`` is the platform's one answer to that; a second local
+    normalisation here would be a second answer to it.
     """
-    if recorded_at is None:
+    stamp = aware(recorded_at)
+    cutoff = aware(knowable_by)
+    if stamp is None or cutoff is None:
         return NO_RECORDED_AT
-    if backfill_before is not None and recorded_at.date() < backfill_before:
+    if backfill_before is not None and stamp.date() < backfill_before:
         return BACKFILLED
-    if recorded_at >= knowable_by:
+    if stamp >= cutoff:
         return RECORDED_AFTER
     return None
 

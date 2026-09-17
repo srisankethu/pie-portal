@@ -39,6 +39,13 @@ NOT_A_POLICY_STAMP: dict[str, str] = {
     "quote_decisions.engine_version":
         "the identity of the code that priced the line — a build, not a policy. "
         "Two versions of the engine can apply exactly the same thresholds.",
+    "quote_diagnoses.engine_version":
+        "the same kind of stamp as quote_decisions.engine_version, on the "
+        "sibling table: which rules produced the diagnosis, not which policy "
+        "judged it. The policy is the thresholds_version beside it, and the two "
+        "answer different questions on purpose — a rule change and a threshold "
+        "edit both make an old diagnosis read differently, and a reader has to "
+        "be able to tell which one happened.",
     "quote_decisions.catalog_version":
         "the same catalogue checksum as products.pie_catalog_version.",
     "signals.detector_version":
@@ -174,6 +181,7 @@ def test_the_expected_stamped_tables_are_all_still_marked():
         "quote_decisions", "outcome_snapshots", "value_events",
         "evaluation_baselines", "business_states",
         "quote_documents", "audit_entries", "entity_groups",
+        "quote_diagnoses",
     }
 
 

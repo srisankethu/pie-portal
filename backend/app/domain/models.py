@@ -2921,6 +2921,133 @@ class QuoteDecision(Base):
                                                  index=True)
 
 
+class QuoteDiagnosis(Base):
+    """One quote line, judged against what the desk could have known. Append-only.
+
+    Re-diagnosing a line writes a **new** row; nothing here is ever updated, and
+    that is the whole of §12's separation. A diagnosis is a judgement made
+    against particular evidence on a particular day. What actually happened is
+    learned later and lives on ``quote_outcomes``, which has no write path into
+    this table — so an outcome can never silently re-judge a line against facts
+    nobody had when it was priced.
+
+    **Distinct from ``QuoteDecision``, deliberately.** That row is the record of
+    a price a human put in front of a customer, written at the moment of sending.
+    This is a read-time judgement that must be recomputable on a quote nobody has
+    sent, including a quote from last year. Fusing them would mean either writing
+    a decision row for an unsent quote or making the decision row mutable, and
+    both are worse than a second table.
+
+    ``evidence_hash`` is what makes ``rediagnose`` mean something: it covers the
+    ordered set of evidence-row ids that produced this diagnosis, so recomputing
+    later and getting a different set fails loudly instead of quietly returning a
+    different answer. Note *why* that is reproducible at all — the evidence is
+    filtered on when the source recorded each row, so a re-sync that adds
+    late-arriving invoices adds rows the filter excludes, and the set does not
+    move. A diagnosis built on event dates could not have been hashed usefully.
+
+    **The economics columns are RESTRICTED in their entirety.** ``cost``,
+    ``opportunity`` and ``peer`` never reach a salesperson; the projection that
+    serves one is built from ``rules.OperationsDiagnosis``, a type with no field
+    to put them in.
+    """
+
+    __tablename__ = "quote_diagnoses"
+    __table_args__ = (
+        Index("ix_quote_diagnoses_org_quote", "organization_id", "quote_id"),
+        Index("ix_quote_diagnoses_org_line", "organization_id", "quote_line_id"),
+        Index("ix_quote_diagnoses_org_customer_product",
+              "organization_id", "customer_id", "product_id"),
+    )
+
+    quote_diagnosis_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                    default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    quote_id: Mapped[str] = mapped_column(String(64), index=True)
+    quote_line_id: Mapped[str] = mapped_column(String(64))
+
+    customer_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    product_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    quantity: Mapped[Any] = mapped_column(Numeric(18, 4))
+    quantity_band: Mapped[str] = mapped_column(String(24), default="")
+    quoted_unit_price: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+
+    #: The quote's commercial date — what the narrative speaks in.
+    as_of: Mapped[date] = mapped_column(Date)
+    #: The instant evidence was cut off at. Stored because it is the input that
+    #: decides what the diagnosis saw, and a replay that used a different one
+    #: would be answering a different question while claiming to reproduce.
+    knowable_by: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+
+    codes: Mapped[list[str]] = mapped_column(JSON, default=list)
+    context: Mapped[list[str]] = mapped_column(JSON, default=list)
+    strength: Mapped[str] = mapped_column(String(16), default="INSUFFICIENT")
+    #: Whether this rendered a card. Stored rather than recomputed because the
+    #: thresholds it was judged against can be edited, and "was this person
+    #: interrupted" is a fact about the past.
+    surfaces: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    #: §I4: every row that produced it, and every row excluded, with the reason.
+    evidence_ids: Mapped[list[str]] = mapped_column(JSON, default=list)
+    excluded: Mapped[list[dict[str, Any]]] = mapped_column(JSON, default=list)
+    evidence_summary: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    evidence_hash: Mapped[str] = mapped_column(String(80), default="", index=True)
+
+    price_band: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: RESTRICTED — purchase economics.
+    cost_baseline: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: RESTRICTED — another customer's commercial position.
+    peer_band: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: RESTRICTED — a management figure, never a salesperson's.
+    opportunity: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    thresholds_version: Mapped[str] = mapped_column(
+        String(32), default="", info={"policy_stamp": "commercial"})
+    engine_version: Mapped[str] = mapped_column(String(32), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now, index=True)
+
+
+class QuoteDiagnosisDismissal(Base):
+    """Somebody read a diagnosis card and said it was wrong. Append-only.
+
+    Its own table because ``QuoteDiagnosis`` is immutable: a dismissal is a human
+    act that happens after the judgement, and writing it onto the judgement would
+    make the judgement editable — the same argument ``QuoteOutcome`` makes about
+    ``QuoteDecision``.
+
+    **The reason code is the point, and it is required.** This is the cheapest
+    route to labelled data this engine will ever have, and the only honest way to
+    find out which rules are noise rather than assuming the ones nobody complains
+    about are right. Free text sits beside it and is not a substitute: a reason
+    nobody can aggregate tunes nothing. The vocabulary is
+    ``quote_diagnosis.render.DISMISS_REASONS``.
+
+    Several dismissals of one diagnosis are possible and are all kept. Two people
+    disagreeing about a card is a finding, and a unique constraint would throw
+    the second one away.
+    """
+
+    __tablename__ = "quote_diagnosis_dismissals"
+    __table_args__ = (
+        Index("ix_quote_diagnosis_dismissals_org_diagnosis",
+              "organization_id", "quote_diagnosis_id"),
+        Index("ix_quote_diagnosis_dismissals_org_reason",
+              "organization_id", "reason_code"),
+    )
+
+    dismissal_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                              default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    quote_diagnosis_id: Mapped[str] = mapped_column(String(64), index=True)
+    reason_code: Mapped[str] = mapped_column(String(32))
+    note: Mapped[Optional[str]] = mapped_column(String(1024))
+    dismissed_by_user_id: Mapped[Optional[str]] = mapped_column(String(64),
+                                                                index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                 default=_now, index=True)
+
+
 class QuoteOutcome(Base):
     """Whether a quote was sent, and whether it was won.
 

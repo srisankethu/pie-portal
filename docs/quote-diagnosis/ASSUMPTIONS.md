@@ -762,5 +762,143 @@ a test serialises the whole card and asserts neither number appears in it.
   exists; nobody has run it against a real book and confirmed a date. Until then
   the engine reports `backfill_cutover_unknown` on every diagnosis and bulk-loaded
   rows are not excluded.
-- **Phases 7 and 8** — the outcome layer (`rediagnose`, the evidence hash, the
-  `diagnosis_vs_outcome` view, dismissal persistence) and the UI.
+- **Quote line ingestion**, still. See §10 for what that leaves unmeasurable.
+
+
+---
+
+## 10. Phases 7 and 8 — the outcome layer, reproducibility, and the two views
+
+### 10.1 What was built
+
+**Two tables, both append-only** (`p3diag`). `quote_diagnoses` holds one
+judgement about one quote line at one moment; re-diagnosing writes a new row and
+nothing is ever updated. `quote_diagnosis_dismissals` holds a person saying the
+card was wrong, with a coded reason. That split is §12's separation made
+structural rather than promised: `quote_outcomes` has no write path into either,
+so what actually happened cannot retroactively re-judge a line against facts
+nobody had when it was priced.
+
+`QuoteDiagnosis` is deliberately **not** `QuoteDecision`. That row is the record
+of a price a human put in front of a customer, written at the moment of sending;
+this is a read-time judgement that must be recomputable on a quote nobody has
+sent. Fusing them would mean writing a decision row for an unsent quote, or
+making the decision row mutable. Both are worse than a second table.
+
+**The evidence hash** (`service.evidence_hash`, `HASH_VERSION = "qdh1"`) covers
+the ordered ids of every evidence row that produced the diagnosis — price side
+and cost side, separately labelled. `replay.rediagnose` re-runs a stored
+diagnosis at its own recorded moment and raises `EvidenceDrift` on a mismatch,
+naming which ids appeared and which disappeared. It is an `AssertionError`
+subclass on purpose: a caller must not branch on it. A replay that quietly
+returned a different answer would be worse than no replay, because the number it
+returned would look like the original.
+
+**This only works because of §3's correction.** The evidence is filtered on
+`source_recorded_at`, so a re-sync that brings in invoices *dated* before the
+quote but keyed in afterwards adds rows the filter excludes, and the cited set
+does not move. A diagnosis built on `event_date` could not have been hashed
+usefully — the hash would change on every catch-up and mean nothing.
+
+**`replay.evaluate`** reads diagnoses against outcomes and reports per-code
+counts. It computes on read and persists nothing, the same arrangement
+`outcome_tracker.evaluate` already uses and for the same reason: a stored
+evaluation is a second thing to keep true, and a late-arriving outcome should
+correct the figure rather than contradict a saved one. Nothing in `replay`
+writes to `quote_diagnoses` and nothing in it is an input to a future diagnosis.
+It is how a human decides to move a threshold, not a feedback loop.
+
+**Five endpoints** (`routers/quote_diagnosis.py`) and **one card**
+(`components/DiagnosisCard.tsx`).
+
+### 10.2 I3, and why the router has no `{mgmt && …}` in it
+
+The build prompt asked for an operations view built from a record type that has
+no cost or margin field on it, so a leak is structurally impossible rather than
+merely avoided. That is what `rules.OperationsDiagnosis` is, and the projection
+for a salesperson never touches `OwnerDiagnosis` — it constructs the operations
+type and renders from that. There is no field to forget to remove.
+
+Both leaks this repository has had were a guard that was right with one line
+below it that was not, so the tests are shaped to catch that class rather than a
+named field:
+
+- `test_a_salespersons_response_has_no_cost_in_it_anywhere` serialises the whole
+  payload and sweeps it, rather than asserting on fields somebody thought of.
+- `test_a_salesperson_cannot_walk_the_price_to_recover_cost` sweeps the quoted
+  price across the purchase cost and asserts nothing in the response moves at
+  it. The engine's codes turn on the *price band* — prices this customer has
+  already seen — so there is no boundary at cost to find. This test is what says
+  so, rather than the argument that says so.
+- `test_a_stored_diagnosis_is_read_back_under_the_same_role_rules` exists
+  because `/assess` and `/quote/{id}` are **two** computations of one withholding
+  rule. The second is therefore the one that drifts, and it needs its own test
+  rather than the first's.
+
+The frontend test file states plainly that it proves none of this — the
+guarantee is on the server, and the component has no guard because the data
+never arrives. What it pins is the layer below: the card is silent unless the
+server says otherwise, every sentence on it came from the server already
+written, and a dismissal cannot be sent without a reason.
+
+One test of mine was wrong on the first pass and the correction is worth
+recording: it asserted no figure matching `₹7\d\d|₹9\d\d` appeared on a
+cost-driven card, and `₹900` was the quoted **selling** price the desk must see.
+Withholding cost is not withholding numbers. It now asserts the exact figure set.
+
+### 10.3 Two departures from the prompt, and one judgement
+
+**`GET /evaluation` is management-only**, which §12 did not ask for. Not because
+the numbers are sensitive — they are counts — but because it is a tuning
+instrument, and a scoreboard of which warnings a salesperson dismissed, read by
+that salesperson, changes what gets dismissed.
+
+**`as_of` is bounded to ±90 days** (`_AS_OF_WINDOW_DAYS`). §13 wanted
+`rediagnose(quote_line_id, as_of)`, and it exists — but it replays a *stored*
+moment rather than choosing one. An open `as_of` on the assess endpoint would let
+any authenticated caller read an item's price history one day at a time, which
+is worth more to a competitor than one quote is.
+
+**`knowable_by` is derived, never taken from the caller** — end of the `as_of`
+day in UTC. A caller who could choose the cut-off could ask what the engine would
+have said before an inconvenient bill landed, and the wall clock as an
+alternative would make the same stored quote reproduce differently on every
+replay.
+
+### 10.4 Guard tables the new tables had to be registered in
+
+Two repository-wide checks failed on the new schema, and both were right to:
+
+- `test_policy_stamp_columns.py` — `quote_diagnoses.engine_version` is classified
+  `NOT_A_POLICY_STAMP` (it says which rules produced the diagnosis, not which
+  policy judged it; the policy is the `thresholds_version` beside it), and
+  `quote_diagnoses` is added to the tables expected to carry a stamp at all.
+- `test_trust_export_completeness.py` — both tables go in `erasure.EXPORTED`,
+  beside `quote_decisions`. The cost baseline on the row is not a reason to
+  withhold it: that export is owner-only, and a diagnosis is the reasoning about
+  the owner's own book. The dismissals travel with the diagnoses for the reason
+  `inbound_line_dispositions` travel with the lines — an export holding every
+  warning without the answers to them hands back a conversation with one side
+  missing.
+
+### 10.5 What phases 7 and 8 still cannot tell you
+
+**`QUOTED_WON` / `QUOTED_LOST` have no producer**, so §8's four evidence classes
+are one class in practice and every band is `REALIZED`. This bounds the outcome
+layer more than it bounds the diagnosis: `replay.evaluate` can report how often a
+code preceded a won or lost quote only for quotes this platform wrote, and the
+book's own history of offers is invisible to it. The resistance truncation is
+coded and tested against constructed rows and remains a guard rather than an
+active adjustment.
+
+**`history_loaded_before` is still unset on every live connection**, so every
+diagnosis carries `backfill_cutover_unknown` and bulk-loaded rows are not
+excluded. The detector exists and nobody has confirmed a date against a real
+book. Until somebody does, the §2.2 measurement stands: honest backtesting on
+SLS starts around 2026-04-01, and a hash computed over evidence that includes the
+bulk-load cohort is reproducible but not meaningful.
+
+**Nothing has been diagnosed against a real quote.** Every number in this
+document is from the audit; every number in the tests is constructed. The first
+real finding is the one that will say whether the surfacing floors in §6 are set
+anywhere near right.

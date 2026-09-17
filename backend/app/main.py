@@ -27,7 +27,8 @@ from .routers import (accounts, admin, ai_settings, api_keys, approvals,
                       onboarding, operator, organizations, outcomes,
                       platform_auth,
                       quote, resolve,
-                      groups, insight, monetization, quote_intelligence,
+                      groups, insight, monetization, quote_diagnosis,
+                      quote_intelligence,
                       quote_support, retrospective, trust)
 
 # One place decides what this process logs and where it goes — level from
@@ -353,6 +354,7 @@ app.include_router(accounts.router)
 app.include_router(groups.router)
 app.include_router(data_status.router)
 app.include_router(commercial.router)
+app.include_router(quote_diagnosis.router)
 app.include_router(quote_intelligence.router)
 app.include_router(enquiries.router)
 app.include_router(approvals.router)

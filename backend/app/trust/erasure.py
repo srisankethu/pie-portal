@@ -198,6 +198,20 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # above are unreadable without the labels and kinds this table gives them.
     ("quote_field_definitions", models.QuoteFieldDefinition),
     ("quote_decisions", models.QuoteDecision),
+    # Why each quoted line was judged the way it was, and who said the judgement
+    # was wrong. Exported on the same footing as the decisions above, and the
+    # cost baseline on the row is not a reason to withhold it: this export is
+    # owner-only, and a diagnosis is the reasoning about the owner's own book —
+    # which of their prices sat below what this customer has paid, on which of
+    # their own transactions, with which of them excluded and why.
+    #
+    # The dismissals travel with the diagnoses for the reason
+    # `inbound_line_dispositions` travel with the lines: the dismissal is the
+    # only record that a person read the card and disagreed, and an export
+    # holding every warning without the answers to them hands back a
+    # conversation with one side missing.
+    ("quote_diagnoses", models.QuoteDiagnosis),
+    ("quote_diagnosis_dismissals", models.QuoteDiagnosisDismissal),
     ("quote_outcomes", models.QuoteOutcome),
     # Which quotes went out, into whose ledger, under which document number.
     # Exported rather than excluded as "derived": a re-sync rebuilds what the

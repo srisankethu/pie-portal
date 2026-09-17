@@ -806,3 +806,22 @@ def test_a_graded_line_is_reported_as_compared():
 
     assert out.strength in (rules.STRONG, rules.MODERATE)
     assert card.comparable is True
+
+
+def test_declining_to_assert_an_opportunity_gives_a_reason_not_the_conclusion():
+    """"No opportunity is asserted — no opportunity is asserted."
+
+    `_opportunity_sentence` reads `basis` as a reason and writes "No
+    opportunity is asserted — {basis}." A single module constant carried the
+    conclusion in that slot, so the sentence restated itself. It went unread
+    for as long as nothing in the front end drew the owner projection, which
+    is the whole reason it survived: the string was generated on every
+    manager's quote and rendered on none of them.
+    """
+    out = _run(_steady(10, price="218"), quoted="339")   # above the band
+    report = render.render_owner(out, opportunity.compute(out, th=TH), th=TH)
+
+    assert report.opportunity.startswith("No opportunity is asserted — ")
+    reason = report.opportunity.split(" — ", 1)[1]
+    assert "no opportunity is asserted" not in reason.lower()
+    assert "not below the range" in reason

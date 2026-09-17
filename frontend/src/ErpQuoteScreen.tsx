@@ -324,7 +324,7 @@ function ErpQuoteDiagnosis({ quote, lines, token }: {
       diagnosis={diagnosis}
       dismissReasons={dismissReasons}
       title="How this was priced against the customer's own history"
-      clean={settled(lineIds, diagnosis, quote.raised_on)}
+      coverage={settled(lineIds, diagnosis, quote.raised_on)}
     />
   );
 }
@@ -350,19 +350,22 @@ function ErpQuoteDiagnosis({ quote, lines, token }: {
  *  quote on this screen surfaced a card and the claim was therefore true by
  *  accident. It is not the salesperson who catches that when it stops being
  *  true — the panel draws their cards and never reaches this sentence. It is
- *  the manager, who is served the owner payload that `DiagnosisCard` cannot
- *  render, sees no cards at all, and got told a quote was clean while their own
- *  projection said two of its lines were above the customer's history. An
- *  asserted clean bill that nothing checked is the `absence of evidence is not
- *  a pass` rule again, one layer up from the engine that is careful about it.
+ *  the manager, who was served the owner payload no card was built on, saw no
+ *  cards at all, and got told a quote was clean while their own projection said
+ *  two of its lines were above the customer's history. An asserted clean bill
+ *  that nothing checked is the `absence of evidence is not a pass` rule again,
+ *  one layer up from the engine that is careful about it.
+ *
+ *  A manager has `OwnerDiagnosisCard` now and both projections publish
+ *  `renders`, so this sentence and the cards above it are finally reading the
+ *  same field. It still counts rather than assuming, because the reason it was
+ *  wrong was the assuming, not the missing card.
  */
 function settled(lineIds: string[], diagnosis: QuoteDiagnosisState,
                  raisedOn: string): string {
   const seen = lineIds.map((id) => diagnosis.byLineId[id]).filter(Boolean);
   const compared = seen.filter((d) => d.comparable).length;
-  // `renders` on the operations projection, `surfaces` on the owner one — see
-  // `DiagnosisView.surfaces` for why there are two names for one answer.
-  const flagged = seen.filter((d) => d.renders ?? d.surfaces).length;
+  const flagged = seen.filter((d) => d.renders).length;
   const total = seen.length;
 
   if (total === 0 || compared === 0) {

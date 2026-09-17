@@ -14,17 +14,44 @@ import { render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { QuoteDiagnosisPanel } from "./QuoteDiagnosisPanel";
-import type { DiagnosisView } from "./DiagnosisCard";
+import type { OperationsDiagnosisView, OwnerDiagnosisView } from "./DiagnosisCard";
 import type { QuoteDiagnosisState } from "../useQuoteDiagnosis";
 
 const REASONS = [{ code: "PRICE_IS_CORRECT", label: "The price is right" }];
 
-function view(over: Partial<DiagnosisView> = {}): DiagnosisView {
+/** The manager's projection. A different shape carrying the economics, which
+ *  is why it is a different fixture and not `view()` with fields bolted on. */
+function ownerView(over: Partial<OwnerDiagnosisView> = {}): OwnerDiagnosisView {
   return {
+    view: "OWNER",
     quote_diagnosis_id: null,
     line_id: "L1",
     renders: true,
     comparable: true,
+    strength_word: "Strong",
+    headline: "Above this customer's historical pricing",
+    lines: [
+      "Quoted \u20b9339 per unit against a supported range of \u20b9218 (median \u20b9218), from 8 comparable transactions knowable on 2026-02-11.",
+      "Expected cost \u20b9150 per unit, from 4 purchase(s) on record.",
+    ],
+    opportunity: "Roughly \u20b96,065 on this line at the top of the band.",
+    evidence: "11 usable, 0 excluded.",
+    codes: ["ABOVE_HISTORICAL_RANGE"],
+    context: [],
+    qualification: "Historical prices may include exceptional deals.",
+    actions: ["REVIEW_PRICE"],
+    ...over,
+  };
+}
+
+function view(over: Partial<OperationsDiagnosisView> = {}): OperationsDiagnosisView {
+  return {
+    view: "OPERATIONS",
+    quote_diagnosis_id: null,
+    line_id: "L1",
+    renders: true,
+    comparable: true,
+    strength_word: "Strong",
     headline: "Below this customer's historical pricing",
     quoted: "₹900",
     historical: "₹980 – ₹1,020",
@@ -151,5 +178,57 @@ describe("still asking", () => {
       onReviewPrice={vi.fn()} />);
 
     expect(screen.getByText("Below this customer's historical pricing")).toBeTruthy();
+  });
+});
+
+describe("whose projection arrived", () => {
+  // The gap this closes: the server had been building the owner report since
+  // the engine landed, and nothing in the front end drew it. A manager saw no
+  // card on the Quote Builder or on an ERP quote — not a thinner card, none —
+  // while their own payload said the line was above the customer's history.
+  it("draws the manager's card from the owner payload", () => {
+    render(<QuoteDiagnosisPanel
+      lineIds={["L1"]}
+      diagnosis={state({ byLineId: { L1: ownerView() } })}
+      dismissReasons={REASONS}
+      onReviewPrice={vi.fn()} />);
+
+    expect(screen.getByText("Above this customer's historical pricing")).toBeTruthy();
+    // The report's own sentences, laid out rather than re-worded.
+    expect(screen.getByText(/supported range of ₹218/)).toBeTruthy();
+    expect(screen.getByText(/Expected cost ₹150 per unit/)).toBeTruthy();
+    expect(screen.getByText(/Roughly ₹6,065 on this line/)).toBeTruthy();
+  });
+
+  it("picks the card from the payload's own view, not from a role prop", () => {
+    // Both fixtures say `renders: true` and differ only in `view`. If the panel
+    // were choosing any other way, one of these two would render the wrong
+    // body — and the operations card reads `quoted`/`why`, which an owner
+    // payload does not have, so the failure would be blank fields rather than
+    // a leak. The discriminated union is what makes that a type error instead.
+    const { unmount } = render(<QuoteDiagnosisPanel
+      lineIds={["L1"]} diagnosis={state({ byLineId: { L1: ownerView() } })}
+      dismissReasons={REASONS} onReviewPrice={vi.fn()} />);
+    expect(screen.queryByText("Why?")).toBeNull();
+    expect(screen.getByText("What the evidence says")).toBeTruthy();
+    unmount();
+
+    render(<QuoteDiagnosisPanel
+      lineIds={["L1"]} diagnosis={state({ byLineId: { L1: view() } })}
+      dismissReasons={REASONS} onReviewPrice={vi.fn()} />);
+    expect(screen.getByText("Why?")).toBeTruthy();
+    expect(screen.queryByText("What the evidence says")).toBeNull();
+  });
+
+  it("stays silent for a manager when the server did not surface the line", () => {
+    // `renders` governs both cards now. It governed only one before, which is
+    // how the two halves came to disagree about what had been flagged.
+    render(<QuoteDiagnosisPanel
+      lineIds={["L1"]}
+      diagnosis={state({ byLineId: { L1: ownerView({ renders: false }) } })}
+      dismissReasons={REASONS}
+      onReviewPrice={vi.fn()} />);
+
+    expect(screen.queryByText("Above this customer's historical pricing")).toBeNull();
   });
 });

@@ -341,3 +341,58 @@ def test_both_roles_are_told_whether_a_line_could_be_compared(client):
 
     assert [ln["comparable"] for ln in ops] == [ln["comparable"] for ln in owner]
     assert all(isinstance(ln["comparable"], bool) for ln in ops + owner)
+
+
+def test_a_manager_is_served_everything_their_card_needs_to_draw(client):
+    """The owner projection had no card, so nothing checked it could feed one.
+
+    A manager saw no diagnosis anywhere in the product: the server built the
+    owner report, the front end drew only the operations shape, and the panel
+    matched nothing. These four fields are what `OwnerDiagnosisCard` reads, and
+    three of them did not exist on this projection until it did.
+    """
+    lines = _erp(client, MANAGER).json()["lines"]
+    assert lines, "the fixture quote must diagnose at least one line"
+
+    for line in lines:
+        assert line["view"] == "OWNER"
+        # `renders`, not `surfaces`. One answer, one name, on both projections:
+        # the front end filtered on `renders` and the owner half published
+        # `surfaces`, so every manager line was silently dropped.
+        assert isinstance(line["renders"], bool)
+        assert "surfaces" not in line
+        assert line["strength_word"] in ("Strong", "Moderate", "Weak",
+                                         "Not enough")
+        assert line["qualification"]
+        assert line["actions"] == ["REVIEW_PRICE", "DISMISS"]
+
+
+def test_both_projections_answer_the_same_questions_under_the_same_names(client):
+    """Whatever differs between the two views, these four may not.
+
+    The reader cannot see which projection they were served. A field that
+    answers a question for one role and is absent — or differently spelled —
+    for the other is a wrong answer for that role rather than a missing one,
+    and the screen reading it has no way to tell those apart.
+    """
+    ops = _erp(client, SALES).json()["lines"]
+    owner = _erp(client, MANAGER).json()["lines"]
+    assert len(ops) == len(owner)
+
+    for a, b in zip(ops, owner):
+        for field in ("renders", "comparable", "strength_word", "actions"):
+            assert a[field] == b[field], field
+
+
+def test_the_managers_card_fields_still_carry_no_cost_for_a_salesperson(client):
+    """The new fields are shared, so they are swept for the same leak.
+
+    `strength_word`, `qualification` and `actions` are published to both roles
+    now. None of them may become a route to a number the desk may not see —
+    which is a claim worth re-asserting rather than assuming, because the
+    helper that adds them is called from the owner branch today and is written
+    to be callable from either.
+    """
+    payload = _erp(client, SALES).json()
+    cost_sweep.assert_no_cost(payload, cost=PURCHASE_COST, words=("cost", "margin"),
+                              id_keys=cost_sweep.ID_KEYS)

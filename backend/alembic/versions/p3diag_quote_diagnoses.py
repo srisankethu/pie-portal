@@ -16,6 +16,16 @@ from — a draft is archived, a quote is sent and becomes an ERP document — an
 cascade that removed the judgement when the workspace row went would delete
 exactly the history this table exists to hold.
 
+**The policies ship in this revision rather than in a later ``*rls`` one**, which
+is the standing rule ``l1grp`` states: a table created today has no window in
+which it is uncovered, and a revision interrupted halfway must not leave one. The
+leak these two would be is worse than the one ``quote_decisions`` next door is
+policied against. A diagnosis row carries the price band a competitor's customer
+has been trading at, the ids of the invoices it was read off, and the expected
+cost of the item — so a cross-tenant read is that book's buy side and its
+customer's negotiating position in one query. A dismissal names the person who
+read the card and what they said was wrong with it.
+
 Revision ID: p3diag
 Revises: n2recorded
 Create Date: 2026-09-16
@@ -27,6 +37,12 @@ revision = "p3diag"
 down_revision = "n2recorded"
 branch_labels = None
 depends_on = None
+
+#: Written out literally rather than imported from ``app.tenancy`` (§4): this
+#: runs against schemas from months ago, and each revision stands on its own.
+GUC = "app.current_org"
+POLICY = "tenant_isolation"
+TABLES = ("quote_diagnoses", "quote_diagnosis_dismissals")
 
 
 def upgrade() -> None:
@@ -108,7 +124,27 @@ def upgrade() -> None:
                     "quote_diagnosis_dismissals",
                     ["organization_id", "reason_code"])
 
+    bind = op.get_bind()
+    if bind.dialect.name != "postgresql":
+        # SQLite has no policies. A no-op is the honest form of that; see
+        # ``d1rls`` for what it costs and why it is stated rather than emulated.
+        return
+    for table in TABLES:
+        op.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+        op.execute(f"ALTER TABLE {table} FORCE ROW LEVEL SECURITY")
+        op.execute(
+            f"CREATE POLICY {POLICY} ON {table} "
+            f"USING (organization_id = current_setting('{GUC}', true)) "
+            f"WITH CHECK (organization_id = current_setting('{GUC}', true))")
+
 
 def downgrade() -> None:
+    bind = op.get_bind()
+    if bind.dialect.name == "postgresql":
+        for table in TABLES:
+            op.execute(f"DROP POLICY IF EXISTS {POLICY} ON {table}")
+            op.execute(f"ALTER TABLE {table} NO FORCE ROW LEVEL SECURITY")
+            op.execute(f"ALTER TABLE {table} DISABLE ROW LEVEL SECURITY")
+
     op.drop_table("quote_diagnosis_dismissals")
     op.drop_table("quote_diagnoses")

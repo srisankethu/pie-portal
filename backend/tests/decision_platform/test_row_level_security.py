@@ -453,6 +453,15 @@ EXPECTED_POLICIED = {
     # that same revision rather than a later `*rls` one: a table created today
     # has no window in which it is uncovered.
     "entity_groups", "entity_group_members",
+    # p3diag — why each quoted line was judged the way it was, and who said the
+    # judgement was wrong. The worse of the two leaks next door: `quote_decisions`
+    # holds one line's priced snapshot, while a diagnosis row carries the price
+    # band a competitor's customer has been trading at, the ids of the invoices
+    # it was read off, and the expected cost of the item — that book's buy side
+    # and its customer's negotiating position in one query. The dismissal names
+    # the person who read the card and what they said was wrong with it. Policied
+    # by the revision that creates the tables, per the rule `l1grp` states.
+    "quote_diagnoses", "quote_diagnosis_dismissals",
 }
 
 #: Tenant-scoped and deliberately uncovered — and after `d3rls` there is only

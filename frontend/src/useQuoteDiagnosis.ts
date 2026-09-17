@@ -24,17 +24,21 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { post } from "./intelligence";
 import { productRef } from "./rel";
 import type { DiagnosisView } from "./components/DiagnosisCard";
-import type { ErpQuoteLine, Quote } from "./types";
+import type { Quote } from "./types";
 
 interface AssessResponse {
   quote_id: string;
   lines: DiagnosisView[];
 }
 
-/** One line as the engine wants it. The endpoint takes a product *code* or an
- *  id and a customer *name* or an id — see `LineIn` — which is what lets two
- *  screens holding different vocabularies ask the same question. */
-export interface DiagnosisLineIn {
+/** One line as `/assess` wants it. It takes a product *code* or an id and a
+ *  customer *name* or an id — see `LineIn` — which is what lets the desk post
+ *  what it is holding rather than what the database calls it.
+ *
+ *  Not exported: the ERP quote page sends no lines at all. It names a document
+ *  and the server reads them, which is what let that page reach quotes older
+ *  than `/assess` will diagnose. */
+interface DiagnosisLineIn {
   line_id: string;
   product_id: string;
   customer_id: string | null;
@@ -61,30 +65,6 @@ function diagnosableLines(quote: Quote | null): DiagnosisLineIn[] {
     }));
 }
 
-/** The lines of an ERP quote, in the same shape.
- *
- *  A quote the ERP raised names its products by the code printed on the
- *  document and its customer by the name on it, neither of which this platform
- *  minted — which is exactly the pair `LineIn` accepts, so the ERP quote page
- *  and the Quote Builder reach one endpoint rather than two.
- *
- *  Same filter as the draft's, for the same reason: a line the ERP never priced
- *  is not a claim about what this customer should pay, and a line naming
- *  nothing cannot be compared against anything. */
-export function erpDiagnosableLines(
-  customerLabel: string, lines: ErpQuoteLine[],
-): DiagnosisLineIn[] {
-  return lines
-    .filter((l) => l.item_code && l.rate !== null)
-    .map((l) => ({
-      line_id: String(l.line_number),
-      product_id: l.item_code,
-      customer_id: customerLabel || null,
-      qty: l.qty,
-      quoted_unit_price: l.rate,
-    }));
-}
-
 export interface QuoteDiagnosisState {
   byLineId: Record<string, DiagnosisView>;
   loading: boolean;
@@ -97,19 +77,20 @@ export interface QuoteDiagnosisState {
 
 /** The engine call itself, shared by both screens that make it.
  *
- *  Split out when the ERP quote page needed the same request against lines of a
- *  different shape. What is generic is everything below the line-building: one
- *  request for N lines, keyed on the content that can change an answer, with
- *  the out-of-order guard. A second copy of that is how one screen comes to
- *  paint a stale verdict the other has already corrected.
+ *  Split out when the ERP quote page needed the same handling against a
+ *  different endpoint. What is generic is everything except what gets posted:
+ *  one request, keyed on what can change an answer, with the out-of-order
+ *  guard. A second copy of that is how one screen comes to paint a stale
+ *  verdict the other has already corrected.
+ *
+ *  `path` is `null` when there is nothing to ask — an unsaved quote, or a
+ *  document whose lines have not been read. A hook cannot be called
+ *  conditionally, so the decision arrives as an argument.
  */
-function useDiagnosis(quoteId: string | null, lines: DiagnosisLineIn[],
-                      token: string,
-                      asOf?: string | null): QuoteDiagnosisState {
+function useDiagnosis(path: string | null, body: unknown,
+                      token: string): QuoteDiagnosisState {
   // Keyed on the content, not the object: see the module docstring.
-  const key = useMemo(
-    () => JSON.stringify([quoteId ?? "", asOf ?? "", lines]),
-    [quoteId, asOf, lines]);
+  const key = useMemo(() => JSON.stringify([path, body]), [path, body]);
 
   const [state, setState] = useState<QuoteDiagnosisState>({
     byLineId: {}, loading: false, error: null,
@@ -117,20 +98,14 @@ function useDiagnosis(quoteId: string | null, lines: DiagnosisLineIn[],
   const latest = useRef(0);
 
   useEffect(() => {
-    if (!quoteId || lines.length === 0) {
+    if (!path) {
       setState({ byLineId: {}, loading: false, error: null });
       return;
     }
     const mine = ++latest.current;
     setState((s) => ({ ...s, loading: true, error: null }));
 
-    post<AssessResponse>("/api/v1/quote-diagnosis/assess", {
-      quote_id: quoteId, lines, record: false,
-      // Omitted rather than sent as null for a draft being priced now: the
-      // server defaults to today, and naming today explicitly would make the
-      // request say something it does not mean.
-      ...(asOf ? { as_of: asOf } : {}),
-    }, token)
+    post<AssessResponse>(path, body, token)
       .then((r) => {
         // Out-of-order responses: a slow answer to an old edit must not paint
         // over a fast answer to a new one, which on this screen would be a
@@ -144,8 +119,7 @@ function useDiagnosis(quoteId: string | null, lines: DiagnosisLineIn[],
         if (mine !== latest.current) return;
         setState({ byLineId: {}, loading: false, error: (e as Error).message });
       });
-    // `key` is the content hash; `lines`, `quoteId` and `asOf` are read
-    // through it.
+    // `key` is the content hash; `path` and `body` are read through it.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key, token]);
 
@@ -155,34 +129,40 @@ function useDiagnosis(quoteId: string | null, lines: DiagnosisLineIn[],
 export function useQuoteDiagnosis(quote: Quote | null,
                                   token: string): QuoteDiagnosisState {
   const lines = useMemo(() => diagnosableLines(quote), [quote]);
-  return useDiagnosis(quote?.id ?? null, lines, token);
+  const body = useMemo(
+    // `record: false` — diagnosing is a read here. See the module docstring.
+    () => ({ quote_id: quote?.id ?? "", lines, record: false }),
+    [quote?.id, lines]);
+  return useDiagnosis(
+    quote && lines.length > 0 ? "/api/v1/quote-diagnosis/assess" : null,
+    body, token);
 }
 
 /** The same question about a quote the ERP already issued.
  *
- *  **`as_of` is the quote's own raised date, not today.** Invariant I1: the
- *  diagnosis is built from what was knowable when the quote went out, so a
- *  quote sent in July is judged against what this customer had paid by July —
- *  not against a price that moved in August. Judging a historical document
- *  against today's evidence would be the look-ahead the engine exists to
- *  refuse.
+ *  **The caller sends no lines and no date.** Both are read from the quote by
+ *  `routers.quote_diagnosis.assess_erp_quote`, and that is the whole reason this
+ *  endpoint exists rather than posting to `/assess` like the draft side does.
+ *  `as_of` on `/assess` is caller-supplied and therefore bounded — a date a
+ *  caller can move a day at a time reads an item's price history out of the
+ *  answers — so every quote older than that window came back refused. Naming a
+ *  quote instead of a date leaves nothing to walk: one document, one date, and
+ *  `erp_quotes` is written by the sync and by nothing else.
  *
- *  The server bounds how far back that date may be, and will refuse a quote
- *  older than its window. That refusal is the server's to make and its sentence
- *  is the one shown: a copy of the limit here would be a second statement of
- *  the same rule, and the one that drifts.
+ *  Invariant I1 holds either way: the diagnosis is built from what was knowable
+ *  when the quote went out, never from today.
  *
- *  **`record: false`, from `useDiagnosis`.** This page cannot write: its whole
- *  promise is that the next sync would overwrite anything typed on it, and a
- *  screen that says so while appending a row on every visit is lying about the
- *  cheapest thing to be honest about.
- */
-export function useErpQuoteDiagnosis(
-  quoteRef: string, customerLabel: string, raisedOn: string | null,
-  lines: ErpQuoteLine[], token: string,
-): QuoteDiagnosisState {
-  const built = useMemo(
-    () => erpDiagnosableLines(customerLabel, lines),
-    [customerLabel, lines]);
-  return useDiagnosis(quoteRef || null, built, token, raisedOn);
+ *  `hasLines` rather than reading them: the server decides which lines are
+ *  diagnosable now, and a copy of that filter here would be the second answer
+ *  that drifts. This only needs to know whether to ask at all. */
+export function useErpQuoteDiagnosis(quoteRef: string, hasLines: boolean,
+                                     token: string): QuoteDiagnosisState {
+  const path = quoteRef && hasLines
+    ? `/api/v1/quote-diagnosis/erp-quote/${encodeURIComponent(quoteRef)}`
+    : null;
+  // A body the endpoint does not read. `post` sends JSON and FastAPI is happy
+  // with an empty object; the alternative is a second request helper for the
+  // one call in this app that has nothing to say.
+  const body = useMemo(() => ({}), []);
+  return useDiagnosis(path, body, token);
 }

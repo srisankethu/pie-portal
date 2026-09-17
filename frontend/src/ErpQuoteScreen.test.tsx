@@ -90,8 +90,9 @@ function draw() {
 
 /** Every diagnosis the stubbed engine will return, by line id. */
 let diagnoses: Record<string, unknown> = {};
-/** What the screen actually posted to `/assess`. */
+/** What the screen actually posted, and to where. */
 let assessed: Record<string, unknown> | null = null;
+let assessedPath: string | null = null;
 /** Make `/assess` fail, with the server's own sentence. */
 let assessFails: string | null = null;
 
@@ -100,7 +101,8 @@ function stubFetch() {
     if (String(url).includes("/quote-diagnosis/reasons")) {
       return { ok: true, json: async () => ({ reasons: [] }) } as Response;
     }
-    if (String(url).includes("/quote-diagnosis/assess")) {
+    if (String(url).includes("/quote-diagnosis/erp-quote/")) {
+      assessedPath = String(url);
       assessed = JSON.parse(String(init?.body ?? "{}"));
       if (assessFails) {
         return { ok: false, statusText: "Unprocessable Content",
@@ -115,7 +117,7 @@ function stubFetch() {
   });
 }
 
-/** One diagnosis, in the shape `/assess` projects. */
+/** One diagnosis, in the shape the endpoint projects. */
 function diagnosis(over: Record<string, unknown> = {}) {
   return {
     quote_diagnosis_id: null, line_id: "0", renders: true,
@@ -133,6 +135,7 @@ beforeEach(() => {
   erpQuoteLines.mockResolvedValue(lines());
   diagnoses = {};
   assessed = null;
+  assessedPath = null;
   assessFails = null;
   vi.stubGlobal("fetch", stubFetch());
 });
@@ -373,37 +376,22 @@ describe("the diagnosis", () => {
     expect(screen.getByText(/14 comparable transactions/)).toBeTruthy();
   });
 
-  it("judges the quote as of the day it went out, never as of today", async () => {
-    // Invariant I1, and the reason a historical document cannot simply be
-    // handed to the engine with today's date: a quote sent in July priced
-    // against August evidence is the look-ahead the whole engine refuses. This
-    // quote was raised on 2026-07-23.
+  it("asks by quote reference, sending neither lines nor a date", async () => {
+    // Both are read from the quote server-side, and that is the point rather
+    // than tidiness: `as_of` on `/assess` is caller-supplied and therefore
+    // bounded to a window, so every quote older than it came back refused. A
+    // reference has nothing to walk.
+    //
+    // What the server then does with it — which lines are diagnosable, that
+    // `as_of` is the quote's own raised date, and that nothing is recorded —
+    // is pinned in `test_quote_diagnosis_erp.py`, where those decisions are
+    // actually made. Asserting them here would be this screen claiming
+    // something it no longer decides.
     draw();
 
-    await waitFor(() => expect(assessed).not.toBeNull());
-    expect(assessed).toMatchObject({ quote_id: REF, as_of: "2026-07-23" });
-  });
-
-  it("records nothing, because this page cannot write", async () => {
-    // The page's whole promise is that the next sync overwrites anything typed
-    // on it. A screen that says so while appending a diagnosis row on every
-    // visit is lying about the cheapest thing to be honest about.
-    draw();
-
-    await waitFor(() => expect(assessed).not.toBeNull());
-    expect(assessed).toMatchObject({ record: false });
-  });
-
-  it("asks only about lines that name a product and carry a price", async () => {
-    // A line with neither cannot be compared against anything. `Freight` is the
-    // second fixture line and has no item code.
-    draw();
-
-    await waitFor(() => expect(assessed).not.toBeNull());
-    expect((assessed as { lines: unknown[] }).lines).toHaveLength(1);
-    expect((assessed as { lines: Record<string, unknown>[] }).lines[0])
-      .toMatchObject({ line_id: "0", product_id: "CNMG120408",
-                       quoted_unit_price: 450 });
+    await waitFor(() => expect(assessedPath).not.toBeNull());
+    expect(assessedPath).toContain(`/quote-diagnosis/erp-quote/${REF}`);
+    expect(assessed).toEqual({});
   });
 
   it("says the check ran when it flagged nothing, rather than vanishing", async () => {

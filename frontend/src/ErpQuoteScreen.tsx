@@ -307,8 +307,7 @@ function ErpQuoteDiagnosis({ quote, lines, token }: {
 }) {
   const held = lines?.lines ?? [];
   const diagnosis = useErpQuoteDiagnosis(
-    quote.quote_document_ref, quote.customer_label, quote.raised_on, held,
-    token);
+    quote.quote_document_ref, held.length > 0, token);
   const dismissReasons = useDismissReasons(token);
 
   // Nothing to ask about. The breakdown has not been read, or no line on it

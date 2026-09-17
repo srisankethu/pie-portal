@@ -945,3 +945,104 @@ def test_the_demo_source_carries_lines_so_the_screen_can_be_looked_at(session):
 
     quoted = [q for q in FixtureZohoSource().list_quotes() if q.get("line_items")]
     assert quoted, "no demo quote carries a line breakdown"
+
+
+# ── the discount shape a real book writes ───────────────────────────────────
+#
+# Every test above this line spells a line discount as `"0"`, and that is the
+# one shape the defect below could not reach. Zoho writes a *percentage* line
+# discount as the string `"50.00%"`, and on the book this pull was built for
+# almost every line carries one.
+
+def _discounted(estimate_id: str, discount, **over) -> dict:
+    """One quote, one line, with the discount written as the ERP writes it."""
+    return _quote(estimate_id, "sent", line_items=[
+        {"line_item_id": "l1", "item_id": "i1", "sku": "22000865",
+         "description": "CNMG120408-UC-D2 YC0014",
+         "quantity": "80", "unit": "pcs", "rate": "1176.00",
+         "item_total": "47040.00", "discount": discount},
+    ], **over)
+
+
+def test_a_percentage_discount_does_not_take_the_whole_quote_pull_down(session):
+    """The defect this section exists for, and it cost the entire book.
+
+    ``"50.00%"`` went straight to the schema, whose ``Decimal(str(v))`` raised
+    ``InvalidOperation``. That is not a ``NormalizationError``, so the per-quote
+    handler in ``_sync_quote_documents`` did not catch it and ``_supply_phase``
+    aborted the stage — on the *first* discounted quote, before writing a single
+    header or line. A book that discounts every line therefore synced no quotes
+    at all, reported ``InvalidOperation: [<class 'decimal.ConversionSyntax'>]``,
+    and advised re-running the sync, which could never have helped.
+
+    So the assertion is about the quotes *after* the discounted one, not just
+    about the discounted one: the stage surviving is the whole point.
+    """
+    report = _sync(session, [_discounted("e1", "50.00%"),
+                             _discounted("e2", "55.00%"),
+                             _with_lines("e3")])
+
+    assert report.quote_documents == 3
+    assert [s for s in report.skipped if s["code"] == "SUPPLY_STAGE_FAILED"] == []
+    assert {r.quote_ref for r in session.query(models.ErpQuoteLine).all()} == {
+        "e1", "e2", "e3"}
+
+
+def test_both_discount_spellings_read_as_the_same_percentage(session):
+    """A bare number and a "%"-suffixed string are the same fact.
+
+    ``_parse_percent`` has read both since bills and invoices were first pulled;
+    this pull simply was not using it. Pinned together so neither spelling can
+    drift onto its own code path again.
+    """
+    _sync(session, [_discounted("e1", "50.00%"), _discounted("e2", 50)])
+
+    held = {r.quote_ref: r.discount_percent
+            for r in session.query(models.ErpQuoteLine).all()}
+
+    assert held["e1"] == held["e2"] == Decimal("50.0000")
+
+
+def test_an_unreadable_number_costs_its_quote_and_not_the_stage(session):
+    """The contract, stated over the field rather than the one value.
+
+    ``normalize_quote_document`` may refuse a payload — that is what
+    ``NormalizationError`` is for, and the sync turns it into a named skip
+    against one document. What it must never do is raise something shaped
+    differently, because every caller here is written around that one shape and
+    a stray ``InvalidOperation`` escapes all of them.
+    """
+    report = _sync(session, [_discounted("e1", "not a number"),
+                             _with_lines("e2")])
+
+    refused = [s for s in report.skipped if s["ref"] == "e1"]
+    assert [s["code"] for s in refused] == ["BAD_DISCOUNT"]
+    assert [s for s in report.skipped if s["code"] == "SUPPLY_STAGE_FAILED"] == []
+    # The quote behind the refused one still landed, lines and all.
+    assert {r.quote_ref for r in session.query(models.ErpQuoteLine).all()} == {"e2"}
+
+
+def test_a_quote_line_carries_no_cost_even_though_the_detail_call_brings_it(session):
+    """The detail call added in this feature carries buy-side figures the list
+    row never did — ``purchase_price`` and ``item_profit_margin_percentage`` on
+    every line, and ``profit_margin_amount`` on the header. ``erp_quote_lines``
+    opens for every role precisely because it holds none of them, so the
+    allowlist in ``_quote_lines`` is load-bearing rather than tidy.
+    """
+    _sync(session, [_quote("e1", "sent", line_items=[
+        {"line_item_id": "l1", "sku": "22000865", "description": "insert",
+         "quantity": "80", "rate": "1176.00", "item_total": "47040.00",
+         "discount": "50.00%", "purchase_price": 529.2,
+         "item_profit_margin_percentage": 10, "item_profit_margin_amount": 4704},
+    ], profit_margin_percentage=16.42, profit_margin_amount="27845.400")])
+
+    row = session.query(models.ErpQuoteLine).one()
+    stored = {c.name for c in models.ErpQuoteLine.__table__.columns}
+
+    # The table has nowhere to put cost, which is the structural half of the
+    # claim — there is no field to forget to withhold.
+    assert not {c for c in stored if "cost" in c or "margin" in c or "profit" in c}
+    # And the normaliser copied none of it onto the row it did write.
+    assert row.rate == Decimal("1176.0000")       # what the customer was shown
+    assert row.discount_percent == Decimal("50.0000")
+    assert not hasattr(row, "purchase_price")

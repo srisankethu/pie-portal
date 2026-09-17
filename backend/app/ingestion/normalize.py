@@ -74,6 +74,24 @@ def _parse_decimal(value: Any, ctx: str, field: str) -> Decimal:
         raise NormalizationError("BAD_NUMBER", f"{ctx}: {field} not numeric ({value!r})")
 
 
+def _optional_decimal(value: Any, ctx: str, field: str) -> Optional[Decimal]:
+    """``_parse_decimal`` where the ERP gave a value, ``None`` where it did not.
+
+    Delegates rather than repeating the conversion, because the thing worth
+    keeping in one place is not the ``Decimal(str(v))`` — it is that a value
+    this module cannot read raises ``NormalizationError`` and therefore lands
+    as a *named skip against one document*. A field handed straight to the
+    schema instead gets Pydantic's bare ``InvalidOperation``, which no caller
+    here catches; see ``_quote_lines`` for what that cost.
+
+    Absent and unreadable stay different: ``None`` and ``""`` are "the ERP said
+    nothing", which is a fact; anything else that will not convert is a refusal.
+    """
+    if value is None or value == "":
+        return None
+    return _parse_decimal(value, ctx, field)
+
+
 def normalize_customer(raw: dict[str, Any], *, system: str = ZOHO) -> CustomerIn:
     cid = _require(raw, "contact_id", "contact")
     status = str(raw.get("status", "active")).lower()
@@ -738,6 +756,12 @@ def _quote_lines(raw: dict[str, Any], qid: str) -> list[QuoteLineIn]:
         if not isinstance(item, dict):
             continue
         line_id = str(item.get("line_item_id") or "") or f"p{position}"
+        ctx = f"quote {qid} line {position}"
+        # `item_total` is post-discount and pre-tax, which is the figure the
+        # header's own total is built from. Falling back to `amount` keeps a
+        # connector that spells it the other way readable.
+        amount_field = ("item_total" if item.get("item_total") is not None
+                        else "amount")
         out.append(QuoteLineIn(
             external_ref=f"{qid}:{line_id}",
             line_number=position,
@@ -747,15 +771,33 @@ def _quote_lines(raw: dict[str, Any], qid: str) -> list[QuoteLineIn]:
             item_code=str(item.get("sku") or item.get("item_code") or "")[:255],
             description=str(item.get("description")
                             or item.get("name") or "")[:2048],
-            qty=item.get("quantity"),
+            qty=_optional_decimal(item.get("quantity"), ctx, "quantity"),
             unit=str(item.get("unit") or "")[:32],
-            rate=item.get("rate"),
-            # `item_total` is post-discount and pre-tax, which is the figure the
-            # header's own total is built from. Falling back to `amount` keeps a
-            # connector that spells it the other way readable.
-            amount=(item.get("item_total") if item.get("item_total") is not None
-                    else item.get("amount")),
-            discount_percent=item.get("discount"),
+            rate=_optional_decimal(item.get("rate"), ctx, "rate"),
+            amount=_optional_decimal(item.get(amount_field), ctx, amount_field),
+            # Through `_parse_percent`, which is what reads this field
+            # everywhere else in this module — Zoho writes a line discount as
+            # a bare number on some organizations and as the string "50.00%"
+            # on others, and `_effective_unit_amount` has handled both since
+            # bills and invoices were first pulled.
+            #
+            # This line read the raw value instead, and on a book that
+            # discounts every line it cost the entire quote pull. Pydantic's
+            # `Decimal(str(v))` raised `InvalidOperation` on "50.00%"; that is
+            # not a `NormalizationError`, so `_sync_quote_documents`' per-quote
+            # handler did not catch it, and `_supply_phase` aborted the whole
+            # stage on the first discounted quote — no lines, and no headers
+            # either, for any quote in the book. The recorded reason was
+            # `InvalidOperation: [<class 'decimal.ConversionSyntax'>]` and its
+            # advice was "re-run the sync", which could never have worked.
+            #
+            # The general rule, which is worth more than the field: a raw ERP
+            # value handed to the schema is a conversion this module has not
+            # taken responsibility for, and its failure is not shaped like the
+            # per-document skip every caller here is written around.
+            discount_percent=(
+                _parse_percent(item["discount"], ctx, "discount")
+                if item.get("discount") not in (None, "") else None),
         ))
     return out
 

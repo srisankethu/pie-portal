@@ -686,10 +686,27 @@ class SyncService:
             self.report.skip(
                 kind, label, "SUPPLY_STAGE_FAILED",
                 f"{type(e).__name__}: {e}",
+                # This advice used to be "re-run the sync", unconditionally,
+                # and a reader followed it three times over a fault that could
+                # not be re-run away: the quote stage aborted on the same
+                # malformed field of the same document on every pass, and the
+                # detail it printed — `InvalidOperation: [<class
+                # 'decimal.ConversionSyntax'>]` — named neither the document
+                # nor the field. Most of what lands here is deterministic, so
+                # promising a re-run will clear it is the wrong default.
+                #
+                # Note what a stage failure means, because it is worse than a
+                # skipped document: the loop stopped where it stopped. Every
+                # document after that point was never read, so an empty result
+                # here is not evidence that there was nothing to read.
                 context={"stage": label,
-                         "fix": ("The rest of the pull completed. Re-run the "
-                                 "sync; if this repeats, the detail here is "
-                                 "what to send on.")})
+                         "fix": ("The rest of the pull completed. This stage "
+                                 "stopped at the point the detail names and "
+                                 "read nothing after it. Re-running helps only "
+                                 "if the cause was transient — a stage that "
+                                 "fails on the same record fails the same way "
+                                 "every time, so send the detail on rather "
+                                 "than pulling again.")})
 
     def _sync_vendors(self) -> None:
         for raw in self.source.list_vendors():

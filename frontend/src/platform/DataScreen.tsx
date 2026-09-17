@@ -174,6 +174,16 @@ function factGroups(s: SyncRun): { title: string; rows: FactRow[] }[] {
           label: "Sales orders", value: count(s.sales_orders),
           tip: "Orders customers have placed but that have not been invoiced yet — demand already promised. Needs ZohoBooks.salesorders.READ.",
         },
+        // Read from `notes` rather than from a column, because the server has
+        // no column for it. Listed unconditionally, including at zero, for the
+        // reason "Suppliers" is: a zero with a reason attached answers "why are
+        // my quotes not here", and an absent row answers nothing — which is
+        // exactly how a refused estimates scope and a 290-quote pull came to
+        // look identical on this screen.
+        {
+          label: "Quotes", value: count(s.notes?.quotes?.read ?? 0),
+          tip: "What was offered, as the ERP raised it. Needs ZohoBooks.estimates.READ — a scope older connections were never asked for, so a zero here is usually a connection that predates it rather than a book with no quotes. Reconnect from Data & connection to grant it.",
+        },
         {
           label: "Payments out", value: count(s.vendor_payments),
           tip: "Money out, to suppliers. Needs ZohoBooks.vendorpayments.READ. Payments in alone are revenue collected, not cash — both sides are needed before liquidity means anything.",

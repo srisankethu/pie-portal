@@ -272,6 +272,49 @@ export interface QuoteDraftSummary {
   updatedAt: string | null;
 }
 
+/** One quote as the connected ERP raised it — read-only, and a different thing
+ *  from `QuoteDraftSummary` above.
+ *
+ *  A draft is work in progress this platform owns and can change. This is an
+ *  issued document in somebody else's system: the desk cannot edit it, and the
+ *  readiness lifecycle (needs work / awaiting approval / ready to send) has no
+ *  meaning for it. Two shapes rather than one with half its fields nulled,
+ *  because a single type would invite a screen to offer Send on a quote that
+ *  went out months ago.
+ *
+ *  Snake_case keys: served by the insight router, which lists this table beside
+ *  `/unrecorded-quotes` and spells it that way. Not renamed on the way in —
+ *  a rename here is a second spelling of the same row. */
+export interface ErpQuote {
+  quote_document_ref: string;
+  number: string | null;
+  customer_id: string | null;
+  customer_label: string;
+  /** The ERP's own status word, verbatim — `sent`, `expired`, `accepted`. */
+  source_status: string;
+  /** WON / LOST / UNRECORDED, as the sync classified that status. Silence is
+   *  never read as a loss, so UNRECORDED is the common case and not a defect. */
+  outcome: string;
+  raised_on: string;
+  expires_on: string | null;
+  decided_on: string | null;
+  /** The quote's own selling total. `null` where the ERP gave none — which is
+   *  not zero, and must not be rendered as one. */
+  value: number | null;
+  opened_at: string | null;
+}
+
+export interface ErpQuoteBook {
+  count: number;
+  by_outcome: { WON: number; LOST: number; UNRECORDED: number };
+  value_total: number | null;
+  quotes_without_a_value: number;
+  quotes_listed: ErpQuote[];
+  listed: number;
+  currency: string;
+  empty_reason: string | null;
+}
+
 export interface Quote {
   id: string;
   /** Who the quote is for. **Empty by default**: a quote starts with no

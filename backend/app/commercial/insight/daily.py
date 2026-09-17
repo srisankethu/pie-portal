@@ -355,6 +355,10 @@ def _moved(moved: dict, *, on_document_dates: bool = False) -> list[Tile]:
         ("invoices", "Invoices raised", "customer", dated),
         ("payments", "Payments received", "payments", dated),
         ("purchase_orders", "Purchase orders placed", "supply", dated),
+        # What was offered, beside what was billed and what was ordered. Absent
+        # from this band until somebody reported a sync as broken over it: the
+        # pull reads quotes, and no tile on the morning read said so.
+        ("erp_quotes", "Quotes raised", "quotes", dated),
         ("customers", "New customers", "customer", first_seen),
         ("products", "New items", "stock", first_seen),
     ]

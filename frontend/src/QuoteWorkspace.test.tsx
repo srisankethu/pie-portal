@@ -8,13 +8,14 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { SnackbarProvider } from "notistack";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import QuoteWorkspace, { customerLabel } from "./QuoteWorkspace";
 import type { PlatformSession, Role } from "./platform/types";
 import type { QuoteDraftSummary } from "./types";
 
 const listQuotes = vi.fn();
+const listErpQuotes = vi.fn();
 const createQuoteForm = vi.fn();
 const createEstimate = vi.fn();
 const navigate = vi.fn();
@@ -26,6 +27,10 @@ vi.mock("./api", async () => {
     forgetLegacyDraft: () => {},
     api: {
       listQuotes: (...a: unknown[]) => listQuotes(...a),
+      // The screen fetches both lists on arrival: its own drafts, and what the
+      // connected ERP raised. Stubbed empty here because these tests are about
+      // the drafts tab — the ERP tab has its own file.
+      listErpQuotes: (...a: unknown[]) => listErpQuotes(...a),
       createQuoteForm: (...a: unknown[]) => createQuoteForm(...a),
       createEstimate: (...a: unknown[]) => createEstimate(...a),
       deleteQuote: vi.fn(),
@@ -38,8 +43,17 @@ vi.mock("react-router-dom", async () => {
   return { ...actual, useNavigate: () => navigate };
 });
 
+beforeEach(() => {
+  listErpQuotes.mockResolvedValue({
+    count: 0, by_outcome: { WON: 0, LOST: 0, UNRECORDED: 0 },
+    value_total: null, quotes_without_a_value: 0,
+    quotes_listed: [], listed: 0, currency: "INR", empty_reason: null,
+  });
+});
+
 afterEach(() => {
   listQuotes.mockReset();
+  listErpQuotes.mockReset();
   createQuoteForm.mockReset();
   createEstimate.mockReset();
   navigate.mockReset();

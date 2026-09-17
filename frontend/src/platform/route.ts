@@ -316,6 +316,10 @@ export function vizPath(route: string): string {
     groups: "groups",
     "quote-outcomes": "quoteOutcomes",
     "unanswered-quotes": "unrecordedQuotes",
+    // The "Quotes raised" tile on the morning read. Named here for the reason
+    // the two below are: without an entry the fallback sends the name to home,
+    // so the tile would navigate to the screen the reader is already on.
+    quotes: "quotes",
     // The two names the *needs-you* tiles carry. They were missing, and the
     // fallback below sends an unknown name to home — so "Approvals waiting"
     // and "Decisions in the queue" navigated to the screen the reader was

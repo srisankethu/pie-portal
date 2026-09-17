@@ -554,8 +554,18 @@ export interface SyncRun {
   /** One row per thing to fix, not per row skipped. See `SyncReport.unresolved`. */
   unresolved: UnresolvedReference[];
   error: string | null;
-  /** What the finished run wants to report — cleared sample data, metric rebuild. */
-  notes: { demo_data_removed?: Record<string, number>; commercial?: Record<string, unknown> };
+  /** What the finished run wants to report — cleared sample data, metric rebuild.
+   *
+   *  `quotes` is here rather than as a column on the run for a dull reason: the
+   *  server counts quotes it read and `SyncRun` has no field to put the number
+   *  in, so it lands in this bag. That is why a pull that read 290 estimates
+   *  and one refused the estimates scope produced identical screens until the
+   *  Quotes row below started reading it. */
+  notes: {
+    demo_data_removed?: Record<string, number>;
+    commercial?: Record<string, unknown>;
+    quotes?: { read?: number; undated_decisions?: number };
+  };
 }
 
 /** One row a pull could not fully resolve, as it happened.

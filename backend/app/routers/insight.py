@@ -47,6 +47,7 @@ from ..commercial.insight import (absence, adoption, bonds, cadence, capital,
                                   periods, radar, routing, schemes, selffunding,
                                   scope as metric_scope,
                                   simulate, stock,
+                                  quote_book as quote_book_view,
                                   unrecorded as unrecorded_view,
                                   story, supply, terms as vendor_terms, wallet,
                                   weather, withholding)
@@ -1727,6 +1728,47 @@ def unrecorded_quotes(limit: int = Query(50, ge=1, le=500),
                       "recorded, or no quotes have been synced yet. This list "
                       "is the ones with neither a win nor a loss against them — "
                       "silence, which is never read as a loss."))
+
+
+@router.get("/quote-book")
+def quote_book_list(limit: int = Query(200, ge=1, le=1000),
+                    principal: Principal = Depends(current_principal),
+                    session: Session = Depends(get_session)) -> dict:
+    """Every quote the ERP raised, newest first.
+
+    The plain listing ``erp_quotes`` did not have. ``/unrecorded-quotes`` next
+    door filters to ``outcome == UNRECORDED``, and it was the only reader — so a
+    book whose quotes the ERP had mostly marked accepted or invoiced synced
+    correctly and showed up nowhere, and somebody who had just connected their
+    books read that as a broken sync.
+
+    Every role, for the reason ``/unrecorded-quotes`` is: nothing here is
+    derived from cost. ``value`` is each quote's own selling total, and the rest
+    is dates, the ERP's own status word and the outcome read off it. A
+    salesperson is narrowed to their own accounts by the same rule.
+
+    Thin, by rule. The read, the ordering and the counts are
+    ``commercial/insight/quote_book``; this maps the page size, applies role
+    scope and slices. The slice is here rather than there so ``totals`` is taken
+    over the whole book and the headline can say how much of it is not on the
+    page.
+    """
+    org, snapshot, th = _labels_only(session, principal)
+    rows = quote_book_view.build(
+        session, org,
+        customer_names=snapshot.customer_names,
+        customer_ids=_assigned_customer_ids(session, principal))
+
+    result = dict(quote_book_view.totals(rows))
+    result["quotes_listed"] = [row.to_dict() for row in rows[:limit]]
+    result["listed"] = len(result["quotes_listed"])
+    return _envelope(
+        result, th=th,
+        empty_reason=(None if rows else
+                      "No quotes have reached the platform from your ERP yet. "
+                      "Reading them needs a permission older connections were "
+                      "never asked for — if a sync has run, Data & connection "
+                      "reports whether the quote stage was refused."))
 
 
 @router.get("/cashflow")
@@ -4779,6 +4821,11 @@ def _moved_since(session: Session, org: str, since: datetime,
         # "Payments received" tile counted receipts and never said how much.
         ("payments", models.PaymentApplication, "amount_applied", "paid_on"),
         ("purchase_orders", models.PurchaseOrderDoc, "total", "date"),
+        # What was offered. Absent from this list until somebody reported a
+        # sync as broken because of it: the pull reads quotes and nothing
+        # counted them here, so a book with 290 estimates and a connection
+        # refused the estimates scope produced the same tiles.
+        ("erp_quotes", models.QuoteDoc, "total", "date"),
         ("customers", models.Customer, None, None),
         ("products", models.Product, None, None),
     ]

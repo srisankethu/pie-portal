@@ -184,12 +184,36 @@ def assess_erp_quote(quote_ref: str,
         LineIn(line_id=str(row.line_number), product_id=row.item_code,
                customer_id=quote.customer_id or quote.customer_label or None,
                qty=row.qty if row.qty is not None else Decimal("1"),
-               quoted_unit_price=row.rate)
+               quoted_unit_price=_net_unit_price(row))
         for row in rows
-        if row.item_code and row.rate is not None
+        if row.item_code and _net_unit_price(row) is not None
     ]
     return _diagnose(session, principal, quote_id=quote_ref, lines=lines,
                      as_of=quote.raised_on, record=False)
+
+
+def _net_unit_price(row: Any) -> Optional[Decimal]:
+    """What the customer was actually asked to pay per unit on this line.
+
+    ``amount / qty``, not ``rate``. The distinction is the whole correctness of
+    a diagnosis on a discounting book: ``rate`` is the list price before the
+    line's discount and ``amount`` is what the line came to after it, and the
+    history this gets compared against is net — ``_effective_unit_amount``
+    resolves an invoice line's discount before storing ``unit_price``.
+
+    On the book this was written for almost every line carries 50% or 55% off,
+    so comparing list against net would have reported every line on every quote
+    as far above what the customer has paid. A diagnosis engine that flags
+    everything is one nobody reads, and it would have been flagging an
+    arithmetic mistake rather than a price.
+
+    Falls back to ``rate`` where the ERP gave no amount or no quantity: a line
+    with a rate and nothing else is still a price somebody quoted. ``None``
+    where there is no price at all, which is not a claim about anything.
+    """
+    if row.amount is not None and row.qty:
+        return Decimal(str(row.amount)) / Decimal(str(row.qty))
+    return Decimal(str(row.rate)) if row.rate is not None else None
 
 
 def _diagnose(session: Session, principal: Principal, *, quote_id: str,
@@ -361,6 +385,13 @@ def _project(owner: rules.OwnerDiagnosis, opportunity, principal: Principal,
                 **_card(card)}
     report = render.render_owner(owner, opportunity, th=th)
     return {"quote_diagnosis_id": diagnosis_id, "view": "OWNER",
+            # Same field, same meaning, on both views. It was on the operations
+            # card alone at first, and a manager's screen then reported every
+            # line of a real quote as incomparable — the reader cannot see which
+            # projection they were served, so a field that answers a question
+            # for one role and is absent for the other is a wrong answer for
+            # that role rather than a missing one.
+            "comparable": rules.INSUFFICIENT_EVIDENCE not in owner.codes,
             "line_id": owner.line_id, "headline": report.headline,
             "lines": list(report.lines), "opportunity": report.opportunity,
             "evidence": report.evidence, "codes": list(report.codes),

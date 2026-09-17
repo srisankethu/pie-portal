@@ -18,6 +18,8 @@ reading an issued document writes nothing.
 """
 from __future__ import annotations
 
+import json
+
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -280,3 +282,62 @@ def test_a_product_with_no_history_is_not_reported_as_looking_fine(client):
     assert line["comparable"] is False, (
         "a line with no history came back indistinguishable from one the "
         "engine judged and found ordinary")
+
+
+def test_the_price_diagnosed_is_the_net_one_not_the_list_rate(client):
+    """The arithmetic that would have made this engine flag everything.
+
+    `rate` is the list price before the line's discount; `amount` is what the
+    line came to after it. The history this is compared against is net —
+    `_effective_unit_amount` resolves an invoice line's discount before storing
+    `unit_price`. On the book this was built for, almost every line carries 50%
+    or 55% off, so comparing list against net would report every line of every
+    quote as far above what the customer has ever paid.
+
+    Seeded so the two readings fall on opposite sides of the verdict: list
+    ₹2,000, half off, ₹1,000 net. This customer's history here is ₹1,000, so
+    the net price is exactly ordinary and raises nothing — while the list rate
+    is double the band and would raise a card on every line of every quote.
+    """
+    s = client.Maker()
+    try:
+        _quote(s, "erp-disc", "c1", "QT-DISC")
+        # This session has autoflush off, so the pending inserts above are not
+        # visible to the query below until they are flushed.
+        s.flush()
+        row = s.query(models.ErpQuoteLine).filter_by(
+            external_ref="erp-disc:l1").one()
+        row.rate = Decimal("2000")       # list
+        row.amount = Decimal("10000")    # 10 × 1,000 after 50% off
+        row.qty = Decimal("10")
+        s.commit()
+    finally:
+        s.close()
+
+    # The desk's view: it is the one with `renders` on it, and the one whose
+    # `quoted` string would show the wrong number to a person.
+    line = _erp(client, SALES, ref="erp-disc").json()["lines"][0]
+
+    # ₹850 is inside the seeded history, so a correct reading raises nothing.
+    assert "2,000" not in json.dumps(line), (
+        "the list rate was diagnosed instead of the net price")
+    assert line["renders"] is False, (
+        "a line priced exactly at this customer's own historical level was "
+        "flagged — the list rate is being compared against net history")
+
+
+def test_both_roles_are_told_whether_a_line_could_be_compared(client):
+    """The field has to mean the same thing on both projections.
+
+    It was on the operations card only, and the manager's screen then said "no
+    line on this quote could be compared" about a real quote where two lines
+    had been. A reader cannot see which projection they were served, so a field
+    that answers the question for one role and is simply absent for the other
+    is a wrong answer for that role rather than a missing one — and the screen
+    that reads it has no way to tell those apart.
+    """
+    ops = _erp(client, SALES).json()["lines"]
+    owner = _erp(client, MANAGER).json()["lines"]
+
+    assert [ln["comparable"] for ln in ops] == [ln["comparable"] for ln in owner]
+    assert all(isinstance(ln["comparable"], bool) for ln in ops + owner)

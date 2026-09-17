@@ -42,6 +42,13 @@ export type DiagnosisView = {
   quote_diagnosis_id: string | null;
   line_id: string;
   renders: boolean;
+  /** Whether the engine had comparable evidence for this line at all.
+   *
+   *  Not the same as `renders`, and the gap between them is what a reader of a
+   *  finished document needs: a line that does not render may have been judged
+   *  and found ordinary, or may never have been comparable to anything. Only
+   *  the first is good news. */
+  comparable: boolean;
   headline: string;
   quoted: string;
   historical: string;

@@ -86,7 +86,8 @@ def _seed(s) -> None:
     s.flush()
 
 
-def _quote(s, ref: str, customer_id: str, number: str) -> None:
+def _quote(s, ref: str, customer_id: str, number: str,
+           item_code: str = "ITEM-900") -> None:
     s.add(models.QuoteDoc(
         organization_id=ORG, external_ref=ref, number=number,
         customer_id=customer_id, customer_ref="Acme Engineering",
@@ -97,7 +98,7 @@ def _quote(s, ref: str, customer_id: str, number: str) -> None:
     # code, which is the ordinary shape of a freight or handling line.
     s.add(models.ErpQuoteLine(
         organization_id=ORG, quote_ref=ref, external_ref=f"{ref}:l1",
-        line_number=0, item_code="ITEM-900", description="CNMG 120408-MP",
+        line_number=0, item_code=item_code, description="CNMG 120408-MP",
         qty=Decimal("10"), unit="pcs", rate=Decimal("850"),
         amount=Decimal("8500"), connector="zoho"))
     s.add(models.ErpQuoteLine(
@@ -231,3 +232,51 @@ def test_a_line_naming_no_product_is_not_diagnosed(client):
     ids = {ln["line_id"] for ln in _erp(client, MANAGER).json()["lines"]}
 
     assert ids == {"0"}
+
+
+def test_a_line_says_whether_it_could_be_compared_at_all(client):
+    """`renders: false` covers three different facts and only two are good news.
+
+    The price sat inside the supported range; the deviation was too small to
+    interrupt anybody over; or there was nothing to compare against. A screen
+    with only `renders` reports all three as "nothing stood out", which is the
+    `absence of evidence is not a pass` rule broken over an engine that is
+    careful about it — `INSUFFICIENT_EVIDENCE` is a first-class answer there.
+
+    So the answer travels as a field. A reader could match on the word "Not
+    enough" in `evidence`, but that string is chosen for display, and a
+    predicate re-derived from a published field downstream is a guess about
+    what the producer meant.
+    """
+    line = _erp(client, MANAGER).json()["lines"][0]
+
+    assert "comparable" in line or line["view"] == "OWNER", line
+
+
+def test_a_product_with_no_history_is_not_reported_as_looking_fine(client):
+    """The case behind the fix: a quote whose items this customer has never
+    bought. The engine cannot compare it, and the response must say so rather
+    than come back quiet in the same way a perfectly ordinary quote does."""
+    s = client.Maker()
+    try:
+        # A different family, deliberately. The engine falls back through
+        # family tiers — a turning insert this customer has never bought is
+        # still comparable to the turning inserts they buy constantly, which is
+        # the engine working as designed and not the case under test. "Nothing
+        # to compare against" means nothing in the same family either.
+        s.add(models.Product(product_id="p9", organization_id=ORG,
+                             external_id="ITEM-NEVER", name="Never bought",
+                             uom="pcs", source_item_category="Workholding"))
+        # A real product this customer has simply never bought — the ordinary
+        # shape of the case, rather than a line pointing at nothing.
+        _quote(s, "erp-nohist", "c1", "QT-NOHIST", item_code="ITEM-NEVER")
+        s.commit()
+    finally:
+        s.close()
+
+    line = _erp(client, SALES, ref="erp-nohist").json()["lines"][0]
+
+    assert line["renders"] is False
+    assert line["comparable"] is False, (
+        "a line with no history came back indistinguishable from one the "
+        "engine judged and found ordinary")

@@ -418,6 +418,7 @@ def _project_stored(row: models.QuoteDiagnosis, principal: Principal,
 
 def _card(card: render.OperationsCard) -> dict[str, Any]:
     return {"line_id": card.line_id, "renders": card.renders,
+            "comparable": card.comparable,
             "headline": card.headline, "quoted": card.quoted,
             "historical": card.historical, "evidence": card.evidence,
             "evidence_detail": card.evidence_detail, "why": card.why,

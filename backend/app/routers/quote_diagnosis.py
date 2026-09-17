@@ -29,6 +29,7 @@ from sqlalchemy.orm import Session
 from ..authz import Principal, current_principal
 from ..clock import aware
 from ..commercial.policy import load_for_org
+from ..commercial.quote_service import _resolve_products, resolve_customer
 from ..commercial.quote_diagnosis import render, replay, rules, service
 from ..db import get_session
 from ..domain import models
@@ -49,7 +50,18 @@ _AS_OF_WINDOW_DAYS = 90
 
 class LineIn(BaseModel):
     line_id: str
+    #: The platform's product id **or** the code the desk typed. Resolved
+    #: through ``quote_service._resolve_products``, which is the same function
+    #: ``quote-intelligence/assess`` uses and already accepts either.
+    #:
+    #: This field used to demand an id, and that is why nothing ever called
+    #: this endpoint: the Quote Builder is its only caller and the builder
+    #: speaks codes — the two screens that assess the same line wanted two
+    #: different vocabularies, so the one that was written second was never
+    #: wired up. One vocabulary, one resolver.
     product_id: str
+    #: The platform's customer id or the name on the quote, resolved through
+    #: the Quote Builder's own tolerant matcher for the same reason.
     customer_id: Optional[str] = None
     qty: Decimal = Decimal("1")
     quoted_unit_price: Optional[Decimal] = None
@@ -102,12 +114,28 @@ def assess(body: AssessRequest,
     knowable_by = _knowable_by(as_of)
     cutover = service.backfill_cutover(session, principal.organization_id)
 
+    # One pass over the catalogue for the whole request, not one per line:
+    # `_resolve_products` says in as many words that the per-call form is the
+    # N+1 it exists to avoid on a forty-line quote.
+    products = _resolve_products(session, principal.organization_id,
+                                 {ln.product_id for ln in body.lines})
+
     out: list[dict[str, Any]] = []
     for line in body.lines:
+        product = products.get((line.product_id or "").strip())
         result = service.diagnose_line(
             session, principal.organization_id, quote_id=body.quote_id,
-            line_id=line.line_id, customer_id=line.customer_id,
-            product_id=line.product_id, qty=line.qty,
+            line_id=line.line_id,
+            customer_id=_customer_id(session, principal.organization_id,
+                                     line.customer_id),
+            # The resolved id where the ref named something, and the ref itself
+            # where it did not. An unresolved product is an ordinary case — the
+            # desk quotes things the master has never held — and the engine
+            # already answers INSUFFICIENT_EVIDENCE for an id it cannot find,
+            # which is the right answer rather than an error.
+            product_id=(product.product_id if product is not None
+                        else line.product_id),
+            qty=line.qty,
             quoted_unit_price=line.quoted_unit_price, as_of=as_of,
             knowable_by=knowable_by, th=th,
             segment=service.segment_roster(session, principal.organization_id,
@@ -191,6 +219,25 @@ def evaluation(since: Optional[date] = None,
     _require_management(principal)
     return replay.evaluate(session, principal.organization_id,
                            since=since).to_dict()
+
+
+def _customer_id(session: Session, org: str, ref: Optional[str]) -> Optional[str]:
+    """A customer id from an id or a name.
+
+    Delegates to the Quote Builder's own tolerant matcher through
+    ``quote_service.resolve_customer`` — the pattern CLAUDE.md §2 holds up as
+    already-done-right, and for its stated reason: a customer resolvable on the
+    quote screen but not in the diagnosis would be a bug nobody can reproduce.
+
+    ``None`` stays ``None``, and a ref that resolves to nothing stays itself:
+    quoting somebody who has never bought before is ordinary, and the engine
+    answers INSUFFICIENT_EVIDENCE for a customer with no history, which is the
+    correct answer rather than a refusal.
+    """
+    if not ref:
+        return None
+    customer = resolve_customer(session, org, ref)
+    return customer.customer_id if customer is not None else ref
 
 
 def _knowable_by(as_of: date) -> datetime:

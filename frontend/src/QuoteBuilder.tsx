@@ -80,6 +80,8 @@ import { PATH, pathFor } from "./platform/route";
 import type { PlatformSession } from "./platform/types";
 import { formatTime } from "./when";
 import { useQuoteIntelligence } from "./useQuoteIntelligence";
+import { useQuoteDiagnosis } from "./useQuoteDiagnosis";
+import { QuoteDiagnosisPanel, useDismissReasons } from "./components/QuoteDiagnosisPanel";
 
 /** The filter row, named against whichever system this quote's books are in.
  *
@@ -233,6 +235,10 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
 
   // One assessment for the whole quote — see useQuoteIntelligence.
   const ci = useQuoteIntelligence(quote, t);
+  // What this customer has paid before. A separate engine from `ci`, asked
+  // separately — see `useQuoteDiagnosis` for why the two are not one hook.
+  const diagnosis = useQuoteDiagnosis(quote, t);
+  const dismissReasons = useDismissReasons(t);
 
   // The same `SnackbarProvider` the rest of the platform uses, rather than the
   // fixed-position div and 2.4s timer this used to hand-roll: two of them in
@@ -1196,6 +1202,22 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           </Box>
         </>
       )}
+
+      {/* What this customer has paid before, per line, and only where the
+          engine judged it worth interrupting somebody. Silent by default and
+          silent on purpose: `renders` is the server's answer to "is this worth
+          saying", taken against a versioned policy, and most lines on most
+          quotes have nothing unusual about them.
+
+          Below the grid rather than inside it. The grid's job is the quote —
+          every line, editable, scannable — and a column that is blank on most
+          rows would cost width on every one of them to say nothing. */}
+      <QuoteDiagnosisPanel
+        lines={visible}
+        diagnosis={diagnosis}
+        dismissReasons={dismissReasons}
+        onReviewPrice={setDrawerLineId}
+      />
 
       <SummaryBar
         quote={quote}

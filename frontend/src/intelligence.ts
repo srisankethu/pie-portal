@@ -26,7 +26,12 @@ export interface AssessLine {
   family?: string | null;
 }
 
-async function post<T>(path: string, body: unknown, token: string): Promise<T> {
+/** Exported for `useQuoteDiagnosis`, which posts to a sibling endpoint and
+ *  needs exactly this failure handling — the server's own sentence kept
+ *  whatever form it arrives in. A second copy would be a second screen that
+ *  says no without saying what would make it say yes. */
+export async function post<T>(path: string, body: unknown,
+                              token: string): Promise<T> {
   const res = await fetch(path, authInit({
     method: "POST",
     body: JSON.stringify(body),

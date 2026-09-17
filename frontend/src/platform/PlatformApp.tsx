@@ -80,6 +80,7 @@ import "./viz/viz.css";
  */
 const QuoteBuilder = lazy(() => import("../QuoteBuilder"));
 const QuoteWorkspace = lazy(() => import("../QuoteWorkspace"));
+const ErpQuoteScreen = lazy(() => import("../ErpQuoteScreen"));
 const ApprovalsScreen = lazy(() =>
   import("./AdminScreens").then((m) => ({ default: m.ApprovalsScreen })));
 const SettingsScreen = lazy(() =>
@@ -1248,6 +1249,11 @@ export default function PlatformApp() {
                 draft the whole desk can see rather than on the one copy this
                 browser kept. */}
             <Route path={PATH.quotes} element={<QuoteWorkspace session={session} />} />
+            {/* Declared before the draft pattern for legibility; React Router
+                ranks the three-segment static path above `/quotes/:id`
+                regardless, so "erp" can never be read as a draft id. */}
+            <Route path={PATTERN.erpQuote}
+                   element={<ErpQuoteScreen session={session} />} />
             <Route path={PATTERN.quote} element={<QuoteBuilder session={session} />} />
 
             {/* ── SETUP ──

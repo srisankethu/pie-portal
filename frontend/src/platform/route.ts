@@ -182,6 +182,12 @@ export const PATTERN = {
   /** One draft in the quote workspace — the Quote Builder open on it. Bare
    *  `/quotes` is the workspace itself: every draft, and the way to start one. */
   quote: "/quotes/:id",
+  /** One quote the ERP raised, read-only. Three segments, so it never contests
+   *  `/quotes/:id` above — that one is a draft this platform owns and can
+   *  change, and this one is an issued document in somebody else's system.
+   *  Two paths because they are two different things, not one thing with a
+   *  flag. */
+  erpQuote: "/quotes/erp/:ref",
 } as const;
 
 /** Screens whose content is a wide table rather than something to read.
@@ -215,6 +221,9 @@ const PARAMETERISED: readonly (readonly [string, Screen])[] = [
   [PATTERN.customerItem, "customerItem"],
   [PATTERN.account, "customer"],
   [PATTERN.detail, "detail"],
+  // Longest first, per this list's own rule: `/quotes/erp/:ref` must not be
+  // read as `/quotes/:id` with an id of "erp".
+  [PATTERN.erpQuote, "quotes"],
   [PATTERN.quote, "quotes"],
 ] as const;
 
@@ -232,6 +241,18 @@ export function pathFor(screen: Screen, id?: string, itemId?: string): string {
   if (screen === "customer" && id) return `/account/${enc(id)}`;
   if (screen === "quotes" && id) return `/quotes/${enc(id)}`;
   return PATH[screen];
+}
+
+/** The URL for one quote the ERP raised.
+ *
+ *  Its own function rather than a `pathFor` branch: `pathFor` is keyed on
+ *  `Screen`, and an ERP quote is not a screen of its own — it lives under the
+ *  `quotes` nav item, which is exactly what `screenAt` has to keep answering
+ *  for it. Adding an "erpQuote" screen to satisfy the builder would put a
+ *  thirteenth entry in a union whose whole purpose is the nav.
+ */
+export function erpQuotePath(ref: string): string {
+  return `/quotes/erp/${encodeURIComponent(ref)}`;
 }
 
 /** Which screen a URL is showing — the nav highlight, and nothing else.

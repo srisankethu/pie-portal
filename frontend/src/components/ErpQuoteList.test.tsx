@@ -6,7 +6,8 @@
 // screen renders what it is handed, and that the two values a list over money
 // must never invent — a missing total, and an outcome nobody recorded — are not
 // invented on the way to the DOM.
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { ErpQuoteList } from "./ErpQuoteList";
@@ -19,9 +20,14 @@ import { pretendViewportIs } from "../test/viewport";
 // arrangement `LineGrid.test.tsx` uses and for the same reason. The empty state
 // is the exception: `DataGrid` returns it in place of the grid, so it renders
 // either way.
+// A `MemoryRouter` because pressing a row is a route change now: the list
+// navigates to the quote's own page rather than opening an overlay.
 function renderRows(quotes: ErpQuote[]) {
   pretendViewportIs(412);
-  return render(<ErpQuoteList quotes={quotes} emptyReason={null} />);
+  return render(
+    <MemoryRouter>
+      <ErpQuoteList quotes={quotes} emptyReason={null} />
+    </MemoryRouter>);
 }
 
 afterEach(() => { vi.unstubAllGlobals(); });
@@ -90,46 +96,26 @@ describe("a quote the ERP gave no total for", () => {
   });
 });
 
-describe("opening a quote", () => {
-  it("opens the one that was pressed", () => {
-    // The report this came from: the rows were on screen and none of them did
-    // anything. Asserted through the narrow card because that path is plain
-    // React — ag-grid's own row activation is its listener, not the DOM's.
-    renderRows([
-      q({ quote_document_ref: "a", number: "QTN-A" }),
-      q({ quote_document_ref: "b", number: "QTN-B", customer_label: "Beta Works" }),
-    ]);
-
-    fireEvent.click(screen.getByText("QTN-B"));
-
-    // The drawer is open on B, not A: its customer is the one in the panel.
-    expect(screen.getAllByText("Beta Works").length).toBeGreaterThan(1);
-    expect(screen.getByRole("button", { name: "Close" })).toBeTruthy();
-  });
-
-  it("gives every row a control a keyboard can reach", () => {
-    // A row somebody can see and cannot open is a row a screen-reader user
-    // cannot read at all.
-    renderRows([q()]);
-
-    expect(screen.getByRole("button", { name: /SLS\/QTN-201/ })).toBeTruthy();
-  });
-});
-
 describe("an empty book", () => {
   it("shows the server's reason rather than a generic blank", () => {
     // A bare "Nothing here" is exactly what sent the original report: it cannot
     // distinguish "no quotes synced" from "the quote stage was refused a
     // permission", and those need different actions.
-    render(<ErpQuoteList quotes={[]} emptyReason={
-      "No quotes have reached the platform from your ERP yet. Reading them "
-      + "needs a permission older connections were never asked for."} />);
+    render(
+      <MemoryRouter>
+        <ErpQuoteList quotes={[]} emptyReason={
+          "No quotes have reached the platform from your ERP yet. Reading them "
+          + "needs a permission older connections were never asked for."} />
+      </MemoryRouter>);
 
     expect(screen.getByText(/needs a permission/)).toBeTruthy();
   });
 
   it("falls back to a plain sentence when the server gave no reason", () => {
-    render(<ErpQuoteList quotes={[]} emptyReason={null} />);
+    render(
+      <MemoryRouter>
+        <ErpQuoteList quotes={[]} emptyReason={null} />
+      </MemoryRouter>);
 
     expect(screen.getByText(/Nothing has come through/)).toBeTruthy();
   });

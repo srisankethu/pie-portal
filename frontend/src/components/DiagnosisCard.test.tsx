@@ -31,6 +31,7 @@ function view(over: Partial<DiagnosisView> = {}): DiagnosisView {
     quote_diagnosis_id: "qd_1",
     line_id: "L1",
     renders: true,
+    comparable: true,
     headline: "Below this customer's historical pricing",
     quoted: "₹900",
     historical: "₹980 – ₹1,020",

@@ -74,6 +74,21 @@ class OperationsCard:
 
     line_id: str
     renders: bool
+    #: Whether the engine had enough comparable evidence to say anything about
+    #: this price at all.
+    #:
+    #: Distinct from ``renders``, and the distinction is the whole reason this
+    #: field exists. A line that does not render covers three different facts —
+    #: the price sat inside the supported range, the deviation was too small to
+    #: interrupt anybody about, or there was nothing to compare against — and a
+    #: screen with only ``renders`` has to report all three as "nothing stood
+    #: out". The first two are good news and the third is the absence of any
+    #: news, which CLAUDE.md §1 is explicit must never read as a pass.
+    #:
+    #: A reader can already see "Not enough" in ``evidence``, but that is a word
+    #: chosen for display and matching on it downstream would be a guess about
+    #: what this module meant. The producer knows; the output shape carries it.
+    comparable: bool
     headline: str
     quoted: str
     historical: str
@@ -111,6 +126,7 @@ def render_operations(ops: OperationsDiagnosis, *,
     return OperationsCard(
         line_id=ops.line_id,
         renders=ops.surfaces,
+        comparable=INSUFFICIENT_EVIDENCE not in ops.codes,
         headline=_ops_headline(ops.codes),
         quoted=quoted,
         historical=historical,

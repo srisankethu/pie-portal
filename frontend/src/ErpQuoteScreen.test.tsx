@@ -120,7 +120,7 @@ function stubFetch() {
 /** One diagnosis, in the shape the endpoint projects. */
 function diagnosis(over: Record<string, unknown> = {}) {
   return {
-    quote_diagnosis_id: null, line_id: "0", renders: true,
+    quote_diagnosis_id: null, line_id: "0", renders: true, comparable: true,
     headline: "Below this customer's historical pricing",
     quoted: "₹450", historical: "₹500 – ₹520",
     evidence: "Strong", evidence_detail: "14 comparable transactions",
@@ -403,9 +403,48 @@ describe("the diagnosis", () => {
     diagnoses = { "0": diagnosis({ renders: false }) };
     draw();
 
-    await waitFor(() => expect(screen.getByText(/Nothing on this quote stood out/))
+    await waitFor(() => expect(screen.getByText(/Nothing stood out/)).toBeTruthy());
+    expect(screen.getByText(/compared against what this customer had paid/))
+      .toBeTruthy();
+  });
+
+  it("never reports a line it could not compare as one that looked fine", async () => {
+    // The defect this replaced. A line renders no card when it sat inside the
+    // supported range, when the deviation was too small to interrupt over, OR
+    // when there was nothing to compare it against — and the screen reported
+    // all three as "nothing stood out". Only the first two are good news.
+    // `absence of evidence is not a pass`, over an engine that treats
+    // INSUFFICIENT_EVIDENCE as a first-class answer.
+    diagnoses = { "0": diagnosis({ renders: false, comparable: false }) };
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText(/No line on this quote could be compared/))
+        .toBeTruthy());
+    expect(screen.getByText(/absence of evidence, not a verdict/)).toBeTruthy();
+    expect(screen.queryByText(/Nothing stood out/)).toBeNull();
+  });
+
+  it("counts the lines it could compare when only some had history", async () => {
+    // The mixed case is the ordinary one on a real book, and the count is what
+    // makes the sentence worth reading: "2 of 3" says how much of the quote the
+    // clean verdict actually covers.
+    erpQuoteLines.mockResolvedValue(lines({
+      lines: [0, 1, 2].map((n) => ({
+        line_number: n, item_code: `ITEM-${n}`, description: `line ${n}`,
+        product_id: null, qty: 1, unit: "pcs", rate: 100 + n, amount: 100 + n,
+      })),
+    }));
+    diagnoses = {
+      "0": diagnosis({ line_id: "0", renders: false, comparable: true }),
+      "1": diagnosis({ line_id: "1", renders: false, comparable: true }),
+      "2": diagnosis({ line_id: "2", renders: false, comparable: false }),
+    };
+    draw();
+
+    await waitFor(() => expect(screen.getByText(/2 of 3 lines were compared/))
       .toBeTruthy());
-    expect(screen.getByText(/paid by 2026-07-23/)).toBeTruthy();
+    expect(screen.getByText(/other 1 had no comparable history/)).toBeTruthy();
   });
 
   it("says so when the check could not run, and never reads as clean", async () => {

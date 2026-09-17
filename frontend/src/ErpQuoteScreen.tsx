@@ -52,6 +52,7 @@ import {
 import { pathFor } from "./platform/route";
 import { QuoteDiagnosisPanel, useDismissReasons } from "./components/QuoteDiagnosisPanel";
 import { useErpQuoteDiagnosis } from "./useQuoteDiagnosis";
+import type { QuoteDiagnosisState } from "./useQuoteDiagnosis";
 import type { PlatformSession } from "./platform/types";
 import type { ErpQuote, ErpQuoteLine, ErpQuoteLines } from "./types";
 
@@ -315,16 +316,53 @@ function ErpQuoteDiagnosis({ quote, lines, token }: {
   // claim about evidence that was never put to it.
   if (held.length === 0) return null;
 
+  const lineIds = held.map((l) => String(l.line_number));
+
   return (
     <QuoteDiagnosisPanel
-      lineIds={held.map((l) => String(l.line_number))}
+      lineIds={lineIds}
       diagnosis={diagnosis}
       dismissReasons={dismissReasons}
       title="How this was priced against the customer's own history"
-      clean={`Checked against what this customer had paid by ${quote.raised_on}. `
-             + "Nothing on this quote stood out."}
+      clean={settled(lineIds, diagnosis, quote.raised_on)}
     />
   );
+}
+
+/** What to say when the engine flagged nothing.
+ *
+ *  **"Nothing stood out" is only one of the things that sentence used to
+ *  cover,** and the other one is not good news. A line renders no card when it
+ *  sat inside the supported range, when the deviation was too small to be worth
+ *  interrupting anybody over, *or* when there was no comparable history to
+ *  judge it against at all. Reporting the third as a clean bill is the
+ *  `absence of evidence is not a pass` rule broken on screen, over an engine
+ *  that is careful about it — `INSUFFICIENT_EVIDENCE` is a first-class answer
+ *  there, described in its own source as valid, expected and frequent.
+ *
+ *  So this counts. `comparable` is the engine's own answer to "could I say
+ *  anything about this line", carried as a field rather than inferred from the
+ *  word in `evidence`, which is chosen for display and would be a guess about
+ *  what the producer meant.
+ */
+function settled(lineIds: string[], diagnosis: QuoteDiagnosisState,
+                 raisedOn: string): string {
+  const seen = lineIds.map((id) => diagnosis.byLineId[id]).filter(Boolean);
+  const compared = seen.filter((d) => d.comparable).length;
+  const total = seen.length;
+
+  if (total === 0 || compared === 0) {
+    return `No line on this quote could be compared: this customer had no `
+      + `purchase history on record for these items by ${raisedOn}. That is an `
+      + `absence of evidence, not a verdict on the pricing.`;
+  }
+  if (compared < total) {
+    return `${compared} of ${total} lines were compared against what this `
+      + `customer had paid by ${raisedOn}, and nothing on those stood out. The `
+      + `other ${total - compared} had no comparable history to judge.`;
+  }
+  return `All ${total} lines were compared against what this customer had paid `
+    + `by ${raisedOn}. Nothing stood out.`;
 }
 
 /** What the lines come to, beside what the ERP says the document came to.

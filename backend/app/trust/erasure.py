@@ -84,6 +84,11 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # withholding the quotes behind them would hand back the half that closed
     # and hide the half that did not.
     ("erp_quotes", models.QuoteDoc),
+    # And what was on each one. Exported with the header for the reason the
+    # header is exported with the orders: the lines are the substance of what
+    # this customer was offered, and a book handed back as a list of totals
+    # with no parts on it is the shape of their trading and none of its content.
+    ("erp_quote_lines", models.ErpQuoteLine),
     # Which orders each invoice billed against. Exported rather than excluded:
     # it is this customer's own trading record, and an export holding the orders
     # and the invoices but not the joins between them would hand back two lists

@@ -1778,6 +1778,51 @@ def quote_book_list(limit: int = Query(200, ge=1, le=1000),
                       "reports whether the quote stage was refused."))
 
 
+@router.get("/quote-book/{quote_ref:path}/lines")
+def quote_book_lines(quote_ref: str,
+                     principal: Principal = Depends(current_principal),
+                     session: Session = Depends(get_session)) -> dict:
+    """What was on one quote the ERP raised.
+
+    Per quote rather than on every row of the book: 114 quotes with their lines
+    is a payload nobody reads most of, and the breakdown is wanted only when
+    somebody opens one.
+
+    Scoped through the book itself rather than by querying the lines directly.
+    A salesperson who may not see the quote may not see its lines, and deriving
+    that twice is how the two answers drift — so this asks the list whether this
+    principal can see this quote, and 404s when it cannot. A 404 rather than a
+    403 on purpose: whether a quote exists in a book you cannot read is itself
+    something you should not learn.
+
+    ``lines: []`` is ambiguous on its own — a quote with no lines and a quote
+    whose breakdown has not been pulled look identical — so ``lines_held`` says
+    which. A resumed sync updates every header and no breakdown, so this is a
+    real state rather than a transient one.
+    """
+    org, snapshot, th = _labels_only(session, principal)
+    visible = {
+        q.quote_document_ref
+        for q in quote_book_view.build(
+            session, org, customer_names={},
+            customer_ids=_assigned_customer_ids(session, principal))
+    }
+    if quote_ref not in visible:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such quote")
+
+    rows = quote_book_view.lines_for(session, org, quote_ref=quote_ref)
+    return _envelope(
+        {"quote_document_ref": quote_ref,
+         "lines": [row.to_dict() for row in rows],
+         "lines_held": bool(rows)},
+        th=th,
+        empty_reason=(None if rows else
+                      "The lines on this quote have not been read from your "
+                      "ERP yet. A sync that already held the quote refreshes "
+                      "its status without re-reading the breakdown, so the "
+                      "next full pull is what fills them in."))
+
+
 @router.get("/cashflow")
 def cash_projection(weeks: int = Query(cashflow.WEEKS, ge=1, le=26),
                     principal: Principal = Depends(require_manager_or_owner),

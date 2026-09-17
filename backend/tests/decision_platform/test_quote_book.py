@@ -459,3 +459,96 @@ def test_an_empty_book_says_what_would_have_filled_it(maker):
 
     assert body["count"] == 0
     assert "permission" in body["empty_reason"]
+
+
+# ── the lines on one quote ───────────────────────────────────────────────────
+
+def _line(s, quote_ref: str, ref: str, *, number: int = 0, code: str = "CNMG120408",
+          desc: str = "Turning insert", product: str | None = None,
+          qty: str | None = "10", rate: str | None = "450",
+          amount: str | None = "4500") -> None:
+    s.add(models.ErpQuoteLine(
+        organization_id=ORG, connector="zoho", connection_id="conn1",
+        external_ref=ref, quote_ref=quote_ref, line_number=number,
+        product_id=product, item_code=code, description=desc,
+        qty=Decimal(qty) if qty is not None else None, unit="pcs",
+        rate=Decimal(rate) if rate is not None else None,
+        amount=Decimal(amount) if amount is not None else None,
+        source_ref={}))
+
+
+def test_the_lines_come_back_in_the_order_the_erp_wrote_them(maker):
+    s = maker()
+    _doc(s, "q1")
+    _line(s, "q1", "q1:c", number=2, code="C")
+    _line(s, "q1", "q1:a", number=0, code="A")
+    _line(s, "q1", "q1:b", number=1, code="B")
+    s.commit()
+    s.close()
+
+    sess = maker()
+    try:
+        rows = quote_book.lines_for(sess, ORG, quote_ref="q1")
+    finally:
+        sess.close()
+
+    assert [r.item_code for r in rows] == ["A", "B", "C"]
+
+
+def test_only_this_quotes_lines_come_back(maker):
+    s = maker()
+    _doc(s, "q1")
+    _doc(s, "q2")
+    _line(s, "q1", "q1:a", code="MINE")
+    _line(s, "q2", "q2:a", code="THEIRS")
+    s.commit()
+    s.close()
+
+    sess = maker()
+    try:
+        rows = quote_book.lines_for(sess, ORG, quote_ref="q1")
+    finally:
+        sess.close()
+
+    assert [r.item_code for r in rows] == ["MINE"]
+
+
+def test_a_line_with_no_price_is_not_read_as_priced_at_nothing(maker):
+    s = maker()
+    _doc(s, "q1")
+    _line(s, "q1", "q1:a", qty=None, rate=None, amount=None)
+    s.commit()
+    s.close()
+
+    sess = maker()
+    try:
+        row = quote_book.lines_for(sess, ORG, quote_ref="q1")[0]
+    finally:
+        sess.close()
+
+    assert (row.qty, row.rate, row.amount) == (None, None, None)
+    assert row.to_dict()["rate"] is None
+
+
+def test_the_endpoint_serves_the_lines_and_says_they_are_held(client):
+    body = client.get("/api/v1/insight/quote-book/won/lines",
+                      headers=_hdr(client, MANAGER)).json()
+
+    assert body["lines_held"] is False
+    assert body["lines"] == []
+    # The distinction the empty list cannot carry on its own.
+    assert "not been read" in body["empty_reason"]
+
+
+def test_a_quote_this_reader_may_not_see_is_a_404_rather_than_an_empty_list(client):
+    """Not a 403 either: whether a quote exists in a book you cannot read is
+    itself something you should not learn."""
+    r = client.get("/api/v1/insight/quote-book/theirs/lines",
+                   headers=_hdr(client, SALES))
+
+    assert r.status_code == 404
+
+
+def test_a_quote_that_does_not_exist_is_also_a_404(client):
+    assert client.get("/api/v1/insight/quote-book/nope/lines",
+                      headers=_hdr(client, MANAGER)).status_code == 404

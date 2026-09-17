@@ -16,7 +16,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { ErpQuoteDrawer } from "./ErpQuoteDrawer";
-import type { ErpQuote } from "../types";
+import type { ErpQuote, ErpQuoteLines } from "../types";
 
 function q(over: Partial<ErpQuote> = {}): ErpQuote {
   return {
@@ -81,15 +81,63 @@ describe("read-only, for anyone", () => {
   });
 });
 
-describe("what it does not hold", () => {
-  it("says the lines are not here, and where they are", () => {
-    // The whole reason this screen exists is that a silence read as a fault.
-    // A panel that simply omitted the lines would repeat it.
+describe("the lines", () => {
+  function withLines(lines: ErpQuoteLines["lines"]): ErpQuoteLines {
+    return { quote_document_ref: "est-1", lines, lines_held: lines.length > 0,
+             empty_reason: null };
+  }
+
+  it("are shown, which is the whole point of opening a quote", () => {
+    render(<ErpQuoteDrawer quote={q()} showCompany={false} onClose={vi.fn()}
+                           lines={withLines([{
+                             line_number: 0, item_code: "CNMG120408",
+                             description: "CNMG 120408 MP KCP25 turning insert",
+                             product_id: "p1", qty: 10, unit: "pcs",
+                             rate: 450, amount: 4500,
+                           }])} />);
+
+    expect(screen.getByText("CNMG120408")).toBeTruthy();
+    expect(screen.getByText(/turning insert/)).toBeTruthy();
+    expect(screen.getByText("10 pcs")).toBeTruthy();
+    expect(screen.getByText("₹4,500")).toBeTruthy();
+  });
+
+  it("show a dash for a line the ERP never priced, not a zero", () => {
+    // A line nobody priced is a different fact from a line priced at nothing,
+    // and the second is the one a reader would act on.
+    render(<ErpQuoteDrawer quote={q()} showCompany={false} onClose={vi.fn()}
+                           lines={withLines([{
+                             line_number: 0, item_code: "X", description: "",
+                             product_id: null, qty: null, unit: "",
+                             rate: null, amount: null,
+                           }])} />);
+
+    expect(document.body.textContent ?? "").not.toMatch(/₹0(?!\d)/);
+  });
+
+  it("are a loading state while the fetch is in flight, not an empty quote", () => {
+    // `undefined` is "not fetched yet" and is deliberately distinct from a
+    // fetched result with no lines, which is a fact about the quote.
     render(<ErpQuoteDrawer quote={q()} showCompany={false} onClose={vi.fn()} />);
 
-    const shown = (document.body.textContent ?? "").replace(/\s+/g, " ");
-    expect(shown).toMatch(/lines that were on this one are not held here/);
-    expect(shown).toMatch(/open QT FY27-018 in your ERP to see them/);
+    // `document`, not the render container: a `Drawer` renders through a
+    // portal, so its contents are never inside the container it was called on.
+    expect(document.querySelector(".MuiSkeleton-root")).toBeTruthy();
+  });
+
+  it("carry the server's reason when the breakdown has never been read", () => {
+    // The distinction an empty list cannot make on its own: this quote's lines
+    // were not pulled, which is not the same as this quote having none. A bare
+    // empty table would assert the second.
+    render(<ErpQuoteDrawer quote={q()} showCompany={false} onClose={vi.fn()}
+                           lines={{
+                             quote_document_ref: "est-1", lines: [],
+                             lines_held: false,
+                             empty_reason: "The lines on this quote have not "
+                               + "been read from your ERP yet.",
+                           }} />);
+
+    expect(screen.getByText(/have not been read from your ERP yet/)).toBeTruthy();
   });
 });
 

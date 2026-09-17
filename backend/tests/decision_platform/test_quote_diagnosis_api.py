@@ -266,3 +266,38 @@ def test_dismissing_a_diagnosis_from_another_organization_is_a_404(client):
                     json={"reason_code": "OTHER"})
 
     assert r.status_code == 404
+
+
+# ── the vocabulary its caller actually speaks ────────────────────────────────
+
+def test_a_line_naming_a_product_by_code_is_diagnosed(client):
+    """Why this endpoint went unused for a release.
+
+    It demanded platform ids. Its only caller is the Quote Builder, which holds
+    the code the desk typed and not an id, so the two screens that assess the
+    same line wanted two different vocabularies and the one written second was
+    never wired to anything. Both resolve through
+    ``quote_service._resolve_products`` now.
+    """
+    r = client.post("/api/v1/quote-diagnosis/assess", headers=_hdr(client, SALES),
+                    json={"quote_id": "q-code", "record": False,
+                          "lines": [{"line_id": "L1", "product_id": "ITEM-900",
+                                     "customer_id": "Acme Engineering",
+                                     "qty": 10, "quoted_unit_price": 850}]})
+
+    assert r.status_code == 200, r.text
+    line = r.json()["lines"][0]
+    assert line["renders"] is True
+    assert line["headline"] == "Below this customer's historical pricing"
+
+
+def test_a_product_the_master_has_never_held_is_answered_not_refused(client):
+    """The desk quotes things the catalogue has never carried. That is ordinary,
+    and the engine's answer is that it has no evidence — not an error."""
+    r = client.post("/api/v1/quote-diagnosis/assess", headers=_hdr(client, SALES),
+                    json={"quote_id": "q-new", "record": False,
+                          "lines": [{"line_id": "L1", "product_id": "NOT-A-CODE",
+                                     "qty": 1, "quoted_unit_price": 100}]})
+
+    assert r.status_code == 200, r.text
+    assert r.json()["lines"][0]["renders"] is False

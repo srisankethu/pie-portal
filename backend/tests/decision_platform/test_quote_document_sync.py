@@ -59,7 +59,24 @@ class _Source:
     def list_invoices(self, skip=None): return []
     def list_bills(self, skip=None): return []
     def list_users(self): return []
-    def list_quotes(self): return list(self._quotes)
+    def list_quotes(self, skip=None):
+        """Takes ``skip`` because the real one does.
+
+        The pull buys a detail call per quote for the line breakdown, and the
+        predicate is what keeps a resumed sync at one list call. Rows already
+        known are yielded without ``line_items``, which is exactly what the
+        client does on a resume — the header refreshes, the breakdown does not.
+        """
+        self.skipped = []
+        out = []
+        for q in self._quotes:
+            row = dict(q)
+            if skip is not None and skip(str(row.get("estimate_id")),
+                                         str(row.get("last_modified_time") or "")):
+                self.skipped.append(str(row.get("estimate_id")))
+                row.pop("line_items", None)
+            out.append(row)
+        return out
 
 
 _CONTACTS = [{"contact_id": "c1", "contact_name": "Pitti Engineering Ltd",
@@ -750,7 +767,11 @@ def test_the_job_reads_quotes_and_commits_at_the_phase_boundary(session, monkeyp
     assert {r: rows[r].outcome for r in sorted(rows)} == {
         "est-1": "WON", "est-2": "LOST", "est-3": "UNRECORDED",
         "est-4": "UNRECORDED"}
-    assert (run.notes or {}).get("quotes") == {"read": 4, "undated_decisions": 1}
+    # ``lines: 0`` because these fixtures are list rows without a breakdown —
+    # the shape a resumed pull yields. Counted separately from the quotes so a
+    # run that refreshed every header and read no lines is visibly that.
+    assert (run.notes or {}).get("quotes") == {
+        "read": 4, "lines": 0, "undated_decisions": 1}
 
 
 def test_an_unreadable_view_stamp_costs_the_field_and_not_the_quote():
@@ -791,3 +812,102 @@ def test_no_view_stamp_is_not_an_unreadable_one():
     assert normalize.unreadable_view_stamp(_quote("q1", "sent")) is False
     assert normalize.unreadable_view_stamp(
         _quote("q1", "sent", client_viewed_time="")) is False
+
+
+# ── the line breakdown ──────────────────────────────────────────────────────
+
+def _with_lines(estimate_id: str = "e1", **over) -> dict:
+    """An estimate as the *detail* call returns it — the list row plus lines."""
+    return _quote(estimate_id, "sent", line_items=[
+        {"line_item_id": "l1", "item_id": "i1", "sku": "CNMG120408",
+         "description": "CNMG 120408 MP KCP25 turning insert",
+         "quantity": "10", "unit": "pcs", "rate": "450.00",
+         "item_total": "4500.00", "discount": "0"},
+        {"line_item_id": "l2", "sku": "", "name": "Freight",
+         "quantity": "1", "unit": "nos", "rate": "500.00",
+         "item_total": "500.00"},
+    ], **over)
+
+
+def test_the_lines_on_a_quote_are_read_and_kept_in_order(session):
+    _sync(session, [_with_lines()])
+
+    rows = session.query(models.ErpQuoteLine).order_by(
+        models.ErpQuoteLine.line_number).all()
+
+    assert [r.external_ref for r in rows] == ["e1:l1", "e1:l2"]
+    assert rows[0].item_code == "CNMG120408"
+    assert str(rows[0].qty) == "10.0000"
+    assert str(rows[0].rate) == "450.0000"
+    assert rows[0].quote_ref == "e1"
+
+
+def test_a_line_naming_nothing_in_the_item_master_is_still_kept(session):
+    """Real quoting activity. Dropping it would shrink the document to the part
+    that happens to be tidy — the same reasoning that keeps a quote whose
+    customer never resolved."""
+    _sync(session, [_with_lines()])
+
+    freight = session.query(models.ErpQuoteLine).filter_by(
+        external_ref="e1:l2").one()
+
+    assert freight.product_id is None
+    assert freight.description == "Freight"
+
+
+def test_a_line_removed_in_the_erp_disappears_here_too(session):
+    """Delete-then-insert rather than a per-line upsert.
+
+    An upsert would leave the removed line behind for ever, and a document on
+    screen that disagrees with the document in the source system is the one
+    thing a mirror must not do.
+
+    The stamp has to move for this to be the case under test at all: with an
+    unchanged ``last_modified_time`` the resume predicate skips the detail call
+    and the pull never sees the shorter quote, which is the *other* test below.
+    """
+    _sync(session, [_with_lines(last_modified_time="2026-05-04T10:00:00+0530")])
+    assert session.query(models.ErpQuoteLine).count() == 2
+
+    shorter = _quote("e1", "sent",
+                     last_modified_time="2026-05-06T09:00:00+0530",
+                     line_items=[
+                         {"line_item_id": "l1", "item_id": "i1",
+                          "sku": "CNMG120408",
+                          "description": "CNMG 120408 MP KCP25 turning insert",
+                          "quantity": "10", "unit": "pcs", "rate": "450.00",
+                          "item_total": "4500.00"}])
+    _sync(session, [shorter])
+
+    rows = session.query(models.ErpQuoteLine).all()
+    assert [r.external_ref for r in rows] == ["e1:l1"]
+
+
+def test_a_resumed_quote_keeps_the_lines_the_earlier_pull_read(session):
+    """The one way a cheap re-sync could destroy data, pinned.
+
+    A resumed row carries no ``line_items``, and rewriting the stored lines from
+    that empty list would delete a breakdown this run never read. The header
+    still refreshes — ``source_status`` and ``outcome`` are exactly the columns
+    that change after a quote is raised.
+    """
+    _sync(session, [_with_lines(last_modified_time="2026-05-04T10:00:00+0530")])
+    assert session.query(models.ErpQuoteLine).count() == 2
+
+    # Same quote, same stamp, now accepted: the resume predicate skips the
+    # detail call, so no lines arrive.
+    resumed = _quote("e1", "accepted", accepted_date="2026-05-20",
+                     last_modified_time="2026-05-04T10:00:00+0530")
+    _sync(session, [resumed])
+
+    assert session.query(models.ErpQuoteLine).count() == 2
+    assert _docs(session)["e1"].outcome == "WON"
+
+
+def test_a_quote_whose_lines_were_never_read_simply_has_none(session):
+    """Not an error, and not an invented line. The reader says the breakdown is
+    not held rather than that the quote was empty."""
+    _sync(session, [_quote("e1", "sent")])
+
+    assert session.query(models.ErpQuoteLine).count() == 0
+    assert _docs(session)["e1"].external_ref == "e1"

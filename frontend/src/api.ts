@@ -9,7 +9,7 @@
  * on one request is how a screen ends up displaying one person's name while
  * deciding what to show from another's role.
  */
-import type { ErpQuoteBook, EstimateResult, ItemSearch, Quote, QuoteDraftSummary,
+import type { ErpQuoteBook, ErpQuoteLines, EstimateResult, ItemSearch, Quote, QuoteDraftSummary,
   QuoteFieldDefinition, QuoteOwner, RfqDocument } from "./types";
 import { authInit } from "./authFetch";
 
@@ -147,6 +147,13 @@ export const api = {
    *  where the role scoping and the other reads of this table live. */
   listErpQuotes: (t: string, limit = 200) =>
     req<ErpQuoteBook>(`/api/v1/insight/quote-book?limit=${limit}`, {}, t),
+
+  /** What was on one ERP quote. Fetched when somebody opens it rather than
+   *  carried on every row: a hundred quotes with their lines is a payload
+   *  nobody reads most of. */
+  erpQuoteLines: (t: string, ref: string) =>
+    req<ErpQuoteLines>(
+      `/api/v1/insight/quote-book/${encodeURIComponent(ref)}/lines`, {}, t),
 
   getQuote: (t: string, id: string) => req<Quote>(`/api/v1/quotes/${id}`, {}, t),
 

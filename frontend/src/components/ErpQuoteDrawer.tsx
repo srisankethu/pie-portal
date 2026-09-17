@@ -9,12 +9,14 @@
  * press. Why a quote was lost is a human fact and lives on `quote_outcomes`,
  * a different table that no sync opens.
  *
- * **It says what it does not hold.** `erp_quotes` is header grain — the
- * line-level split would cost one API call per quote, and the model's docstring
- * says so. A reader who opens a quote expecting to see the lines and finds a
- * panel that simply does not mention them learns the same lesson that produced
- * the report this whole screen came from: something is missing and nothing says
- * what. So the absence is printed, with where the lines actually are.
+ * **The lines are here now, and the absence is still named when they are not.**
+ * This panel shipped saying the platform did not hold them, because it did not:
+ * `erp_quotes` was header grain and the line breakdown cost one API call per
+ * quote. That call is bought now. What has not changed is the rule the old
+ * sentence existed for — a quote whose breakdown a resumed sync never re-read
+ * has no lines *here* and had plenty in the ERP, and `lines_held` is the server
+ * saying which case this is. An empty list rendered as an empty quote would be
+ * the same silence that produced the report this screen came from.
  *
  * **Nothing here is cost or margin.** `value` is the quote's own selling total.
  * There is no cost column on this table, which is why this opens for every role
@@ -24,13 +26,14 @@
 import Box from "@mui/material/Box";
 import Drawer from "@mui/material/Drawer";
 import IconButton from "@mui/material/IconButton";
+import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import CloseOutlined from "@mui/icons-material/CloseOutlined";
 
 import { money } from "../money";
 import { FactTable, FieldLabel, Meta, StatusChip, TOUCH, type Tone } from "../platform/kit";
-import type { ErpQuote } from "../types";
+import type { ErpQuote, ErpQuoteLines } from "../types";
 
 /** The same three readings the grid uses, kept in one place with it. */
 export const OUTCOME: Record<string, { label: string; tone: Tone; tip: string }> = {
@@ -70,8 +73,12 @@ function dash(value: string | null | undefined): string {
   return value || "—";
 }
 
-export function ErpQuoteDrawer({ quote, showCompany, onClose }: {
+export function ErpQuoteDrawer({ quote, showCompany, lines, onClose }: {
   quote: ErpQuote;
+  /** The breakdown, once it has been fetched. `undefined` while in flight —
+   *  distinct from a fetched result with no lines, which is a fact about the
+   *  quote rather than about the request. */
+  lines?: ErpQuoteLines;
   /** Naming the book is information with two connected companies and noise
    *  with one, which is the server's `companies` count to decide, not this
    *  component's. */
@@ -145,16 +152,44 @@ export function ErpQuoteDrawer({ quote, showCompany, onClose }: {
           </Box>
         )}
 
-        {/* Printed on every quote, without exception. The platform reads these
-            documents at header grain, and a panel that simply omitted the lines
-            would leave a reader with the same unanswered silence that made this
-            screen necessary in the first place. */}
+        <Box sx={{ mt: 2.5 }}>
+          <FieldLabel>What was quoted</FieldLabel>
+          <Box sx={{ mt: 0.5 }}>
+            {lines === undefined ? (
+              <Skeleton variant="rectangular" height={72} />
+            ) : lines.lines.length > 0 ? (
+              <FactTable
+                label={`Lines on quote ${dash(quote.number)}`}
+                columns={["Item", "Qty", "Rate", "Amount"]}
+                rows={lines.lines.map((ln) => [
+                  <Box key="d">
+                    <Box sx={{ fontWeight: 600 }}>{ln.item_code || "—"}</Box>
+                    <Box sx={{ color: "text.secondary", fontSize: 13 }}>
+                      {ln.description}
+                    </Box>
+                  </Box>,
+                  ln.qty === null ? "—" : `${ln.qty}${ln.unit ? ` ${ln.unit}` : ""}`,
+                  ln.rate === null ? "—" : money(ln.rate),
+                  ln.amount === null ? "—" : money(ln.amount),
+                ])}
+              />
+            ) : (
+              // The server's own sentence, which is the only thing that
+              // distinguishes "this quote had no lines" from "nobody has read
+              // them yet". Rendering a bare empty table would assert the first.
+              <Meta>
+                {lines.empty_reason
+                  ?? "This quote has no lines on record."}
+              </Meta>
+            )}
+          </Box>
+        </Box>
+
+        {/* Printed on every quote, without exception. */}
         <Box sx={{ mt: 3 }}>
           <Meta>
-            The platform reads these quotes at header level, so the lines that
-            were on this one are not held here — open {dash(quote.number)} in
-            your ERP to see them. Nothing on this panel can be edited: a change
-            typed here would be overwritten by the next sync.
+            Nothing on this panel can be edited: a change typed here would be
+            overwritten by the next sync.
           </Meta>
         </Box>
       </Box>

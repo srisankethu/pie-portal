@@ -260,9 +260,51 @@ class SalesOrderIn(BaseModel):
         return v if isinstance(v, Decimal) else Decimal(str(v))
 
 
+class QuoteLineIn(BaseModel):
+    """One line of a quote the ERP raised — what was actually offered.
+
+    The line's own words are carried whether or not the item resolves.
+    ``item_code`` and ``description`` are what the quote said; matching them to
+    a product this platform holds happens downstream and is allowed to fail. A
+    quote line naming something that never became a catalogue item is real
+    quoting activity, and dropping it would shrink the document to the part that
+    happens to be tidy.
+
+    ``qty``, ``rate`` and ``amount`` are ``None`` where the ERP gave none, never
+    zero: a line with no price is a line somebody has not priced, which is a
+    different fact from a line priced at nothing.
+
+    No cost and no margin. These are the figures that went to the customer.
+    """
+
+    model_config = ConfigDict(arbitrary_types_allowed=True)
+
+    #: ``{estimate_id}:{line_item_id}`` — the shape ``sales_txns`` uses for an
+    #: invoice line.
+    external_ref: str = Field(min_length=1)
+    line_number: int = 0
+    item_external_id: Optional[str] = None
+    item_code: str = ""
+    description: str = ""
+    qty: Optional[Decimal] = None
+    unit: str = ""
+    rate: Optional[Decimal] = None
+    amount: Optional[Decimal] = None
+    discount_percent: Optional[Decimal] = None
+
+    @field_validator("qty", "rate", "amount", "discount_percent", mode="before")
+    @classmethod
+    def _to_decimal(cls, v: Any) -> Optional[Decimal]:
+        if v is None or v == "":
+            return None
+        # Via str, for the reason the header's total is: a float cannot
+        # introduce binary noise into a figure a customer was quoted.
+        return v if isinstance(v, Decimal) else Decimal(str(v))
+
+
 class QuoteDocIn(BaseModel):
-    """One quote as an ERP raised it, header grain. What was offered, and how
-    the ERP says it ended.
+    """One quote as an ERP raised it. What was offered, and how the ERP says it
+    ended.
 
     The demand-side document the platform has never read. Sales orders are what
     a customer committed to; this is everything that was *offered* — the ~290
@@ -284,6 +326,12 @@ class QuoteDocIn(BaseModel):
     and lives on ``quote_outcomes``, which no sync writes. This type is the
     second layer of that guarantee — the first being that the table it feeds
     has no such column either.
+
+    ``lines`` carries the breakdown where the pull bought the detail call, and is
+    empty where it did not — a resumed sync refreshes every header and re-reads
+    no lines, so empty means "not read on this pass" rather than "this quote had
+    none". The reader has to keep those apart; the caller that writes them does
+    too, which is why the sync only replaces stored lines when it has some.
 
     No cost, no margin, no unit economics. ``total`` is the quote's own selling
     total, which is what was put in front of the customer.
@@ -329,6 +377,10 @@ class QuoteDocIn(BaseModel):
     #: configuration is not a schema every connector has to share, and an
     #: absent key stays absent: "not set" is not a category.
     attributes: dict[str, Any] = Field(default_factory=dict)
+    #: What was on the quote. Empty where the pull did not buy the detail call
+    #: or the ERP returned no breakdown — an absence, and read as one: the
+    #: reader says the lines are not held rather than that the quote had none.
+    lines: list[QuoteLineIn] = Field(default_factory=list)
     source_ref: SourceRef
 
     @field_validator("total", mode="before")

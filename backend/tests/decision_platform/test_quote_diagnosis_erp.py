@@ -18,7 +18,6 @@ reading an issued document writes nothing.
 """
 from __future__ import annotations
 
-import json
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -27,6 +26,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
+import cost_sweep
 import dbsupport
 from app.db import get_session
 from app.domain import models
@@ -194,16 +194,7 @@ def test_a_salespersons_response_has_no_cost_in_it_anywhere(client):
     gets the same sweep rather than the assumption that the shared projection
     makes it safe.
     """
-    payload = _erp(client, SALES).json()
-    # Non-empty first. A sweep over `{"lines": []}` passes while proving
-    # nothing, which is this repository's own `absence of evidence is not a
-    # pass` tell pointed at its own test.
-    assert payload["lines"], "nothing was diagnosed, so the sweep proves nothing"
-    body = json.dumps(payload)
-
-    assert str(PURCHASE_COST) not in body
-    for word in ("cost", "margin", "purchase_price", "opportunity"):
-        assert word not in body.lower(), f"{word!r} reached a salesperson"
+    cost_sweep.assert_no_cost(_erp(client, SALES).json(), cost=PURCHASE_COST)
 
 
 def test_a_quote_on_an_account_this_salesperson_does_not_hold_is_not_found(client):

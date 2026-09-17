@@ -24,38 +24,23 @@
 import Box from "@mui/material/Box";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
+import { useState } from "react";
 
 import { money } from "../money";
 import { DataGrid, numeric, text } from "../platform/DataGrid";
 import type { ColDef } from "../platform/DataGrid";
-import { EmptyState, Meta, StatusChip, type Tone } from "../platform/kit";
+import { EmptyState, Meta, StatusChip } from "../platform/kit";
+import { ErpQuoteDrawer, outcomeOf } from "./ErpQuoteDrawer";
 import type { ErpQuote } from "../types";
 
-/** How the sync classified the ERP's own status word.
+/** The chip readings live with the drawer and are imported here.
  *
- *  UNRECORDED is `neutral`, deliberately, and it is the common case rather than
- *  a fault: the classifier refuses to read silence as a loss, because "nobody
- *  worked it", "the customer never answered" and "we lost it to a competitor"
- *  all look identical in an ERP and only the last is a loss. Colouring it
- *  `warn` would put a verdict on the screen that the server went out of its way
- *  not to reach.
+ *  One row and its opened form must not disagree about whether a quote was
+ *  won — which they would the first time somebody edited one of two copies.
+ *  UNRECORDED is `neutral` there, deliberately: the classifier refuses to read
+ *  silence as a loss, and colouring it `warn` would put a verdict on screen
+ *  that the server went out of its way not to reach.
  */
-const OUTCOME: Record<string, { label: string; tone: Tone; tip: string }> = {
-  WON: {
-    label: "Won", tone: "good",
-    tip: "The ERP recorded this quote as accepted, with the date it happened.",
-  },
-  LOST: {
-    label: "Lost", tone: "bad",
-    tip: "The ERP recorded this quote as declined, with the date it happened.",
-  },
-  UNRECORDED: {
-    label: "No outcome", tone: "neutral",
-    tip: "Nobody wrote down how this ended. That is not a loss — silence covers "
-      + "a quote nobody worked, one the customer never answered, and one lost "
-      + "to a competitor, and only the last is a loss.",
-  },
-};
 
 /** The ERP's own word for a status, shown beside the verdict rather than
  *  replaced by it — a reader asking why a quote reads "No outcome" needs to see
@@ -68,14 +53,19 @@ function when(iso: string | null): string {
   return iso ?? "—";
 }
 
-export function ErpQuoteList({ quotes, emptyReason }: {
+export function ErpQuoteList({ quotes, emptyReason, companies = 1 }: {
   quotes: ErpQuote[];
   /** The server's sentence for an empty book. Rendered rather than replaced:
    *  it is the one that distinguishes "no quotes synced yet" from "the quote
    *  stage was refused a permission", and a generic "Nothing here" is exactly
    *  what sent the original report. */
   emptyReason: string | null;
+  /** How many connected companies this organization has, so the opened quote
+   *  names its book only where that is information rather than noise. */
+  companies?: number;
 }) {
+  const [open, setOpen] = useState<ErpQuote | null>(null);
+
   const columns: ColDef<ErpQuote>[] = [
     text("number", "Quote", { minWidth: 150 }),
     text("customer_label", "Customer", { minWidth: 200 }),
@@ -84,9 +74,7 @@ export function ErpQuoteList({ quotes, emptyReason }: {
       field: "outcome", headerName: "Outcome", width: 150, flex: 0,
       cellRenderer: (p: { data?: ErpQuote }) => {
         if (!p.data) return null;
-        const o = OUTCOME[p.data.outcome] ?? {
-          label: p.data.outcome, tone: "neutral" as Tone, tip: "",
-        };
+        const o = outcomeOf(p.data.outcome);
         return <StatusChip label={o.label} tone={o.tone} tip={o.tip} />;
       },
     },
@@ -106,10 +94,16 @@ export function ErpQuoteList({ quotes, emptyReason }: {
   ];
 
   return (
+    <>
     <DataGrid<ErpQuote>
       rows={quotes}
       columns={columns}
       getRowId={(r) => r.quote_document_ref}
+      // Opening one is a read, so both the click and the keyboard activation
+      // land on the same handler — a row somebody can reach with the keyboard
+      // and not open is a row a screen-reader user cannot read at all.
+      onRowClick={setOpen}
+      onRowActivate={setOpen}
       ariaLabel="Quotes raised in your ERP"
       empty={
         <EmptyState
@@ -118,19 +112,39 @@ export function ErpQuoteList({ quotes, emptyReason }: {
             ?? "Nothing has come through from the connected books."}
         />
       }
-      renderNarrow={(q) => <ErpQuoteCard key={q.quote_document_ref} q={q} />}
+      renderNarrow={(q) => (
+        <ErpQuoteCard key={q.quote_document_ref} q={q}
+                      onOpen={() => setOpen(q)} />
+      )}
     />
+    {open && (
+      <ErpQuoteDrawer quote={open} showCompany={companies > 1}
+                      onClose={() => setOpen(null)} />
+    )}
+    </>
   );
 }
 
 /** The phone row. The grid's own narrow mode, not a second list — `renderNarrow`
- *  is what `platform/DataGrid` takes for exactly this. */
-function ErpQuoteCard({ q }: { q: ErpQuote }) {
-  const o = OUTCOME[q.outcome] ?? {
-    label: q.outcome, tone: "neutral" as Tone, tip: "",
-  };
+ *  is what `platform/DataGrid` takes for exactly this.
+ *
+ *  A `button`, not a `div` with an `onClick`: the whole card opens the quote, so
+ *  it has to be reachable by keyboard and announced as something that can be
+ *  pressed. The wide grid gets that from `onRowActivate`; the narrow path has to
+ *  say it itself. */
+function ErpQuoteCard({ q, onOpen }: { q: ErpQuote; onOpen: () => void }) {
+  const o = outcomeOf(q.outcome);
   return (
-    <Box sx={{ p: 2, borderBottom: 1, borderColor: "divider" }}>
+    <Box
+      component="button"
+      type="button"
+      onClick={onOpen}
+      sx={{
+        display: "block", width: "100%", textAlign: "left", font: "inherit",
+        color: "inherit", background: "none", border: 0, cursor: "pointer",
+        p: 2, borderBottom: 1, borderColor: "divider",
+      }}
+    >
       <Stack direction="row" spacing={1}
              sx={{ alignItems: "center", justifyContent: "space-between" }}>
         <Typography variant="subtitle2">{q.number ?? q.quote_document_ref}</Typography>

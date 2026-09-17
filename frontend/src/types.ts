@@ -302,6 +302,12 @@ export interface ErpQuote {
    *  not zero, and must not be rendered as one. */
   value: number | null;
   opened_at: string | null;
+  /** Which connected company's books raised it. `"Source not recorded"` where
+   *  the connection is unknown — an absence named, not a blank. */
+  company: string;
+  /** The organization's own fields on the quote, as the ERP holds them. Only
+   *  the keys the source set: an absent custom field is not a category. */
+  attributes: Record<string, string>;
 }
 
 export interface ErpQuoteBook {
@@ -311,6 +317,10 @@ export interface ErpQuoteBook {
   quotes_without_a_value: number;
   quotes_listed: ErpQuote[];
   listed: number;
+  /** How many connected companies this organization has. The screen needs it
+   *  to decide whether naming the book is information or noise: with one
+   *  company every row says the same thing. */
+  companies: number;
   currency: string;
   empty_reason: string | null;
 }

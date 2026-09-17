@@ -1754,12 +1754,19 @@ def quote_book_list(limit: int = Query(200, ge=1, le=1000),
     page.
     """
     org, snapshot, th = _labels_only(session, principal)
+    companies = Companies(session, org)
     rows = quote_book_view.build(
         session, org,
         customer_names=snapshot.customer_names,
-        customer_ids=_assigned_customer_ids(session, principal))
+        customer_ids=_assigned_customer_ids(session, principal),
+        companies=companies)
 
     result = dict(quote_book_view.totals(rows))
+    # Whether a company badge is information or noise is the screen's decision
+    # and it needs this number to make it: with one connected company every
+    # badge says the same thing, and a column of identical badges is decoration
+    # that costs width.
+    result["companies"] = companies.count
     result["quotes_listed"] = [row.to_dict() for row in rows[:limit]]
     result["listed"] = len(result["quotes_listed"])
     return _envelope(

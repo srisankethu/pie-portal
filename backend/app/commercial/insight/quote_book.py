@@ -48,6 +48,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...domain import models
+from ...domain.origin import Companies
 
 _ZERO = Decimal("0")
 
@@ -90,6 +91,17 @@ class BookQuote:
     #: not zero and must not be summed as zero.
     value: Optional[Decimal]
     opened_at: Optional[datetime]
+    #: Which connected company's books this was raised in. Resolved through
+    #: ``origin.Companies``, the one dictionary — ``label_for`` and ``of``
+    #: answer the same question for a grouped query and for a record, so two
+    #: screens cannot name the same company differently.
+    company: str
+    #: The organization's own fields on the quote, as the ERP holds them —
+    #: quote type, pricing type, procurement type, branch. Only the keys the
+    #: source actually set: an absent custom field is not a category, and a
+    #: quote nobody classified is a different fact from every unclassified
+    #: quote sharing a bucket called "other".
+    attributes: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         """Snake_case keys and a ``float`` value, both matching ``unrecorded``.
@@ -113,11 +125,14 @@ class BookQuote:
             "decided_on": self.decided_on.isoformat() if self.decided_on else None,
             "value": float(self.value) if self.value is not None else None,
             "opened_at": self.opened_at.isoformat() if self.opened_at else None,
+            "company": self.company,
+            "attributes": dict(self.attributes),
         }
 
 
 def build(session: Session, org: str, *, customer_names: dict[str, str],
-          customer_ids: Optional[frozenset[str]] = None) -> list[BookQuote]:
+          customer_ids: Optional[frozenset[str]] = None,
+          companies: Optional["Companies"] = None) -> list[BookQuote]:
     """The whole book, newest quote first.
 
     ``customer_ids`` is the caller's role scope and follows the rule
@@ -130,6 +145,12 @@ def build(session: Session, org: str, *, customer_names: dict[str, str],
     scope and kept unscoped, for that module's reason: nobody recorded it
     against an account, so there is no account to say it belongs to, and showing
     it to everybody would put a stranger's quote on a salesperson's list.
+
+    ``companies`` attributes each row to the book it was raised in. Optional
+    because it costs a query the caller may already have made, and a caller
+    without one gets ``"Source not recorded"`` — the same words ``label_for``
+    uses for a row whose connection is unknown, rather than a blank that reads
+    as "no company" or a guess that names the wrong one.
 
     Returns the whole list rather than a page. The caller slices it, so a screen
     can say how many it is not showing — a builder that truncated would make the
@@ -157,6 +178,9 @@ def build(session: Session, org: str, *, customer_names: dict[str, str],
             outcome=row.outcome,
             decided_on=row.decided_on,
             value=Decimal(row.total) if row.total is not None else None,
+            company=(companies.label_for(row.connection_id) if companies
+                     else "Source not recorded"),
+            attributes=dict(row.attributes or {}),
             opened_at=row.client_viewed_at,
         )
         for row in session.scalars(stmt).all()

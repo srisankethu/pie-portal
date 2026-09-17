@@ -278,6 +278,76 @@ class CommercialThresholds:
     # How far below a reference price counts as materially below.
     quote_price_tolerance_pct: float = 0.02
 
+    # ── quote diagnosis ──────────────────────────────────────────────────────
+    # Every number the diagnosis engine judges against, in one place and under
+    # one version hash. The engine reads these and holds no literal of its own:
+    # undefined thresholds are how every line ends up rendering a card, and
+    # alert fatigue kills this product faster than a wrong diagnosis does.
+    #
+    # Starting values, to be tuned against outcomes. They are deliberately
+    # stricter than the exception engine's, because an exception is a control a
+    # reviewer already expects and a diagnosis is unsolicited advice.
+
+    # How many median absolute deviations from the median an observation may sit
+    # before the band stops believing it — applied symmetrically, in both
+    # directions. Trimming the low tail and not the high one drifts every band
+    # upward and inflates every opportunity figure, which is the failure that
+    # ends trust in a pricing tool.
+    diagnosis_mad_k: float = 3.0
+    # Past this share of comparables removed as outliers, the band is not
+    # describing a population any more. Confidence caps at WEAK and the
+    # diagnosis carries POSSIBLE_EXCEPTIONAL_PRICE whichever way the rows fell.
+    diagnosis_max_exclusion_rate: float = 0.25
+    # The scale to trim against when the MAD collapses to zero — which is what a
+    # customer who has paid the same price ten times looks like, so it is the
+    # common case rather than an edge one. Anything further than this share away
+    # from the median is not the going price. Wide on purpose: it is doing the
+    # job of a spread that does not exist, and a narrow value here would start
+    # calling ordinary variation an outlier.
+    diagnosis_degenerate_band_pct: float = 0.10
+    # "Recent", as the strength table's two rows mean it. Twelve months for
+    # STRONG and eighteen for MODERATE: the looser grade is allowed older
+    # evidence precisely because it is claiming less.
+    diagnosis_recent_days: int = 365
+    diagnosis_moderate_recent_days: int = 548
+    # STRONG: this many comparables in tiers 1-2, this many of them recent, and
+    # a band no wider than this relative to its own median.
+    diagnosis_strong_min_comparables: int = 8
+    diagnosis_strong_min_recent: int = 4
+    diagnosis_strong_max_iqr_ratio: float = 0.15
+    # MODERATE: the same three, over tiers 1-3 and the longer recency window.
+    diagnosis_moderate_min_comparables: int = 4
+    diagnosis_moderate_min_recent: int = 2
+    diagnosis_moderate_max_iqr_ratio: float = 0.30
+    # WEAK: anything at all, at any tier. Below it, nothing is asserted.
+    diagnosis_weak_min_comparables: int = 2
+    # ── what reaches a salesperson's screen ──────────────────────────────────
+    # A card renders only when every one of these clears. Everything below them
+    # is still computed, still stored and still available on demand — the
+    # default state is silent, and silence is the design rather than a gap.
+    #
+    # Relative floor: a deviation smaller than this share of the band median is
+    # inside the noise of freight, rounding and a good day.
+    diagnosis_min_deviation_pct: float = 0.05
+    # Absolute per-unit floor, so a 6% deviation on a ₹40 consumable does not
+    # become a card. Money, so it is spelled in the book's own currency.
+    diagnosis_min_deviation_per_unit: float = 25.0
+    # And the line has to be worth the interruption in total, not only per unit.
+    # Matches ``min_quote_exception_impact`` on purpose: a diagnosis that
+    # surfaced below the threshold at which the exception engine already stays
+    # quiet would be the same line arguing with itself.
+    diagnosis_min_line_opportunity: float = 500.0
+    # How far the whole of a customer's own band has to sit below the peer band
+    # before that is an account-level finding rather than a negotiated
+    # difference. Freight, terms and volume commitments genuinely differ between
+    # accounts, so this is deliberately well clear of them.
+    diagnosis_peer_gap_pct: float = 0.10
+    # The smallest peer population that is a market rather than an anecdote.
+    # Separate from ``min_peer_customers`` because that one governs a margin
+    # benchmark on a review screen and this one can route an account-level
+    # pricing finding to an owner.
+    diagnosis_min_peer_customers: int = 3
+
     # ── inventory carrying cost ──────────────────────────────────────────────
     # What a rupee of stock costs to hold for a year, as a fraction: interest on
     # the money, warehousing, insurance, obsolescence. Owner-set, because it is
@@ -780,6 +850,32 @@ class CommercialThresholds:
             min_band_transactions=_i("CI_MIN_BAND_TRANSACTIONS", 2),
             min_quote_exception_impact=_f("CI_MIN_QUOTE_EXCEPTION_IMPACT", 500.0),
             quote_price_tolerance_pct=_f("CI_QUOTE_PRICE_TOLERANCE_PCT", 0.02),
+            diagnosis_mad_k=_f("CI_DIAGNOSIS_MAD_K", 3.0),
+            diagnosis_max_exclusion_rate=_f("CI_DIAGNOSIS_MAX_EXCLUSION_RATE", 0.25),
+            diagnosis_degenerate_band_pct=_f(
+                "CI_DIAGNOSIS_DEGENERATE_BAND_PCT", 0.10),
+            diagnosis_recent_days=_i("CI_DIAGNOSIS_RECENT_DAYS", 365),
+            diagnosis_moderate_recent_days=_i(
+                "CI_DIAGNOSIS_MODERATE_RECENT_DAYS", 548),
+            diagnosis_strong_min_comparables=_i(
+                "CI_DIAGNOSIS_STRONG_MIN_COMPARABLES", 8),
+            diagnosis_strong_min_recent=_i("CI_DIAGNOSIS_STRONG_MIN_RECENT", 4),
+            diagnosis_strong_max_iqr_ratio=_f(
+                "CI_DIAGNOSIS_STRONG_MAX_IQR_RATIO", 0.15),
+            diagnosis_moderate_min_comparables=_i(
+                "CI_DIAGNOSIS_MODERATE_MIN_COMPARABLES", 4),
+            diagnosis_moderate_min_recent=_i("CI_DIAGNOSIS_MODERATE_MIN_RECENT", 2),
+            diagnosis_moderate_max_iqr_ratio=_f(
+                "CI_DIAGNOSIS_MODERATE_MAX_IQR_RATIO", 0.30),
+            diagnosis_weak_min_comparables=_i(
+                "CI_DIAGNOSIS_WEAK_MIN_COMPARABLES", 2),
+            diagnosis_min_deviation_pct=_f("CI_DIAGNOSIS_MIN_DEVIATION_PCT", 0.05),
+            diagnosis_min_deviation_per_unit=_f(
+                "CI_DIAGNOSIS_MIN_DEVIATION_PER_UNIT", 25.0),
+            diagnosis_min_line_opportunity=_f(
+                "CI_DIAGNOSIS_MIN_LINE_OPPORTUNITY", 500.0),
+            diagnosis_peer_gap_pct=_f("CI_DIAGNOSIS_PEER_GAP_PCT", 0.10),
+            diagnosis_min_peer_customers=_i("CI_DIAGNOSIS_MIN_PEER_CUSTOMERS", 3),
             crosssell_min_base_customers=_i(
                 "CI_CROSSSELL_MIN_BASE_CUSTOMERS",
                 _default("crosssell_min_base_customers")),

@@ -1912,6 +1912,11 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/organizations/current` | signed-in | Current workspace identity: name, currency, timezone, country, caller's role |
 | POST | `/api/v1/organizations/{organization_id}/switch` | signed-in | Open a NEW session against another workspace (old session untouched); returns token, org, name, role |
 | GET | `/api/v1/outcomes` | signed-in | Every visible decision-outcome snapshot with its evaluation (PENDING/REALISED/UNKNOWN) computed on read; optional validated status_filter (400 on… |
+| POST | `/api/v1/quote-diagnosis/assess` | signed-in | Diagnose each line against evidence that was knowable when the quote was written, and record it; a salesperson receives the operations card, a manager the owner report; walk-guards: as_of ±90d, ≤200 lines |
+| GET | `/api/v1/quote-diagnosis/quote/{quote_id}` | signed-in | The diagnosis in force for each line of a quote, read from the stored rows rather than recomputed |
+| POST | `/api/v1/quote-diagnosis/{quote_diagnosis_id}/dismiss` | signed-in | Somebody read a card and judged it wrong: an append-only row carrying one of the seven reason codes; the diagnosis is untouched |
+| GET | `/api/v1/quote-diagnosis/reasons` | signed-in | The dismissal vocabulary, served rather than duplicated in TypeScript so the front end cannot offer a reason the service refuses |
+| GET | `/api/v1/quote-diagnosis/evaluation` | managers/owners | How each diagnosis code has done against recorded outcomes, and what people dismissed it for — the tuning instrument, computed on read and written nowhere |
 | POST | `/api/v1/quote-intelligence/assess` | signed-in | Whole-quote deterministic assessment: per-line references, exceptions, economics (mgmt), quantity bands, outcome echo; walk-guards: as_of ±90d, ≤200… |
 | POST | `/api/v1/quote-intelligence/outcome` | signed-in | The one writer moving a quote along DRAFT→SENT→WON/LOST, by platform quote_id or ERP quote_document_ref; 422 LOST-without-reason (names choices) or… |
 | GET | `/api/v1/quote-intelligence/quotes/{quote_id}` | signed-in | Full audit trail: outcome row + every snapshot ever recorded, oldest first |

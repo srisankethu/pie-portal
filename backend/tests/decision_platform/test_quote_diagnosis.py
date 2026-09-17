@@ -825,3 +825,22 @@ def test_declining_to_assert_an_opportunity_gives_a_reason_not_the_conclusion():
     reason = report.opportunity.split(" — ", 1)[1]
     assert "no opportunity is asserted" not in reason.lower()
     assert "not below the range" in reason
+
+
+def test_a_line_with_no_history_is_not_told_it_sits_above_a_range():
+    """There is no range. Saying it is "not below" one asserts that there is.
+
+    Found by rendering a real quote: the fourth line of QT-095 is a new item
+    with nothing on record, and its card read "No comparable transaction was
+    knowable when this quote was written" immediately above "this line is not
+    below the range its history supports". The first guard in `compute` caught
+    both "above a real band" and "no band at all", and only one of those is
+    what its reason described.
+    """
+    out = _run([], quoted="900")          # nothing comparable at all
+    opp = opportunity.compute(out, th=TH)
+
+    assert rules.INSUFFICIENT_EVIDENCE in out.codes
+    assert not opp.exists
+    assert "no range to sit below" in opp.basis
+    assert "not below the range" not in opp.basis

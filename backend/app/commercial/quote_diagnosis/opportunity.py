@@ -104,14 +104,20 @@ def compute(owner: OwnerDiagnosis, *, th: CommercialThresholds) -> Opportunity:
     word "opportunity" would tell somebody to renegotiate a price that was never
     the problem.
     """
+    # Order matters: "not below its band" presumes a band. A line with no
+    # comparable history has none, and answering it with that reason asserts a
+    # range the engine never had — the same benign-default shape the rest of
+    # this package is careful about. Rule out the missing band first.
+    price = owner.quoted_unit_price
+    band = owner.price.band
+    if band.low is None or band.median is None:
+        return _nothing("no comparable history was knowable when this quote "
+                        "was written, so there is no range to sit below")
+    if price is None:
+        return _nothing("this line carries no quoted price to compare")
     if BELOW_HISTORICAL_RANGE not in owner.codes:
         return _nothing("this line is not below the range its history "
                         "supports, so there is nothing to reclaim on it")
-    price = owner.quoted_unit_price
-    band = owner.price.band
-    if price is None or band.low is None or band.median is None:
-        return _nothing("no usable price band was knowable when this quote "
-                        "was written")
 
     target, truncated = _target(owner.price, band.median)
     if target <= price:

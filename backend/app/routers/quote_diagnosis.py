@@ -10,11 +10,20 @@ declares no cost, margin, opportunity or peer field; a manager's is built from
 removes things, because that is the shape both of this repository's boundary
 leaks had — a guard that was right, with one line below it that was not.
 
-Three endpoints and no more:
+The endpoints:
 
 ``GET  /api/v1/quote-diagnosis/quote/{quote_id}``  what is on record for a quote
 ``POST /api/v1/quote-diagnosis/assess``            diagnose now, and record it
+``POST /api/v1/quote-diagnosis/erp-quote/{ref}``   diagnose a quote the ERP
+                                                   issued, as of the day it did
 ``POST /api/v1/quote-diagnosis/{id}/dismiss``      somebody says a card is wrong
+
+The first two take what to diagnose from the caller; the third takes only a
+reference and reads the rest from the document. That is not a convenience —
+``assess`` bounds how far back a caller-supplied ``as_of`` may reach, because a
+date a caller can move is a date a caller can walk an item's price history with,
+and the ERP quote page needed documents far older than that bound. A reference
+names one date, fixed by a table no endpoint writes.
 """
 from __future__ import annotations
 
@@ -22,7 +31,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -30,8 +39,14 @@ from ..authz import Principal, current_principal
 from ..clock import aware
 from ..commercial.policy import load_for_org
 from ..commercial.quote_service import _resolve_products, resolve_customer
+from ..commercial.insight import quote_book
 from ..commercial.quote_diagnosis import render, replay, rules, service
 from ..db import get_session
+# The one answer to "which accounts is this principal narrowed to". Imported
+# rather than re-derived: that helper's own docstring is about two disagreeing
+# answers to "whose book is this" in one file, and a second copy here would be
+# a third — on the path that decides whether somebody sees a quote at all.
+from .insight import _assigned_customer_ids
 from ..domain import models
 
 router = APIRouter(prefix="/api/v1/quote-diagnosis", tags=["quote-diagnosis"])
@@ -109,8 +124,84 @@ def assess(body: AssessRequest,
     instant the evidence is cut off at, and a caller who could choose it could
     ask what the engine would have said before an inconvenient bill landed.
     """
-    th = load_for_org(session, principal.organization_id)
     as_of = body.as_of or date.today()
+    return _diagnose(session, principal, quote_id=body.quote_id,
+                     lines=body.lines, as_of=as_of, record=body.record)
+
+
+@router.post("/erp-quote/{quote_ref:path}")
+def assess_erp_quote(quote_ref: str,
+                     principal: Principal = Depends(current_principal),
+                     session: Session = Depends(get_session)) -> dict[str, Any]:
+    """Diagnose a quote the ERP already issued, as of the day it went out.
+
+    **Why this exists rather than the caller posting to ``/assess``.** It can,
+    and for a recent quote it did — but ``AssessRequest.as_of`` may not be more
+    than ``_AS_OF_WINDOW_DAYS`` back, so every quote older than that came back
+    refused. The window is not a nuisance to route around: a caller who can
+    choose the date can move it a day at a time and read an item's price history
+    out of the answers, which is the whole reason it is there.
+
+    **This endpoint does not take a date, so there is nothing to walk.** The
+    caller names a quote; the server reads that quote's own ``raised_on`` and
+    diagnoses against it. One document, one date, fixed by the ERP — and fixed
+    is the operative word: ``erp_quotes`` is written by the sync and by nothing
+    else, so a caller cannot mint a quote to obtain a date they wanted. What a
+    caller can enumerate is the quotes they are already allowed to read, at the
+    dates those quotes were actually raised.
+
+    So the window is **not relaxed**. It still applies, unchanged, to every
+    caller-supplied ``as_of`` on ``/assess``. This is a different question with
+    a different input, and the validator that guards the other one is not
+    something this path needs an exemption from.
+
+    **Scoped through the book itself**, exactly as ``insight.quote_book_lines``
+    is and for its stated reason: a salesperson who may not see the quote may
+    not see its diagnosis, and deriving that twice is how the two answers drift.
+    404 rather than 403 — whether a quote exists in a book you cannot read is
+    itself something you should not learn.
+
+    **Records nothing.** Reading an issued document must not append a row per
+    visit, and the page this serves says in as many words that nothing on it is
+    written. A diagnosis worth storing is stored when a quote is *sent*.
+    """
+    org = principal.organization_id
+    visible = {
+        q.quote_document_ref: q
+        for q in quote_book.build(session, org, customer_names={},
+                                  customer_ids=_assigned_customer_ids(
+                                      session, principal))
+    }
+    quote = visible.get(quote_ref)
+    if quote is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such quote")
+
+    rows = quote_book.lines_for(session, org, quote_ref=quote_ref)
+    # The same filter the draft side applies, for the same reason: a line naming
+    # no product cannot be compared against anything, and a line the ERP never
+    # priced is not a claim about what this customer should pay.
+    lines = [
+        LineIn(line_id=str(row.line_number), product_id=row.item_code,
+               customer_id=quote.customer_id or quote.customer_label or None,
+               qty=row.qty if row.qty is not None else Decimal("1"),
+               quoted_unit_price=row.rate)
+        for row in rows
+        if row.item_code and row.rate is not None
+    ]
+    return _diagnose(session, principal, quote_id=quote_ref, lines=lines,
+                     as_of=quote.raised_on, record=False)
+
+
+def _diagnose(session: Session, principal: Principal, *, quote_id: str,
+              lines: list[LineIn], as_of: date, record: bool) -> dict[str, Any]:
+    """The engine loop, shared by the two endpoints that run it.
+
+    Extracted when the ERP quote page needed the same pass over the same engine
+    with the lines and the date read from the database instead of the body. A
+    second copy would be two places deciding what ``knowable_by`` means, and
+    that value is the one this whole engine's reproducibility rests on.
+    """
+    th = load_for_org(session, principal.organization_id)
     knowable_by = _knowable_by(as_of)
     cutover = service.backfill_cutover(session, principal.organization_id)
 
@@ -118,13 +209,13 @@ def assess(body: AssessRequest,
     # `_resolve_products` says in as many words that the per-call form is the
     # N+1 it exists to avoid on a forty-line quote.
     products = _resolve_products(session, principal.organization_id,
-                                 {ln.product_id for ln in body.lines})
+                                 {ln.product_id for ln in lines})
 
     out: list[dict[str, Any]] = []
-    for line in body.lines:
+    for line in lines:
         product = products.get((line.product_id or "").strip())
         result = service.diagnose_line(
-            session, principal.organization_id, quote_id=body.quote_id,
+            session, principal.organization_id, quote_id=quote_id,
             line_id=line.line_id,
             customer_id=_customer_id(session, principal.organization_id,
                                      line.customer_id),
@@ -142,14 +233,14 @@ def assess(body: AssessRequest,
                                            line.customer_id),
             backfill_before=cutover)
         stored = (service.record(session, principal.organization_id,
-                                 quote_id=body.quote_id, result=result)
-                  if body.record else None)
+                                 quote_id=quote_id, result=result)
+                  if record else None)
         out.append(_project(result.owner, result.opportunity, principal, th,
                             diagnosis_id=(stored.quote_diagnosis_id
                                           if stored is not None else None)))
-    if body.record:
+    if record:
         session.commit()
-    return {"quote_id": body.quote_id, "as_of": as_of.isoformat(),
+    return {"quote_id": quote_id, "as_of": as_of.isoformat(),
             "cutover_known": cutover is not None, "lines": out}
 
 

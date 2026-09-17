@@ -21,6 +21,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import sessionmaker
 
+import cost_sweep
 import dbsupport
 from app.db import get_session
 from app.domain import models
@@ -125,12 +126,14 @@ def test_a_salespersons_response_has_no_cost_in_it_anywhere(client):
     Every field-level assertion in this repository's previous leak passed while
     the endpoint gave up cost, because the leak was in a field nobody had
     thought to name.
-    """
-    body = json.dumps(_assess(client, SALES))
 
-    assert str(PURCHASE_COST) not in body
-    for word in ("cost", "margin", "opportunity", "peer", "expected_cost"):
-        assert word not in body.lower(), f"{word!r} reached a salesperson"
+    The sweep lives in `cost_sweep` rather than here because a second endpoint
+    projects the same diagnosis, and two definitions of "a leak" is one more
+    than this can afford. Its docstring has why opaque ids come out first: this
+    assertion failed on CI having found nothing, because `371` is a legal hex
+    substring and landed inside a uuid.
+    """
+    cost_sweep.assert_no_cost(_assess(client, SALES), cost=PURCHASE_COST)
 
 
 def test_a_manager_receives_the_economics(client):

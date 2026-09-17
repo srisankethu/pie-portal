@@ -39,4 +39,11 @@ class ZohoSource(Protocol):
     # NetSuite say estimate, Business Central, Acumatica, P21 and Sage say
     # quote — and ``sync`` probes for the method by name, so a vendor's
     # vocabulary here would end up inside connector-blind code.
-    def list_quotes(self) -> Iterable[dict[str, Any]]: ...
+    #: ``skip`` for the reason the other detail-bearing pulls take it: reading a
+    #: quote's lines costs one call per quote, and the predicate is what keeps a
+    #: resumed pull at one list call. Declared here and not only on the Zoho
+    #: client — a protocol one implementation has widened is a protocol
+    #: ``sync`` cannot call uniformly, which is a TypeError at the seam rather
+    #: than a type error at the desk.
+    def list_quotes(self, skip: Optional[SkipPredicate] = None
+                    ) -> Iterable[dict[str, Any]]: ...

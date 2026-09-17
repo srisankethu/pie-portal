@@ -23,6 +23,7 @@ and by parsing the ingestion package for any mention of that table at all.
 from __future__ import annotations
 
 import ast
+import inspect
 import pathlib
 from datetime import date
 from decimal import Decimal
@@ -911,3 +912,36 @@ def test_a_quote_whose_lines_were_never_read_simply_has_none(session):
 
     assert session.query(models.ErpQuoteLine).count() == 0
     assert _docs(session)["e1"].external_ref == "e1"
+
+
+def test_every_source_takes_the_argument_the_sync_passes(session):
+    """The protocol and its implementations, called the way ``sync`` calls them.
+
+    ``list_quotes`` grew a ``skip`` parameter on the Zoho client and nowhere
+    else, and nothing failed until a source that had not grown it was asked for
+    quotes — at which point the whole stage died on a ``TypeError`` that
+    ``_supply_phase`` records as a generic failure. A protocol one implementer
+    has widened is a protocol the caller cannot call uniformly.
+
+    Asserted by *calling* rather than by reading signatures: a keyword-only
+    mismatch, a positional-only marker or a decorator that drops kwargs all
+    pass an `inspect` check and fail here.
+    """
+    from app.ingestion.mock_source import FixtureZohoSource
+    from app.ingestion.zoho_client import ZohoApiSource
+
+    for source in (FixtureZohoSource, ZohoApiSource):
+        sig = inspect.signature(source.list_quotes)
+        assert "skip" in sig.parameters, f"{source.__name__} cannot be resumed"
+
+    # And the mock actually runs with it, which is what the demo org does.
+    assert list(FixtureZohoSource().list_quotes(skip=lambda _id, _at: False))
+
+
+def test_the_demo_source_carries_lines_so_the_screen_can_be_looked_at(session):
+    """Without them the one screen that reads a quote's lines cannot be seen
+    without a live ERP, which is how it would rot unnoticed."""
+    from app.ingestion.mock_source import FixtureZohoSource
+
+    quoted = [q for q in FixtureZohoSource().list_quotes() if q.get("line_items")]
+    assert quoted, "no demo quote carries a line breakdown"

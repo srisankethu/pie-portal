@@ -127,6 +127,24 @@ function factRows(rows: FactRow[]): readonly (readonly [ReactNode, ReactNode, Re
  *  Through `count()` rather than as a bare number, so four hundred thousand
  *  sales lines group the way this organization's own figures do everywhere
  *  else. The outcome is not in this list; it is the chip on the panel. */
+/** What the quote stage did about lines, in words.
+ *
+ *  `read` alone cannot say it: a run that refreshed every quote header and read
+ *  no breakdown looks exactly like a run whose line pull failed. The first is
+ *  ordinary — the lines are already held and the resume predicate skipped the
+ *  detail call — and the second needs somebody to look at the skipped rows.
+ *
+ *  This is the counter that existed only in the response until somebody asked
+ *  why their quotes had no lines and nothing on this screen could answer.
+ */
+function quoteLineNote(s: SyncRun): string | undefined {
+  const quotes = s.notes?.quotes;
+  if (!quotes || !quotes.read) return undefined;
+  const lines = quotes.lines ?? 0;
+  if (lines > 0) return `${count(lines)} lines read`;
+  return "no lines read — already held, or the detail call did not run";
+}
+
 function factGroups(s: SyncRun): { title: string; rows: FactRow[] }[] {
   return [
     {
@@ -183,6 +201,13 @@ function factGroups(s: SyncRun): { title: string; rows: FactRow[] }[] {
         {
           label: "Quotes", value: count(s.notes?.quotes?.read ?? 0),
           tip: "What was offered, as the ERP raised it. Needs ZohoBooks.estimates.READ — a scope older connections were never asked for, so a zero here is usually a connection that predates it rather than a book with no quotes. Reconnect from Data & connection to grant it.",
+          // The two numbers answer different questions and only together say
+          // what a run did. A pull that refreshed 114 quote headers and read no
+          // lines is a real and ordinary state — every one of them was already
+          // held, so the resume predicate skipped the detail call — and it is
+          // indistinguishable from a broken line pull unless the second number
+          // is on screen beside the first.
+          note: quoteLineNote(s),
         },
         {
           label: "Payments out", value: count(s.vendor_payments),

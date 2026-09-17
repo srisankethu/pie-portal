@@ -29,6 +29,7 @@ from .opportunity import Opportunity
 from .rules import (ABOVE_HISTORICAL_RANGE, BELOW_HISTORICAL_RANGE,
                     BELOW_PEER_BAND_STRUCTURAL, COST_DRIVEN_MARGIN_RISK,
                     EVIDENCE_WITHHELD, INSUFFICIENT_EVIDENCE, KNOWN_COST_CHANGE,
+                    had_enough_to_compare,
                     MODERATE, NO_COST_EVIDENCE, OperationsDiagnosis,
                     OwnerDiagnosis, POSSIBLE_COST_DRIVEN,
                     POSSIBLE_EXCEPTIONAL_PRICE, PRICE_RESISTANCE_OBSERVED,
@@ -126,7 +127,7 @@ def render_operations(ops: OperationsDiagnosis, *,
     return OperationsCard(
         line_id=ops.line_id,
         renders=ops.surfaces,
-        comparable=INSUFFICIENT_EVIDENCE not in ops.codes,
+        comparable=had_enough_to_compare(ops),
         headline=_ops_headline(ops.codes),
         quoted=quoted,
         historical=historical,
@@ -173,8 +174,18 @@ def _ops_why(ops: OperationsDiagnosis, historical: str) -> str:
         return "There is nothing comparable on record for this item."
     noun = ("once" if ops.comparable_count == 1
             else f"{ops.comparable_count} times")
+    # "between" needs two operands and the band often has one. A customer who
+    # pays the same price on every order collapses low and high to a single
+    # value — the ordinary shape of a repeat account, not an edge case — and
+    # the sentence came out as "between ₹218." with nothing after it.
+    if ops.historical_low is None or ops.historical_high is None:
+        preposition = "in"
+    elif ops.historical_low == ops.historical_high:
+        preposition = "at"
+    else:
+        preposition = "between"
     return (f"This customer has purchased this item {noun} at a comparable "
-            f"quantity, between {historical}.")
+            f"quantity, {preposition} {historical}.")
 
 
 def _ops_note(context: tuple[str, ...]) -> str:

@@ -344,11 +344,25 @@ function ErpQuoteDiagnosis({ quote, lines, token }: {
  *  anything about this line", carried as a field rather than inferred from the
  *  word in `evidence`, which is chosen for display and would be a guess about
  *  what the producer meant.
+ *
+ *  **And it counts what was flagged, rather than assuming nothing was.** "Nothing
+ *  stood out" was written into the sentence as a constant, at a time when no
+ *  quote on this screen surfaced a card and the claim was therefore true by
+ *  accident. It is not the salesperson who catches that when it stops being
+ *  true — the panel draws their cards and never reaches this sentence. It is
+ *  the manager, who is served the owner payload that `DiagnosisCard` cannot
+ *  render, sees no cards at all, and got told a quote was clean while their own
+ *  projection said two of its lines were above the customer's history. An
+ *  asserted clean bill that nothing checked is the `absence of evidence is not
+ *  a pass` rule again, one layer up from the engine that is careful about it.
  */
 function settled(lineIds: string[], diagnosis: QuoteDiagnosisState,
                  raisedOn: string): string {
   const seen = lineIds.map((id) => diagnosis.byLineId[id]).filter(Boolean);
   const compared = seen.filter((d) => d.comparable).length;
+  // `renders` on the operations projection, `surfaces` on the owner one — see
+  // `DiagnosisView.surfaces` for why there are two names for one answer.
+  const flagged = seen.filter((d) => d.renders ?? d.surfaces).length;
   const total = seen.length;
 
   if (total === 0 || compared === 0) {
@@ -356,13 +370,19 @@ function settled(lineIds: string[], diagnosis: QuoteDiagnosisState,
       + `purchase history on record for these items by ${raisedOn}. That is an `
       + `absence of evidence, not a verdict on the pricing.`;
   }
-  if (compared < total) {
-    return `${compared} of ${total} lines were compared against what this `
-      + `customer had paid by ${raisedOn}, and nothing on those stood out. The `
-      + `other ${total - compared} had no comparable history to judge.`;
+  const lead = compared < total
+    ? `${compared} of ${total} lines were compared against what this customer `
+      + `had paid by ${raisedOn}`
+    : `All ${total} lines were compared against what this customer had paid by `
+      + `${raisedOn}`;
+  const rest = compared < total
+    ? ` The other ${total - compared} had no comparable history to judge.`
+    : "";
+  if (flagged > 0) {
+    return `${lead}, and ${flagged} of them ${flagged === 1 ? "sits" : "sit"} `
+      + `outside it.${rest}`;
   }
-  return `All ${total} lines were compared against what this customer had paid `
-    + `by ${raisedOn}. Nothing stood out.`;
+  return `${lead}, and nothing on those stood out.${rest}`;
 }
 
 /** What the lines come to, beside what the ERP says the document came to.

@@ -391,7 +391,7 @@ def _project(owner: rules.OwnerDiagnosis, opportunity, principal: Principal,
             # projection they were served, so a field that answers a question
             # for one role and is absent for the other is a wrong answer for
             # that role rather than a missing one.
-            "comparable": rules.INSUFFICIENT_EVIDENCE not in owner.codes,
+            "comparable": rules.had_enough_to_compare(owner),
             "line_id": owner.line_id, "headline": report.headline,
             "lines": list(report.lines), "opportunity": report.opportunity,
             "evidence": report.evidence, "codes": list(report.codes),

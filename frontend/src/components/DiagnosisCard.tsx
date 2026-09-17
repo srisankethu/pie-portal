@@ -42,6 +42,16 @@ export type DiagnosisView = {
   quote_diagnosis_id: string | null;
   line_id: string;
   renders: boolean;
+  /** The owner projection's name for the same answer as `renders`.
+   *
+   *  Two names for one thing because no card is built on the owner payload
+   *  yet: `DiagnosisCard` draws the operations shape, so a manager is served a
+   *  body this component cannot render and the panel shows them none. Until
+   *  that card exists the field cannot simply be renamed server-side — the
+   *  panel would then try to draw an owner payload as an operations card — so
+   *  anything that needs "did the engine want to interrupt somebody" across
+   *  both roles has to read both. */
+  surfaces?: boolean;
   /** Whether the engine had comparable evidence for this line at all.
    *
    *  Not the same as `renders`, and the gap between them is what a reader of a

@@ -61,6 +61,42 @@ def test_context_hash_is_stable(session):
     assert a == b and a.startswith("cx_")
 
 
+def test_re_detecting_one_situation_does_not_move_the_context_hash(session):
+    """Stable across *rows*, not just across two reads of one row.
+
+    The detectors run on every sync and the signal table is append-only, so an
+    unchanged situation arrives as a new row with a new uuid every time. The
+    hash used to carry that uuid, so it moved on every sync, the "unchanged
+    context ⇒ no re-inference" guard never fired once in production, and every
+    open decision was re-interpreted at a provider's list price to say exactly
+    what it already said.
+    """
+    session.add(models.Product(product_id="p1", organization_id="org_test", name="Insert",
+                               external_id="p1"))
+    first, second = _margin_signal(), _margin_signal()   # same situation, two runs
+    session.add_all([first, second])
+    session.flush()
+    assert first.signal_id != second.signal_id
+
+    assert (assemble_from_signal(session, first, Role.SALES_MANAGER).context_hash()
+            == assemble_from_signal(session, second, Role.SALES_MANAGER).context_hash())
+
+
+def test_a_situation_that_has_moved_does_move_the_context_hash(session):
+    """The other half: the guard must not be stable because it stopped looking."""
+    session.add(models.Product(product_id="p1", organization_id="org_test", name="Insert",
+                               external_id="p1"))
+    before = _margin_signal()
+    after = _margin_signal()
+    after.severity_base = 80
+    after.metrics = {**after.metrics, "current_margin_pct": 0.04}
+    session.add_all([before, after])
+    session.flush()
+
+    assert (assemble_from_signal(session, before, Role.SALES_MANAGER).context_hash()
+            != assemble_from_signal(session, after, Role.SALES_MANAGER).context_hash())
+
+
 _APP = pathlib.Path(app.__file__).resolve().parent
 
 #: The tag every context fact, price reference and quote exception carries.

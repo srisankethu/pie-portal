@@ -51,7 +51,6 @@ import DialogContentText from "@mui/material/DialogContentText";
 import DialogTitle from "@mui/material/DialogTitle";
 import FormControlLabel from "@mui/material/FormControlLabel";
 import MenuItem from "@mui/material/MenuItem";
-import Paper from "@mui/material/Paper";
 import Stack from "@mui/material/Stack";
 import Switch from "@mui/material/Switch";
 import TextField from "@mui/material/TextField";
@@ -73,8 +72,8 @@ import { blockersFor, coverage, type Fix } from "./components/lineProblems";
 import { NARROW_BREAKPOINT } from "./platform/DataGrid";
 import { QuoteOutcomeBar } from "./components/QuoteOutcomeBar";
 import { SummaryBar } from "./components/SummaryBar";
-import { EmptyState, ErrorState, FieldLabel, FilterChip, FilterPanel, FormDialog,
-         LoadingState, SectionHeader, TOUCH } from "./platform/kit";
+import { EmptyState, ErrorState, FilterChip, FilterPanel, FormDialog,
+         IdentityStrip, LoadingState, SectionHeader, TOUCH } from "./platform/kit";
 import { abilityFor } from "./platform/ability";
 import { PATH, pathFor } from "./platform/route";
 import type { PlatformSession } from "./platform/types";
@@ -828,90 +827,91 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       />
 
       {/* Which quote this is, whose it is, and when the row was last written.
-          A `Paper` strip rather than the brand bar this used to occupy: the
-          shell above already says who is signed in and what the product is
+          `kit.IdentityStrip` rather than a `Paper` spelling out the same six sx
+          properties — the ERP quote page needed the identical strip, which is
+          the second caller §10 asks for before a pattern becomes a component.
+          The shell above already says who is signed in and what the product is
           called, and repeating it here was half of why the screen felt like a
           different application. */}
-      <Paper
-        variant="outlined"
-        sx={{
-          p: 1.5, mb: 2,
-          display: "flex", flexWrap: "wrap", alignItems: "center", gap: 2, rowGap: 1,
-        }}
-      >
-        <Box>
-          <FieldLabel>Quote</FieldLabel>
-          {/* A number, or the plain fact that there is not one yet. A form has
-              no number because nothing has been minted — printing a provisional
-              one would be a number somebody could write down and then not find. */}
-          <Typography sx={{ fontFamily: "var(--font-heading)", fontWeight: 600,
-                            color: unsaved ? "text.secondary" : undefined }}>
-            {unsaved ? "Not saved yet" : quote.number}
-          </Typography>
-        </Box>
-        <Box sx={{ minWidth: 0 }}>
-          <FieldLabel>Customer</FieldLabel>
-          {/* A control, not a caption — and, until somebody answers, the
-              question itself. A quote opens with no customer; this is where
-              one is chosen, and it reads as a thing still to do rather than
-              as a blank. */}
-          {hasCustomer ? (
-            <Button
-              type="button"
-              variant="text"
-              size="small"
-              onClick={() => setPickerOpen(true)}
-              disabled={readOnly}
-              sx={{ ...TOUCH, p: 0, justifyContent: "flex-start",
-                    textTransform: "none", lineHeight: 1.4,
-                    fontFamily: "var(--font-heading)", fontWeight: 600,
-                    "&.Mui-disabled": { color: "text.primary" } }}
-            >
-              {quote.customer}
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              variant="outlined"
-              size="small"
-              color="warning"
-              onClick={() => setPickerOpen(true)}
-              disabled={readOnly}
-              sx={{ ...TOUCH, textTransform: "none" }}
-            >
-              {readOnly ? "No customer yet" : "Choose customer"}
-            </Button>
-          )}
-        </Box>
-        <Box sx={{ minWidth: 0 }}>
-          <FieldLabel>Owner</FieldLabel>
-          {/* Whose quote this is. Every quote has one — whoever started it —
-              and only they change it, plus managers where the policy allows.
-              The owner (or a manager) can hand it over from here. */}
-          <Button
-            type="button"
-            variant="text"
-            size="small"
-            onClick={openHandover}
-            disabled={readOnly || busy}
-            title={readOnly ? undefined : "Hand this quote to somebody else"}
-            sx={{ ...TOUCH, p: 0, justifyContent: "flex-start",
-                  textTransform: "none", lineHeight: 1.4,
-                  fontFamily: "var(--font-heading)", fontWeight: 600,
-                  "&.Mui-disabled": { color: "text.primary" } }}
-          >
-            {quote.owner?.name || "—"}
-          </Button>
-        </Box>
-        <Box sx={{ flex: 1 }} />
-        {/* When the server last wrote this quote. Every change is written
-            through before it is answered, so there is no Save button to
-            press and nothing that lives only in this browser. */}
-        {quote.savedAt && (
-          <Chip size="small" variant="outlined"
-                label={`Saved ${formatTime(quote.savedAt)}`} />
-        )}
-      </Paper>
+      <IdentityStrip
+        fields={[
+          {
+            label: "Quote",
+            // A number, or the plain fact that there is not one yet. A form has
+            // no number because nothing has been minted — printing a provisional
+            // one would be a number somebody could write down and then not find.
+            value: (
+              <Typography sx={{ fontFamily: "var(--font-heading)", fontWeight: 600,
+                                color: unsaved ? "text.secondary" : undefined }}>
+                {unsaved ? "Not saved yet" : quote.number}
+              </Typography>
+            ),
+          },
+          {
+            label: "Customer",
+            // A control, not a caption — and, until somebody answers, the
+            // question itself. A quote opens with no customer; this is where
+            // one is chosen, and it reads as a thing still to do rather than
+            // as a blank.
+            value: hasCustomer ? (
+              <Button
+                type="button"
+                variant="text"
+                size="small"
+                onClick={() => setPickerOpen(true)}
+                disabled={readOnly}
+                sx={{ ...TOUCH, p: 0, justifyContent: "flex-start",
+                      textTransform: "none", lineHeight: 1.4,
+                      fontFamily: "var(--font-heading)", fontWeight: 600,
+                      "&.Mui-disabled": { color: "text.primary" } }}
+              >
+                {quote.customer}
+              </Button>
+            ) : (
+              <Button
+                type="button"
+                variant="outlined"
+                size="small"
+                color="warning"
+                onClick={() => setPickerOpen(true)}
+                disabled={readOnly}
+                sx={{ ...TOUCH, textTransform: "none" }}
+              >
+                {readOnly ? "No customer yet" : "Choose customer"}
+              </Button>
+            ),
+          },
+          {
+            label: "Owner",
+            // Whose quote this is. Every quote has one — whoever started it —
+            // and only they change it, plus managers where the policy allows.
+            // The owner (or a manager) can hand it over from here.
+            value: (
+              <Button
+                type="button"
+                variant="text"
+                size="small"
+                onClick={openHandover}
+                disabled={readOnly || busy}
+                title={readOnly ? undefined : "Hand this quote to somebody else"}
+                sx={{ ...TOUCH, p: 0, justifyContent: "flex-start",
+                      textTransform: "none", lineHeight: 1.4,
+                      fontFamily: "var(--font-heading)", fontWeight: 600,
+                      "&.Mui-disabled": { color: "text.primary" } }}
+              >
+                {quote.owner?.name || "—"}
+              </Button>
+            ),
+          },
+        ]}
+        // When the server last wrote this quote. Every change is written
+        // through before it is answered, so there is no Save button to
+        // press and nothing that lives only in this browser.
+        aside={quote.savedAt
+          ? <Chip size="small" variant="outlined"
+                  label={`Saved ${formatTime(quote.savedAt)}`} />
+          : undefined}
+      />
 
       {/* Chips, matching the decision queue's filter row. These select what the
           grid shows; they are not actions, and rendering them as buttons said
@@ -1213,7 +1213,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           every line, editable, scannable — and a column that is blank on most
           rows would cost width on every one of them to say nothing. */}
       <QuoteDiagnosisPanel
-        lines={visible}
+        lineIds={visible.map((l) => l.id)}
         diagnosis={diagnosis}
         dismissReasons={dismissReasons}
         onReviewPrice={setDrawerLineId}

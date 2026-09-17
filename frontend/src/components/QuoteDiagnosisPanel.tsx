@@ -25,12 +25,12 @@ import Box from "@mui/material/Box";
 import Skeleton from "@mui/material/Skeleton";
 import Stack from "@mui/material/Stack";
 import { useEffect, useState } from "react";
+import type { ReactNode } from "react";
 
 import { DiagnosisCard } from "./DiagnosisCard";
 import type { DismissReason } from "./DiagnosisCard";
-import { FieldLabel } from "../platform/kit";
+import { FieldLabel, Meta } from "../platform/kit";
 import type { QuoteDiagnosisState } from "../useQuoteDiagnosis";
-import type { Line } from "../types";
 
 /** The dismissal vocabulary, served rather than hardcoded.
  *
@@ -39,6 +39,8 @@ import type { Line } from "../types";
  *  Fetched once per session-token rather than per card: the list is the same
  *  for every line on every quote.
  */
+const DEFAULT_TITLE = "What this customer has paid before";
+
 export function useDismissReasons(token: string): DismissReason[] {
   const [reasons, setReasons] = useState<DismissReason[]>([]);
 
@@ -59,18 +61,33 @@ export function useDismissReasons(token: string): DismissReason[] {
 }
 
 export function QuoteDiagnosisPanel({
-  lines, diagnosis, dismissReasons, onReviewPrice,
+  lineIds, diagnosis, dismissReasons, onReviewPrice, title, clean,
 }: {
-  /** The lines currently on screen. Read so the cards follow the grid's own
-   *  filter — a diagnosis for a line somebody has filtered away is a card
-   *  about something they cannot see. */
-  lines: Line[];
+  /** The ids of the lines currently on screen, in order. Read so the cards
+   *  follow the grid's own filter — a diagnosis for a line somebody has
+   *  filtered away is a card about something they cannot see.
+   *
+   *  Ids rather than the draft `Line` objects this used to take: the ERP quote
+   *  page has lines of a different type and this component read exactly one
+   *  field off them. */
+  lineIds: string[];
   diagnosis: QuoteDiagnosisState;
   dismissReasons: DismissReason[];
-  onReviewPrice: (lineId: string) => void;
+  /** Absent where there is no price to review — an issued document cannot be
+   *  re-priced here, and a card offering it would be a dead control. */
+  onReviewPrice?: (lineId: string) => void;
+  title?: string;
+  /** What to say when the check ran and flagged nothing.
+   *
+   *  The Quote Builder passes nothing and the panel disappears, which is right
+   *  while somebody is pricing: a row of furniture reading "no findings" on
+   *  every ordinary quote is noise. A finished document is the opposite case —
+   *  a reader asking "was this checked?" cannot tell silence from a panel that
+   *  was never mounted, and on that screen the answer is worth one line. */
+  clean?: ReactNode;
 }) {
-  const shown = lines
-    .map((l) => diagnosis.byLineId[l.id])
+  const shown = lineIds
+    .map((id) => diagnosis.byLineId[id])
     .filter((d) => d && d.renders);
 
   if (diagnosis.error) {
@@ -93,14 +110,21 @@ export function QuoteDiagnosisPanel({
     );
   }
 
-  // Nothing worth interrupting anybody about. The panel disappears entirely
-  // rather than sitting there saying "no findings", which is a row of furniture
-  // on every ordinary quote.
-  if (shown.length === 0) return null;
+  // Nothing worth interrupting anybody about. Silent unless the caller asked
+  // for a settled note — see `clean`.
+  if (shown.length === 0) {
+    if (!clean) return null;
+    return (
+      <Box sx={{ mt: "var(--space-4)" }}>
+        <FieldLabel>{title ?? DEFAULT_TITLE}</FieldLabel>
+        <Box sx={{ mt: 0.5 }}><Meta>{clean}</Meta></Box>
+      </Box>
+    );
+  }
 
   return (
     <Box sx={{ mt: "var(--space-4)" }}>
-      <FieldLabel>What this customer has paid before</FieldLabel>
+      <FieldLabel>{title ?? DEFAULT_TITLE}</FieldLabel>
       <Stack spacing={2} sx={{ mt: 1 }}>
         {shown.map((d) => (
           <DiagnosisCard

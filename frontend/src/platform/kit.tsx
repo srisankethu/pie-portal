@@ -1082,6 +1082,90 @@ export function FactTable({
   );
 }
 
+/** Which record this page is about, in labelled fields, with an optional aside.
+ *
+ *  A `Paper` strip at the top of a document screen — the quote's number, whose
+ *  it is, which book it came from — and on the right whatever states the
+ *  record's standing: when it was last saved, or how it ended.
+ *
+ *  **Deliberately not `FilterPanel`,** which it resembles to the pixel. That one
+ *  is "the controls above a list" and these are not controls; a duplicate scan
+ *  named the Quote Builder's two strips as one clone and only the lower one —
+ *  the real filter row — moved. This is the upper one, and it stayed inline
+ *  until a second screen needed the same shape.
+ *
+ *  A field's `value` is a `ReactNode` because the two callers disagree about
+ *  what one is: the Quote Builder's customer and owner are buttons that open a
+ *  picker, and an ERP quote's are text nobody may change. The strip lays them
+ *  out; it does not decide whether they can be pressed. */
+export function IdentityStrip({
+  fields, aside,
+}: {
+  fields: Array<{ label: string; value: ReactNode; key?: string }>;
+  /** The right-hand end, after a flexible gap. */
+  aside?: ReactNode;
+}) {
+  return (
+    <Paper
+      variant="outlined"
+      sx={{
+        p: 1.5, mb: 2,
+        display: "flex", flexWrap: "wrap", alignItems: "center", gap: 2, rowGap: 1,
+      }}
+    >
+      {fields.map((f) => (
+        <Box key={f.key ?? f.label} sx={{ minWidth: 0 }}>
+          <FieldLabel>{f.label}</FieldLabel>
+          {f.value}
+        </Box>
+      ))}
+      {aside ? (
+        <>
+          <Box sx={{ flex: 1 }} />
+          {aside}
+        </>
+      ) : null}
+    </Paper>
+  );
+}
+
+/** One figure in a summary strip: its label, the money, and what it leaves out.
+ *
+ *  The `note` is the part worth having a component for. A subtotal that omits
+ *  two unpriced lines and one that omits nothing render identically without it,
+ *  and the first is a number somebody would otherwise read as the whole quote. */
+export function Stat({
+  label, value, strong = false, note,
+}: {
+  label: string;
+  /** `null` renders an em dash, through `CurrencyValue` — a total the source
+   *  never gave is not a total of nought. */
+  value: number | string | null | undefined;
+  strong?: boolean;
+  /** What this figure does not account for. */
+  note?: string | null;
+}) {
+  return (
+    <Box>
+      <Typography variant="overline" color="text.secondary"
+                  sx={{ display: "block", lineHeight: 1.3 }}>
+        {label}
+      </Typography>
+      <CurrencyValue
+        value={value}
+        bold={strong}
+        sx={{ fontFamily: "var(--font-heading)", fontSize: 20 }}
+      />
+      {note && (
+        <Typography variant="caption" color="text.secondary"
+                    sx={{ display: "block", lineHeight: 1.3 }}>
+          {note}
+        </Typography>
+      )}
+    </Box>
+  );
+}
+
 /** The controls above a list: search, segments, filters.
  *
  *  A `Paper`, and one place that decides how they space and wrap. Replaces

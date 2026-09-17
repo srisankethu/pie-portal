@@ -258,6 +258,8 @@ These live in `frontend/src/platform/kit.tsx`:
 | `FilterChip` | one choice in a row of them, with how many rows it leaves | the quote's line-state and margin-floor chips, the decision queue's type chips |
 | `FilterSelect` | the same filter where a row of chips will not fit | `CompanyFilter`'s private `CompanySelect`, and the `TextField select` it was built from twice |
 | `OptionMeta` | the count, and where relevant the connector, beside an option's name | three copies of an inline `Meta` inside `CompanyFilter` |
+| `IdentityStrip` | which record a document screen is about, in labelled fields, with an optional aside | the Quote Builder's header `Paper`, copied onto the ERP quote page |
+| `Stat` | one figure in a summary strip, with what it leaves out | `SummaryBar`'s private copy, once a second summary needed it |
 
 Two rows of this table used to name components that were never written —
 `ChartContainer` and `AuditTimeline`. A standard that lists a component nobody

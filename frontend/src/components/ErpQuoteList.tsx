@@ -24,14 +24,15 @@
 import Box from "@mui/material/Box";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import { money } from "../money";
 import { DataGrid, numeric, text } from "../platform/DataGrid";
 import type { ColDef } from "../platform/DataGrid";
 import { EmptyState, Meta, StatusChip } from "../platform/kit";
 import { ErpQuoteDrawer, outcomeOf } from "./ErpQuoteDrawer";
-import type { ErpQuote } from "../types";
+import { api } from "../api";
+import type { ErpQuote, ErpQuoteLines } from "../types";
 
 /** The chip readings live with the drawer and are imported here.
  *
@@ -53,7 +54,7 @@ function when(iso: string | null): string {
   return iso ?? "—";
 }
 
-export function ErpQuoteList({ quotes, emptyReason, companies = 1 }: {
+export function ErpQuoteList({ quotes, emptyReason, companies = 1, token }: {
   quotes: ErpQuote[];
   /** The server's sentence for an empty book. Rendered rather than replaced:
    *  it is the one that distinguishes "no quotes synced yet" from "the quote
@@ -63,8 +64,33 @@ export function ErpQuoteList({ quotes, emptyReason, companies = 1 }: {
   /** How many connected companies this organization has, so the opened quote
    *  names its book only where that is information rather than noise. */
   companies?: number;
+  /** Needed only to fetch a quote's lines when one is opened. Omitted, the
+   *  drawer still opens and says the breakdown is not loaded — a screen that
+   *  cannot fetch is not a screen that should refuse to show the header. */
+  token?: string;
 }) {
   const [open, setOpen] = useState<ErpQuote | null>(null);
+  const [lines, setLines] = useState<ErpQuoteLines | undefined>(undefined);
+
+  /* Fetched per quote when one is opened, and cleared first so the panel shows
+     its loading state rather than the previous quote's lines under this
+     quote's number — which is the failure worth guarding here, because it is
+     wrong in a way that looks right. */
+  useEffect(() => {
+    setLines(undefined);
+    if (!open || !token) return;
+    let live = true;
+    api.erpQuoteLines(token, open.quote_document_ref)
+      .then((r) => { if (live) setLines(r); })
+      .catch(() => {
+        if (live) {
+          setLines({ quote_document_ref: open.quote_document_ref, lines: [],
+                     lines_held: false,
+                     empty_reason: "The lines could not be loaded just now." });
+        }
+      });
+    return () => { live = false; };
+  }, [open, token]);
 
   const columns: ColDef<ErpQuote>[] = [
     text("number", "Quote", { minWidth: 150 }),
@@ -118,7 +144,7 @@ export function ErpQuoteList({ quotes, emptyReason, companies = 1 }: {
       )}
     />
     {open && (
-      <ErpQuoteDrawer quote={open} showCompany={companies > 1}
+      <ErpQuoteDrawer quote={open} showCompany={companies > 1} lines={lines}
                       onClose={() => setOpen(null)} />
     )}
     </>

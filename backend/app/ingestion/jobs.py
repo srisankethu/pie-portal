@@ -946,6 +946,7 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         # relax the gate.
         if report.quote_documents or report.quote_documents_undated:
             notes["quotes"] = {"read": report.quote_documents,
+                               "lines": report.quote_document_lines,
                                "undated_decisions": report.quote_documents_undated}
         run.notes = notes
         # Everything logged since the last phase boundary, the traceback of a

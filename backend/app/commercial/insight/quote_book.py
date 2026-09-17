@@ -15,7 +15,8 @@ between two questions rather than two filters:
 ``unrecorded``   which of the unanswered ones to chase, ranked by how long it
                  has been lapsed and what is on it. A worklist that shrinks.
 ``quote_book``   what is in the book. Every row, newest first, with the ERP's
-                 own word for how each ended.
+                 own word for how each ended — and, per quote on request,
+                 what was on it.
 
 They share the table and nothing else, which is why the ordering here is a flat
 ``date DESC`` and not that module's lexicographic sort inside named groups: a
@@ -188,6 +189,66 @@ def build(session: Session, org: str, *, customer_names: dict[str, str],
     rows.sort(key=lambda q: (q.raised_on, q.number or "",
                              q.quote_document_ref), reverse=True)
     return rows
+
+
+@dataclass(frozen=True)
+class BookQuoteLine:
+    """One line of a quote, as the ERP wrote it."""
+
+    line_number: int
+    item_code: str
+    description: str
+    product_id: Optional[str]
+    qty: Optional[Decimal]
+    unit: str
+    rate: Optional[Decimal]
+    amount: Optional[Decimal]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "line_number": self.line_number,
+            "item_code": self.item_code,
+            "description": self.description,
+            "product_id": self.product_id,
+            "qty": float(self.qty) if self.qty is not None else None,
+            "unit": self.unit,
+            "rate": float(self.rate) if self.rate is not None else None,
+            "amount": float(self.amount) if self.amount is not None else None,
+        }
+
+
+def lines_for(session: Session, org: str, *, quote_ref: str) -> list[BookQuoteLine]:
+    """What was on one quote, in the order the ERP wrote it.
+
+    Fetched per quote rather than carried on every row of the book: 114 quotes
+    with their lines is a payload nobody reads most of, and the lines are wanted
+    only when somebody opens one.
+
+    An empty list is two different facts — a quote genuinely without lines, and
+    a quote whose breakdown this platform has not pulled — and this function
+    cannot tell them apart. The caller can: a resumed sync leaves the header
+    updated and the lines untouched, so the screen says "not held" rather than
+    "none". Do not let an empty list here render as an empty quote.
+    """
+    rows = session.scalars(
+        select(models.ErpQuoteLine)
+        .where(models.ErpQuoteLine.organization_id == org,
+               models.ErpQuoteLine.quote_ref == quote_ref)
+        .order_by(models.ErpQuoteLine.line_number,
+                  models.ErpQuoteLine.external_ref)).all()
+    return [
+        BookQuoteLine(
+            line_number=row.line_number,
+            item_code=row.item_code or "",
+            description=row.description or "",
+            product_id=row.product_id,
+            qty=Decimal(row.qty) if row.qty is not None else None,
+            unit=row.unit or "",
+            rate=Decimal(row.rate) if row.rate is not None else None,
+            amount=Decimal(row.amount) if row.amount is not None else None,
+        )
+        for row in rows
+    ]
 
 
 def totals(quotes: list[BookQuote]) -> dict[str, Any]:

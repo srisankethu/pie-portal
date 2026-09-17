@@ -43,6 +43,18 @@ from .domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
 _CANONICAL_STAMP_LIKE = "____-__-__T__:__:__Z"
 
 
+def _same(column: Any, value: Any):
+    """``column == value``, and ``IS NULL`` when the value is null.
+
+    SQL's ``= NULL`` is never true, so a filter written the obvious way silently
+    matches nothing the moment the value it compares against is absent. That is
+    harmless in a read and destructive in a delete-then-insert: the delete finds
+    no rows, the insert runs regardless, and the table grows a duplicate set
+    every time while the code reads as though it replaced them.
+    """
+    return column.is_(None) if value is None else column == value
+
+
 class ReadModelRepository:
     """Upsert + lookup for the canonical read model, scoped to one org."""
 
@@ -1015,6 +1027,64 @@ class ReadModelRepository:
         row.source_recorded_at = q.source_ref.recorded_at
         row.source_ref = q.source_ref.model_dump(mode="json")
         return row
+
+    def replace_quote_lines(self, q: QuoteDocIn) -> int:
+        """This quote's lines, rewritten from the payload.
+
+        Delete-then-insert rather than a per-line upsert, because a line can be
+        *removed* from a quote in the ERP and an upsert would leave the removed
+        one behind for ever — the document on screen would then disagree with
+        the document in the source system, which is the one thing a mirror must
+        not do. Cheap for the same reason it is safe: a quote has a handful of
+        lines, not thousands.
+
+        **Only ever called with lines in hand.** A resumed pull carries no
+        breakdown, and calling this with an empty list would delete a quote's
+        lines because this run did not happen to read them; the caller checks,
+        and this docstring is the other half of that contract.
+
+        Keyed on ``external_ref`` per line, so a re-sync of the same quote
+        replaces rather than duplicates.
+        """
+        # Scoped to this pull's own provenance, because two connected books can
+        # each hold their own estimate 123 — and compared NULL-safely, because
+        # `column == None` compiles to `= NULL`, which matches no row ever. A
+        # book whose rows carry no connection id would otherwise keep every line
+        # it had ever seen: the delete would quietly match nothing and the
+        # insert would run anyway, so a quote would gain a duplicate set of
+        # lines on every sync while looking like it was being replaced.
+        self.s.query(models.ErpQuoteLine).filter(
+            models.ErpQuoteLine.organization_id == self.org,
+            _same(models.ErpQuoteLine.connector, self.connector),
+            _same(models.ErpQuoteLine.connection_id, self.connection_id),
+            models.ErpQuoteLine.quote_ref == q.external_ref,
+        ).delete(synchronize_session=False)
+
+        for line in q.lines:
+            # The item is resolved where the code matches one this platform
+            # holds, and left null where it does not. A quote line naming
+            # something that never became a catalogue item is real quoting
+            # activity and is kept either way.
+            product = (self.get_product_by_external(line.item_external_id)
+                       if line.item_external_id else None)
+            self.s.add(models.ErpQuoteLine(
+                organization_id=self.org,
+                connector=self.connector,
+                connection_id=self.connection_id,
+                external_ref=line.external_ref,
+                quote_ref=q.external_ref,
+                line_number=line.line_number,
+                product_id=product.product_id if product is not None else None,
+                item_code=line.item_code,
+                description=line.description,
+                qty=line.qty,
+                unit=line.unit,
+                rate=line.rate,
+                amount=line.amount,
+                discount_percent=line.discount_percent,
+                source_ref=q.source_ref.model_dump(mode="json"),
+            ))
+        return len(q.lines)
 
     def upsert_bill(self, vendor_id: Optional[str], b: BillIn) -> models.BillDoc:
         """The payable header. Re-read on every pull that touches the bill,

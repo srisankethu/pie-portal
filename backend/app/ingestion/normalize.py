@@ -29,7 +29,8 @@ from ..domain.schemas import (BillIn, CostRecordIn, CreditNoteApplicationIn,
                              CreditNoteIn, CustomerIn, DocumentApplicationIn,
                              InvoiceIn, InvoiceSalesOrderRef, LocationIn,
                              PaymentReceiptIn, ProductIn, PurchaseOrderIn,
-                             QuoteDocIn, SalesOrderIn, SalesTxnIn, SourceRef,
+                             QuoteDocIn, QuoteLineIn, SalesOrderIn,
+                             SalesTxnIn, SourceRef,
                              StockLocationSnapshotIn, StockSnapshotIn, VendorIn,
                              VendorCreditApplicationIn, VendorCreditIn,
                              VendorPaymentIn)
@@ -710,9 +711,53 @@ def normalize_quote_document(raw: dict[str, Any], *, system: str = ZOHO) -> Quot
         # unclassified quote sharing a bucket called "other".
         attributes={k: raw[k] for k in _QUOTE_ATTRIBUTE_KEYS
                     if raw.get(k) not in (None, "")},
+        lines=_quote_lines(raw, qid),
         source_ref=SourceRef(system=system, record_type="quote", record_id=qid,
                              recorded_at=_recorded_at(raw, ctx)),
     )
+
+
+def _quote_lines(raw: dict[str, Any], qid: str) -> list[QuoteLineIn]:
+    """What was on the quote, where the pull bought the detail call.
+
+    An empty list is returned for a payload with no ``line_items`` — a header-only
+    row from a resumed pull, or a connector whose adapter does not carry them —
+    and that is an absence rather than "the quote had no lines". The reader says
+    so; nothing here invents a line to fill the gap.
+
+    A line with no id still gets one: Zoho supplies ``line_item_id`` and the
+    position is the fallback, because a line keyed on nothing would collide with
+    its neighbour on the next sync and the quote would lose every line but one.
+
+    Prices are carried as the ERP wrote them, missing where missing. ``rate``
+    absent is a line somebody has not priced, which the schema keeps distinct
+    from a line priced at zero.
+    """
+    out: list[QuoteLineIn] = []
+    for position, item in enumerate(raw.get("line_items") or []):
+        if not isinstance(item, dict):
+            continue
+        line_id = str(item.get("line_item_id") or "") or f"p{position}"
+        out.append(QuoteLineIn(
+            external_ref=f"{qid}:{line_id}",
+            line_number=position,
+            item_external_id=(str(item["item_id"]) if item.get("item_id")
+                              else None),
+            # The quote's own words, kept whether or not the item resolves.
+            item_code=str(item.get("sku") or item.get("item_code") or "")[:255],
+            description=str(item.get("description")
+                            or item.get("name") or "")[:2048],
+            qty=item.get("quantity"),
+            unit=str(item.get("unit") or "")[:32],
+            rate=item.get("rate"),
+            # `item_total` is post-discount and pre-tax, which is the figure the
+            # header's own total is built from. Falling back to `amount` keeps a
+            # connector that spells it the other way readable.
+            amount=(item.get("item_total") if item.get("item_total") is not None
+                    else item.get("amount")),
+            discount_percent=item.get("discount"),
+        ))
+    return out
 
 
 def normalize_bill_terms(raw: dict[str, Any], *, system: str = ZOHO) -> BillIn:

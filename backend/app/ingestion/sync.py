@@ -99,6 +99,10 @@ class SyncReport:
     #: ``source_status`` is stored verbatim beside ``outcome``, so a GROUP BY
     #: on the pair names exactly which statuses fell through.
     quote_documents_undated: int = 0
+    #: Lines read. Counted separately from the quotes so a resumed pull, which
+    #: re-reads every header and no breakdown, is visibly a different thing
+    #: from a first pull that read both.
+    quote_document_lines: int = 0
     #: Quotes kept whose ``client_viewed_time`` could not be placed on the UTC
     #: line, so the open is recorded as unknown. The price of degrading that one
     #: field instead of losing the document — see ``unreadable_view_stamp``.
@@ -287,6 +291,7 @@ class SyncReport:
             "sales_orders": self.sales_orders,
             "quote_documents": self.quote_documents,
             "quote_documents_undated": self.quote_documents_undated,
+            "quote_document_lines": self.quote_document_lines,
             "quote_documents_unreadable_view":
                 self.quote_documents_unreadable_view,
             "vendor_payments": self.vendor_payments,
@@ -820,7 +825,13 @@ class SyncService:
         shrink the denominator of every win rate — the same reasoning that
         keeps a sales order against an unknown customer.
         """
-        for raw in self.source.list_quotes():
+        # Resumed like every other document with a detail call: without the
+        # predicate this phase costs one API call per quote on every run, and
+        # with it a re-sync costs one list call. The quotes already held are
+        # re-read from the list row alone, so their headers still update —
+        # `source_status` and `outcome` are exactly the columns that change
+        # after a quote is raised — and only their line breakdown is skipped.
+        for raw in self.source.list_quotes(skip=self._skipper("quote")):
             ref = str(raw.get("estimate_id", "?"))
             try:
                 q = normalize_quote_document(raw, system=self.connector)
@@ -837,6 +848,15 @@ class SyncService:
                 customer = self.repo.get_customer_by_external(q.customer_external_id)
                 customer_id = customer.customer_id if customer else None
             self.repo.upsert_quote_document(customer_id, q)
+            # Only where the detail call actually answered. A resumed row
+            # carries no lines, and rewriting the stored ones from an empty
+            # list would delete a breakdown this run never read — the one way
+            # a cheap re-sync could destroy data.
+            if q.lines:
+                self.repo.replace_quote_lines(q)
+                self.report.quote_document_lines += len(q.lines)
+                self.repo.mark_ingested(
+                    "quote", ref, str(raw.get("last_modified_time") or ""))
             if dropped_an_undated_decision(q, system=self.connector):
                 self.report.quote_documents_undated += 1
             if unreadable_view_stamp(raw):

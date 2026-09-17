@@ -1614,7 +1614,8 @@ class ZohoApiSource(ZohoTransport):
                 "salesperson_id": so.get("salesperson_id"),
             }
 
-    def list_quotes(self) -> Iterable[dict[str, Any]]:
+    def list_quotes(
+            self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:
         """Quotes — what was offered, including everything nobody ordered.
 
         Zoho calls these estimates and the endpoint is named for it; the
@@ -1629,12 +1630,21 @@ class ZohoApiSource(ZohoTransport):
         the orders that came out of them is the first time the platform can see
         both halves.
 
-        Header grain, no detail call, for the same reason as sales orders:
-        "what was offered, to whom, for how much, and how did it end" is
-        entirely on the list row. The line breakdown would cost one call per
-        quote to answer questions this does not ask — and when it is worth
-        buying, ``list_vendor_payments`` shows the shape, ``skip`` predicate
-        and all.
+        **The detail call is bought now, and this docstring used to argue
+        against it.** The argument was right about the questions the table was
+        built for — "what was offered, to whom, for how much, and how did it
+        end" is entirely on the list row — and wrong about the only question a
+        person actually opens a quote to ask, which is what was on it. No amount
+        of header answers that.
+
+        So this is the shape the old text pointed at: ``skip`` makes a resumed
+        pull cost one list call instead of hundreds of detail calls, exactly as
+        for vendor payments. The first pull after this lands is expensive once —
+        one call per quote in the window — and every pull after it is not.
+
+        A detail call that comes back empty costs the lines, not the quote: the
+        list row is a complete quote on its own, so it is still yielded. A book
+        whose breakdown could not be read is worth more than no book.
 
         **No status exclusion**, which is the one deliberate divergence from
         ``list_sales_orders``. A draft sales order is skipped there because it
@@ -1659,8 +1669,21 @@ class ZohoApiSource(ZohoTransport):
                 continue
             if quoted < cutoff or (until is not None and quoted > until):
                 continue
+            estimate_id = str(est.get("estimate_id"))
+            detail: dict[str, Any] = {}
+            if skip is not None and skip(estimate_id,
+                                         str(est.get("last_modified_time") or "")):
+                self.documents_resumed += 1
+            else:
+                detail = self._get(f"estimates/{estimate_id}").get("estimate") or {}
+                if detail:
+                    self.documents_fetched += 1
             yield {
-                "estimate_id": str(est.get("estimate_id")),
+                "estimate_id": estimate_id,
+                "last_modified_time": est.get("last_modified_time"),
+                # Only the detail call carries these. Absent on a resumed row,
+                # which the normaliser reads as "not held" rather than "none".
+                "line_items": detail.get("line_items") or [],
                 "estimate_number": est.get("estimate_number"),
                 # Usually the customer's own enquiry or RFQ number, typed in by
                 # whoever raised the quote. The only string on the row that

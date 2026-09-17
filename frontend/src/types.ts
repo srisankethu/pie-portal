@@ -310,6 +310,31 @@ export interface ErpQuote {
   attributes: Record<string, string>;
 }
 
+export interface ErpQuoteLine {
+  line_number: number;
+  item_code: string;
+  description: string;
+  /** The platform's item where the code matched one, `null` where it did not —
+   *  which is a real state, not a failure. A quote line naming something that
+   *  never became a catalogue item is real quoting activity. */
+  product_id: string | null;
+  qty: number | null;
+  unit: string;
+  /** `null` where the ERP gave none. A line nobody priced, not a free line. */
+  rate: number | null;
+  amount: number | null;
+}
+
+export interface ErpQuoteLines {
+  quote_document_ref: string;
+  lines: ErpQuoteLine[];
+  /** Whether the breakdown has been pulled at all. `lines: []` cannot say this
+   *  on its own — a quote with no lines and a quote whose lines were never read
+   *  look identical — and a resumed sync leaves the second state behind. */
+  lines_held: boolean;
+  empty_reason: string | null;
+}
+
 export interface ErpQuoteBook {
   count: number;
   by_outcome: { WON: number; LOST: number; UNRECORDED: number };

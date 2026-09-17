@@ -4217,9 +4217,14 @@ class QuoteDoc(Base):
     exactly the collision the merge found, and the released one keeps the name.
     ``erp_quotes`` also says the direction out loud, which the old name did not.
 
-    Header grain, like ``SalesOrderDoc`` and for the same reason: the line-level
-    split would cost one API call per quote and answers a question this does not
-    ask.
+    **Header grain here, with the lines on ``ErpQuoteLine``.** This used to say
+    the split was not worth one API call per quote, and that was right about the
+    questions this table was built for — how many were quoted, how each ended,
+    what the denominator of a win rate is — and wrong about the one a person
+    opens a quote to ask, which is what was on it. The detail call is bought
+    now; ``skip`` keeps a resumed pull at one list call. The header stays here
+    because these columns are what every count and every rate reads, and joining
+    to a line table to answer "how many quotes" would be a join for nothing.
 
     **Two status columns, and both earn their place.** ``source_status`` is the
     ERP's own word carried verbatim, never mapped on the way in; ``outcome`` is
@@ -4343,6 +4348,77 @@ class QuoteDoc(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  onupdate=_now)
+
+
+class ErpQuoteLine(Base):
+    """What was actually offered on one line of a quote the ERP raised.
+
+    **The header docstring above used to say this table should not exist**, and
+    the reasoning it gave was sound at the time: the line breakdown costs one API
+    call per quote, and "what was offered, to whom, for how much, and how did it
+    end" is answered entirely by the list row. What changed is the question. A
+    person looking at a won quote for ₹2,25,171 wants to know *what* was on it,
+    and the header cannot answer that at any price. So the detail call is bought
+    now, and ``skip`` keeps a resumed pull at one list call rather than hundreds
+    — the arrangement ``list_vendor_payments`` has used since the payables side
+    needed the same thing.
+
+    **Derived, and replaced wholesale.** A sync deletes this quote's lines and
+    writes them again from the payload, the same contract the header follows: a
+    human-supplied fact stored here would survive exactly until the next pull.
+    Nothing writes this table but the sync, and no endpoint updates it.
+
+    **The line's own words are kept even when the item resolves.**
+    ``product_id`` is the platform's item where the code matched one and NULL
+    where it did not, but ``description`` and ``item_code`` are what the quote
+    actually said. A quote line naming something that never became a catalogue
+    item is real quoting activity, and dropping it because the master has no row
+    would shrink the document to the part that happens to be tidy — the same
+    reasoning that keeps a quote whose customer never resolved.
+
+    **No cost and no margin.** ``rate`` and ``amount`` are what was offered to
+    the customer. There is no buy-side column here, so there is nothing a role
+    projection would have to withhold and therefore nothing it can forget.
+    """
+
+    __tablename__ = "erp_quote_lines"
+    __table_args__ = (
+        # ``{estimate_id}:{line_item_id}`` — the same shape ``sales_txns`` uses
+        # for an invoice line, and unique per connection for the reason that
+        # table's constraint is: two companies' books can both hold line 1 of
+        # their own document 500.
+        UniqueConstraint("organization_id", "connector", "connection_id",
+                         "external_ref", name="uq_erp_quote_line_ref"),
+        Index("ix_erp_quote_lines_org_quote", "organization_id", "quote_ref"),
+        Index("ix_erp_quote_lines_org_product", "organization_id", "product_id"),
+    )
+
+    erp_quote_line_id: Mapped[str] = mapped_column(String(64), primary_key=True,
+                                                   default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    connector: Mapped[Optional[str]] = mapped_column(String(32), index=True)
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    external_ref: Mapped[str] = mapped_column(String(160), index=True)
+    #: The header's ``external_ref``, held by value rather than as a foreign
+    #: key — the same pointer style ``QuoteOutcome.quote_document_ref`` uses,
+    #: and for the same reason: a full rebuild re-mints every
+    #: ``quote_document_id`` and every pointer still resolves.
+    quote_ref: Mapped[str] = mapped_column(String(128), index=True)
+    line_number: Mapped[int] = mapped_column(Integer, default=0)
+    #: The platform's item, where the code matched one. NULL is a real state.
+    product_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
+    #: What the quote itself said, kept whether or not the item resolved.
+    item_code: Mapped[str] = mapped_column(String(255), default="")
+    description: Mapped[str] = mapped_column(String(2048), default="")
+    qty: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    unit: Mapped[str] = mapped_column(String(32), default="")
+    #: Offered unit price and line total, pre-tax. ``None`` where the ERP gave
+    #: none, which is not zero.
+    rate: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    amount: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    discount_percent: Mapped[Optional[Any]] = mapped_column(Numeric(9, 4))
+    source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
 
 
 class BillDoc(Base):

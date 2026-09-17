@@ -1876,6 +1876,7 @@ shims, are mounted but are not flows and are not listed here.
 | DELETE | `/api/v1/insight/targets/{target_id}` | manager/owner | Delete a target |
 | POST | `/api/v1/insight/tenders` | manager/owner | Record a tender result observation (no frontend consumer found — API-only) |
 | GET | `/api/v1/insight/quote-book` | signed-in | Every quote the connected ERP raised, newest first, with the ERP's own status word beside the WON/LOST/UNRECORDED the sync read off it; counts partition the book and a missing total is reported, never summed as zero. Salesperson narrowed to their own accounts |
+| GET | `/api/v1/insight/quote-book/{quote_ref}/lines` | signed-in | What was on one ERP quote, in the order the ERP wrote it; scoped through the book itself so a quote the reader may not see is a 404, and `lines_held` distinguishes a quote with no lines from one whose breakdown has not been pulled |
 | GET | `/api/v1/insight/unrecorded-quotes` | signed-in | Ranked worklist of ERP quotes with no recorded outcome: three server-published groups (PAST_EXPIRY / EXPIRY_NOT_RECORDED / STILL_OPEN), totals over… |
 | GET | `/api/v1/insight/vendor-terms` | manager/owner | Agreed payment terms beside Zoho's, with schedule shift |
 | PUT | `/api/v1/insight/vendor-terms` | manager/owner | Record/replace one supplier's agreed term (days + basis + note) |

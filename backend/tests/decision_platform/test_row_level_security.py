@@ -462,6 +462,11 @@ EXPECTED_POLICIED = {
     # the person who read the card and what they said was wrong with it. Policied
     # by the revision that creates the tables, per the rule `l1grp` states.
     "quote_diagnoses", "quote_diagnosis_dismissals",
+    # q4qline — what was on each quote the ERP raised. Strictly worse to leak
+    # than the header next door: a cross-tenant read is a competitor's
+    # customers, the parts they buy and the prices they were offered, at line
+    # grain. Policied by the revision that creates the table.
+    "erp_quote_lines",
 }
 
 #: Tenant-scoped and deliberately uncovered — and after `d3rls` there is only

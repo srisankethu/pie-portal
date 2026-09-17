@@ -564,7 +564,7 @@ export interface SyncRun {
   notes: {
     demo_data_removed?: Record<string, number>;
     commercial?: Record<string, unknown>;
-    quotes?: { read?: number; undated_decisions?: number };
+    quotes?: { read?: number; lines?: number; undated_decisions?: number };
   };
 }
 

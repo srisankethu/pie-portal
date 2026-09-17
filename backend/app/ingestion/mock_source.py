@@ -95,7 +95,18 @@ _QUOTES = [
      "accepted_date": "2026-05-09", "declined_date": "",
      "total": 15660, "salesperson_id": "zu-1",
      "client_viewed_time": "2026-05-03T10:15:00+0530",
-     "cf_quote_type": "REPEAT"},
+     "cf_quote_type": "REPEAT",
+     # What was on it. Carried inline because this source has no detail call to
+     # make — the demo has to be able to show a quote's lines, or the one screen
+     # that reads them cannot be looked at without a live ERP.
+     "line_items": [
+         {"line_item_id": "eli-1", "item_id": "itm-1", "sku": "CNMG120408-MP",
+          "description": "CNMG 120408 MP KCP25 turning insert",
+          "quantity": 30, "unit": "pcs", "rate": 452, "item_total": 13560},
+         {"line_item_id": "eli-2", "sku": "", "name": "Freight",
+          "description": "Freight and handling",
+          "quantity": 1, "unit": "nos", "rate": 2100, "item_total": 2100},
+     ]},
     {"estimate_id": "est-8002", "estimate_number": "SLS/QTN-202",
      "reference_number": "", "customer_id": "cst-1002",
      "customer_name": "Bharat Forge", "date": "2026-05-14",
@@ -103,7 +114,12 @@ _QUOTES = [
      "accepted_date": "", "declined_date": "2026-05-28",
      "total": 42000, "salesperson_id": "zu-1",
      "client_viewed_time": "2026-05-15T09:00:00+0530",
-     "cf_quote_type": "NEW"},
+     "cf_quote_type": "NEW",
+     "line_items": [
+         {"line_item_id": "eli-3", "item_id": "itm-2", "sku": "WNMG080408",
+          "description": "WNMG 080408 roughing insert",
+          "quantity": 100, "unit": "pcs", "rate": 420, "item_total": 42000},
+     ]},
     # Lapsed, and never opened by the customer — the shape most of a real book
     # sits in, and the one nothing may read as a loss.
     {"estimate_id": "est-8003", "estimate_number": "SLS/QTN-203",
@@ -171,5 +187,13 @@ class FixtureZohoSource:
     def list_purchase_orders(self) -> Iterable[dict[str, Any]]:
         return list(_PURCHASE_ORDERS)
 
-    def list_quotes(self) -> Iterable[dict[str, Any]]:
+    def list_quotes(self, skip: Any = None) -> Iterable[dict[str, Any]]:
+        """``skip`` accepted and ignored, like this class's other pulls.
+
+        The demo payloads carry their ``line_items`` inline, so there is no
+        detail call to save — but the *signature* has to match the protocol or
+        the sync's one call site raises ``TypeError`` and takes the whole quote
+        stage down. That is not hypothetical: the real client grew ``skip`` and
+        this one did not, and nothing failed until a demo org ran a sync.
+        """
         return list(_QUOTES)

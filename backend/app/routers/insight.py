@@ -1816,11 +1816,21 @@ def quote_book_lines(quote_ref: str,
          "lines": [row.to_dict() for row in rows],
          "lines_held": bool(rows)},
         th=th,
+        # Both reasons, because the message used to name one and a reader who
+        # acted on it got nowhere. A sync refreshes a quote it already holds
+        # without re-reading the breakdown, *and* a pull only covers quotes
+        # raised inside its date window — so "run a sync" is not advice unless
+        # it says which sync. The sync screen's Quotes row carries the number
+        # that tells the two apart.
         empty_reason=(None if rows else
                       "The lines on this quote have not been read from your "
-                      "ERP yet. A sync that already held the quote refreshes "
-                      "its status without re-reading the breakdown, so the "
-                      "next full pull is what fills them in."))
+                      "ERP yet. Two things stop a sync filling them in: a pull "
+                      "that already holds the quote refreshes its status "
+                      "without re-reading the breakdown, and a pull only covers "
+                      "quotes raised inside its own date window. A full sync "
+                      "reaching back past this quote's date is what reads them. "
+                      "Data & connection reports how many lines the last run "
+                      "actually read."))
 
 
 @router.get("/cashflow")

@@ -425,6 +425,27 @@ def diagnose(*, line_id: str, subject_customer_id: Optional[str],
         surfaces=surfaces, thresholds_version=th.version)
 
 
+def had_enough_to_compare(d) -> bool:
+    """Whether there was enough comparable history to judge this line at all.
+
+    ``strength`` is the field that answers this; ``codes`` are not, and reading
+    them for it is the re-derivation §1 warns about. A single prior transaction
+    still produces a usable band, so ``_diagnose`` takes the price branch and
+    appends ``ABOVE_HISTORICAL_RANGE`` — ``INSUFFICIENT_EVIDENCE`` never lands
+    in ``codes`` — while ``strength`` correctly grades it INSUFFICIENT. Asking
+    the codes therefore reported "compared" on a line the engine had just
+    graded as having too little to compare, and the quote summary counted it.
+
+    The code is still consulted for the case the grade cannot see: a band with
+    no usable median or low, where the grade may survive but there is nothing
+    to compare against.
+
+    Takes either projection — both carry ``strength`` and ``codes``, and the
+    two roles must answer this identically.
+    """
+    return d.strength != INSUFFICIENT and INSUFFICIENT_EVIDENCE not in d.codes
+
+
 def _surfaces(*, codes: Sequence[str], grade: str,
               band_median: Optional[Decimal], deviation: Optional[Decimal],
               line_value: Optional[Decimal], th: CommercialThresholds) -> bool:

@@ -758,3 +758,51 @@ def test_no_creation_stamps_says_what_to_do_about_it():
 
     assert found.suggested is None
     assert "re-sync" in found.reason
+
+
+def test_a_flat_price_history_does_not_produce_a_sentence_saying_between_one_value():
+    """"between ₹218." is a sentence with an operand missing.
+
+    A customer who pays the same price on every order collapses the band to a
+    single value, and that is the ordinary shape of a repeat account here, not
+    an edge case: the first real quote this engine surfaced a STRONG card on
+    had eight prior purchases at one price. ``_range_words`` already returned
+    the bare figure for that case — it was the caller that went on prefixing
+    "between" to it.
+    """
+    out = _run(_steady(10, price="218"), quoted="339")
+    card = render.render_operations(rules.operations_view(out), th=TH)
+
+    assert card.renders is True
+    assert "between" not in card.why
+    assert "at " in card.why
+    assert card.why.endswith(".")
+    # The figure itself still has to be in the sentence.
+    assert "218" in card.why
+
+
+def test_one_prior_transaction_is_not_reported_as_a_line_that_was_compared():
+    """``comparable`` must follow the grade, not the codes.
+
+    One prior sale still yields a usable band, so ``_diagnose`` takes the price
+    branch and appends ``ABOVE_HISTORICAL_RANGE``; ``INSUFFICIENT_EVIDENCE``
+    never reaches ``codes``. Reading the codes for "was there enough to
+    compare" therefore answered yes on a line the engine had just graded
+    INSUFFICIENT, and the quote summary counted it among the lines compared.
+    """
+    out = _run(_steady(1, price="1446"), quoted="1974")
+    card = render.render_operations(rules.operations_view(out), th=TH)
+
+    assert out.strength == rules.INSUFFICIENT
+    assert rules.INSUFFICIENT_EVIDENCE not in out.codes  # the trap
+    assert card.renders is False
+    assert card.comparable is False
+
+
+def test_a_graded_line_is_reported_as_compared():
+    """The other direction, so the fix cannot be "always false"."""
+    out = _run(_steady(10, price="218"), quoted="339")
+    card = render.render_operations(rules.operations_view(out), th=TH)
+
+    assert out.strength in (rules.STRONG, rules.MODERATE)
+    assert card.comparable is True

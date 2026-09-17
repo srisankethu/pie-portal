@@ -403,7 +403,8 @@ describe("the diagnosis", () => {
     diagnoses = { "0": diagnosis({ renders: false }) };
     draw();
 
-    await waitFor(() => expect(screen.getByText(/Nothing stood out/)).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByText(/nothing on those stood out/i)).toBeTruthy());
     expect(screen.getByText(/compared against what this customer had paid/))
       .toBeTruthy();
   });
@@ -445,6 +446,42 @@ describe("the diagnosis", () => {
     await waitFor(() => expect(screen.getByText(/2 of 3 lines were compared/))
       .toBeTruthy());
     expect(screen.getByText(/other 1 had no comparable history/)).toBeTruthy();
+  });
+
+  it("does not tell a manager a quote was clean when their own payload flagged it",
+     async () => {
+    // The owner projection names this `surfaces`; the operations one names it
+    // `renders`, and `DiagnosisCard` draws only the operations shape — so a
+    // manager is served a body the panel cannot render, sees no cards, and this
+    // sentence is the whole of what they get. It used to end "nothing stood
+    // out" as a constant, which was true only for as long as no real quote
+    // surfaced anything. QT-095 surfaced two.
+    erpQuoteLines.mockResolvedValue(lines({
+      lines: [0, 1].map((n) => ({
+        line_number: n, item_code: `ITEM-${n}`, description: `line ${n}`,
+        product_id: null, qty: 1, unit: "pcs", rate: 100 + n, amount: 100 + n,
+      })),
+    }));
+    diagnoses = {
+      "0": diagnosis({ line_id: "0", renders: undefined, surfaces: true,
+                       comparable: true }),
+      "1": diagnosis({ line_id: "1", renders: undefined, surfaces: false,
+                       comparable: true }),
+    };
+    draw();
+
+    await waitFor(() => expect(screen.getByText(/1 of them sits outside it/))
+      .toBeTruthy());
+    expect(screen.queryByText(/nothing on those stood out/i)).toBeNull();
+  });
+
+  it("still reports a genuinely clean quote as clean", async () => {
+    // The other direction, so the fix above cannot be "never say clean".
+    diagnoses = { "0": diagnosis({ renders: false, comparable: true }) };
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText(/nothing on those stood out/i)).toBeTruthy());
   });
 
   it("says so when the check could not run, and never reads as clean", async () => {

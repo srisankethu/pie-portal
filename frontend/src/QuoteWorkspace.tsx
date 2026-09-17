@@ -397,7 +397,8 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
                 </Meta>
               )}
               <ErpQuoteList quotes={book.quotes_listed}
-                            emptyReason={book.empty_reason} />
+                            emptyReason={book.empty_reason}
+                            companies={book.companies} />
             </>
           )}
         </Box>

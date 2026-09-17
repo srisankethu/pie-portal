@@ -242,6 +242,75 @@ def test_the_label_rule_is_the_one_the_worklist_uses(maker):
     assert unrecorded.quote_book.customer_label is quote_book.customer_label
 
 
+# ── what the drawer needs beyond the grid ────────────────────────────────────
+
+def test_a_quote_carries_the_book_it_was_raised_in(maker):
+    """Through ``origin.Companies``, not a second lookup.
+
+    ``label_for`` and ``of`` answer the same question for a grouped query and
+    for a record, which is what stops two screens naming one company two ways.
+    """
+    from app.domain.origin import Companies
+
+    s = maker()
+    s.add(models.ZohoConnection(
+        connection_id="conn1", organization_id=ORG, connector="zoho",
+        zoho_organization_id="600", label="SLS Engineers"))
+    _doc(s, "q1")
+    s.commit()
+    s.close()
+
+    sess = maker()
+    try:
+        rows = quote_book.build(sess, ORG, customer_names=NAMES,
+                                companies=Companies(sess, ORG))
+    finally:
+        sess.close()
+
+    assert rows[0].company == "SLS Engineers"
+
+
+def test_a_caller_with_no_company_index_gets_the_absence_named(maker):
+    """Not a blank, which reads as "no company", and not a guess."""
+    s = maker()
+    _doc(s, "q1")
+    s.commit()
+    s.close()
+
+    assert _build(maker)[0].company == "Source not recorded"
+
+
+def test_the_organizations_own_fields_on_the_quote_travel(maker):
+    """What somebody typed in their ERP about this quote — the classification
+    no other table holds."""
+    s = maker()
+    row = models.QuoteDoc(
+        organization_id=ORG, connector="zoho", connection_id="conn1",
+        external_ref="q1", number="QT-1", customer_id="c1",
+        customer_ref="Acme Engineering", date=date(2026, 5, 1),
+        source_status="sent", outcome=QuoteDocOutcome.UNRECORDED.value,
+        total=Decimal("1000"),
+        attributes={"cf_quote_type": "Tender", "branch_id": "b1"})
+    s.add(row)
+    s.commit()
+    s.close()
+
+    assert _build(maker)[0].attributes == {
+        "cf_quote_type": "Tender", "branch_id": "b1"}
+
+
+def test_a_quote_nobody_classified_carries_an_empty_set_not_a_bucket(maker):
+    """An absent custom field is not a category. A quote with no
+    ``cf_quote_type`` is a quote nobody classified, which is a different fact
+    from every unclassified quote sharing a bucket called "other"."""
+    s = maker()
+    _doc(s, "q1")
+    s.commit()
+    s.close()
+
+    assert _build(maker)[0].attributes == {}
+
+
 # ── role scope ───────────────────────────────────────────────────────────────
 
 def test_a_salesperson_sees_only_their_own_accounts(maker):

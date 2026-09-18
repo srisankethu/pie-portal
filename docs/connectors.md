@@ -146,17 +146,38 @@ names each skipped row. Nothing estimates around a gap.
 - **Sage 100**: purchase costs — its AP history carries GL distributions, not
   item lines, so margin stays UNKNOWN for a Sage 100 book.
 - **All six**: credit notes and per-location stock (Zoho-only today).
-- **All six**: `created_time` — *when the source system recorded the document*,
-  which is a different fact from its date and from when this platform synced it.
-  Only the Zoho pull supplies it today. Every translator in `ingestion/erp/`
-  already maps `last_modified_time`; this is the key beside it, and each one
-  needs the field its own system calls it (NetSuite `datecreated`, Business
-  Central `systemCreatedAt`, Acumatica `CreatedDateTime`, and so on — none of
-  them verified against a live tenant here, which is why none is guessed at in
-  code). The degradation is deliberate and safe: `normalize._recorded_at`
-  returns `None` when the key is absent, and a row with no recorded time is
-  **excluded from quote-diagnosis evidence and counted**, never imputed from its
-  own date. A book on one of these connectors therefore diagnoses nothing rather
+- **`created_time`** — *when the source system recorded the document*, which is
+  a different fact from its date and from when this platform synced it. Every
+  connector now states whether its system exposes one at all, in
+  `ConnectorSpec.records_source_time` and `source_time_note`; both are required
+  fields with no default, so a connector cannot answer by staying silent. Five
+  of the six carry it (Acumatica `CreatedDateTime`, Prophet 21 `date_created`,
+  Sage X3 `CREDAT`/`CRETIM`, Sage 100 `DateCreated`/`TimeCreated`, NetSuite
+  `createddate` — the SuiteQL column, not the `datecreated` saved-search id).
+  Business Central declares **False**: its published v2.0 invoice resources
+  expose only `lastModifiedDateTime`, so the gap is that API's rather than ours.
+  None of these names is verified against a live tenant.
+
+  **Carrying it is necessary and not sufficient, and three connectors stop
+  here.** `clock.utc_stamp` refuses a stamp with no UTC offset and
+  `normalize._recorded_at` drops what it refuses, so `'2026-01-29T14:11:02'` and
+  a bare date both become `None`. NetSuite states `createddate` in PST whatever
+  the account's zone; Sage X3 and Sage 100 split the date and the time across
+  two columns and zone neither. Only Acumatica (`datetimeoffset`) and probably
+  Prophet 21 deliver something placeable on the UTC line. **No offset is
+  invented anywhere** — which zone a book states is an owner's answer, and a
+  fixed one for NetSuite would be a DST bug.
+
+  A second ceiling sits behind that: `normalize` populates `SourceRef.recorded_at`
+  on invoices, bills and quote documents only — three of its seventeen
+  normalizers — although the field exists on every entity and `domain/spec.py`
+  marks it EXPECTED at all nineteen. The connectors carry it on payments already;
+  normalisation is what has not caught up.
+
+  The degradation is deliberate and safe at every one of those steps:
+  `_recorded_at` returns `None` rather than a guess, and a row with no recorded
+  time is **excluded from quote-diagnosis evidence and counted**, never imputed
+  from its own date. A book on one of these connectors diagnoses nothing rather
   than diagnosing from evidence it could not have had.
 
 A US client organization sets its own `currency` (e.g. USD) and timezone; a

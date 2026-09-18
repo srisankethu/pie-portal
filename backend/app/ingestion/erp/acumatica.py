@@ -257,6 +257,12 @@ def translate_invoice(row: dict[str, Any]) -> dict[str, Any]:
         "currency_code": (str(row.get("CurrencyID")).upper()
                           if row.get("CurrencyID") else None),
         "last_modified_time": str(row.get("LastModifiedDateTime") or ""),
+        # When Acumatica itself recorded the document, as against when the
+        # commercial fact happened. The audit pair of the stamp above, carried
+        # verbatim and never defaulted from ``Date``: the point-in-time engine
+        # cuts evidence off at this one, so a document dated before a quote but
+        # entered after it is correctly not evidence the quoter had.
+        "created_time": row.get("CreatedDateTime") or None,
         "line_items": _document_lines(row, qty_key="Qty",
                                       price_key="UnitPrice"),
     }
@@ -275,6 +281,8 @@ def translate_bill(row: dict[str, Any]) -> dict[str, Any]:
         "currency_code": (str(row.get("CurrencyID")).upper()
                           if row.get("CurrencyID") else None),
         "last_modified_time": str(row.get("LastModifiedDateTime") or ""),
+        # ``CreatedDateTime``'s other half. Verbatim, never from ``Date``.
+        "created_time": row.get("CreatedDateTime") or None,
         "line_items": _document_lines(row, qty_key="Qty", price_key="UnitCost"),
     }
 
@@ -301,6 +309,8 @@ def translate_payment(row: dict[str, Any]) -> dict[str, Any]:
         "payment_mode": str(row.get("PaymentMethod") or "") or None,
         "unused_amount": row.get("AvailableBalance"),
         "last_modified_time": str(row.get("LastModifiedDateTime") or ""),
+        # ``CreatedDateTime``'s other half. Verbatim, never from ``Date``.
+        "created_time": row.get("CreatedDateTime") or None,
         "invoices": [a for a in applications if a["date"]],
     }
 
@@ -689,4 +699,15 @@ SPEC = register(ConnectorSpec(
                    required=False, reads=("purchase_orders",)),
     ),
     build_source=_build_source,
+    records_source_time=True,
+    source_time_note=(
+        "``CreatedDateTime`` — the audit pair of the ``LastModifiedDateTime`` "
+        "this connector already reads off every document entity, both written "
+        "by Acumatica's own ``PXDBCreatedDateTime``/``PXDBLastModifiedDateTime`` "
+        "attributes and both exposed on the contract-based Default endpoint "
+        "(Acumatica's own integration guide filters on "
+        "``CreatedDateTime gt datetimeoffset'…'``). Carried on invoices, bills "
+        "and payments. Absent on an endpoint version that does not map it, "
+        "which arrives here as ``None`` — the field is dropped, never guessed "
+        "from the document date."),
 ))

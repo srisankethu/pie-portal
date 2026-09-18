@@ -679,5 +679,18 @@ SPEC = register(ConnectorSpec(
                    required=False, reads=("purchase_orders",)),
     ),
     build_source=_build_source,
+    records_source_time=False,
+    source_time_note=(
+        "Not on this surface. Business Central's API v2.0 ``salesInvoice`` and "
+        "``purchaseInvoice`` resources publish exactly one clock — "
+        "``lastModifiedDateTime`` — and no creation counterpart; the resource "
+        "property tables are the whole projection, and this connector sends no "
+        "``$select`` that could ask for more. The underlying AL table does hold "
+        "a platform audit field (``SystemCreatedAt``, column ``$systemCreatedAt``, "
+        "field 2000000001, on every table since 2020 wave 2), but Microsoft "
+        "documents it as exposed to AL code and it is not among the published "
+        "properties of these API pages. So the gap is the API's, not this "
+        "connector's, and closing it would mean a custom API page in the "
+        "tenant or a different surface — not a translator change here."),
     discover=_discover,
 ))

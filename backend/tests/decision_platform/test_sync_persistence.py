@@ -1225,3 +1225,123 @@ def test_the_payable_is_not_counted_as_a_second_thing_read(session):
     assert session.query(models.BillDoc).count() == 1
     assert report.to_dict()["cost_records"] == 1
     assert "payables" not in report.to_dict()
+
+
+# ── the seam: the real client projection, all the way to a row ───────────────
+#
+# Everything above drives the sync from `_Source`, a fake that hands over
+# whatever the test wrote. That is the right shape for testing the sync, and it
+# is blind to one whole class of defect: a field the *real* client never
+# projects. `created_time` was dropped by all three Zoho projections, so on live
+# data every row below landed with `source_recorded_at = None` — present,
+# correct, and unusable as point-in-time evidence — while these tests passed by
+# supplying the field themselves.
+
+class _FakeResponse:
+    def __init__(self, body):
+        self._body, self.status_code, self.headers = body, 200, {}
+
+    def json(self):
+        return self._body
+
+
+class _FakeHttp:
+    """Only the transport. Everything above it is the shipping code."""
+
+    def __init__(self, routes):
+        self.routes = routes
+
+    def post(self, url, **kw):
+        return _FakeResponse({"access_token": "tok", "expires_in": 3600})
+
+    def get(self, url, **kw):
+        for fragment, body in self.routes.items():
+            if fragment in url:
+                return _FakeResponse(body)
+        return _FakeResponse({"code": 0, "page_context": {"has_more_page": False}})
+
+
+def test_every_document_the_real_client_projects_lands_usable_as_evidence(session):
+    """Invoice, bill and estimate, through the real projection, to real rows.
+
+    The payloads are the shapes Zoho actually returns for the 4U Precision
+    book — invoice 118/25-26, bill YGCT13600 and estimate QT-095 — and the
+    assertion that matters is the last one on each: `source_recorded_at` is
+    the point-in-time engine's only visibility clock, and a row without it is
+    excluded from evidence rather than dated from its own `date`. A cost that
+    is present and correct still buys nothing if the engine may not look at it.
+
+    Reverting the three `created_time` lines in `zoho_client` turns all three
+    assertions red, which is what makes this a guard rather than a decoration.
+    """
+    from app.ingestion.zoho_client import ZohoApiSource, ZohoCredentials
+
+    cust, vend = "cust-1", "vend-1"
+    p1, p2 = "item-1", "item-2"
+    page = {"page_context": {"has_more_page": False}}
+
+    invoice = {
+        "invoice_id": "INV-118", "invoice_number": "118/25-26",
+        "customer_id": cust, "date": "2025-12-25", "status": "paid",
+        "created_time": "2025-12-25T17:04:59+0530",
+        "last_modified_time": "2026-03-11T17:51:16+0530",
+        "line_items": [{"line_item_id": "L1", "item_id": p1, "quantity": 80,
+                        "rate": 557, "item_total": 44560}],
+    }
+    bill = {
+        "bill_id": "BILL-13600", "bill_number": "YGCT13600",
+        "date": "2026-09-09", "status": "open", "vendor_id": vend,
+        "created_time": "2026-09-12T12:14:16+0530",
+        "last_modified_time": "2026-09-12T12:14:17+0530",
+        # 70% off a ₹980 list rate: the row must land at what was paid.
+        "line_items": [{"line_item_id": "L1", "item_id": p2, "quantity": 100,
+                        "rate": 980, "discount": "70.00%",
+                        "discount_amount": 68600, "item_total": 29400}],
+    }
+    estimate_row = {
+        "estimate_id": "EST-095", "estimate_number": "QT-095",
+        "customer_id": cust, "date": "2026-02-11", "status": "invoiced",
+        "accepted_date": "2026-02-13", "total": 144440,
+        "created_time": "2026-02-11T18:04:44+0530",
+        "last_modified_time": "2026-08-10T16:52:31+0530",
+    }
+    routes = {
+        "/invoices/INV-118": {"code": 0, "invoice": invoice},
+        "/invoices": {"code": 0, "invoices": [invoice], **page},
+        "/bills/BILL-13600": {"code": 0, "bill": bill},
+        "/bills": {"code": 0, "bills": [bill], **page},
+        "/estimates/EST-095": {"code": 0, "estimate": {
+            "estimate_id": "EST-095",
+            "line_items": [{"line_item_id": "L1", "item_id": p2, "quantity": 50,
+                            "rate": 754, "discount": "55.00%",
+                            "item_total": 16965}]}},
+        "/estimates": {"code": 0, "estimates": [estimate_row], **page},
+        "/items": {"code": 0, "items": [
+            {"item_id": p1, "name": "PNMU1206ZNN", "unit": "pcs", "status": "active"},
+            {"item_id": p2, "name": "CNMG120408", "unit": "pcs", "status": "active"}],
+            **page},
+        "/contacts": {"code": 0, "contacts": [
+            {"contact_id": cust, "contact_name": "Pitti", "status": "active"},
+            {"contact_id": vend, "contact_name": "YG", "contact_type": "vendor",
+             "status": "active"}], **page},
+    }
+    src = ZohoApiSource(http=_FakeHttp(routes), credentials=ZohoCredentials(
+        organization_id="org-x", client_id="c", client_secret="s",
+        refresh_token="r"))
+    SyncService(session, src, "org_a").run()
+    session.commit()
+
+    txn = session.query(models.SalesTxn).one()
+    assert txn.unit_price == Decimal("557.0000")
+    assert txn.source_recorded_at is not None
+    assert txn.source_recorded_at.date() == date(2025, 12, 25)
+
+    cost = session.query(models.CostRecord).one()
+    assert cost.unit_cost == Decimal("294.0000")      # paid, not the ₹980 list
+    assert cost.source_recorded_at is not None
+    assert cost.source_recorded_at.date() == date(2026, 9, 12)
+
+    quote = session.query(models.QuoteDoc).one()
+    assert quote.number == "QT-095"
+    assert quote.source_recorded_at is not None
+    assert quote.source_recorded_at.date() == date(2026, 2, 11)

@@ -347,6 +347,28 @@ class CommercialThresholds:
     # benchmark on a review screen and this one can route an account-level
     # pricing finding to an owner.
     diagnosis_min_peer_customers: int = 3
+    # ── how much a single attributed driver matters ──────────────────────────
+    # ``quote_diagnosis.drivers`` splits a line's margin movement between the
+    # price decision and the cost level and grades each half. Severity is how
+    # much that half matters; ``rules.strength`` is how much to believe it, and
+    # the two are not substitutes — a 9 pp effect off a two-row band is severe
+    # and unbelievable at the same time, and one number for both would have to
+    # lie about one of them.
+    #
+    # Deliberately NOT ``queue_margin_drop_pp`` or ``min_margin_deterioration_pp``
+    # reused. Those grade a *relationship's* margin trend across two time
+    # windows; this grades one half of one quote line's movement against its own
+    # band. Folding them would mean a driver silently re-graded the day somebody
+    # quietened the decision queue — the failure the comment on
+    # ``queue_margin_drop_pp`` above is itself about.
+    #
+    # Percentage points, carried as a fraction like every other ``_pp`` here:
+    # 0.05 is five points of margin.
+    diagnosis_driver_major_pp: float = 0.05
+    # Below this a driver is inside the noise of freight, rounding and a good
+    # day — reported, because the reader has to see that the other factor was
+    # measured and was flat, but never as a finding.
+    diagnosis_driver_minor_pp: float = 0.01
 
     # ── inventory carrying cost ──────────────────────────────────────────────
     # What a rupee of stock costs to hold for a year, as a fraction: interest on
@@ -876,6 +898,12 @@ class CommercialThresholds:
                 "CI_DIAGNOSIS_MIN_LINE_OPPORTUNITY", 500.0),
             diagnosis_peer_gap_pct=_f("CI_DIAGNOSIS_PEER_GAP_PCT", 0.10),
             diagnosis_min_peer_customers=_i("CI_DIAGNOSIS_MIN_PEER_CUSTOMERS", 3),
+            diagnosis_driver_major_pp=_f(
+                "CI_DIAGNOSIS_DRIVER_MAJOR_PP",
+                _default("diagnosis_driver_major_pp")),
+            diagnosis_driver_minor_pp=_f(
+                "CI_DIAGNOSIS_DRIVER_MINOR_PP",
+                _default("diagnosis_driver_minor_pp")),
             crosssell_min_base_customers=_i(
                 "CI_CROSSSELL_MIN_BASE_CUSTOMERS",
                 _default("crosssell_min_base_customers")),

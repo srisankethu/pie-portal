@@ -67,9 +67,11 @@ function lines(over: Partial<ErpQuoteLines> = {}): ErpQuoteLines {
     quote_document_ref: REF,
     lines: [
       { line_number: 0, item_code: "CNMG120408",
+        item_name: "CNMG120408-MP KCP25",
         description: "CNMG 120408 MP KCP25 turning insert", product_id: "p1",
         qty: 10, unit: "pcs", rate: 450, amount: 4500 },
-      { line_number: 1, item_code: "", description: "Freight",
+      // No catalogue item behind it, so no name — a real state, not a gap.
+      { line_number: 1, item_code: "", item_name: "", description: "Freight",
         product_id: null, qty: 1, unit: "nos", rate: 500, amount: 500 },
     ],
     lines_held: true,
@@ -117,18 +119,17 @@ function stubFetch() {
   });
 }
 
-/** One diagnosis, in the shape the endpoint projects. */
 /** The manager's projection — a different shape, not the same one filtered. */
 function owner(over: Record<string, unknown> = {}) {
   return {
     view: "OWNER",
     quote_diagnosis_id: null, line_id: "0", renders: true, comparable: true,
     headline: "Above this customer's historical pricing",
-    strength_word: "Strong",
+    strength_word: "Strong", context: [],
     lines: ["Quoted ₹339 per unit against a supported range of ₹218."],
     opportunity: "No opportunity is asserted.",
     evidence: "11 usable, 0 excluded.",
-    codes: ["ABOVE_HISTORICAL_RANGE"], context: [],
+    codes: ["ABOVE_HISTORICAL_RANGE"],
     qualification: "", actions: [],
     ...over,
   };
@@ -140,7 +141,7 @@ function diagnosis(over: Record<string, unknown> = {}) {
     quote_diagnosis_id: null, line_id: "0", renders: true, comparable: true,
     headline: "Below this customer's historical pricing",
     quoted: "₹450", historical: "₹500 – ₹520",
-    strength_word: "Strong",
+    strength_word: "Strong", context: [],
     evidence: "Strong", evidence_detail: "14 comparable transactions",
     why: "This customer has purchased this item 14 times.",
     note: "", qualification: "", actions: [],
@@ -194,6 +195,27 @@ describe("the lines", () => {
     await waitFor(() => expect(screen.getByText("CNMG120408")).toBeTruthy());
     expect(screen.getByText(/turning insert/)).toBeTruthy();
     expect(screen.getByText("Freight")).toBeTruthy();
+  });
+
+  it("name the item before its code, which is what a reader recognises", async () => {
+    // The screen showed the SKU alone. Nobody reads a quote by remembering
+    // that 22000865 is a CNMG insert — the code is what gets checked against a
+    // PO afterwards, which is a second act. Both are shown, name first.
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText("CNMG120408-MP KCP25")).toBeTruthy());
+    expect(screen.getByText("CNMG120408")).toBeTruthy();
+  });
+
+  it("says so rather than going blank when a line is in no catalogue", async () => {
+    // The freight line resolves to no product, so there is no master name for
+    // it. Its code still names it; an empty name cell would read as a line
+    // with nothing on it rather than a line the catalogue does not hold.
+    draw();
+
+    await waitFor(() => expect(screen.getByText("Freight")).toBeTruthy());
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
   });
 
   it("stop showing the loading state once they arrive", async () => {
@@ -345,11 +367,11 @@ describe("what the quote comes to", () => {
     // total that equals one of them proves nothing about the total.
     erpQuoteLines.mockResolvedValue(lines({
       lines: [
-        { line_number: 0, item_code: "A", description: "priced", product_id: null,
+        { line_number: 0, item_code: "A", item_name: "", description: "priced", product_id: null,
           qty: 1, unit: "pcs", rate: 6000, amount: 6000 },
-        { line_number: 1, item_code: "B", description: "priced", product_id: null,
+        { line_number: 1, item_code: "B", item_name: "", description: "priced", product_id: null,
           qty: 1, unit: "pcs", rate: 1500, amount: 1500 },
-        { line_number: 2, item_code: "C", description: "never priced",
+        { line_number: 2, item_code: "C", item_name: "", description: "never priced",
           product_id: null, qty: 1, unit: "pcs", rate: null, amount: null },
       ],
     }));
@@ -450,7 +472,8 @@ describe("the diagnosis", () => {
     // clean verdict actually covers.
     erpQuoteLines.mockResolvedValue(lines({
       lines: [0, 1, 2].map((n) => ({
-        line_number: n, item_code: `ITEM-${n}`, description: `line ${n}`,
+        line_number: n, item_code: `ITEM-${n}`, item_name: "",
+        description: `line ${n}`,
         product_id: null, qty: 1, unit: "pcs", rate: 100 + n, amount: 100 + n,
       })),
     }));
@@ -475,7 +498,8 @@ describe("the diagnosis", () => {
     // anything. QT-095 surfaced two.
     erpQuoteLines.mockResolvedValue(lines({
       lines: [0, 1].map((n) => ({
-        line_number: n, item_code: `ITEM-${n}`, description: `line ${n}`,
+        line_number: n, item_code: `ITEM-${n}`, item_name: "",
+        description: `line ${n}`,
         product_id: null, qty: 1, unit: "pcs", rate: 100 + n, amount: 100 + n,
       })),
     }));
@@ -497,6 +521,64 @@ describe("the diagnosis", () => {
 
     await waitFor(() =>
       expect(screen.getByText(/nothing on those stood out/i)).toBeTruthy());
+  });
+
+  it("does not blame the customer's history for history it was not allowed to use",
+     async () => {
+    // The production report this was written from. Sixteen transactions were
+    // found for these items and every one excluded, because the sync had not
+    // carried the stamp that says when each became visible — and the screen
+    // reported "this customer had no purchase history on record". Somebody
+    // went looking for missing invoices that were sitting right there.
+    diagnoses = {
+      "0": diagnosis({ renders: false, comparable: false,
+                       context: ["EVIDENCE_WITHHELD"] }),
+    };
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText(/history is not empty/)).toBeTruthy());
+    expect(screen.getByText(/cannot tell when each one became visible/))
+      .toBeTruthy();
+    expect(screen.queryByText(/had no purchase history on record/)).toBeNull();
+  });
+
+  it("still says plainly when there genuinely is no history", async () => {
+    // The other direction. Nothing was withheld, so the absence is real and
+    // naming it is the correct answer — this must not become a warning that
+    // cries data problem on every quiet account.
+    diagnoses = {
+      "0": diagnosis({ renders: false, comparable: false, context: [] }),
+    };
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText(/had no purchase history on record/)).toBeTruthy());
+    expect(screen.queryByText(/history is not empty/)).toBeNull();
+  });
+
+  it("separates a line it was never asked about from one it could not compare",
+     async () => {
+    // A line with no item code or no price never reaches the engine, so it
+    // comes back in no answer at all. Counting it as "not comparable" blames
+    // the customer's history for a blank field on the document.
+    erpQuoteLines.mockResolvedValue(lines({
+      lines: [0, 1].map((n) => ({
+        line_number: n, item_code: n === 0 ? "ITEM-0" : "", item_name: "",
+        description: `line ${n}`, product_id: null, qty: 1, unit: "pcs",
+        rate: 100, amount: 100,
+      })),
+    }));
+    // Only line 0 was answered; line 1 carried no code, so the engine has
+    // nothing for it.
+    diagnoses = { "0": diagnosis({ line_id: "0", renders: false,
+                                   comparable: true }) };
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText(/All 1 lines were compared/)).toBeTruthy());
+    expect(screen.getByText(/One more line carried no item code or no price/))
+      .toBeTruthy();
   });
 
   it("says so when the check could not run, and never reads as clean", async () => {

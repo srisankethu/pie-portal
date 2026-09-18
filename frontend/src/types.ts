@@ -313,6 +313,10 @@ export interface ErpQuote {
 export interface ErpQuoteLine {
   line_number: number;
   item_code: string;
+  /** The item master's name, empty where the code resolved to no product.
+   *  Read from the catalogue server-side rather than copied onto the line, so
+   *  a renamed item reads the same here as everywhere else. */
+  item_name: string;
   description: string;
   /** The platform's item where the code matched one, `null` where it did not —
    *  which is a real state, not a failure. A quote line naming something that

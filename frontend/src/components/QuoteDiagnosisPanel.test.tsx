@@ -29,6 +29,7 @@ function ownerView(over: Partial<OwnerDiagnosisView> = {}): OwnerDiagnosisView {
     renders: true,
     comparable: true,
     strength_word: "Strong",
+    context: [],
     headline: "Above this customer's historical pricing",
     lines: [
       "Quoted \u20b9339 per unit against a supported range of \u20b9218 (median \u20b9218), from 8 comparable transactions knowable on 2026-02-11.",
@@ -37,7 +38,6 @@ function ownerView(over: Partial<OwnerDiagnosisView> = {}): OwnerDiagnosisView {
     opportunity: "Roughly \u20b96,065 on this line at the top of the band.",
     evidence: "11 usable, 0 excluded.",
     codes: ["ABOVE_HISTORICAL_RANGE"],
-    context: [],
     qualification: "Historical prices may include exceptional deals.",
     actions: ["REVIEW_PRICE"],
     ...over,
@@ -52,6 +52,7 @@ function view(over: Partial<OperationsDiagnosisView> = {}): OperationsDiagnosisV
     renders: true,
     comparable: true,
     strength_word: "Strong",
+    context: [],
     headline: "Below this customer's historical pricing",
     quoted: "₹900",
     historical: "₹980 – ₹1,020",

@@ -387,7 +387,7 @@ and neither has merged.** Nothing in this section is proposed as new work.
 
 Both define `QuoteLossReason` in `domain/enums.py`. Both branch from the same
 revision. **Whichever merges second produces two alembic heads and a duplicate
-`loss_reason` column**, so `verify.sh` step 5 fails on an empty database rather
+`loss_reason` column**, so `verify.sh` step 6 fails on an empty database rather
 than in production — the system working, but only after two sessions have both
 finished.
 

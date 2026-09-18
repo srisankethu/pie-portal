@@ -1,0 +1,142 @@
+{
+  "$defs": {
+    "SourceRef": {
+      "description": "A pointer back to the originating ERP record (provenance).\n\n``system`` is required, and that is the point. It used to default to\n``\"zoho\"``, which meant no normalizer ever had to say where a record came\nfrom \u2014 and every row in the database claimed Zoho whether or not it was\ntrue. A second connector would have had to *remember* to override it, and\nforgetting would have been silent: the evidence a decision cites would name\nthe wrong system, and nothing anywhere would disagree.\n\nProvenance that defaults is not provenance. This is the layer that must not\nknow which ERP exists, so the value comes from the adapter that read the\nrecord.",
+      "properties": {
+        "line_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line Id"
+        },
+        "record_id": {
+          "title": "Record Id",
+          "type": "string"
+        },
+        "record_type": {
+          "title": "Record Type",
+          "type": "string"
+        },
+        "recorded_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recorded At"
+        },
+        "system": {
+          "minLength": 1,
+          "title": "System",
+          "type": "string"
+        }
+      },
+      "required": [
+        "system",
+        "record_type",
+        "record_id"
+      ],
+      "title": "SourceRef",
+      "type": "object",
+      "x-pie-expected": {
+        "recorded_at": "When the source system recorded the document. A row without it is not usable as point-in-time evidence: it is counted, never imputed, and every quote line that needed it answers INSUFFICIENT_EVIDENCE. A connector whose source exposes a creation timestamp and omits this is defective; one whose source has none must say so, because silence here is what the incident behind this module looked like."
+      }
+    }
+  },
+  "description": "One credit note set against one invoice, on one date.\n\nThe grain a historical receivable is reconstructed at, and the reason this\ntable exists at all: today's outstanding balance already nets applied credit\n(Zoho states it and ``state/reducers/receivables`` reads it), but \"what was\nowed on 31 March\" cannot be answered from a balance that only describes now.\nThat answer is invoices raised, minus receipts applied, minus *this*.\n\n``invoice_date`` is carried here rather than joined from ``InvoiceDoc``, for\nthe same reason ``PaymentApplication`` carries it: a credit note landing\ntoday may settle an invoice raised before the sync window starts, and a join\nwould silently drop exactly the oldest positions.",
+  "properties": {
+    "amount_applied": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        }
+      ],
+      "title": "Amount Applied"
+    },
+    "applied_on": {
+      "format": "date",
+      "title": "Applied On",
+      "type": "string"
+    },
+    "credit_note_external_ref": {
+      "minLength": 1,
+      "title": "Credit Note External Ref",
+      "type": "string"
+    },
+    "customer_external_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Customer External Id"
+    },
+    "external_ref": {
+      "minLength": 1,
+      "title": "External Ref",
+      "type": "string"
+    },
+    "invoice_date": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Invoice Date"
+    },
+    "invoice_external_ref": {
+      "minLength": 1,
+      "title": "Invoice External Ref",
+      "type": "string"
+    },
+    "invoice_number": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Invoice Number"
+    },
+    "source_ref": {
+      "$ref": "#/$defs/SourceRef"
+    }
+  },
+  "required": [
+    "external_ref",
+    "credit_note_external_ref",
+    "invoice_external_ref",
+    "applied_on",
+    "amount_applied",
+    "source_ref"
+  ],
+  "title": "CreditNoteApplicationIn",
+  "type": "object"
+}

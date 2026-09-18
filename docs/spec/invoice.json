@@ -1,0 +1,193 @@
+{
+  "$defs": {
+    "InvoiceSalesOrderRef": {
+      "description": "One order an invoice bills against, as the invoice itself names it.\n\nA list of these rather than a scalar on ``InvoiceIn`` because the\nrelationship is many-to-many in this book \u2014 see\n``models.InvoiceSalesOrderLink``. ``is_primary`` carries which one Zoho's\nscalar ``salesorder_id`` named, which is a fact about the payload rather\nthan about the trade.",
+      "properties": {
+        "external_ref": {
+          "minLength": 1,
+          "title": "External Ref",
+          "type": "string"
+        },
+        "is_primary": {
+          "default": false,
+          "title": "Is Primary",
+          "type": "boolean"
+        },
+        "number": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Number"
+        }
+      },
+      "required": [
+        "external_ref"
+      ],
+      "title": "InvoiceSalesOrderRef",
+      "type": "object"
+    },
+    "SourceRef": {
+      "description": "A pointer back to the originating ERP record (provenance).\n\n``system`` is required, and that is the point. It used to default to\n``\"zoho\"``, which meant no normalizer ever had to say where a record came\nfrom \u2014 and every row in the database claimed Zoho whether or not it was\ntrue. A second connector would have had to *remember* to override it, and\nforgetting would have been silent: the evidence a decision cites would name\nthe wrong system, and nothing anywhere would disagree.\n\nProvenance that defaults is not provenance. This is the layer that must not\nknow which ERP exists, so the value comes from the adapter that read the\nrecord.",
+      "properties": {
+        "line_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line Id"
+        },
+        "record_id": {
+          "title": "Record Id",
+          "type": "string"
+        },
+        "record_type": {
+          "title": "Record Type",
+          "type": "string"
+        },
+        "recorded_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recorded At"
+        },
+        "system": {
+          "minLength": 1,
+          "title": "System",
+          "type": "string"
+        }
+      },
+      "required": [
+        "system",
+        "record_type",
+        "record_id"
+      ],
+      "title": "SourceRef",
+      "type": "object",
+      "x-pie-expected": {
+        "recorded_at": "When the source system recorded the document. A row without it is not usable as point-in-time evidence: it is counted, never imputed, and every quote line that needed it answers INSUFFICIENT_EVIDENCE. A connector whose source exposes a creation timestamp and omits this is defective; one whose source has none must say so, because silence here is what the incident behind this module looked like."
+      }
+    }
+  },
+  "description": "An invoice's receivable terms, header grain. The mirror of ``BillIn``.\n\nDeliberately the same shape: one is what a supplier is owed, the other what\na customer owes us, and the two answer the same question in opposite\ndirections. A different shape for the receivable side would mean two ways to\nask \"what is outstanding and how overdue\".\n\nThe companion to the ``SalesTxnIn`` list the same document produces \u2014\n``balance`` and ``due_date`` are facts about one invoice, and copying them\nonto every line would make \"what is outstanding\" a de-duplication problem\ninstead of a sum.",
+  "properties": {
+    "balance": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Balance"
+    },
+    "customer_external_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Customer External Id"
+    },
+    "date": {
+      "format": "date",
+      "title": "Date",
+      "type": "string"
+    },
+    "due_date": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Due Date"
+    },
+    "external_ref": {
+      "minLength": 1,
+      "title": "External Ref",
+      "type": "string"
+    },
+    "number": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Number"
+    },
+    "sales_orders": {
+      "items": {
+        "$ref": "#/$defs/InvoiceSalesOrderRef"
+      },
+      "title": "Sales Orders",
+      "type": "array"
+    },
+    "source_ref": {
+      "$ref": "#/$defs/SourceRef"
+    },
+    "status": {
+      "default": "",
+      "title": "Status",
+      "type": "string"
+    },
+    "total": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Total"
+    }
+  },
+  "required": [
+    "external_ref",
+    "date",
+    "source_ref"
+  ],
+  "title": "InvoiceIn",
+  "type": "object"
+}

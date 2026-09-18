@@ -155,7 +155,7 @@ rm backend/data/platform.db && python -m app.bootstrap
 file or one script away, and the suite runs on it by setting a single
 variable; [postgres.md](postgres.md) has the loop, the data-move tool for an
 existing SQLite database, and the reasoning behind the dialect decisions.
-SQLite stays the zero-configuration default; the gate's step 6 proves the
+SQLite stays the zero-configuration default; the gate's step 7 proves the
 migration chain on Postgres either way.
 
 ---

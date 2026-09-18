@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""The gate's step 6: migrations from nothing, on PostgreSQL — then drift.
+"""The gate's step 7: migrations from nothing, on PostgreSQL — then drift.
 
 Run from ``backend/`` with DATABASE_URL pointing at a DISPOSABLE Postgres
 database. The database is wiped (``DROP SCHEMA public CASCADE``), migrated to
 head through the real Alembic chain, and then compared against the models —
-the same two checks step 5 makes on SQLite, on the dialect production runs.
+the same two checks step 6 makes on SQLite, on the dialect production runs.
 
 Exit 0: migrated clean, zero drift. Exit 1: the failure is printed.
 

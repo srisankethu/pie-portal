@@ -130,7 +130,7 @@ answer.**
 ### What is verified, and where
 
 The queue's tests run twice: on SQLite with the rest of the suite, and on
-PostgreSQL in `scripts/verify.sh`'s step 6 whenever a server is available
+PostgreSQL in `scripts/verify.sh`'s step 7 whenever a server is available
 (`PG_VERIFY_URL`, or the throwaway cluster `pg_sandbox.sh` starts). The
 concurrent-claim test only runs on Postgres and skips elsewhere, and that is not
 a formality: the SQLite test fixture hands every session one shared connection,

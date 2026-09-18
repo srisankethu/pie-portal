@@ -9,7 +9,8 @@
 # consecutive merges to main while the gate stayed red.
 #
 #   ./scripts/verify.sh          everything (~4 min)
-#   ./scripts/verify.sh --fast   lint, invariants, backend tests (~2.5 min)
+#   ./scripts/verify.sh --fast   lint, invariants, the published spec, backend
+#                                tests (~2.5 min)
 #
 # --fast is for the edit loop, not for merging: it skips the frontend build, the
 # empty-database migration check and the restore drill. CI always runs the full
@@ -104,7 +105,7 @@ fi
 # ── 1. Lint ──────────────────────────────────────────────────────────────────
 # Rule set in ruff.toml, version pinned in backend/requirements-dev.txt. Both
 # halves are needed; the header of ruff.toml has the incident.
-step "1/7  ruff"
+step "1/8  ruff"
 if $PY -m ruff check . ; then pass "lint"; else fail "ruff check ."; fi
 
 # ── 2. The §1 invariants ─────────────────────────────────────────────────────
@@ -113,7 +114,7 @@ if $PY -m ruff check . ; then pass "lint"; else fail "ruff check ."; fi
 # imports properly and is what actually blocks; it is repeated here because it
 # costs milliseconds and because a failure here is legible without reading a
 # traceback.
-step "2/7  §1 layer invariants"
+step "2/8  §1 layer invariants"
 INV_OK=1
 if grep -rnE '^\s*(from|import)\s+\.*\.?ai[. ]' \
      backend/app/commercial backend/app/signals \
@@ -129,11 +130,32 @@ if grep -rnE '^\s*(from|import)\s+.*commercial' backend/app/ai 2>/dev/null; then
 fi
 if [ "$INV_OK" = "1" ]; then pass "deterministic layers never import ai/"; else fail "§1 layer boundary violated"; fi
 
-# ── 3. Backend tests ─────────────────────────────────────────────────────────
+# ── 3. The published ingestion contract ──────────────────────────────────────
+# docs/spec/ is generated from app/domain/schemas.py and committed, because the
+# people it is for — somebody writing a connector against this platform — have
+# this repository's docs and no interpreter to run. A committed artifact is a
+# second copy, though, and a second copy of a contract that lags the code is
+# worse than no contract at all: it teaches a wrong answer with authority, and
+# the reader has no way to find out.
+#
+# So the exporter regenerates the whole directory in memory and compares. It
+# writes nothing here — `--check` is a comparison, and a gate that silently
+# fixed the tree would leave the stale artifact committed.
+#
+# Also covered by tests/decision_platform/test_spec_artifact.py, which is what
+# actually blocks. It is repeated here for the reason step 2 is: it costs about
+# a second, it runs before the suite rather than inside it, and its failure
+# names the stale files and the one command that fixes them instead of an
+# assertion message.
+step "3/8  the published ingestion contract"
+run_step "docs/spec matches the schemas it is generated from" \
+  $PY scripts/spec_export.py --check
+
+# ── 4. Backend tests ─────────────────────────────────────────────────────────
 # Parallel by default. Each xdist worker gets its own SQLite file (see
 # backend/tests/conftest.py) — without that the workers race on one `alembic
 # upgrade head` and lose. Set PYTEST_WORKERS=0 to force the serial path.
-step "3/7  backend tests"
+step "4/8  backend tests"
 WORKERS="${PYTEST_WORKERS:-auto}"
 if [ "$WORKERS" = "0" ]; then NARG=(); else NARG=(-n "$WORKERS"); fi
 if (cd backend && $PY -m pytest tests -q "${NARG[@]}"); then
@@ -143,13 +165,13 @@ else
 fi
 
 if [ "$FAST" = "1" ]; then
-  step "4-7/7  skipped (--fast)"
+  step "5-8/8  skipped (--fast)"
   printf '      frontend build, the empty-database migration checks and the\n'
   printf '      restore drill not run.\n'
   printf '      Do not merge on --fast.\n'
 else
-  # ── 4. Frontend ────────────────────────────────────────────────────────────
-  step "4/7  frontend — tests, types, production build"
+  # ── 5. Frontend ────────────────────────────────────────────────────────────
+  step "5/8  frontend — tests, types, production build"
   if [ ! -d frontend/node_modules ]; then
     printf '      installing frontend dependencies (npm ci)…\n'
     (cd frontend && PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npm ci >/dev/null 2>&1) \
@@ -170,11 +192,12 @@ else
 
   run_step "tsc -b + vite build" env -C frontend npm run build
 
-  # ── 5. Migrations, on an EMPTY database ────────────────────────────────────
-  # CLAUDE.md §6 step 5, and the one check that would have caught the incident
-  # in §4. A developer's own database is already migrated and can never exercise
+  # ── 6. Migrations, on an EMPTY database ────────────────────────────────────
+  # CLAUDE.md §6's empty-database run, and the one check that would have caught
+  # the incident in §4. A developer's own database is already migrated and can
+  # never exercise
   # the empty case; production always does. Note the `rm`.
-  step "5/7  migrations from nothing — SQLite"
+  step "6/8  migrations from nothing — SQLite"
   MIGDB="$(mktemp -u /tmp/verify-mig-XXXXXX.db)"
   rm -f "$MIGDB"
   if (cd backend && DATABASE_URL="sqlite:///$MIGDB" $PY -m alembic upgrade head >/dev/null 2>&1); then
@@ -202,10 +225,10 @@ else
   fi
   rm -f "$MIGDB"
 
-  # ── 6. Migrations, on an EMPTY database — PostgreSQL ───────────────────────
+  # ── 7. Migrations, on an EMPTY database — PostgreSQL ───────────────────────
   # The dialect production actually runs (deploy/compose.yaml) and the one this
   # gate never used to exercise: the chain had been proven only on SQLite while
-  # every real deployment migrates Postgres. Same two checks as step 5 —
+  # every real deployment migrates Postgres. Same two checks as step 6 —
   # upgrade from nothing, then models-vs-schema drift — on the real dialect.
   #
   # Where the server comes from, in order:
@@ -215,7 +238,7 @@ else
   #                   (GitHub's ubuntu runners ship them; most laptops do too)
   # With neither, this is SKIPPED and the verdict says so — narrowed, never
   # silently passed, exactly the pie-parser arrangement above.
-  step "6/7  migrations from nothing — PostgreSQL"
+  step "7/8  migrations from nothing — PostgreSQL"
   PG_COVERED=1
   RLS_COVERED=1
   PG_SANDBOX_STARTED=0
@@ -240,7 +263,7 @@ else
       "Postgres: alembic upgrade head on an empty database, or drift"
 
     # Row-level security, which cannot be exercised anywhere else in this gate.
-    # Step 3 runs the suite on SQLite, which has no policies and no connection
+    # Step 4 runs the suite on SQLite, which has no policies and no connection
     # settings, so these tests skip there — and a security control whose tests
     # only ever skip is a control nobody has checked.
     #
@@ -283,7 +306,7 @@ else
       "queue suites on Postgres"
   fi
 
-  # ── 7. The documented backup, actually performed ───────────────────────────
+  # ── 8. The documented backup, actually performed ───────────────────────────
   # docs/hosting.md tells an operator to pg_dump this database and restore the
   # dump into an empty one. Nothing had ever run that instruction, which made it
   # a hypothesis about a file — and the half of this database a re-sync cannot
@@ -296,9 +319,9 @@ else
   # the log. The script's docstring states exactly what this does and does not
   # prove — it is not evidence about any particular production backup.
   #
-  # Same server as step 6, deliberately: a second sandbox would mean a second
+  # Same server as step 7, deliberately: a second sandbox would mean a second
   # initdb for no coverage. It creates and drops its own two databases on it.
-  step "7/7  restore drill — dump, restore, compare"
+  step "8/8  restore drill — dump, restore, compare"
   if [ -z "$PG_URL" ]; then
     printf '\033[33mnote:\033[0m no PostgreSQL server — the restore drill will SKIP too.\n'
   else
@@ -315,7 +338,7 @@ else
       pass "pg_dump → restore round-trips every row, Σ, audit chain and receipt"
     elif [ "$DRILL_RC" = "3" ]; then
       # Its own flag. This used to set PG_COVERED=0, which made a skipped drill
-      # report the Postgres MIGRATION check as skipped too — even when step 6
+      # report the Postgres MIGRATION check as skipped too — even when step 7
       # had just run and passed against PG_VERIFY_URL. One flag standing for two
       # checks is how a verdict starts lying about which one it means.
       DRILL_COVERED=0

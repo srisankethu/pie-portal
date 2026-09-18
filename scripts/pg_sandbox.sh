@@ -14,7 +14,7 @@
 # server — on Debian /usr/bin/pg_dump is a wrapper that picks a cluster, not a
 # binary. One find_pg_bin, used by both.
 #
-# Why this exists: the gate's step 5 migrates an EMPTY database, and until the
+# Why this exists: the gate's step 6 migrates an EMPTY database, and until the
 # Postgres leg landed it only ever did so on SQLite — so the dialect production
 # actually runs (deploy/compose.yaml) was the one dialect the gate never
 # exercised. This script is what lets verify.sh and the backend suite

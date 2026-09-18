@@ -1732,6 +1732,13 @@ class ZohoApiSource(ZohoTransport):
                 # other is the benign default this pull keeps refusing.
                 "client_viewed_time": est.get("client_viewed_time"),
                 "branch_id": est.get("branch_id") or est.get("location_id"),
+                # The same branch, as a person says it. Carried beside the id
+                # rather than instead of it: the id is what another system
+                # joins on, and the name is the only half a reader can use.
+                # A screen showed "2263307000000033035" under the heading
+                # "Branch" for as long as this projection passed only the id.
+                "branch_name": (est.get("branch_name")
+                                or est.get("location_name")),
                 # This business's own taxonomy on the quote, verbatim. It was
                 # built by the people quoting; re-deriving any of it from the
                 # lines would be a second answer to a question already

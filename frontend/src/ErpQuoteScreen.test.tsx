@@ -300,6 +300,34 @@ describe("the organization's own fields", () => {
     expect(screen.getByText("Tender")).toBeTruthy();
   });
 
+  it("name the branch instead of the number the ERP files it under", async () => {
+    // "Branch: 2263307000000033035" is not a branch to anybody. The id is the
+    // join key another system matches on; the name is the only half a reader
+    // can use, and the ERP gives both.
+    listErpQuotes.mockResolvedValue({
+      quotes_listed: [quote({ attributes: {
+        branch_id: "2263307000000033035", branch_name: "Head Office" } })] });
+    draw();
+
+    await waitFor(() => expect(screen.getByText("Head Office")).toBeTruthy());
+    expect(screen.getByText("Branch")).toBeTruthy();
+    expect(screen.queryByText("2263307000000033035")).toBeNull();
+  });
+
+  it("still shows the branch id when the ERP gave no name for it", async () => {
+    // A branch nobody can name is still a fact about the quote. Blanking it
+    // would hide that the ERP set one at all, which is the failure mode the
+    // unknown-key case below exists to prevent.
+    listErpQuotes.mockResolvedValue({
+      quotes_listed: [quote({ attributes: {
+        branch_id: "2263307000000033035" } })] });
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText("2263307000000033035")).toBeTruthy());
+    expect(screen.getByText("Branch")).toBeTruthy();
+  });
+
   it("show a key this file has never heard of rather than dropping it", async () => {
     // It is a fact somebody typed into their ERP. Hiding it because this file
     // has no label for it would be this screen's own bug, repeated.
@@ -309,6 +337,20 @@ describe("the organization's own fields", () => {
 
     await waitFor(() => expect(screen.getByText("cf_something_new")).toBeTruthy());
     expect(screen.getByText("Yes")).toBeTruthy();
+  });
+});
+
+describe("the reference the source system files this under", () => {
+  it("is offered for looking the document up, not as a fact about the quote",
+     async () => {
+    // It sat in the fact panel with the same weight as "Raised", so a reader
+    // working down five rows of dates met a twenty-digit number that told them
+    // nothing. It is still on the page — it is the handle support asks for.
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText(/Your ERP files this document under/)).toBeTruthy());
+    expect(screen.getByText(new RegExp(REF))).toBeTruthy();
   });
 });
 

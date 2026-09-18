@@ -50,6 +50,7 @@ import {
   Meta, Section, SectionHeader, Stat, StatusChip, TOUCH, type Tone,
 } from "./platform/kit";
 import { pathFor } from "./platform/route";
+import { formatDate, formatDateTime } from "./when";
 import { QuoteDiagnosisPanel, useDismissReasons } from "./components/QuoteDiagnosisPanel";
 import { useErpQuoteDiagnosis } from "./useQuoteDiagnosis";
 import type { QuoteDiagnosisState } from "./useQuoteDiagnosis";
@@ -96,7 +97,20 @@ const FIELD_LABEL: Record<string, string> = {
   cf_pricing_type: "Pricing type",
   cf_procurement_type: "Procurement type",
   branch_id: "Branch",
+  branch_name: "Branch",
 };
+
+/** Keys whose only reader is another machine, dropped once a readable field
+ *  says the same thing.
+ *
+ *  `branch_id` was rendered under the heading "Branch" as
+ *  `2263307000000033035`, which is not a branch to anybody — it is the join
+ *  key the ERP files one under. The id is still pulled and still stored,
+ *  because that is what a second system matches on; it is simply not the half
+ *  worth a row on a page somebody reads. Where the source gave no name the id
+ *  is shown anyway: a branch nobody can name is still a fact about the quote,
+ *  and blanking it would hide that the ERP set one. */
+const SUPERSEDED_BY: Record<string, string> = { branch_id: "branch_name" };
 
 /** The page's own name, used by all four of its states so the heading does not
  *  change under a reader while the same page loads, fails, or resolves. */
@@ -201,7 +215,9 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   }
 
   const o = outcomeOf(quote.outcome);
-  const fields = Object.entries(quote.attributes ?? {});
+  const attributes = quote.attributes ?? {};
+  const fields = Object.entries(attributes).filter(
+    ([key]) => !(SUPERSEDED_BY[key] && attributes[SUPERSEDED_BY[key]]));
   const heading = (t: string) => (
     <Typography sx={{ fontFamily: "var(--font-heading)", fontWeight: 600 }}>
       {t}
@@ -253,13 +269,35 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
         <FactTable
           label={`Quote ${dash(quote.number)}`}
           rows={[
-            ["Raised", quote.raised_on],
-            ["Expires", dash(quote.expires_on)],
-            ["Decided", dash(quote.decided_on)],
-            ["Customer opened", dash(quote.opened_at)],
-            ["ERP reference", quote.quote_document_ref],
+            // Through `when.ts`, the one owner of how this platform writes a
+            // date, rather than passed through as the ERP's wire format. Four
+            // rows read "2026-07-11" and the fifth read
+            // "2026-07-12T09:00:00" — the same screen in two formats, one of
+            // them a machine's. `formatDate` and `formatDateTime` already
+            // return an em dash for a missing value, so `dash` is not needed
+            // over them.
+            ["Raised", formatDate(quote.raised_on)],
+            ["Expires", formatDate(quote.expires_on)],
+            ["Decided", formatDate(quote.decided_on)],
+            // The one row with a time worth keeping: when a customer opened a
+            // quote is an instant, and "the 12th" loses what the hour says
+            // about how it was read.
+            ["Customer opened", formatDateTime(quote.opened_at)],
           ]}
         />
+
+        {/* Out of the table above on purpose. It is not a fact about the quote
+            the way its dates are — it is the handle the source system files
+            this document under, useful for looking it up there or quoting to
+            support, and unreadable as anything else. Sitting in the fact panel
+            it had the same weight as "Raised", so a reader met a twenty-digit
+            number where every other row told them something. */}
+        <Box sx={{ mt: 2 }}>
+          <Meta>
+            {`Your ERP files this document under ${quote.quote_document_ref} — `}
+            {"quote that reference if you are looking it up there."}
+          </Meta>
+        </Box>
 
         {fields.length > 0 && (
           <Box sx={{ mt: 3 }}>
@@ -324,7 +362,10 @@ function ErpQuoteDiagnosis({ quote, lines, token }: {
       diagnosis={diagnosis}
       dismissReasons={dismissReasons}
       title="How this was priced against the customer's own history"
-      coverage={settled(lineIds, diagnosis, quote.raised_on)}
+      // Formatted here rather than inside `settled`, which composes a
+      // sentence and should not also be deciding how this platform writes
+      // a date — `when.ts` owns that for every screen.
+      coverage={settled(lineIds, diagnosis, formatDate(quote.raised_on))}
     />
   );
 }

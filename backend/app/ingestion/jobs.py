@@ -85,7 +85,7 @@ from sqlalchemy.orm import Session
 
 from ..clock import aware as _aware, now as _now, today as _clock_today
 from ..config import settings
-from ..domain import models
+from ..domain import models, spec
 from ..observability import logs
 
 log = logging.getLogger("pie_portal.sync_jobs")
@@ -1579,7 +1579,16 @@ def start_sync(session: Session, organization_id: str, *,
                 organization_id=organization_id, source=settings.ZOHO_SOURCE,
                 status="QUEUED", started_at=_now(), heartbeat_at=_now(),
                 phase="Queued", triggered_by=triggered_by, since=since,
-                connection_id=connection_id)
+                connection_id=connection_id,
+                # Stamped here, at QUEUED, and nowhere else. The stamp says
+                # which ingestion contract this run's rows were written under,
+                # and the writing starts as soon as the job is dispatched — so
+                # a run that dies in its third phase must carry it just as much
+                # as one that reaches OK. Stamping at completion would leave
+                # exactly the failed runs, the ones somebody is reading this
+                # table to understand, saying nothing about the contract they
+                # wrote under.
+                spec_version=spec.spec_version())
             session.add(run)
             # Committed before dispatch so the worker's own session can see the
             # row, and so a crash between here and the thread start still

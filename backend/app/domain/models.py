@@ -2387,6 +2387,13 @@ class SyncRun(Base):
     a duplicate. Staleness is judged from it rather than from ``started_at``,
     because a legitimate four-hour pull and a job that died after ten seconds
     look identical by start time.
+
+    ``spec_version`` says which version of the canonical ingestion spec was in
+    force when the run wrote its rows. It is the same idea as the
+    ``thresholds_version`` on a computed row and answers a different question:
+    not which policy judged a number, but which contract the rows were written
+    against — so a field the spec later adds, or an omission it later catches,
+    can be placed against the runs that predate it.
     """
 
     __tablename__ = "sync_runs"
@@ -2499,6 +2506,28 @@ class SyncRun(Base):
     documents_fetched: Mapped[int] = mapped_column(Integer, default=0)
     documents_resumed: Mapped[int] = mapped_column(Integer, default=0)
     assignments: Mapped[int] = mapped_column(Integer, default=0)
+    # Which version of the canonical ingestion spec was in force when this run
+    # wrote its rows — ``spec_…`` from ``domain.spec.spec_version``, stamped by
+    # ``jobs.start_sync`` at the moment the row is queued rather than when the
+    # run ends. A run that dies part-way has already written rows, and they were
+    # written under the contract in force when it started; a stamp applied at
+    # completion would describe only the runs that survived, which is the
+    # opposite of the set an audit asks about.
+    #
+    # Nullable, with no default and nothing backfilled. Every row already in
+    # this table was written before the spec existed, and filling them with
+    # today's stamp would turn "no contract judged this" into a claim that one
+    # did — absence of evidence read as a pass (§1), with a version number on it
+    # to make it convincing. NULL is the honest value and reads as what it is: a
+    # run from before the contract. The same reasoning as ``source_recorded_at``
+    # next door, which is the field the spec exists to protect.
+    #
+    # Deliberately **not** marked ``policy_stamp``, and listed in
+    # ``NOT_A_POLICY_STAMP`` with that reason. No threshold goes into it: it is
+    # the shape of the ingestion contract, the same class of stamp as
+    # ``products.pie_catalog_version``, and its pre-image is the public
+    # ``spec.canonical_json()`` rather than bytes only the registry could hold.
+    spec_version: Mapped[Optional[str]] = mapped_column(String(32))
 
 
 class SyncSkip(Base):

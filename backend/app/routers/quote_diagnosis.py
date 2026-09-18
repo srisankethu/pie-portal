@@ -382,7 +382,7 @@ def _project(owner: rules.OwnerDiagnosis, opportunity, principal: Principal,
     if principal.is_salesperson:
         card = render.render_operations(rules.operations_view(owner), th=th)
         return {"quote_diagnosis_id": diagnosis_id, "view": "OPERATIONS",
-                **_card(card)}
+                **_card(card), **_shared(card.renders, owner.strength)}
     report = render.render_owner(owner, opportunity, th=th)
     return {"quote_diagnosis_id": diagnosis_id, "view": "OWNER",
             # Same field, same meaning, on both views. It was on the operations
@@ -396,7 +396,7 @@ def _project(owner: rules.OwnerDiagnosis, opportunity, principal: Principal,
             "lines": list(report.lines), "opportunity": report.opportunity,
             "evidence": report.evidence, "codes": list(report.codes),
             "context": list(report.context), "strength": owner.strength,
-            "surfaces": owner.surfaces,
+            **_shared(owner.surfaces, owner.strength),
             "price_band": owner.price.to_dict(),
             "cost_baseline": owner.cost.to_dict(),
             "peer_band": owner.peer.to_dict(),
@@ -418,7 +418,7 @@ def _project_stored(row: models.QuoteDiagnosis, principal: Principal,
     common = {"quote_diagnosis_id": row.quote_diagnosis_id,
               "line_id": row.quote_line_id,
               "as_of": row.as_of.isoformat(),
-              "strength": row.strength, "surfaces": row.surfaces}
+              "strength": row.strength}
     if principal.is_salesperson:
         ops = rules.OperationsDiagnosis(
             line_id=row.quote_line_id,
@@ -433,8 +433,10 @@ def _project_stored(row: models.QuoteDiagnosis, principal: Principal,
             context=tuple(c for c in context if c in rules.OPERATIONS_CODES),
             surfaces=row.surfaces)
         return {**common, "view": "OPERATIONS",
-                **_card(render.render_operations(ops, th=th))}
+                **_card(render.render_operations(ops, th=th)),
+                **_shared(row.surfaces, row.strength)}
     return {**common, "view": "OWNER", "codes": list(codes),
+            **_shared(row.surfaces, row.strength),
             "context": list(context), "price_band": row.price_band,
             "cost_baseline": row.cost_baseline, "peer_band": row.peer_band,
             "opportunity_detail": row.opportunity,
@@ -447,14 +449,39 @@ def _project_stored(row: models.QuoteDiagnosis, principal: Principal,
                            if row.created_at else None)}
 
 
+def _shared(surfaces: bool, strength: str) -> dict[str, Any]:
+    """The fields a card needs whichever projection it was built from.
+
+    Both views now draw a card, so both have to answer "is this worth
+    interrupting somebody for", "how strong is the evidence" and "what can the
+    reader do about it" — and they have to answer under the SAME NAMES. The
+    owner projection used to publish the first of those as ``surfaces`` while
+    the operations one called it ``renders``, and the front end read only
+    ``renders``: a manager was served two flagged lines, matched none of them,
+    and was shown a summary saying the quote was clean. Two names for one
+    answer is a bug with a grace period.
+
+    None of it is economics. ``renders`` is a threshold decision, ``strength``
+    grades the band, and the actions are the same two either reader gets, so
+    this helper stays callable from the salesperson path if it ever needs it.
+    The cost, margin and peer figures remain where they were — reachable only
+    from ``render_owner``, on a projection a salesperson is never built.
+    """
+    return {"renders": surfaces,
+            "strength_word": render.strength_word(strength),
+            "qualification": render.QUALIFICATION,
+            "actions": [render.REVIEW_PRICE, render.DISMISS]}
+
+
 def _card(card: render.OperationsCard) -> dict[str, Any]:
-    return {"line_id": card.line_id, "renders": card.renders,
+    """The desk's own half. The four fields both roles share come from
+    ``_shared``, so neither branch can spell one of them its own way."""
+    return {"line_id": card.line_id,
             "comparable": card.comparable,
             "headline": card.headline, "quoted": card.quoted,
             "historical": card.historical, "evidence": card.evidence,
             "evidence_detail": card.evidence_detail, "why": card.why,
-            "note": card.note, "qualification": card.qualification,
-            "actions": list(card.actions)}
+            "note": card.note}
 
 
 def _money(value: Any) -> Optional[Decimal]:

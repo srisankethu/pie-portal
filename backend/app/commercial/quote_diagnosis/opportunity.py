@@ -75,10 +75,20 @@ class Opportunity:
                 "basis": self.basis}
 
 
-NONE_AVAILABLE = Opportunity(
-    low=None, high=None, per_unit_low=None, per_unit_high=None,
-    target_price=None, truncated_by_resistance=False, cost_on_record=False,
-    basis="no opportunity is asserted")
+def _nothing(basis: str) -> Opportunity:
+    """No range, and the reason there is none.
+
+    ``basis`` is a *reason*, and the renderer reads it as one: it writes "No
+    opportunity is asserted — {basis}." This used to be a single module
+    constant whose basis was the conclusion itself, so a manager's card read
+    "No opportunity is asserted — no opportunity is asserted." Nobody saw it
+    for as long as nothing drew the owner projection. Two call sites decline
+    for two different reasons and each one states its own.
+    """
+    return Opportunity(
+        low=None, high=None, per_unit_low=None, per_unit_high=None,
+        target_price=None, truncated_by_resistance=False, cost_on_record=False,
+        basis=basis)
 
 
 def compute(owner: OwnerDiagnosis, *, th: CommercialThresholds) -> Opportunity:
@@ -94,12 +104,20 @@ def compute(owner: OwnerDiagnosis, *, th: CommercialThresholds) -> Opportunity:
     word "opportunity" would tell somebody to renegotiate a price that was never
     the problem.
     """
-    if BELOW_HISTORICAL_RANGE not in owner.codes:
-        return NONE_AVAILABLE
+    # Order matters: "not below its band" presumes a band. A line with no
+    # comparable history has none, and answering it with that reason asserts a
+    # range the engine never had — the same benign-default shape the rest of
+    # this package is careful about. Rule out the missing band first.
     price = owner.quoted_unit_price
     band = owner.price.band
-    if price is None or band.low is None or band.median is None:
-        return NONE_AVAILABLE
+    if band.low is None or band.median is None:
+        return _nothing("no comparable history was knowable when this quote "
+                        "was written, so there is no range to sit below")
+    if price is None:
+        return _nothing("this line carries no quoted price to compare")
+    if BELOW_HISTORICAL_RANGE not in owner.codes:
+        return _nothing("this line is not below the range its history "
+                        "supports, so there is nothing to reclaim on it")
 
     target, truncated = _target(owner.price, band.median)
     if target <= price:

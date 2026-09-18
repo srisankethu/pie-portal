@@ -57,6 +57,16 @@ DISMISS_REASONS: dict[str, str] = {
 
 _STRENGTH_WORD = {STRONG: "Strong", MODERATE: "Moderate", WEAK: "Weak"}
 
+
+def strength_word(strength: str) -> str:
+    """The grade as a reader sees it, for either projection's card.
+
+    One definition because it is one word on two screens. INSUFFICIENT has no
+    entry on purpose: "Not enough" is what it is called everywhere it appears,
+    and a second spelling of it would be a second answer.
+    """
+    return _STRENGTH_WORD.get(strength, "Not enough")
+
 #: Printed on every card, without exception. A reader who is not told that
 #: history can contain unrecorded exceptional pricing will read a band as a rule,
 #: and these books genuinely hold deals that were negotiated outside the system.
@@ -131,7 +141,7 @@ def render_operations(ops: OperationsDiagnosis, *,
         headline=_ops_headline(ops.codes),
         quoted=quoted,
         historical=historical,
-        evidence=_STRENGTH_WORD.get(ops.strength, "Not enough"),
+        evidence=strength_word(ops.strength),
         evidence_detail=_evidence_detail(ops.comparable_count,
                                          ops.recent_comparable_count),
         # The prose form, not the display form: "between ₹980 – ₹1,020" reads

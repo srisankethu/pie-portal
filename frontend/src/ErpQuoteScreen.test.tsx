@@ -118,11 +118,29 @@ function stubFetch() {
 }
 
 /** One diagnosis, in the shape the endpoint projects. */
+/** The manager's projection — a different shape, not the same one filtered. */
+function owner(over: Record<string, unknown> = {}) {
+  return {
+    view: "OWNER",
+    quote_diagnosis_id: null, line_id: "0", renders: true, comparable: true,
+    headline: "Above this customer's historical pricing",
+    strength_word: "Strong",
+    lines: ["Quoted ₹339 per unit against a supported range of ₹218."],
+    opportunity: "No opportunity is asserted.",
+    evidence: "11 usable, 0 excluded.",
+    codes: ["ABOVE_HISTORICAL_RANGE"], context: [],
+    qualification: "", actions: [],
+    ...over,
+  };
+}
+
 function diagnosis(over: Record<string, unknown> = {}) {
   return {
+    view: "OPERATIONS",
     quote_diagnosis_id: null, line_id: "0", renders: true, comparable: true,
     headline: "Below this customer's historical pricing",
     quoted: "₹450", historical: "₹500 – ₹520",
+    strength_word: "Strong",
     evidence: "Strong", evidence_detail: "14 comparable transactions",
     why: "This customer has purchased this item 14 times.",
     note: "", qualification: "", actions: [],
@@ -450,12 +468,11 @@ describe("the diagnosis", () => {
 
   it("does not tell a manager a quote was clean when their own payload flagged it",
      async () => {
-    // The owner projection names this `surfaces`; the operations one names it
-    // `renders`, and `DiagnosisCard` draws only the operations shape — so a
-    // manager is served a body the panel cannot render, sees no cards, and this
-    // sentence is the whole of what they get. It used to end "nothing stood
-    // out" as a constant, which was true only for as long as no real quote
-    // surfaced anything. QT-095 surfaced two.
+    // A manager is served the OWNER projection. It draws a card of its own now,
+    // so the panel is not silent for them any more — but this sentence still
+    // has to agree with the cards above it. It used to end "nothing stood out"
+    // as a constant, which was true only for as long as no real quote surfaced
+    // anything. QT-095 surfaced two.
     erpQuoteLines.mockResolvedValue(lines({
       lines: [0, 1].map((n) => ({
         line_number: n, item_code: `ITEM-${n}`, description: `line ${n}`,
@@ -463,10 +480,8 @@ describe("the diagnosis", () => {
       })),
     }));
     diagnoses = {
-      "0": diagnosis({ line_id: "0", renders: undefined, surfaces: true,
-                       comparable: true }),
-      "1": diagnosis({ line_id: "1", renders: undefined, surfaces: false,
-                       comparable: true }),
+      "0": owner({ line_id: "0", renders: true, comparable: true }),
+      "1": owner({ line_id: "1", renders: false, comparable: true }),
     };
     draw();
 

@@ -27,7 +27,7 @@ import Stack from "@mui/material/Stack";
 import { useEffect, useState } from "react";
 import type { ReactNode } from "react";
 
-import { DiagnosisCard } from "./DiagnosisCard";
+import { DiagnosisCard, OwnerDiagnosisCard } from "./DiagnosisCard";
 import type { DismissReason } from "./DiagnosisCard";
 import { FieldLabel, Meta } from "../platform/kit";
 import type { QuoteDiagnosisState } from "../useQuoteDiagnosis";
@@ -61,7 +61,7 @@ export function useDismissReasons(token: string): DismissReason[] {
 }
 
 export function QuoteDiagnosisPanel({
-  lineIds, diagnosis, dismissReasons, onReviewPrice, title, clean,
+  lineIds, diagnosis, dismissReasons, onReviewPrice, title, coverage,
 }: {
   /** The ids of the lines currently on screen, in order. Read so the cards
    *  follow the grid's own filter — a diagnosis for a line somebody has
@@ -77,14 +77,22 @@ export function QuoteDiagnosisPanel({
    *  re-priced here, and a card offering it would be a dead control. */
   onReviewPrice?: (lineId: string) => void;
   title?: string;
-  /** What to say when the check ran and flagged nothing.
+  /** How much of the quote the check could actually judge.
    *
-   *  The Quote Builder passes nothing and the panel disappears, which is right
-   *  while somebody is pricing: a row of furniture reading "no findings" on
-   *  every ordinary quote is noise. A finished document is the opposite case —
-   *  a reader asking "was this checked?" cannot tell silence from a panel that
-   *  was never mounted, and on that screen the answer is worth one line. */
-  clean?: ReactNode;
+   *  The Quote Builder passes nothing and the panel disappears when there is
+   *  nothing to say, which is right while somebody is pricing: a row of
+   *  furniture reading "no findings" on every ordinary quote is noise. A
+   *  finished document is the opposite case — a reader asking "was this
+   *  checked?" cannot tell silence from a panel that was never mounted.
+   *
+   *  **It shows above the cards as well as instead of them.** It used to render
+   *  only when nothing was flagged, which made its truth depend on this
+   *  component's filter rather than on its own arithmetic — and a sentence that
+   *  is true because of what some other component decided to draw is a sentence
+   *  that goes wrong the next time that decision changes. Coverage is also
+   *  worth reading *with* two cards in front of you: two lines flagged out of
+   *  four judged out of eight is a different quote from two out of eight. */
+  coverage?: ReactNode;
 }) {
   const shown = lineIds
     .map((id) => diagnosis.byLineId[id])
@@ -110,29 +118,35 @@ export function QuoteDiagnosisPanel({
     );
   }
 
-  // Nothing worth interrupting anybody about. Silent unless the caller asked
-  // for a settled note — see `clean`.
-  if (shown.length === 0) {
-    if (!clean) return null;
-    return (
-      <Box sx={{ mt: "var(--space-4)" }}>
-        <FieldLabel>{title ?? DEFAULT_TITLE}</FieldLabel>
-        <Box sx={{ mt: 0.5 }}><Meta>{clean}</Meta></Box>
-      </Box>
-    );
-  }
+  // Nothing worth interrupting anybody about, and no coverage line asked for.
+  if (shown.length === 0 && !coverage) return null;
 
   return (
     <Box sx={{ mt: "var(--space-4)" }}>
       <FieldLabel>{title ?? DEFAULT_TITLE}</FieldLabel>
+      {coverage && <Box sx={{ mt: 0.5 }}><Meta>{coverage}</Meta></Box>}
       <Stack spacing={2} sx={{ mt: 1 }}>
+        {/* The server already made the role decision and said so in `view`.
+            This switch reads that answer; it does not re-take the decision from
+            a role prop, which would put it in the one place that cannot see the
+            policy — and would be the `{mgmt && …}` shape both of this
+            repository's boundary leaks had. */}
         {shown.map((d) => (
-          <DiagnosisCard
-            key={d.line_id}
-            diagnosis={d}
-            reasons={dismissReasons}
-            onReviewPrice={onReviewPrice}
-          />
+          d.view === "OWNER" ? (
+            <OwnerDiagnosisCard
+              key={d.line_id}
+              diagnosis={d}
+              reasons={dismissReasons}
+              onReviewPrice={onReviewPrice}
+            />
+          ) : (
+            <DiagnosisCard
+              key={d.line_id}
+              diagnosis={d}
+              reasons={dismissReasons}
+              onReviewPrice={onReviewPrice}
+            />
+          )
         ))}
       </Stack>
     </Box>

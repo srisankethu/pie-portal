@@ -19,19 +19,21 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { DiagnosisCard } from "./DiagnosisCard";
-import type { DiagnosisView } from "./DiagnosisCard";
+import type { OperationsDiagnosisView } from "./DiagnosisCard";
 
 const REASONS = [
   { code: "PRICE_IS_CORRECT", label: "The price is right for this deal" },
   { code: "VOLUME_COMMITMENT", label: "Priced for a volume or contract commitment" },
 ];
 
-function view(over: Partial<DiagnosisView> = {}): DiagnosisView {
+function view(over: Partial<OperationsDiagnosisView> = {}): OperationsDiagnosisView {
   return {
+    view: "OPERATIONS",
     quote_diagnosis_id: "qd_1",
     line_id: "L1",
     renders: true,
     comparable: true,
+    strength_word: "Strong",
     headline: "Below this customer's historical pricing",
     quoted: "₹900",
     historical: "₹980 – ₹1,020",

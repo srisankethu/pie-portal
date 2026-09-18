@@ -19,6 +19,7 @@ validation must not.
 """
 from __future__ import annotations
 
+import json
 from datetime import date, datetime, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Optional
@@ -92,6 +93,122 @@ def _optional_decimal(value: Any, ctx: str, field: str) -> Optional[Decimal]:
     return _parse_decimal(value, ctx, field)
 
 
+# ── the source's own fields on a record ──────────────────────────────────────
+#
+# This replaced an allowlist of five key names, and the allowlist is the defect
+# rather than the design: a sixth custom field configured on a Zoho quote was
+# dropped here, silently, with nothing anywhere saying it had existed. What is
+# carried now is whatever the record actually holds, under the source's own key
+# names and with the source's own values, and the selection rule is about the
+# *shape* of a key rather than about any particular one.
+#
+# Two ways in, and both are needed:
+#
+# * **The envelope.** An adapter puts the fields it knows to be source-defined
+#   under one key. That is the connector-blind half — only the adapter knows
+#   that NetSuite spells them ``custentity…`` or that Acumatica nests them under
+#   an extension object — and it is the route a second ERP should use.
+# * **The prefix**, on a flattened record. The canonical wire shape descends
+#   from Zoho (see the module docstring), and Zoho flattens a custom field onto
+#   the record as ``cf_<label>``. Reading the prefix is what makes a field
+#   nobody has heard of travel without a code change, which is the property the
+#   allowlist did not have.
+#
+# Nothing here interprets a key. No rule, threshold or computed number reads one
+# out of the bag; mapping a source key onto a concept this platform reasons with
+# is a separate, versioned exercise.
+
+#: The key an adapter puts a record's own source-defined fields under.
+_SOURCE_ATTRIBUTES_KEY = "source_attributes"
+
+#: How a flattened record marks a field the source's administrator added.
+_CUSTOM_FIELD_PREFIX = "cf_"
+
+#: Standard source fields carried verbatim beside the custom ones, per record
+#: type. **Not the allowlist that was removed**: these are fields the source
+#: defines for everybody, which this platform has no typed column for and which
+#: a person reading the document expects to see on it. The quote's branch is the
+#: whole of the list today.
+_QUOTE_SOURCE_FIELDS = ("branch_id", "branch_name")
+
+#: How many characters one field's value may take before it is *described*
+#: rather than carried.
+#:
+#: A ceiling exists because the bag is verbatim and a source value is not bounded
+#: by anything this platform controls — an ERP's multi-line text custom field
+#: will hold whatever somebody pasted into it, and these columns sit on the
+#: largest tables in the schema and travel whole in ``trust.erasure.export``.
+#:
+#: It is deliberately not a *truncation*. An over-long value is replaced by a
+#: statement that it was omitted and how big it was, the same way
+#: ``erasure._rows`` describes a binary column rather than serialising it: the
+#: key still travels, so a reader sees that the field is set and that its value
+#: is not here, instead of seeing a shortened value they would read as the whole
+#: one. Silent loss is the thing this whole function exists to stop.
+#:
+#: There is no ceiling on the *number* of keys, and that is deliberate too. The
+#: count is bounded by what an administrator configured on their ERP — it is a
+#: property of the tenant's setup, not of any one record — so a cap on it would
+#: guard a case that does not arise, and its only honest failure mode would need
+#: a reserved key name that could collide with a real one.
+_MAX_SOURCE_ATTRIBUTE_CHARS = 4096
+
+
+def _source_attribute_value(value: Any) -> Any:
+    """One source field's value, verbatim unless it is too large to be."""
+    try:
+        encoded = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError):
+        # Described rather than dropped, and rather than carried: a value the
+        # JSON column cannot store would fail at commit, far from the record
+        # that caused it.
+        return {"omitted": "value is not JSON-serialisable",
+                "type": type(value).__name__}
+    if len(encoded) <= _MAX_SOURCE_ATTRIBUTE_CHARS:
+        return value
+    return {"omitted": "value is longer than this platform carries",
+            "chars": len(encoded), "limit": _MAX_SOURCE_ATTRIBUTE_CHARS}
+
+
+def _source_attributes(raw: dict[str, Any], *,
+                       also: tuple[str, ...] = ()) -> Optional[dict[str, Any]]:
+    """The source's own fields on one record, or ``None`` where none are held.
+
+    ``None`` and ``{}`` are different claims and only one of them is available
+    here. ``{}`` would say *this source holds no custom fields on this record*,
+    which this layer cannot know: the payload arrives already projected by a
+    connector, so an adapter that never read them looks exactly like an ERP that
+    has none. ``None`` says what is true — none are held — and the model column
+    is nullable to match.
+
+    Keys are taken in sorted order so the stored JSON is byte-identical for the
+    same record however the adapter happened to build its dict. An absent or
+    blank value stays absent: "not set" is not a category, and a quote nobody
+    classified is a different fact from every unclassified quote sharing a
+    bucket called "other".
+    """
+    found: dict[str, Any] = {}
+    envelope = raw.get(_SOURCE_ATTRIBUTES_KEY)
+    if isinstance(envelope, dict):
+        found.update(envelope)
+    elif envelope:
+        # An adapter that sent something other than a mapping — Zoho's own
+        # ``custom_fields`` array, say, passed through unflattened. Carried
+        # under the key it arrived on rather than ignored: the contract is a
+        # mapping, and a contract this module enforces by quietly dropping the
+        # payload is the defect it was rewritten to end. The value is still a
+        # source value and still travels verbatim.
+        found[_SOURCE_ATTRIBUTES_KEY] = envelope
+    for key, value in raw.items():
+        # The envelope wins: an adapter that named a field explicitly has said
+        # more about it than the prefix scan can infer.
+        if key.startswith(_CUSTOM_FIELD_PREFIX) or key in also:
+            found.setdefault(key, value)
+    carried = {key: _source_attribute_value(found[key])
+               for key in sorted(found) if found[key] not in (None, "")}
+    return carried or None
+
+
 def normalize_customer(raw: dict[str, Any], *, system: str = ZOHO) -> CustomerIn:
     cid = _require(raw, "contact_id", "contact")
     status = str(raw.get("status", "active")).lower()
@@ -99,6 +216,7 @@ def normalize_customer(raw: dict[str, Any], *, system: str = ZOHO) -> CustomerIn
         external_id=str(cid),
         name=str(_require(raw, "contact_name", "contact")),
         status=CustomerStatus.ACTIVE if status == "active" else CustomerStatus.INACTIVE,
+        source_attributes=_source_attributes(raw),
         source_ref=SourceRef(system=system, record_type="contact", record_id=str(cid)),
     )
 
@@ -119,6 +237,7 @@ def normalize_product(raw: dict[str, Any], *, system: str = ZOHO) -> ProductIn:
         source_item_category=(str(raw["source_item_category"])
                               if raw.get("source_item_category") else None),
         active=(status == "active"),
+        source_attributes=_source_attributes(raw),
         source_ref=SourceRef(system=system, record_type="item", record_id=str(iid)),
     )
 
@@ -284,6 +403,7 @@ def normalize_vendor(raw: dict[str, Any], *, system: str = ZOHO) -> VendorIn:
         # falsiness, which would erase every due-on-receipt supplier.
         payment_terms_days=(int(terms) if terms not in (None, "") else None),
         status=CustomerStatus.ACTIVE if status == "active" else CustomerStatus.INACTIVE,
+        source_attributes=_source_attributes(raw),
         source_ref=SourceRef(system=system, record_type="vendor", record_id=str(vid)),
     )
 
@@ -389,6 +509,7 @@ def normalize_sales_order(raw: dict[str, Any], *, system: str = ZOHO) -> SalesOr
         total=raw.get("total"),
         salesperson_external_id=(str(raw["salesperson_id"])
                                  if raw.get("salesperson_id") else None),
+        source_attributes=_source_attributes(raw),
         source_ref=SourceRef(system=system, record_type="salesorder", record_id=str(soid)),
     )
 
@@ -636,15 +757,6 @@ def dropped_an_undated_decision(q: QuoteDocIn, *, system: str = ZOHO) -> bool:
     return q.source_status.strip().lower() in (won | lost)
 
 
-#: The quote fields this business's own Zoho configuration adds, plus the
-#: branch it was raised at. Carried verbatim under the source's own key names:
-#: the taxonomy is the business's, it already exists, and re-deriving a quote
-#: type from anything else would be inventing a second answer to a question
-#: somebody already answered on the document.
-_QUOTE_ATTRIBUTE_KEYS = ("cf_quote_type", "cf_pricing_type", "cf_procurement_type",
-                         "branch_id", "branch_name")
-
-
 def normalize_quote_document(raw: dict[str, Any], *, system: str = ZOHO) -> QuoteDocIn:
     """One quote as its ERP raised it. Header grain, mirroring
     ``normalize_sales_order`` — an offer rather than a commitment.
@@ -723,12 +835,11 @@ def normalize_quote_document(raw: dict[str, Any], *, system: str = ZOHO) -> Quot
         # named as an absence. So null is already "unknown" downstream, and the
         # document is worth more than the field.
         client_viewed_at=_viewed_at(viewed, ctx),
-        # Only the keys the source actually set. An absent custom field is not
-        # a category and must not become one: a quote with no cf_quote_type is
-        # a quote nobody classified, which is a different fact from every
-        # unclassified quote sharing a bucket called "other".
-        attributes={k: raw[k] for k in _QUOTE_ATTRIBUTE_KEYS
-                    if raw.get(k) not in (None, "")},
+        # Whatever this business configured on its quotes, plus the branch —
+        # not a named five. A sixth custom field used to be dropped here with
+        # nothing saying it had existed, which is the defect this reader was
+        # widened to end.
+        source_attributes=_source_attributes(raw, also=_QUOTE_SOURCE_FIELDS),
         lines=_quote_lines(raw, qid),
         source_ref=SourceRef(system=system, record_type="quote", record_id=qid,
                              recorded_at=_recorded_at(raw, ctx)),
@@ -832,6 +943,7 @@ def normalize_bill_terms(raw: dict[str, Any], *, system: str = ZOHO) -> BillIn:
         status=str(raw.get("status") or ""),
         total=raw.get("total"),
         balance=raw.get("balance"),
+        source_attributes=_source_attributes(raw),
         source_ref=SourceRef(system=system, record_type="bill", record_id=bill_id),
     )
 
@@ -907,6 +1019,7 @@ def normalize_invoice_terms(raw: dict[str, Any], *, system: str = ZOHO) -> Invoi
         total=raw.get("total"),
         balance=raw.get("balance"),
         sales_orders=_invoice_sales_orders(raw),
+        source_attributes=_source_attributes(raw),
         source_ref=SourceRef(system=system, record_type="invoice", record_id=invoice_id),
     )
 
@@ -1132,5 +1245,6 @@ def normalize_purchase_order(raw: dict[str, Any], *, system: str = ZOHO) -> Purc
         pending_qty=raw.get("quantity_yet_to_receive"),
         total=raw.get("total"),
         received_on=received_on,
+        source_attributes=_source_attributes(raw),
         source_ref=SourceRef(system=system, record_type="purchaseorder", record_id=str(poid)),
     )

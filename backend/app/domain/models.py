@@ -1077,6 +1077,31 @@ class Customer(Base):
     # ``commercial.incentive.may_pay_third_party`` for why it fails closed and
     # why nothing infers this from the customer's name.
     incentive_eligibility: Mapped[Optional[str]] = mapped_column(String(16))
+    #: The source's own fields on this record, verbatim — the custom fields an
+    #: administrator added to their ERP, under the keys and with the values that
+    #: system wrote. **Carried, never interpreted**: no rule, threshold or
+    #: computed number reads a key out of here, and a mapping from a source key
+    #: onto a concept this platform reasons with is a separate, versioned
+    #: exercise. A JSON bag rather than typed columns because one tenant's ERP
+    #: configuration is not a schema every connector has to share, and an absent
+    #: key stays absent: "not set" is not a category.
+    #:
+    #: **Not ``attributes``, and the collision is the reason.** ``attributes/``
+    #: is this codebase's word for a *decoded technical fact about a product* —
+    #: a corner radius, a grade — held in ``product_attribute_values`` with its
+    #: own provenance and supersede semantics. One word over two unrelated
+    #: concepts on the same entity is the thing this repository does not do.
+    #:
+    #: **NULL, not ``{}``, when nothing is held, and the two are not the same
+    #: claim.** ``{}`` would assert *the source holds no custom fields on this
+    #: record*; NULL says only that none are held here. Nothing in this platform
+    #: can make the first claim — a row may predate the column, and a payload is
+    #: projected by a connector before normalisation ever sees it, so an adapter
+    #: that never read them is indistinguishable from an ERP that has none. The
+    #: migration adds the column nullable, with no server default and no
+    #: backfill, for exactly that reason. A non-empty bag is the only positive
+    #: statement this column makes.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -1213,6 +1238,10 @@ class Product(Base):
     #: rather than merely stale.
     pie_catalog_version: Mapped[Optional[str]] = mapped_column(String(128))
 
+    #: The source's own fields on this record, verbatim. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -4038,6 +4067,10 @@ class Vendor(Base):
     #: which is a real term and not a missing value.
     payment_terms_days: Mapped[Optional[int]] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE")
+    #: The source's own fields on this record, verbatim. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -4223,6 +4256,10 @@ class SalesOrderDoc(Base):
     shipped_status: Mapped[Optional[str]] = mapped_column(String(48))
     total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
     salesperson_external_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: The source's own fields on this record, verbatim. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -4357,13 +4394,16 @@ class QuoteDoc(Base):
     #: it. It is deliberately *not* an input to the outcome classification: a
     #: customer reading a quote is not a customer deciding on one.
     client_viewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    #: The business's own taxonomy on the quote — Zoho's ``cf_quote_type``,
-    #: ``cf_pricing_type``, ``cf_procurement_type`` and the branch it was raised
-    #: at — verbatim, keys and values as the source wrote them. A JSON bag rather
-    #: than typed columns because one tenant's ERP configuration is not a schema
-    #: every connector has to share, and an absent key stays absent: "not set" is
-    #: not a category.
-    attributes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: The source's own fields on the quote, verbatim — every custom field this
+    #: business configured, plus the branch it was raised at. ``cf_quote_type``,
+    #: ``cf_pricing_type`` and ``cf_procurement_type`` are examples rather than
+    #: the set: those three were hand-listed until A4.1, and a fourth field
+    #: configured tomorrow travels with no code change, which was the point. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case. This
+    #: column was called ``attributes`` until it stopped being the only one of
+    #: its kind; ``s6srcattr`` renames it forward.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     #: When the source system recorded this quote. See
     #: ``SalesTxn.source_recorded_at``. Here it does double duty: it is the
     #: visibility stamp when this quote is *evidence* for a later one, and it is
@@ -4499,6 +4539,10 @@ class BillDoc(Base):
     status: Mapped[str] = mapped_column(String(48), default="")
     total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
     balance: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    #: The source's own fields on this record, verbatim. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -4554,6 +4598,10 @@ class InvoiceDoc(Base):
     status: Mapped[str] = mapped_column(String(48), default="")
     total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
     balance: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    #: The source's own fields on this record, verbatim. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -5095,6 +5143,10 @@ class PurchaseOrderDoc(Base):
     #: for an *actual* lead time; absent means the order is still open or the
     #: receipt was never logged, and those are not the same thing.
     received_on: Mapped[Optional[date]] = mapped_column(Date)
+    #: The source's own fields on this record, verbatim. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,

@@ -356,9 +356,13 @@ def test_contacts_are_mapped_to_the_normalizer_shape():
     rows = list(_src(http=http).list_contacts())
     # gst_no rides along for the identity layer. Present as None rather than
     # absent when the edition has no such field, so a caller never has to guess
-    # whether the key was missing or the value was.
+    # whether the key was missing or the value was. `source_attributes` is
+    # present and empty for the same reason, and the emptiness is not a claim:
+    # `normalize._source_attributes` turns it into NULL, which says only that
+    # none are held.
     assert rows == [{"contact_id": "123", "contact_name": "4U Customer",
-                     "gst_no": None, "status": "active"}]
+                     "gst_no": None, "status": "active",
+                     "source_attributes": {}}]
 
 
 def test_a_contacts_gstin_reaches_the_identity_layer():

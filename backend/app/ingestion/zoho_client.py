@@ -54,6 +54,115 @@ _EXCLUDED_CREDIT_NOTE_STATUS = {"draft", "void"}
 #: given back, so as far as this platform is concerned it never happened.
 _EXCLUDED_VENDOR_CREDIT_STATUS = {"draft", "void"}
 
+# ── a record's own custom fields, whichever way Zoho spelled them ────────────
+#
+# What an administrator configured on this book, read off one record and handed
+# to ``normalize`` under the envelope key it already reads. Carried, never
+# interpreted: nothing in this platform reads a key out of the bag to decide a
+# number, and mapping a source key onto a concept the platform reasons with is
+# a separate, versioned exercise.
+#
+# **Zoho publishes them in two different shapes, and which one arrives is a
+# property of the endpoint rather than of the module.** Measured against the
+# live SLS Engineers book (2026-09-18), not assumed:
+#
+# * **List rows** — ``/items``, ``/estimates``, ``/salesorders``,
+#   ``/purchaseorders``, ``/bills`` — flatten each field onto the record as
+#   ``cf_<api_name>``, with two derived twins beside it,
+#   ``cf_<api_name>_formatted`` and ``cf_<api_name>_unformatted``. There is no
+#   ``custom_fields`` array on a list row.
+# * **Detail records** — ``/estimates/{id}``, ``/bills/{id}``, ``/items/{id}``
+#   — carry **no flat key at all**. They carry a ``custom_fields`` array of
+#   objects (``label``, ``api_name``, ``value``, ``value_formatted``,
+#   ``data_type``) and a ``custom_field_hash`` holding the flattened spelling.
+# * **Contacts**, list and detail alike, only ever use the array and the hash.
+#
+# That difference is not academic: ``_item_payload`` read ``cf_item_type`` off
+# the record, which is right for ``list_items`` and reads ``None`` for every
+# item ``get_item`` fetches — so the master-read race this projection exists to
+# repair wrote a product row with no taxonomy on it. Reading both shapes here
+# is what fixes it, and it is why the two typed item fields below come through
+# this function rather than off the record.
+#
+# **The key is the api name.** The label ("Vendor Internal Doc Reference #") is
+# a human string an administrator can rename at any time, and a key that moves
+# when somebody edits a caption is not a key. The api name is what Zoho itself
+# uses for the flattened spelling and in ``custom_field_hash``, so the same
+# record read through a list row and through its detail produces byte-identical
+# bytes — which is the property a bag stored on every sync has to have.
+#
+# **The twins are one field, not three.** ``cf_x_unformatted`` is the field's
+# own value and ``cf_x_formatted`` is Zoho's rendering of it under this book's
+# locale — the same class of field as ``total_formatted`` and
+# ``created_time_formatted``, which every projection here has always dropped.
+# They are identical on a dropdown and genuinely differ on a date
+# (``cf_vendor_internal_doc_date``: ``17/09/2026`` against ``2026-09-17``), so
+# the *value* is taken and the rendering is not: one entry per field the
+# administrator configured, holding what they entered. Nothing is narrowed —
+# no configured field loses its value — and the array's ``value`` is the same
+# string, which is what keeps the two shapes agreeing.
+#
+# A twin is only treated as one when its base key is on the record too, so a
+# field genuinely named ``cf_notes_formatted`` still travels as itself.
+_CUSTOM_FIELD_PREFIX = "cf_"
+_CUSTOM_FIELD_TWINS = ("_formatted", "_unformatted")
+
+#: Item custom fields this projection deliberately does not copy onto a product
+#: row. ``cf_end_customer`` is a lookup onto a customer: copying it would put a
+#: customer's identity on a catalogue row that every reader of the catalogue
+#: can see, which is ``trust/``'s concern and is not solved by carrying it here
+#: first. Named rather than filtered by shape, because the list row that most
+#: items arrive on carries no ``data_type`` to filter on — and named here
+#: rather than in ``normalize``, which must not hold one source's vocabulary.
+#: ``test_the_customer_lookup_on_an_item_is_not_copied_onto_the_product`` pins
+#: it. Every other field on an item travels, including one configured tomorrow.
+_ITEM_FIELDS_NOT_COPIED = frozenset({"cf_end_customer"})
+
+
+def _flattened_custom_fields(record: dict[str, Any]) -> dict[str, Any]:
+    """The flattened spelling — top-level ``cf_`` keys and ``custom_field_hash``."""
+    flat: dict[str, Any] = {}
+    for source in (record, record.get("custom_field_hash")):
+        if isinstance(source, dict):
+            for key, value in source.items():
+                if isinstance(key, str) and key.startswith(_CUSTOM_FIELD_PREFIX):
+                    flat.setdefault(key, value)
+    out: dict[str, Any] = {}
+    for key, value in flat.items():
+        if any(key.endswith(t) and key[: -len(t)] in flat
+               for t in _CUSTOM_FIELD_TWINS):
+            continue
+        out[key] = flat.get(f"{key}_unformatted", value)
+    return out
+
+
+def _listed_custom_fields(record: dict[str, Any]) -> dict[str, Any]:
+    """The ``custom_fields`` array, keyed on each field's api name."""
+    out: dict[str, Any] = {}
+    for field in record.get("custom_fields") or []:
+        if not isinstance(field, dict):
+            continue
+        api_name = str(field.get("api_name") or "")
+        if api_name:
+            out.setdefault(api_name, field.get("value"))
+    return out
+
+
+def source_attributes(record: dict[str, Any]) -> dict[str, Any]:
+    """This record's own custom fields, keyed on api name, values verbatim.
+
+    Both shapes are read and merged, so a caller never has to know which
+    endpoint its record came from. A blank is left in place rather than
+    dropped: "absent stays absent" is ``normalize._source_attributes``' rule
+    and it owns it, so this function translates the wire shape and decides
+    nothing else.
+    """
+    found = _flattened_custom_fields(record)
+    for api_name, value in _listed_custom_fields(record).items():
+        found.setdefault(api_name, value)
+    return found
+
+
 
 @dataclass(frozen=True)
 class ZohoCredentials:
@@ -806,6 +915,11 @@ class ZohoApiSource(ZohoTransport):
                 # which the matcher treats as "no evidence", not "no match".
                 "gst_no": c.get("gst_no") or c.get("gst_treatment_gstin"),
                 "status": (c.get("status") or "active"),
+                # Whatever this book configured on a contact. Contacts are the
+                # one module that never flattens: the list row carries the
+                # array and the hash, so a projection reading `cf_` keys off
+                # it would find nothing at all.
+                "source_attributes": source_attributes(c),
             }
 
     def list_items(self) -> Iterable[dict[str, Any]]:
@@ -867,6 +981,13 @@ class ZohoApiSource(ZohoTransport):
         write a subtly different record and no test comparing either path alone
         would notice.
         """
+        # Read once, off whichever shape this record arrived in: the master
+        # list flattens its custom fields onto the row and `get_item` does not
+        # carry a flat key at all. The two typed fields below come out of the
+        # same reading, which is what keeps the racing by-id fetch from writing
+        # a product with no taxonomy on it.
+        custom = {key: value for key, value in source_attributes(i).items()
+                  if key not in _ITEM_FIELDS_NOT_COPIED}
         return {
                 "item_id": str(i.get("item_id")),
                 "name": i.get("name") or "",
@@ -936,31 +1057,39 @@ class ZohoApiSource(ZohoTransport):
                 # difference is visible in the data: "HSS Taper Shank Reamer
                 # Dia 10mm" is filed Tap / Threading, and a reamer is neither.
                 # Carry it as evidence about an item; do not gate on it.
-                "source_item_type": i.get("cf_item_type"),
-                "source_item_category": i.get("cf_item_category"),
-                # Two more item custom fields exist on this book and are
-                # deliberately NOT read.
+                "source_item_type": custom.get("cf_item_type"),
+                "source_item_category": custom.get("cf_item_category"),
+                # Every other field this book keeps on an item, verbatim. The
+                # two above keep their own keys because they have typed columns
+                # and readers; they are not removed from the bag, because the
+                # bag is what the source holds and a reader of it should not
+                # have to know which two this platform happened to promote.
+                "source_attributes": custom,
+                # Three more item custom fields exist on this book, and what
+                # is said about them here changed when the bag above landed.
                 #
                 # ``cf_bin_location`` and ``cf_catalog_status`` are configured
                 # — both active in the field definitions — and set on 0 of the
                 # 23 items sampled. Zoho omits an unset custom field entirely,
-                # so absent here means unset rather than unconfigured. Reading
-                # them would add two always-null columns; the day they are
-                # populated they are two more lines exactly like the two above.
-                # ``cf_catalog_status`` needs one extra care when that happens:
-                # it is a dropdown whose *definition* defaults to REGULAR, so a
+                # so absent here means unset rather than unconfigured. They now
+                # travel in the bag the day somebody fills them in, with no
+                # code change, which is the whole point of it. Promoting either
+                # to a typed column is still a separate decision, and
+                # ``cf_catalog_status`` needs one care when it is taken: it is
+                # a dropdown whose *definition* defaults to REGULAR, so a
                 # missing value must not be read as REGULAR — that is the
-                # benign default this codebase refuses everywhere else.
-                #
-                # ``cf_end_customer`` is a lookup onto a customer. Copying it
-                # here would put a customer's identity on a product row, which
-                # is ``trust/``'s concern and not this one's, and it would
-                # travel to every reader of the catalogue. Not read.
+                # benign default this codebase refuses everywhere else. The bag
+                # cannot make that mistake, because an unset field is absent
+                # from it rather than defaulted into it.
                 #
                 # ``cf_estimate_delivery_date`` is a real lead-time signal and
                 # is the first evidence found for decision 016, which is open.
-                # Reading it belongs in that decision, with the persist-or-fetch
-                # question settled, not smuggled in here.
+                # It travels in the bag as data; *reading* it — persisting it
+                # as a promised date anything computes from — still belongs in
+                # that decision, and nothing here interprets it.
+                #
+                # ``cf_end_customer`` is the one that does not travel. See
+                # ``_ITEM_FIELDS_NOT_COPIED``.
                 "status": (i.get("status") or "active"),
                 # Stock travels on the item list Zoho already returns, so this
                 # costs nothing extra. Passed through raw — including the blank
@@ -1257,6 +1386,10 @@ class ZohoApiSource(ZohoTransport):
                 "salesperson_id": (str(inv["salesperson_id"])
                                    if inv.get("salesperson_id") else None),
                 "salesperson_name": inv.get("salesperson_name"),
+                # Whatever this book configured on an invoice. Read off the
+                # *detail* payload `_documents` yields, which carries the
+                # array and the hash and no flat key.
+                "source_attributes": source_attributes(inv),
                 # Which customer orders this invoice bills against. The detail
                 # payload above already carries them, so this is a passthrough:
                 # no extra call, no extra scope — the same trade `due_date` and
@@ -1391,6 +1524,10 @@ class ZohoApiSource(ZohoTransport):
                 "status": bill.get("status"),
                 "total": bill.get("total"),
                 "balance": bill.get("balance"),
+                # Read off the detail payload, same as the invoice. On this
+                # book that is the vendor's own document reference and date —
+                # the one place a bill records what the supplier called it.
+                "source_attributes": source_attributes(bill),
                 "line_items": [
                     {
                         "line_item_id": str(li.get("line_item_id")),
@@ -1489,6 +1626,7 @@ class ZohoApiSource(ZohoTransport):
                 # it is passed through and only ``None`` means unknown.
                 "payment_terms": v.get("payment_terms"),
                 "status": (v.get("status") or "active"),
+                "source_attributes": source_attributes(v),
             }
 
     def list_customer_payments(
@@ -1581,6 +1719,7 @@ class ZohoApiSource(ZohoTransport):
                 "quantity_yet_to_receive": po.get("quantity_yet_to_receive"),
                 "total": po.get("total"),
                 "receives": po.get("receives") or [],
+                "source_attributes": source_attributes(po),
             }
 
     def list_sales_orders(self) -> Iterable[dict[str, Any]]:
@@ -1626,6 +1765,7 @@ class ZohoApiSource(ZohoTransport):
                 "shipped_status": so.get("shipped_status"),
                 "total": so.get("total"),
                 "salesperson_id": so.get("salesperson_id"),
+                "source_attributes": source_attributes(so),
             }
 
     def list_quotes(
@@ -1743,9 +1883,15 @@ class ZohoApiSource(ZohoTransport):
                 # built by the people quoting; re-deriving any of it from the
                 # lines would be a second answer to a question already
                 # answered on the document.
-                "cf_quote_type": est.get("cf_quote_type"),
-                "cf_pricing_type": est.get("cf_pricing_type"),
-                "cf_procurement_type": est.get("cf_procurement_type"),
+                #
+                # Three keys were named here — quote type, pricing type,
+                # procurement type — and a fourth configured on the book would
+                # have been dropped with nothing recording that it existed.
+                # They travel in the bag now, under the same names, along with
+                # whatever else is on the record. Read off the *list* row: it
+                # carries the flattened spelling and is present even on a
+                # resumed quote whose detail call was skipped.
+                "source_attributes": source_attributes(est),
             }
 
     def list_vendor_payments(

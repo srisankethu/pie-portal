@@ -109,6 +109,19 @@
       "default": null,
       "title": "Payment Terms Days"
     },
+    "source_attributes": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Attributes"
+    },
     "source_ref": {
       "$ref": "#/$defs/SourceRef"
     },

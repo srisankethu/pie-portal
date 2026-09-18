@@ -107,6 +107,19 @@
       "default": null,
       "title": "Number"
     },
+    "source_attributes": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Attributes"
+    },
     "source_ref": {
       "$ref": "#/$defs/SourceRef"
     },

@@ -543,6 +543,15 @@ SURVIVES_PLAINTEXT: tuple[dict[str, str], ...] = (
             "encrypted — the corpus an RFQ parser is measured against has to "
             "be the bytes the customer sent. So destroying the key does not "
             "unread them; only row deletion removes this text"},
+    {"table": "customers, products, vendors, invoices, bills, sales_orders, "
+              "purchase_orders, erp_quotes",
+     "column": "source_attributes",
+     "why": "the custom fields your own ERP carries on each record, held "
+            "verbatim under the keys and with the values that system wrote. "
+            "Plaintext, and listed here because the contents are yours rather "
+            "than ours: a field an administrator added can hold anything, "
+            "including a person's name or a telephone number, and destroying "
+            "the key does not unread it. Only row deletion removes this text"},
     {"table": "audit_chain_heads", "column": "every column",
      "why": "where the audit chain is meant to end, kept for the same reason "
             "as the chain itself and useless apart from it — without the "

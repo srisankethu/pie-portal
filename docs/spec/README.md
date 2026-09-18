@@ -1,6 +1,6 @@
 # The PIE canonical ingestion spec
 
-`spec_031ffc8ae7` · 19 entities · 293 field contracts (142 REQUIRED, 20 EXPECTED, 131 OPTIONAL)
+`spec_a2dd5e2e56` · 19 entities · 300 field contracts (142 REQUIRED, 20 EXPECTED, 138 OPTIONAL)
 
 > **Generated — do not edit any file in this directory by hand.**
 > `scripts/spec_export.py` writes it from `backend/app/domain/schemas.py`,
@@ -92,7 +92,7 @@ element that is present; it never means the list must be non-empty.
 ## Versioning and compatibility
 
 **The stamp is a content hash, not a semantic version.**
-`spec_031ffc8ae7` is sha256 over all 19 documents, truncated. It
+`spec_a2dd5e2e56` is sha256 over all 19 documents, truncated. It
 moves on *any* change to any of them,
 including a reworded description — deliberately, because a contract whose
 stated meaning can be rewritten under a stable stamp is not a contract. It
@@ -145,7 +145,7 @@ print("spec_" + hashlib.sha256(pre.encode()).hexdigest()[:10])
 EOF
 ```
 
-That prints `spec_031ffc8ae7`. A hash does not invert, so publishing the
+That prints `spec_a2dd5e2e56`. A hash does not invert, so publishing the
 pre-image is what makes the stamp explainable rather than merely
 distinguishable — the same reason this platform publishes the serialised
 form behind its other policy stamps.
@@ -154,22 +154,22 @@ form behind its other policy stamps.
 
 | Entity | Schema | Fields | REQUIRED | EXPECTED | OPTIONAL |
 |---|---|---:|---:|---:|---:|
-| [`bill`](#bill) | [`bill.json`](bill.json) | 14 | 6 | 1 | 7 |
+| [`bill`](#bill) | [`bill.json`](bill.json) | 15 | 6 | 1 | 8 |
 | [`cost_record`](#cost_record) | [`cost_record.json`](cost_record.json) | 14 | 10 | 2 | 2 |
 | [`credit_note`](#credit_note) | [`credit_note.json`](credit_note.json) | 13 | 6 | 1 | 6 |
 | [`credit_note_application`](#credit_note_application) | [`credit_note_application.json`](credit_note_application.json) | 14 | 9 | 1 | 4 |
-| [`customer`](#customer) | [`customer.json`](customer.json) | 11 | 6 | 1 | 4 |
-| [`invoice`](#invoice) | [`invoice.json`](invoice.json) | 18 | 7 | 1 | 10 |
+| [`customer`](#customer) | [`customer.json`](customer.json) | 12 | 6 | 1 | 5 |
+| [`invoice`](#invoice) | [`invoice.json`](invoice.json) | 19 | 7 | 1 | 11 |
 | [`location`](#location) | [`location.json`](location.json) | 13 | 6 | 1 | 6 |
 | [`payment_receipt`](#payment_receipt) | [`payment_receipt.json`](payment_receipt.json) | 20 | 12 | 1 | 7 |
-| [`product`](#product) | [`product.json`](product.json) | 15 | 6 | 1 | 8 |
-| [`purchase_order`](#purchase_order) | [`purchase_order.json`](purchase_order.json) | 17 | 6 | 1 | 10 |
+| [`product`](#product) | [`product.json`](product.json) | 16 | 6 | 1 | 9 |
+| [`purchase_order`](#purchase_order) | [`purchase_order.json`](purchase_order.json) | 18 | 6 | 1 | 11 |
 | [`quote_doc`](#quote_doc) | [`quote_doc.json`](quote_doc.json) | 31 | 7 | 1 | 23 |
-| [`sales_order`](#sales_order) | [`sales_order.json`](sales_order.json) | 16 | 6 | 1 | 9 |
+| [`sales_order`](#sales_order) | [`sales_order.json`](sales_order.json) | 17 | 6 | 1 | 10 |
 | [`sales_txn`](#sales_txn) | [`sales_txn.json`](sales_txn.json) | 15 | 11 | 1 | 3 |
 | [`stock_location_snapshot`](#stock_location_snapshot) | [`stock_location_snapshot.json`](stock_location_snapshot.json) | 12 | 7 | 1 | 4 |
 | [`stock_snapshot`](#stock_snapshot) | [`stock_snapshot.json`](stock_snapshot.json) | 14 | 6 | 1 | 7 |
-| [`vendor`](#vendor) | [`vendor.json`](vendor.json) | 12 | 6 | 1 | 5 |
+| [`vendor`](#vendor) | [`vendor.json`](vendor.json) | 13 | 6 | 1 | 6 |
 | [`vendor_credit`](#vendor_credit) | [`vendor_credit.json`](vendor_credit.json) | 13 | 6 | 1 | 6 |
 | [`vendor_credit_application`](#vendor_credit_application) | [`vendor_credit_application.json`](vendor_credit_application.json) | 12 | 8 | 1 | 3 |
 | [`vendor_payment`](#vendor_payment) | [`vendor_payment.json`](vendor_payment.json) | 19 | 11 | 1 | 7 |
@@ -197,6 +197,7 @@ A bill's payable terms, header grain. The companion to the
 | `status` | OPTIONAL |  |
 | `total` | OPTIONAL |  |
 | `balance` | OPTIONAL |  |
+| `source_attributes` | OPTIONAL |  |
 | `source_ref` | REQUIRED |  |
 | `source_ref.system` | REQUIRED |  |
 | `source_ref.record_type` | REQUIRED |  |
@@ -313,6 +314,7 @@ artifact has nothing here to go on.*
 | `status` | OPTIONAL |  |
 | `first_seen` | OPTIONAL |  |
 | `assigned_user_id` | OPTIONAL |  |
+| `source_attributes` | OPTIONAL |  |
 | `source_ref` | REQUIRED |  |
 | `source_ref.system` | REQUIRED |  |
 | `source_ref.record_type` | REQUIRED |  |
@@ -350,6 +352,7 @@ instead of a sum.
 | `sales_orders[].external_ref` | REQUIRED |  |
 | `sales_orders[].number` | OPTIONAL |  |
 | `sales_orders[].is_primary` | OPTIONAL |  |
+| `source_attributes` | OPTIONAL |  |
 | `source_ref` | REQUIRED |  |
 | `source_ref.system` | REQUIRED |  |
 | `source_ref.record_type` | REQUIRED |  |
@@ -437,6 +440,7 @@ artifact has nothing here to go on.*
 | `source_item_type` | OPTIONAL |  |
 | `source_item_category` | OPTIONAL |  |
 | `active` | OPTIONAL |  |
+| `source_attributes` | OPTIONAL |  |
 | `source_ref` | REQUIRED |  |
 | `source_ref.system` | REQUIRED |  |
 | `source_ref.record_type` | REQUIRED |  |
@@ -466,6 +470,7 @@ artifact has nothing here to go on.*
 | `pending_qty` | OPTIONAL |  |
 | `total` | OPTIONAL |  |
 | `received_on` | OPTIONAL |  |
+| `source_attributes` | OPTIONAL |  |
 | `source_ref` | REQUIRED |  |
 | `source_ref.system` | REQUIRED |  |
 | `source_ref.record_type` | REQUIRED |  |
@@ -525,7 +530,7 @@ total, which is what was put in front of the customer.
 | `total` | OPTIONAL |  |
 | `salesperson_external_id` | OPTIONAL |  |
 | `client_viewed_at` | OPTIONAL |  |
-| `attributes` | OPTIONAL |  |
+| `source_attributes` | OPTIONAL |  |
 | `lines` | OPTIONAL |  |
 | `lines[].external_ref` | REQUIRED |  |
 | `lines[].line_number` | OPTIONAL |  |
@@ -563,6 +568,7 @@ One customer order, header grain. The demand-side mirror of
 | `shipped_status` | OPTIONAL |  |
 | `total` | OPTIONAL |  |
 | `salesperson_external_id` | OPTIONAL |  |
+| `source_attributes` | OPTIONAL |  |
 | `source_ref` | REQUIRED |  |
 | `source_ref.system` | REQUIRED |  |
 | `source_ref.record_type` | REQUIRED |  |
@@ -667,6 +673,7 @@ artifact has nothing here to go on.*
 | `pan` | OPTIONAL |  |
 | `payment_terms_days` | OPTIONAL |  |
 | `status` | OPTIONAL |  |
+| `source_attributes` | OPTIONAL |  |
 | `source_ref` | REQUIRED |  |
 | `source_ref.system` | REQUIRED |  |
 | `source_ref.record_type` | REQUIRED |  |

@@ -55,6 +55,24 @@ def _same(column: Any, value: Any):
     return column.is_(None) if value is None else column == value
 
 
+def _carried_attributes(bag: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """The source's own fields, copied onto a row — or NULL where none are held.
+
+    One function rather than the same expression on each of the eight upserts
+    that write this column, because what it encodes is a *rule* and not
+    tidiness: ``{}`` would assert *the source holds no custom fields on this
+    record*, and nothing this side of a connector's projection can make that
+    claim — an adapter that never read them is indistinguishable here from an
+    ERP that has none. ``None`` says only what is true, and the columns are
+    nullable to match. Eight hand-written copies of that test is eight places
+    for the ninth entity to get it wrong.
+
+    Copied rather than assigned through, so a later mutation of the DTO's dict
+    cannot reach a row that has already been written.
+    """
+    return dict(bag) if bag else None
+
+
 class ReadModelRepository:
     """Upsert + lookup for the canonical read model, scoped to one org."""
 
@@ -171,6 +189,7 @@ class ReadModelRepository:
         row.first_seen = c.first_seen
         if c.assigned_user_id is not None:
             row.assigned_user_id = c.assigned_user_id
+        row.source_attributes = _carried_attributes(c.source_attributes)
         row.source_ref = c.source_ref.model_dump()
         return row
 
@@ -238,6 +257,7 @@ class ReadModelRepository:
         row.source_item_type = p.source_item_type
         row.source_item_category = p.source_item_category
         row.active = p.active
+        row.source_attributes = _carried_attributes(p.source_attributes)
         row.source_ref = p.source_ref.model_dump()
         return row
 
@@ -808,6 +828,7 @@ class ReadModelRepository:
         row.pan = v.pan
         row.payment_terms_days = v.payment_terms_days
         row.status = v.status.value
+        row.source_attributes = _carried_attributes(v.source_attributes)
         row.source_ref = v.source_ref.model_dump()
         return row
 
@@ -972,6 +993,7 @@ class ReadModelRepository:
         row.shipped_status = so.shipped_status
         row.total = so.total
         row.salesperson_external_id = so.salesperson_external_id
+        row.source_attributes = _carried_attributes(so.source_attributes)
         row.source_ref = so.source_ref.model_dump()
         return row
 
@@ -1023,7 +1045,7 @@ class ReadModelRepository:
         row.total = q.total
         row.salesperson_external_id = q.salesperson_external_id
         row.client_viewed_at = q.client_viewed_at
-        row.attributes = dict(q.attributes)
+        row.source_attributes = _carried_attributes(q.source_attributes)
         row.source_recorded_at = q.source_ref.recorded_at
         row.source_ref = q.source_ref.model_dump(mode="json")
         return row
@@ -1106,6 +1128,7 @@ class ReadModelRepository:
         row.status = b.status
         row.total = b.total
         row.balance = b.balance
+        row.source_attributes = _carried_attributes(b.source_attributes)
         row.source_ref = b.source_ref.model_dump()
         return row
 
@@ -1131,6 +1154,7 @@ class ReadModelRepository:
         row.status = inv.status
         row.total = inv.total
         row.balance = inv.balance
+        row.source_attributes = _carried_attributes(inv.source_attributes)
         row.source_ref = inv.source_ref.model_dump()
         self._replace_invoice_sales_orders(inv)
         return row
@@ -1371,6 +1395,7 @@ class ReadModelRepository:
         row.pending_qty = po.pending_qty
         row.total = po.total
         row.received_on = po.received_on
+        row.source_attributes = _carried_attributes(po.source_attributes)
         row.source_ref = po.source_ref.model_dump()
         return row
 

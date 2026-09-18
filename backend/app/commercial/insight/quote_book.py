@@ -97,12 +97,15 @@ class BookQuote:
     #: answer the same question for a grouped query and for a record, so two
     #: screens cannot name the same company differently.
     company: str
-    #: The organization's own fields on the quote, as the ERP holds them —
-    #: quote type, pricing type, procurement type, branch. Only the keys the
-    #: source actually set: an absent custom field is not a category, and a
-    #: quote nobody classified is a different fact from every unclassified
-    #: quote sharing a bucket called "other".
-    attributes: dict[str, Any]
+    #: The source's own fields on the quote, as the ERP holds them — quote
+    #: type, pricing type, procurement type, branch, and whatever else this
+    #: business configured. Only the keys the source actually set: an absent
+    #: custom field is not a category, and a quote nobody classified is a
+    #: different fact from every unclassified quote sharing a bucket called
+    #: "other". ``{}`` here rather than ``None``: a reader wants a mapping to
+    #: iterate, and the column's NULL/empty distinction is not one a screen
+    #: can act on.
+    source_attributes: dict[str, Any]
 
     def to_dict(self) -> dict[str, Any]:
         """Snake_case keys and a ``float`` value, both matching ``unrecorded``.
@@ -127,7 +130,13 @@ class BookQuote:
             "value": float(self.value) if self.value is not None else None,
             "opened_at": self.opened_at.isoformat() if self.opened_at else None,
             "company": self.company,
-            "attributes": dict(self.attributes),
+            # The wire key, not the field name, and deliberately unchanged by
+            # the rename behind it: this is a published response field that
+            # ``ErpQuoteScreen`` reads, and nothing in the gate binds the two,
+            # so renaming it here would be a silent break of a working screen.
+            # It moves with its consumer or not at all — the same reasoning
+            # this method's docstring already applies to its key convention.
+            "attributes": dict(self.source_attributes),
         }
 
 
@@ -181,7 +190,7 @@ def build(session: Session, org: str, *, customer_names: dict[str, str],
             value=Decimal(row.total) if row.total is not None else None,
             company=(companies.label_for(row.connection_id) if companies
                      else "Source not recorded"),
-            attributes=dict(row.attributes or {}),
+            source_attributes=dict(row.source_attributes or {}),
             opened_at=row.client_viewed_at,
         )
         for row in session.scalars(stmt).all()

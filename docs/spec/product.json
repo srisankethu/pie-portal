@@ -106,6 +106,19 @@
       "title": "Name",
       "type": "string"
     },
+    "source_attributes": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Attributes"
+    },
     "source_item_category": {
       "anyOf": [
         {

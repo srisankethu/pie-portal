@@ -177,11 +177,6 @@
   },
   "description": "One quote as an ERP raised it. What was offered, and how the ERP says it\nended.\n\nThe demand-side document the platform has never read. Sales orders are what\na customer committed to; this is everything that was *offered* \u2014 the ~290\nestimates behind them, including the ones nobody ordered. Without it a win\nrate has no denominator and a lost quote leaves no trace anywhere.\n\nTwo status fields, on purpose. ``source_status`` is the ERP's own word,\ncarried verbatim and never mapped on the way in; ``outcome`` is this\nplatform's classification of it. Keeping only the first would put the\nWON/LOST mapping in every reader that ever asks, and the third copy of that\nmapping is the one that reads ``expired`` as a loss. Keeping only the\nsecond would make the classification unauditable \u2014 nothing left to group by\nwhen somebody asks which statuses fell through.\n\n**Nothing here carries a judgement.** No loss reason, no \"lost to\", no\nnote, no platform status: an ERP list row cannot know why a customer said\nno, and a field for it would be a field somebody eventually fills in from a\npayload that never held the answer. Why a quote was lost is a human fact\nand lives on ``quote_outcomes``, which no sync writes. This type is the\nsecond layer of that guarantee \u2014 the first being that the table it feeds\nhas no such column either.\n\n``lines`` carries the breakdown where the pull bought the detail call, and is\nempty where it did not \u2014 a resumed sync refreshes every header and re-reads\nno lines, so empty means \"not read on this pass\" rather than \"this quote had\nnone\". The reader has to keep those apart; the caller that writes them does\ntoo, which is why the sync only replaces stored lines when it has some.\n\nNo cost, no margin, no unit economics. ``total`` is the quote's own selling\ntotal, which is what was put in front of the customer.",
   "properties": {
-    "attributes": {
-      "additionalProperties": true,
-      "title": "Attributes",
-      "type": "object"
-    },
     "client_viewed_at": {
       "anyOf": [
         {
@@ -282,6 +277,19 @@
       ],
       "default": null,
       "title": "Salesperson External Id"
+    },
+    "source_attributes": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Attributes"
     },
     "source_ref": {
       "$ref": "#/$defs/SourceRef"

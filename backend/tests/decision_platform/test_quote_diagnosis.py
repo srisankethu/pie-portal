@@ -18,7 +18,8 @@ from app.commercial import dispersion
 from app.commercial.config import CommercialThresholds
 from app.commercial.quantity import band_for, bands
 from app.commercial.quote_diagnosis import (baselines, comparables, cutover,
-                                            evidence, opportunity, render, rules)
+                                            evidence, opportunity, render, rules,
+                                            working_capital)
 
 TH = CommercialThresholds()
 
@@ -64,8 +65,18 @@ def _subject(qty: str = "10", customer: str = "cst_a") -> comparables.Subject:
 
 
 def _run(rows, *, quoted: str | None, costs=(), subject=None,
-         segment=None, peer_rows=None, lost=()):
-    """The whole phase 1-4 pipeline over one set of rows. Mirrors the service."""
+         segment=None, peer_rows=None, lost=(), th=None,
+         settlements=(), supplier_term=None, supplier_term_recorded_at=None,
+         supplier_erp_days=None):
+    """The whole phase 1-4 pipeline over one set of rows. Mirrors the service.
+
+    The last four arguments are the working-capital reading's evidence, which
+    ``service`` loads and threads through. They default to nothing, so every
+    test written before the reading existed still runs the pipeline it ran
+    then — and gets the refusal a book with no cost of capital set gets, which
+    is the platform as it ships.
+    """
+    th = th if th is not None else TH
     subj = subject or _subject()
     kept, dropped = evidence.knowable_at(rows, knowable_by=KNOWABLE_BY)
     kept, unnorm = evidence.normalize(kept, subject_unit=subj.unit)
@@ -75,17 +86,17 @@ def _run(rows, *, quoted: str | None, costs=(), subject=None,
         costs, knowable_by=KNOWABLE_BY)
     dropped = dropped + cost_dropped
 
-    ladder = bands(TH)
+    ladder = bands(th)
     axis = comparables.select_customer_axis(kept, subject=subj, bands=ladder,
                                             segment=segment)
     peer = comparables.select_peer_axis(
         peer_rows if peer_rows is not None else kept, subject=subj,
-        bands=ladder, segment=segment, recent_days=TH.diagnosis_recent_days)
+        bands=ladder, segment=segment, recent_days=th.diagnosis_recent_days)
 
     own = [r for r in axis.rows if r.customer_id == subj.customer_id]
     for_band, held = evidence.for_baseline(own)
-    price = baselines.price_baseline(for_band, as_of=subj.as_of, th=TH, lost=lost)
-    cost_base = baselines.cost_baseline(kept_costs, as_of=subj.as_of, th=TH)
+    price = baselines.price_baseline(for_band, as_of=subj.as_of, th=th, lost=lost)
+    cost_base = baselines.cost_baseline(kept_costs, as_of=subj.as_of, th=th)
 
     evset = evidence.EvidenceSet(rows=kept, costs=kept_costs,
                                  excluded=dropped + held)
@@ -95,7 +106,10 @@ def _run(rows, *, quoted: str | None, costs=(), subject=None,
         quantity_band=subj.band.label,
         quoted_unit_price=Decimal(quoted) if quoted is not None else None,
         as_of=subj.as_of, knowable_by=KNOWABLE_BY, axis=axis, peer=peer,
-        price=price, cost=cost_base, evidence=evset, th=TH)
+        price=price, cost=cost_base, evidence=evset, th=th,
+        settlements=settlements, supplier_term=supplier_term,
+        supplier_term_recorded_at=supplier_term_recorded_at,
+        supplier_erp_days=supplier_erp_days)
 
 
 def _steady(n: int = 10, *, price: str = "1000", start: date = date(2026, 1, 5)):
@@ -1002,3 +1016,219 @@ def test_no_driver_and_no_attribution_field_can_reach_the_operations_view():
     # is how an attribution would arrive in an existing string field.
     card = render.render_operations(ops, th=TH)
     assert " pp" not in str(dataclasses.asdict(card))
+
+
+# ── what the cash on the line costs, carried to the owner's card ─────────────
+#
+# The reading itself is exercised in ``test_quote_diagnosis_working_capital``,
+# 44 tests over its arithmetic and its five refusals. These are about the
+# carrying: that the field exists on every diagnosis, that a refusal arrives as
+# something written rather than as an empty block, and that every figure on the
+# card is a string the server formatted.
+
+def _with_rate(pct: float = 0.12) -> CommercialThresholds:
+    """The platform with somebody's cost of capital typed in.
+
+    ``CommercialThresholds()`` deliberately has none — which is why the default
+    ``_run`` above produces the ``NO_RATE`` refusal, and why that refusal is the
+    first thing tested here rather than an edge case.
+    """
+    return dataclasses.replace(TH, cost_of_capital_annual_pct=pct)
+
+
+def _settled(n: int = 8, *, due_in: int = 45, paid_in: int = 70):
+    """``n`` settled invoices for this customer, all knowable on the quote day.
+
+    Same shape as the reading's own suite builds, deliberately: the fixture that
+    proves the wiring should be the fixture the module was written against, or
+    the wiring is verified against a scenario the engine never sees.
+    """
+    from datetime import timedelta
+
+    from app.commercial.insight import payments as _payments
+    out = []
+    for i in range(n):
+        raised = QUOTE_DAY - timedelta(days=340 - 20 * i)
+        out.append(_payments.Settlement(
+            party_id="cst_a", document_ref=f"inv_{i}", document_number=None,
+            document_date=raised, due_date=raised + timedelta(days=due_in),
+            paid_on=raised + timedelta(days=paid_in), amount=1000.0))
+    return out
+
+
+def _funded_line(**kwargs):
+    """A steady line with everything the reading needs to produce a figure."""
+    from datetime import timedelta
+    costs = [cost(f"c{i}", unit_cost="600",
+                  day=date(2026, 1, 8) + timedelta(days=21 * i))
+             for i in range(6)]
+    args = {"th": _with_rate(), "settlements": _settled(),
+            "supplier_erp_days": 30}
+    args.update(kwargs)
+    return _run(_steady(), quoted="1000", costs=costs, **args)
+
+
+def test_every_diagnosis_carries_a_working_capital_reading_never_none():
+    """The field is not optional, and the platform as it ships refuses.
+
+    A key that could simply be absent would read as "this line ties up no cash",
+    which is the benign default CLAUDE.md §1 names. So the refusal is a shape of
+    the reading rather than the absence of one.
+    """
+    out = _run(_steady(), quoted="1000")
+
+    assert out.working_capital is not None
+    assert out.working_capital.assessed is False
+    assert out.working_capital.reason == working_capital.NO_RATE
+    assert out.working_capital.capital_per_unit is None
+
+
+def test_an_unset_rate_names_the_settings_field_that_finishes_it():
+    """A refusal is content, not an empty state.
+
+    One person typing one number into Settings completes this reading, so the
+    card says which field — in the engine's own words, at the label that screen
+    actually uses. A block that drew nothing would say "nothing to report" about
+    a question nobody has answered yet.
+    """
+    out = _run(_steady(), quoted="1000")
+    view = render.render_owner(out, opportunity.compute(out, th=TH),
+                               th=TH).working_capital
+
+    assert view.assessed is False
+    assert view.figures == ()
+    assert view.headline == ""
+    # As visible as the card it sits in — never less, which is what would turn
+    # the refusal into the empty panel it exists to replace.
+    assert view.renders == out.surfaces
+    assert render.render_working_capital(
+        out.working_capital, surfaces=True, th=TH).renders is True
+    assert view.note.startswith("NO_RATE:")
+    assert "'Annual cost of capital' in Settings" in view.note
+    # And it does not offer the stock carrying rate as a substitute.
+    assert "a receivable occupies no shelf" in view.note
+
+
+def test_an_assessed_reading_reaches_the_card_as_money_and_days():
+    """Every figure a string, formatted once, on the server.
+
+    The front end may not format money or compute a number (CLAUDE.md §3), so a
+    percentage point and a rupee figure are already written here. These are
+    asserted verbatim because a second rounding somewhere downstream is exactly
+    what this shape exists to prevent.
+    """
+    th = _with_rate()
+    out = _funded_line()
+    view = render.render_owner(out, opportunity.compute(out, th=th),
+                               th=th).working_capital
+
+    assert view.assessed is True
+    # 70 days to be paid, 30 days of supplier credit, 40 days funded.
+    assert dict(view.figures)["Customer pays in"] == "70 days"
+    assert dict(view.figures)["Supplier credit"] == "30 days"
+    assert dict(view.figures)["Money out for"] == "40 days"
+    assert dict(view.figures)["Cost of capital"] == "12.00% a year"
+    assert view.headline.startswith("Funding this line's cash costs ")
+    assert "per unit), taking " in view.headline
+    assert view.headline.endswith(" off its margin.")
+    # The engine's own sentence, verbatim, carrying the days and where each
+    # leg's number came from.
+    assert view.note.startswith("Money is out for 40 days on this line")
+    assert view.strength_word in ("Strong", "Moderate", "Weak", "Not enough")
+
+
+def test_the_money_on_the_card_is_the_readings_own_figures_spelled():
+    """Nothing is recomputed between the engine and the card.
+
+    Asserted against ``th.money`` of the reading's own fields rather than
+    against literals, so a renderer that started doing arithmetic of its own
+    would fail here rather than agreeing by coincidence.
+    """
+    th = _with_rate()
+    out = _funded_line()
+    capital = out.working_capital
+    view = render.render_owner(out, opportunity.compute(out, th=th),
+                               th=th).working_capital
+    figures = dict(view.figures)
+
+    assert figures["Capital at risk"] == (
+        f"{th.money(capital.capital_at_risk)} "
+        f"({th.money(capital.capital_per_unit)} per unit)")
+    assert figures["Funding charge"] == (
+        f"{th.money(capital.line_charge)} "
+        f"({th.money(capital.charge_per_unit)} per unit)")
+    assert th.money(capital.line_charge) in view.headline
+
+
+def test_a_supplier_whose_credit_covers_the_wait_is_charged_nothing():
+    """Zero is a real answer here and is told apart from a missing one.
+
+    ``financing_cost`` floors the window at nought days and says why; the card
+    has to say that no charge was levied rather than printing a blank, because a
+    blank is what an unassessed reading looks like.
+    """
+    th = _with_rate()
+    out = _funded_line(settlements=_settled(due_in=20, paid_in=30),
+                       supplier_erp_days=60)
+    view = render.render_owner(out, opportunity.compute(out, th=th),
+                               th=th).working_capital
+
+    assert out.working_capital.assessed is True
+    assert out.working_capital.funded_days == -30
+    assert view.headline.startswith("No funding charge on this line")
+    assert dict(view.figures)["Money out for"] == (
+        "nothing — supplier credit runs 30 days longer")
+
+
+def test_the_block_is_never_louder_than_either_gate_already_decided():
+    """``interrupts`` is a conjunction, so it can only be more silent.
+
+    ``rules._surfaces`` decides whether this line interrupts anybody and
+    ``working_capital._surfaces`` decides whether this reading does. Two gates
+    conjoined have one answer; a third condition here would be a second answer
+    to a question that already has one.
+    """
+    th = _with_rate()
+    out = _funded_line()
+    view = render.render_owner(out, opportunity.compute(out, th=th),
+                               th=th).working_capital
+
+    assert view.interrupts <= out.surfaces
+    assert view.interrupts <= out.working_capital.surfaces
+    assert view.interrupts == (out.surfaces and out.working_capital.surfaces)
+
+
+def test_the_reading_is_carried_rather_than_re_derived_from_its_figures():
+    """``assessed`` comes off the engine, not off whether a number is present.
+
+    A predicate rebuilt downstream from published fields is a guess about what
+    the producer meant — the ``_identity_candidate`` lesson in CLAUDE.md §1. A
+    line whose supplier funds it outright has a charge of exactly zero, and a
+    view that had asked "is there a figure" would have called that a refusal.
+    """
+    th = _with_rate()
+    out = _funded_line(settlements=_settled(due_in=20, paid_in=30),
+                       supplier_erp_days=60)
+    view = render.render_owner(out, opportunity.compute(out, th=th),
+                               th=th).working_capital
+
+    assert out.working_capital.charge_per_unit == Decimal("0")
+    assert view.assessed is out.working_capital.assessed is True
+    assert view.figures  # and the figures are on the card, not suppressed
+
+
+def test_a_stored_row_says_it_has_no_reading_rather_than_showing_none():
+    """The refusal a row read back from the store carries.
+
+    Rendered through the same function a live reading is, so there is one answer
+    to what a refusal looks like. A manager who found no key would read the
+    absence as "this line ties up no cash", which is never true of a line.
+    """
+    view = render.render_working_capital(render.WC_NOT_STORED, surfaces=True,
+                                         th=TH)
+
+    assert view.assessed is False
+    assert view.figures == ()
+    assert view.renders is True
+    assert view.note.startswith("NOT_ON_STORED_RECORD:")
+    assert "Re-assess this line" in view.note

@@ -80,6 +80,14 @@ function ownerView(over: Partial<OwnerDiagnosisView> = {}): OwnerDiagnosisView {
     qualification: "Historical prices may include exceptional deals.",
     actions: ["REVIEW_PRICE"],
     attribution: attribution(),
+    // Required on this projection and irrelevant to this file: a refusal, so
+    // the card draws its block and nothing here has to reason about it.
+    // `DiagnosisCard.workingcapital.test.tsx` is where it is pinned.
+    working_capital: {
+      assessed: false, interrupts: false, renders: true, headline: "",
+      figures: [], severity: "", strength_word: "",
+      note: "NO_RATE: No annual cost of capital is set.",
+    },
     ...over,
   };
 }

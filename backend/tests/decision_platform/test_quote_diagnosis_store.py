@@ -53,12 +53,12 @@ def _seed(session, *, prices=("1000",) * 12, product="prd_1",
     session.flush()
 
 
-def _diagnose(session, *, quoted="850"):
+def _diagnose(session, *, quoted="850", th=None):
     return service.diagnose_line(
         session, ORG, quote_id="q1", line_id="ln_1", customer_id="cst_a",
         product_id="prd_1", qty=Decimal("10"),
         quoted_unit_price=Decimal(quoted), as_of=QUOTE_DAY,
-        knowable_by=KNOWABLE_BY, th=TH,
+        knowable_by=KNOWABLE_BY, th=th if th is not None else TH,
         backfill_before=service.backfill_cutover(session, ORG))
 
 
@@ -450,3 +450,227 @@ def test_recording_a_diagnosis_writes_no_driver_code_anywhere_in_the_row(session
     for code in drivers.DRIVER_CODES:
         assert code not in body
     assert "PRICE_THEN_COST" not in body
+
+
+# ── the working-capital reading is computed, not stored ──────────────────────
+#
+# Same decision as the attribution above, reached the same way and held by the
+# same two tripwires. ``engine_version`` answers "which code produced the
+# columns in this row"; ``record`` writes no column for a reading, the evidence
+# hash covers the cited price and cost ids, and the replay compares ``codes``
+# and ``strength``. The reading touches none of the three, so every row written
+# after this change is byte-identical to the row that would have been written
+# before it.
+
+def test_the_reading_adds_no_column_and_the_engine_version_still_does_not_move():
+    """Why ``qd-1`` is still ``qd-1`` after a second computed block.
+
+    The column assertion is the other half: if a reading is ever persisted this
+    fails, and persisting one is exactly the change that must bump the stamp and
+    bring a migration with it.
+    """
+    from app.commercial.quote_diagnosis import rules
+
+    columns = {c.name for c in models.QuoteDiagnosis.__table__.columns}
+
+    assert rules.ENGINE_VERSION == "qd-1"
+    assert not [c for c in columns
+                if "capital" in c or "funding" in c or "charge" in c
+                or "settlement" in c]
+
+
+def test_a_row_written_without_a_working_capital_reading_still_replays(session):
+    """The recomputation cannot make a stored diagnosis stop reproducing.
+
+    A replay recomputes the reading from this account's settlements and this
+    supplier's terms — rows that move — and compares neither, because neither is
+    part of the hash or of the verdict.
+    """
+    _seed(session)
+    stored = service.record(session, ORG, quote_id="q1",
+                            result=_diagnose(session))
+    session.commit()
+
+    done = replay.rediagnose(session, ORG, quote_line_id="ln_1", th=TH)
+
+    assert done.result.evidence_hash == stored.evidence_hash
+    assert done.verdict_matches is True
+    assert done.stored_engine_version == done.current_engine_version == "qd-1"
+    # It was produced — it is simply not compared and not written.
+    assert done.result.owner.working_capital is not None
+
+
+def test_recording_a_diagnosis_writes_no_working_capital_figure_in_the_row(
+        session):
+    """A serialised check beside the column one.
+
+    A reason code or a money figure smuggled into ``codes``, ``context`` or one
+    of the JSON blobs would pass a column-name assertion and would still be a
+    persisted shape nobody migrated.
+    """
+    from app.commercial.quote_diagnosis import working_capital
+
+    _seed(session)
+    stored = service.record(session, ORG, quote_id="q1",
+                            result=_diagnose(session))
+    session.commit()
+
+    body = str(_snapshot(session, stored.quote_diagnosis_id))
+
+    for reason in (working_capital.ASSESSED, working_capital.NO_RATE,
+                   working_capital.NO_COST_BASELINE,
+                   working_capital.NO_SUPPLIER_TERMS,
+                   working_capital.NO_RECEIVABLE_DAYS,
+                   working_capital.MEASURED_LAG, working_capital.GRANTED_TERM,
+                   working_capital.AGREED_TERM, working_capital.ERP_TERM):
+        assert reason not in body
+    assert "capital_per_unit" not in body
+    assert "funded_days" not in body
+
+
+def test_the_row_is_identical_whether_or_not_the_reading_could_be_taken(session):
+    """The empirical half of the ``ENGINE_VERSION`` argument.
+
+    The other two tests assert that no column is *named* for the reading and
+    that no reason code appears in the serialised row. This one diagnoses the
+    same line twice against the same policy and the same purchases, varying only
+    the two inputs the reading brought with it — this account's settled invoices
+    and this supplier's agreed term — and asserts every stored column comes out
+    the same.
+
+    That is the property the stamp actually promises: two rows carrying ``qd-1``
+    were produced by code that writes the same columns. An argument from three
+    facts is only as good as the three facts; this asks the row.
+
+    ``created_at`` and the primary key are excluded because they are the two
+    things that must differ between two inserts.
+    """
+    import dataclasses
+
+    th = dataclasses.replace(TH, cost_of_capital_annual_pct=0.12)
+    _seed(session)
+    session.add(models.Vendor(vendor_id="vnd_1", organization_id=ORG,
+                              external_id="v1", name="Toolmakers",
+                              payment_terms_days=30))
+    session.flush()
+    for i in range(6):
+        day = date(2026, 1, 8) + timedelta(days=21 * i)
+        session.add(models.CostRecord(
+            cost_record_id=f"c{i}", organization_id=ORG, external_ref=f"b{i}:1",
+            product_id="prd_1", vendor_id="vnd_1", date=day, qty=Decimal("10"),
+            unit_cost=Decimal("600"), rate=Decimal("600"),
+            source_recorded_at=datetime(day.year, day.month, day.day, 9,
+                                        tzinfo=timezone.utc),
+            source_ref={"record_type": "bill"}))
+    session.commit()
+
+    # Nothing to read the receivable leg off yet.
+    refused = _diagnose(session, th=th)
+    assert refused.owner.working_capital.assessed is False
+    bare = service.record(session, ORG, quote_id="q1", result=refused)
+    session.commit()
+
+    # The two inputs this reading brought with it, and nothing else.
+    session.add(models.VendorPaymentTerm(
+        organization_id=ORG, vendor_id="vnd_1", days=45,
+        # Stamped before the quote on purpose. ``vendor_payment_terms`` is
+        # upserted, so ``updated_at`` is when the values it holds now were
+        # written, and a term typed after the quote is not evidence the quoter
+        # had — see ``_knowable_term``, and the test below that pins it.
+        created_at=_at(date(2026, 1, 2)), updated_at=_at(date(2026, 1, 2))))
+    for i in range(8):
+        raised = QUOTE_DAY - timedelta(days=340 - 20 * i)
+        session.add(models.PaymentReceipt(
+            payment_receipt_id=f"rcp_{i}", organization_id=ORG,
+            external_ref=f"RCP-{i}", customer_id="cst_a",
+            date=raised + timedelta(days=70), amount=Decimal("10000")))
+    session.flush()
+    for i in range(8):
+        raised = QUOTE_DAY - timedelta(days=340 - 20 * i)
+        session.add(models.PaymentApplication(
+            payment_application_id=f"pa_{i}", organization_id=ORG,
+            external_ref=f"PA-{i}", payment_receipt_id=f"rcp_{i}",
+            customer_id="cst_a", invoice_external_ref=f"INV-{i}",
+            invoice_number=f"INV-{i}", invoice_date=raised,
+            invoice_due_date=raised + timedelta(days=45),
+            paid_on=raised + timedelta(days=70),
+            amount_applied=Decimal("10000")))
+    session.commit()
+
+    result = _diagnose(session, th=th)
+    # The reading was genuinely taken — otherwise this proves nothing at all,
+    # which is the *absence of evidence is not a pass* rule pointed at a test.
+    assert result.owner.working_capital.assessed is True
+    assert result.owner.working_capital.funded_days == 25
+
+    full = service.record(session, ORG, quote_id="q1", result=result)
+    session.commit()
+
+    skip = {"quote_diagnosis_id", "created_at"}
+    before = {k: v for k, v in _snapshot(session, bare.quote_diagnosis_id).items()
+              if k not in skip}
+    after = {k: v for k, v in _snapshot(session, full.quote_diagnosis_id).items()
+             if k not in skip}
+    assert after == before
+
+
+def test_a_supplier_term_typed_after_the_quote_is_not_read_back_into_it(session):
+    """The stamp threaded from the row is ``updated_at``, and it is checked.
+
+    ``vendor_payment_terms`` is upserted one row per vendor: ``created_at``
+    would vouch for a term that has since been retyped, and there is no earlier
+    version kept to fall back on. So the agreement carries the instant its
+    current values were written, the engine puts that through its one
+    ``is_knowable``, and a term agreed last week does not re-date a quote from
+    June.
+    """
+    import dataclasses
+
+    th = dataclasses.replace(TH, cost_of_capital_annual_pct=0.12)
+    _seed(session)
+    session.add(models.Vendor(vendor_id="vnd_1", organization_id=ORG,
+                              external_id="v1", name="Toolmakers",
+                              payment_terms_days=30))
+    session.flush()
+    for i in range(6):
+        day = date(2026, 1, 8) + timedelta(days=21 * i)
+        session.add(models.CostRecord(
+            cost_record_id=f"c{i}", organization_id=ORG, external_ref=f"b{i}:1",
+            product_id="prd_1", vendor_id="vnd_1", date=day, qty=Decimal("10"),
+            unit_cost=Decimal("600"), rate=Decimal("600"),
+            source_recorded_at=_at(day), source_ref={"record_type": "bill"}))
+    # Agreed at 45 days, but typed a month after the quote was written.
+    session.add(models.VendorPaymentTerm(
+        organization_id=ORG, vendor_id="vnd_1", days=45,
+        created_at=_at(date(2026, 7, 1)), updated_at=_at(date(2026, 7, 1))))
+    for i in range(8):
+        raised = QUOTE_DAY - timedelta(days=340 - 20 * i)
+        session.add(models.PaymentReceipt(
+            payment_receipt_id=f"rcp_{i}", organization_id=ORG,
+            external_ref=f"RCP-{i}", customer_id="cst_a",
+            date=raised + timedelta(days=70), amount=Decimal("10000")))
+    session.flush()
+    for i in range(8):
+        raised = QUOTE_DAY - timedelta(days=340 - 20 * i)
+        session.add(models.PaymentApplication(
+            payment_application_id=f"pa_{i}", organization_id=ORG,
+            external_ref=f"PA-{i}", payment_receipt_id=f"rcp_{i}",
+            customer_id="cst_a", invoice_external_ref=f"INV-{i}",
+            invoice_number=f"INV-{i}", invoice_date=raised,
+            invoice_due_date=raised + timedelta(days=45),
+            paid_on=raised + timedelta(days=70),
+            amount_applied=Decimal("10000")))
+    session.commit()
+
+    reading = _diagnose(session, th=th).owner.working_capital
+
+    assert reading.assessed is True
+    # The ERP's 30 days, not the agreement's 45 — and the residual says both
+    # that the ERP value is what ran and why the agreement was not usable.
+    assert reading.terms_source == "ERP_TERM"
+    assert reading.supplier_credit_days == 30
+    assert any("RECORDED_AFTER" in u["reason"] for u in reading.unavailable)
+
+
+def _at(day: date) -> datetime:
+    return datetime(day.year, day.month, day.day, 9, tzinfo=timezone.utc)

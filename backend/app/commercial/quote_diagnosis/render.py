@@ -30,6 +30,7 @@ from ..config import CommercialThresholds
 from .drivers import (Attribution, COST_LEVEL_EFFECT, Driver,
                       PRICE_POSITION_EFFECT)
 from .opportunity import Opportunity
+from .working_capital import ASSESSED, WorkingCapital
 from .rules import (ABOVE_HISTORICAL_RANGE, BELOW_HISTORICAL_RANGE,
                     BELOW_PEER_BAND_STRUCTURAL, COST_DRIVEN_MARGIN_RISK,
                     EVIDENCE_WITHHELD, INSUFFICIENT_EVIDENCE, KNOWN_COST_CHANGE,
@@ -127,6 +128,11 @@ class OperationsCard:
 #: longer adds up, presented as though it did.
 _DRIVER_LABEL = {PRICE_POSITION_EFFECT: "price", COST_LEVEL_EFFECT: "cost level"}
 
+#: Compared against rather than tested for falsehood, so a genuine zero charge —
+#: a line whose supplier credit covers the wait — is told apart from a missing
+#: one. ``Decimal("0")`` and ``None`` are different answers here.
+_CAPITAL_ZERO = Decimal("0")
+
 #: Why a *stored* diagnosis carries no split. Its own reason rather than one of
 #: ``drivers``' — those name something about the evidence, and this names
 #: something about the record: ``quote_diagnoses`` has no attribution column, so
@@ -196,6 +202,87 @@ class AttributionView:
     note: str
 
 
+# ── working capital, in words ────────────────────────────────────────────────
+#
+# RESTRICTED in its entirety, and the most direct of the three blocks on this
+# card: ``capital_per_unit`` **is** the purchase cost and the charge divides
+# straight back to it against one organization-wide rate. None of it has a
+# counterpart on the operations card and none of it may grow one.
+
+#: An unassessed reading for a row read back from the store. The same
+#: ``NOT_ON_STORED_RECORD`` the attribution uses, because it is the same fact
+#: about the same record: ``quote_diagnoses`` has no column for either, so a
+#: stored row cannot answer and must say so rather than answering with silence.
+#: Built here so the stored projection refuses through the same function a live
+#: reading renders through — a second renderer for the refusal case would be a
+#: second answer to what a refusal looks like.
+WC_NOT_STORED = WorkingCapital(
+    assessed=False, reason=NOT_ON_STORED_RECORD,
+    funded_days=None, receivable_days=None, supplier_credit_days=None,
+    days_source=None, terms_source=None, settlements=0,
+    rate=None, capital_per_unit=None, capital_at_risk=None,
+    charge_per_unit=None, line_charge=None, effect_pp=None,
+    severity="", strength="", days_strength="", cost_strength="",
+    surfaces=False, cited=(), unavailable=(),
+    basis=(f"{NOT_ON_STORED_RECORD}: this is the diagnosis as it was stored, "
+           "and what the cash on this line costs is not one of its columns — it "
+           "is computed when the engine runs over this account's settled "
+           "invoices and this supplier's terms. Re-assess this line to see it."))
+
+
+@dataclass(frozen=True)
+class WorkingCapitalView:
+    """What the line's cash costs as an owner reads it, or the refusal. RESTRICTED.
+
+    Two shapes and no third, which is the shape ``WorkingCapital`` itself has.
+    Either ``figures`` holds the reading and ``headline`` states the money, or
+    ``figures`` is empty, ``headline`` is blank and ``note`` names what stopped
+    it. There is no state where this renders as an empty panel.
+
+    ``assessed`` is **carried from the engine, never re-derived** from whether a
+    figure happens to be present. A predicate rebuilt downstream from published
+    fields is a guess about what the producer meant, which is the lesson
+    CLAUDE.md §1 draws from ``_identity_candidate`` — and here the producer knows
+    something the figures do not say, namely that a reading of zero days is a
+    real answer rather than an absent one.
+    """
+
+    #: Whether a figure was produced at all — ``WorkingCapital.assessed``.
+    assessed: bool
+    #: Whether this reading should interrupt somebody — ``rules._surfaces``'
+    #: answer for the line, narrowed by ``working_capital._surfaces``' answer for
+    #: the reading. **A narrowing, never a widening**: it can only ever be more
+    #: silent than either gate already decided, so "should this interrupt
+    #: somebody" keeps exactly one answer. It decides the register the headline
+    #: is printed in and nothing else — the figures are on the card either way,
+    #: because a card somebody opened is not an interruption and
+    #: ``working_capital._surfaces`` says in as many words that a ``MINOR``
+    #: reading still belongs on it.
+    interrupts: bool
+    #: Whether this block draws at all. The line's own gate, narrowed by whether
+    #: there is anything written here — never widened, for the reason
+    #: ``AttributionView.renders`` is not.
+    renders: bool
+    #: The money in one sentence, or ``""`` when nothing is asserted.
+    headline: str
+    #: Label and value, already formatted. A fixed handful of rows, which is the
+    #: case ``ui-standards`` §3 keeps a ``<table>`` for.
+    figures: tuple[tuple[str, str], ...]
+    #: ``MAJOR`` / ``MINOR`` / ``NEGLIGIBLE``, or ``""`` on a refusal — a refusal
+    #: has no effect to grade and a grade printed beside one would be read as a
+    #: verdict on a number nobody asserted.
+    severity: str
+    #: How much to believe it, in the one spelling ``strength_word`` gives, or
+    #: ``""`` on a refusal.
+    strength_word: str
+    #: The engine's own sentence — what the number answers, or the refusal and
+    #: the field that would finish it. Verbatim, never re-worded: it names a
+    #: Settings field by the label that screen actually uses, and a second
+    #: spelling of "why there is no figure" would drift from the one the engine
+    #: states.
+    note: str
+
+
 @dataclass(frozen=True)
 class OwnerReport:
     """The full picture, economics included. RESTRICTED.
@@ -216,6 +303,9 @@ class OwnerReport:
     #: one. Part of the report rather than a second object beside it: it is one
     #: of the things this reader is being told about this line.
     attribution: AttributionView
+    #: RESTRICTED. What the cash tied up in this line costs, or the refusal to
+    #: say — on the report for the same reason the attribution is.
+    working_capital: WorkingCapitalView
 
 
 def render_operations(ops: OperationsDiagnosis, *,
@@ -351,6 +441,8 @@ def render_owner(owner: OwnerDiagnosis, opportunity: Opportunity, *,
         context=owner.context,
         attribution=render_attribution(owner.attribution,
                                        surfaces=owner.surfaces, th=th),
+        working_capital=render_working_capital(owner.working_capital,
+                                               surfaces=owner.surfaces, th=th),
     )
 
 
@@ -458,6 +550,105 @@ def _signed_money(value: Optional[Decimal], th: CommercialThresholds) -> str:
     if value == 0:
         return th.money(value)
     return f"{'+' if value > 0 else '-'}{th.money(abs(value))}"
+
+
+def render_working_capital(capital: WorkingCapital, *, surfaces: bool,
+                           th: CommercialThresholds) -> WorkingCapitalView:
+    """What this line's cash costs, or the refusal, as an owner reads it. RESTRICTED.
+
+    Takes a ``WorkingCapital`` rather than an ``OwnerDiagnosis``, so the
+    stored-row projection — which has a row and no diagnosis object — renders its
+    own refusal through this same function instead of a copy of it.
+
+    **The refusal is the case this is written around.** The rate is owner-set
+    with no default, so the commonest reading on a fresh book is ``NO_RATE``: one
+    person typing one number into Settings finishes it, and the engine's own
+    sentence names the field by the label that screen uses. Four more refusals
+    sit behind it. Each leaves ``figures`` empty, and an empty block that simply
+    did not draw would read as "nothing to report" — which is CLAUDE.md §1's
+    *absence of evidence is not a pass* wearing a layout. So the refusal goes
+    into ``note`` in the engine's own words and the block still draws.
+
+    **Every figure is formatted here and nowhere else.** The front end may not
+    format money or compute a number (CLAUDE.md §3), and a figure rounded in two
+    places is two answers to one question.
+    """
+    assessed = capital.reason == ASSESSED
+    figures = _capital_figures(capital, th) if assessed else ()
+    headline = _capital_headline(capital, th) if assessed else ""
+    note = capital.basis
+    return WorkingCapitalView(
+        assessed=assessed,
+        # Two gates conjoined, so this can only be more silent than either.
+        interrupts=bool(surfaces and capital.surfaces),
+        renders=bool(surfaces and (headline or note)),
+        headline=headline,
+        figures=figures,
+        severity=capital.severity if assessed else "",
+        strength_word=strength_word(capital.strength) if assessed else "",
+        note=note,
+    )
+
+
+def _capital_headline(capital: WorkingCapital, th: CommercialThresholds) -> str:
+    """The money in one sentence.
+
+    Deliberately the half the engine's own ``basis`` does not state. That
+    sentence carries the days, where each leg's number came from, and the margin
+    points; this carries the rupees. Two sentences that overlapped would be two
+    roundings of one figure and would drift the first time either was edited.
+    """
+    if capital.charge_per_unit == _CAPITAL_ZERO:
+        return ("No funding charge on this line: the money is back before the "
+                "supplier is paid.")
+    return (f"Funding this line's cash costs {th.money(capital.line_charge)} "
+            f"({th.money(capital.charge_per_unit)} per unit), taking "
+            f"{_pp_magnitude(capital.effect_pp)} off its margin.")
+
+
+def _capital_figures(capital: WorkingCapital, th: CommercialThresholds,
+                     ) -> tuple[tuple[str, str], ...]:
+    """The reading as labelled figures, in the order the arithmetic runs.
+
+    The two legs before the window they make, the capital before the charge
+    levied on it, and the rate last — which is the order the sentence in ``note``
+    walks, so a reader checking one against the other reads down rather than
+    hunting.
+    """
+    return (
+        ("Customer pays in", _days(capital.receivable_days)),
+        ("Supplier credit", _days(capital.supplier_credit_days)),
+        ("Money out for", _days(capital.funded_days)),
+        ("Capital at risk", f"{th.money(capital.capital_at_risk)} "
+                            f"({th.money(capital.capital_per_unit)} per unit)"),
+        ("Funding charge", f"{th.money(capital.line_charge)} "
+                           f"({th.money(capital.charge_per_unit)} per unit)"),
+        ("Margin effect", _signed_pp(capital.effect_pp)),
+        ("Cost of capital", _annual_pct(capital.rate)),
+    )
+
+
+def _days(value: Optional[int]) -> str:
+    """``45 days``, ``1 day``, and a negative window said as what it means.
+
+    ``funded_days`` is signed: negative is the supplier funding this line
+    outright, which is a real and good answer rather than a missing one. Printing
+    ``-15 days`` would read as an error, and printing ``0`` would hide that the
+    credit more than covers the wait.
+    """
+    if value is None:
+        return "unknown"
+    if value < 0:
+        return f"nothing — supplier credit runs {abs(value)} days longer"
+    return f"{value} day" if value == 1 else f"{value} days"
+
+
+def _annual_pct(value: Optional[Decimal]) -> str:
+    """The cost of capital as a reader sees it. A ratio in, a percentage out —
+    the conversion belongs here rather than in a browser, like every other."""
+    if value is None:
+        return "unknown"
+    return f"{value * 100:.2f}% a year"
 
 
 def _cost_lines(owner: OwnerDiagnosis, th: CommercialThresholds) -> list[str]:

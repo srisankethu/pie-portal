@@ -33,12 +33,16 @@ from .comparables import (CustomerAxis, PeerBand, SPECIFIC_TIERS,
                           TIER_SAME_CUSTOMER_SKU_BAND)
 from .evidence import EvidenceSet
 
-if TYPE_CHECKING:  # ``drivers`` imports this module's code vocabulary, so the
-    # dependency can only run one way at module scope. The annotation is a
-    # string under ``from __future__ import annotations`` and is never
-    # evaluated; ``diagnose`` imports the function itself at call time, the
-    # same arrangement ``service`` uses for ``render``.
+if TYPE_CHECKING:  # ``drivers`` and ``working_capital`` both import this
+    # module's code vocabulary, so the dependency can only run one way at module
+    # scope. The annotations are strings under ``from __future__ import
+    # annotations`` and are never evaluated; ``diagnose`` imports the functions
+    # themselves at call time, the same arrangement ``service`` uses for
+    # ``render``.
+    from ..insight.payments import Settlement
+    from ..insight.terms import Term
     from .drivers import Attribution
+    from .working_capital import WorkingCapital
 
 _ZERO = Decimal("0")
 
@@ -62,6 +66,23 @@ _ZERO = Decimal("0")
 #: there is a difference nobody reads. The bump belongs to whichever change
 #: first *persists* an attribution, because that is the change after which two
 #: rows carrying one stamp have different shapes.
+#:
+#: **And deliberately not bumped for the working-capital reading either**, by
+#: the same three facts checked again rather than by analogy. ``service.record``
+#: writes no column for it; ``service.evidence_hash`` covers the cited price and
+#: cost ids and nothing else; ``replay.rediagnose`` compares that hash, then
+#: ``codes`` and ``strength``. The reading adds no code, sits outside the
+#: strength ladder this row publishes — it grades itself, and the grade goes
+#: nowhere near ``owner.strength`` — and cites only the purchase ids the cost
+#: baseline already cited. Every column written after this change is byte-
+#: identical to the column written before it.
+#:
+#: That is worth stating rather than assuming, because this reading takes rows
+#: the diagnosis never touched before: settled invoices and a supplier's payment
+#: term, both of which move under it. A replay recomputes the reading from
+#: today's rows and can legitimately get a different figure from the one an
+#: owner saw — which is exactly why it is not stored and not compared. The bump
+#: belongs to whichever change first persists one.
 ENGINE_VERSION = "qd-1"
 
 
@@ -254,6 +275,21 @@ class OwnerDiagnosis:
     #: that could simply be missing would read as "nothing to report", which is
     #: the failure CLAUDE.md §1 names.
     attribution: "Attribution"
+    #: RESTRICTED. What the cash tied up in this line costs: how long the money
+    #: is out — the customer's days to pay less the supplier's credit — and what
+    #: funding the purchase over that window takes off this line's margin.
+    #:
+    #: The most directly cost-revealing field on this type. ``capital_per_unit``
+    #: **is** the purchase cost, carried rather than re-derived, and the charge
+    #: divides straight back to it against one organization-wide rate. It has no
+    #: counterpart on the type below and may never grow one.
+    #:
+    #: Always present and never ``None``, for the reason ``attribution`` is:
+    #: ``working_capital.assess`` returns a reading on every path and a refusal
+    #: is one of its two shapes, so a reader is told either the figure or which
+    #: field would finish it. A key that could simply be absent would read as
+    #: "nothing to report", which is the failure CLAUDE.md §1 names.
+    working_capital: "WorkingCapital"
 
     #: Per unit, positive when the quote is below the bottom of the band. The
     #: gate reads this; the opportunity *range* is computed downstream.
@@ -321,6 +357,16 @@ FORBIDDEN_OPERATIONS_FIELDS = frozenset({
     # ones above are, not because the words look economic.
     "attribution", "drivers", "driver", "movement_pp", "residual_pp",
     "effect_pp", "effect_per_unit",
+    # Working capital, in every spelling it could arrive under. This is the most
+    # direct of the three: ``capital_per_unit`` **is** the purchase cost, and
+    # ``capital_at_risk`` is that times a quantity the caller sent. The charge
+    # fields are no better — one organization-wide rate and a day count turn any
+    # of them back into the cost with one division, which is the same shape as
+    # MFLOOR and as the attribution above. ``rate`` is on the list because the
+    # cost of capital is itself RESTRICTED policy.
+    "working_capital", "capital_per_unit", "capital_at_risk",
+    "charge_per_unit", "line_charge", "funded_days", "receivable_days",
+    "supplier_credit_days", "rate", "cost_of_capital", "financing", "funding",
 })
 
 
@@ -372,12 +418,28 @@ def diagnose(*, line_id: str, subject_customer_id: Optional[str],
              price: PriceBaseline, cost: CostBaseline,
              evidence: EvidenceSet, th: CommercialThresholds,
              backfill_before: Optional[date] = None,
+             settlements: Sequence["Settlement"] = (),
+             supplier_term: Optional["Term"] = None,
+             supplier_term_recorded_at: Optional[datetime] = None,
+             supplier_erp_days: Optional[int] = None,
              ) -> OwnerDiagnosis:
     """Run every rule over already-computed baselines. Pure and total.
 
     Order matters in one place only: ``codes[0]`` is what the renderer leads
     with, so the price-side conclusion comes first and the cost-side and
     account-level findings follow it. Everything else is a set.
+
+    The last four arguments are the working-capital reading's own evidence, and
+    they are arguments rather than a load because this function holds no
+    ``Session`` and must not start: ``service`` reads them and threads them
+    through, exactly as it does the cost rows. They default to nothing and the
+    reading then refuses and says which of them is missing, which is the correct
+    answer for a caller that has none — the alternative is a plausible-looking
+    stand-in, and this package does not have those.
+
+    ``settlements`` are **one customer's**, unfiltered. ``working_capital``
+    applies the window and the visibility cut itself, and refuses a mixed-party
+    list outright; pre-filtering here would put two windows in one product.
     """
     codes: list[str] = []
     context: list[str] = []
@@ -479,12 +541,37 @@ def diagnose(*, line_id: str, subject_customer_id: Optional[str],
         cost_rows=evidence.costs, strength=grade, knowable_by=knowable_by,
         backfill_before=backfill_before, th=th)
 
+    # ── what the cash on this line costs ────────────────────────────────────
+    #
+    # Computed on every line and surfaced on almost none, for the reason the
+    # attribution above is: the gate governs interruption, not calculation.
+    # ``assess`` decides its own ``surfaces`` from its own strength and
+    # severity — a second gate here would be a second answer to "should this
+    # interrupt somebody" and could only disagree with the first.
+    #
+    # Imported at call time rather than at module scope because
+    # ``working_capital`` reads this module's grade ladder; the dependency can
+    # only run one way.
+    from .working_capital import assess as _assess_working_capital
+    capital = _assess_working_capital(
+        quoted_unit_price=quoted_unit_price, qty=qty, cost=cost,
+        settlements=settlements,
+        # Told rather than inferred from an empty settlement list: a line with
+        # no customer and an account that has settled nothing arrive here
+        # looking identical, and they are not the same refusal.
+        has_customer=subject_customer_id is not None,
+        supplier_term=supplier_term,
+        supplier_term_recorded_at=supplier_term_recorded_at,
+        supplier_erp_days=supplier_erp_days,
+        as_of=as_of, knowable_by=knowable_by, th=th)
+
     return OwnerDiagnosis(
         line_id=line_id, customer_id=subject_customer_id, product_id=product_id,
         qty=qty, quantity_band=quantity_band, as_of=as_of,
         knowable_by=knowable_by, quoted_unit_price=quoted_unit_price,
         codes=tuple(codes), context=tuple(sorted(set(context))), strength=grade,
         price=price, peer=peer, cost=cost, attribution=attribution,
+        working_capital=capital,
         deviation_per_unit=deviation, line_deviation_value=line_value,
         evidence=evidence.summary(), tier_counts=axis.tier_counts(),
         surfaces=surfaces, thresholds_version=th.version)

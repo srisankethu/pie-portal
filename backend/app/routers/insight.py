@@ -45,7 +45,7 @@ from ..commercial.insight import (absence, adoption, bonds, cadence, capital,
                                   outcomes as outcomes_view,
                                   passthrough as pass_through_view, payments,
                                   periods, radar, routing, schemes, selffunding,
-                                  scope as metric_scope,
+                                  scope as metric_scope, settlements,
                                   simulate, stock,
                                   quote_book as quote_book_view,
                                   unrecorded as unrecorded_view,
@@ -792,23 +792,15 @@ def buying_cadence(
 
 def _settlements(session: Session, org: str,
                  customer_id: Optional[str] = None) -> list[payments.Settlement]:
-    """Payment applications as the grain the payment view computes on."""
-    stmt = select(models.PaymentApplication).where(
-        models.PaymentApplication.organization_id == org)
-    if customer_id:
-        stmt = stmt.where(models.PaymentApplication.customer_id == customer_id)
-    return [
-        payments.Settlement(
-            party_id=row.customer_id,
-            document_ref=row.invoice_external_ref,
-            document_number=row.invoice_number,
-            document_date=row.invoice_date,
-            due_date=row.invoice_due_date,
-            paid_on=row.paid_on,
-            amount=float(row.amount_applied or 0),
-        )
-        for row in session.scalars(stmt).all()
-    ]
+    """Payment applications as the grain the payment view computes on.
+
+    The read itself lives in ``commercial/insight/settlements.py`` now, because
+    the quote diagnosis needs one customer's settled invoices too and a
+    deterministic package may not import a router. This name is kept as the way
+    the rest of this file spells it — renaming fourteen call sites would be a
+    bigger diff than the move, and the alias costs nothing.
+    """
+    return settlements.load(session, org, customer_id)
 
 
 def _cash_movements(session: Session, org: str) -> list[cashflow.Movement]:

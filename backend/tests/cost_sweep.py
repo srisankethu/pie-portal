@@ -50,8 +50,20 @@ ID_KEYS = frozenset({"quote_diagnosis_id"})
 #: would not have caught one: a margin beside the price the caller sent is the
 #: cost in one step, P x (1 - m), exactly. They are economics words because the
 #: thing they name is a cost, not because they sound like one.
+#: The third line is the working-capital reading, added when the engine learned
+#: what the cash tied up in a line costs. It is on this list for a blunter reason
+#: than the attribution above: ``capital_per_unit`` **is** the purchase cost,
+#: carried rather than derived, so a leak here is not a boundary somebody could
+#: walk — it is the number itself. The charge fields are no safer, because one
+#: organization-wide rate and a day count turn any of them back into the cost
+#: with one division. ``rate`` is deliberately **not** here: it is a substring of
+#: ordinary English ("accurate", "separate") and a check that fires on prose is a
+#: check people learn to scroll past. The key that would carry it is named
+#: instead.
 WORDS = ("cost", "margin", "purchase_price", "opportunity", "peer",
-         "attribution", "driver", "effect", "movement_pp", "residual_pp")
+         "attribution", "driver", "effect", "movement_pp", "residual_pp",
+         "capital", "charge", "funding", "funded_days", "receivable_days",
+         "supplier_credit", "cost_of_capital")
 
 #: Keys whose value **is** the caller's own input, spelled back. They move when
 #: the caller moves the price, by definition, so a price walk cannot compare

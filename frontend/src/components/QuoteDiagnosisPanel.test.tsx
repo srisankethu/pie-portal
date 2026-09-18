@@ -49,6 +49,20 @@ function ownerView(over: Partial<OwnerDiagnosisView> = {}): OwnerDiagnosisView {
       note: "No cost is on record for this item, so the movement could not be "
             + "split between price and cost.",
     },
+    // Owner-only for the same reason, and a refusal for the same reason: the
+    // block itself is pinned in `DiagnosisCard.workingcapital.test.tsx`, and
+    // this is the state a book that has not set a cost of capital is in.
+    working_capital: {
+      assessed: false,
+      interrupts: false,
+      renders: true,
+      headline: "",
+      figures: [],
+      severity: "",
+      strength_word: "",
+      note: "NO_RATE: No annual cost of capital is set, so there is no rate at "
+            + "which to charge the money this line ties up.",
+    },
     qualification: "Historical prices may include exceptional deals.",
     actions: ["REVIEW_PRICE"],
     ...over,

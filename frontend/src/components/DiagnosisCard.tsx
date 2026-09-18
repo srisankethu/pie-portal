@@ -166,6 +166,49 @@ export type AttributionView = {
  *  written by `render_owner` and do carry cost and margin, which is why the
  *  server only ever builds this for a principal whose role may see them. The
  *  browser does not re-decide that — it draws what arrived. */
+/** What the cash tied up in one line costs, or a refusal to say.
+ *
+ *  **Declared on the owner projection and nowhere else**, for the reason
+ *  `AttributionView` is — only blunter. `capital_per_unit` *is* the purchase
+ *  cost, carried rather than derived, so this is not a boundary somebody could
+ *  walk towards the number; it is the number. Reaching it on an un-narrowed
+ *  `DiagnosisView` does not compile, and an operations literal carrying the key
+ *  is an excess-property error.
+ *
+ *  Two shapes, exactly as the server has: either `figures` holds the reading
+ *  and `headline` states the money, or `figures` is empty and `note` says what
+ *  stopped it. There is no third state, and an empty one is not silence — see
+ *  `WorkingCapitalBlock`.
+ */
+export type WorkingCapitalView = {
+  /** Whether a figure was produced at all. **Read this, never `figures.length`
+   *  on its own:** a line whose supplier credit covers the wait is assessed and
+   *  charged exactly nothing, and a component that asked "is there a number"
+   *  would report that real answer as a refusal. The server knows which it is
+   *  and says so. */
+  assessed: boolean;
+  /** Whether this reading should interrupt somebody — the line's own surfacing
+   *  gate narrowed by the reading's. It decides the register the headline is
+   *  printed in and nothing else: the figures are on the card either way,
+   *  because a card somebody opened is not an interruption. */
+  interrupts: boolean;
+  renders: boolean;
+  /** The money in one sentence; `""` when nothing is asserted. */
+  headline: string;
+  /** Label and value, **already formatted server-side** — days, rupees and a
+   *  percentage. Nothing in this file formats a figure, picks a currency
+   *  symbol, or does arithmetic; `CLAUDE.md` §3 puts every number a screen
+   *  renders in `commercial/`. */
+  figures: { label: string; value: string }[];
+  /** `MAJOR` / `MINOR` / `NEGLIGIBLE`, or `""` on a refusal. */
+  severity: string;
+  /** How much to believe it, or `""` on a refusal. */
+  strength_word: string;
+  /** The engine's own sentence — what the number answers, or the refusal and
+   *  the Settings field that would finish it. */
+  note: string;
+};
+
 export type OwnerDiagnosisView = DiagnosisCommon & {
   view: "OWNER";
   /** The report, one claim per sentence, already worded. */
@@ -178,6 +221,9 @@ export type OwnerDiagnosisView = DiagnosisCommon & {
    *  much the cost level does. Owner-only, by construction — see
    *  `AttributionView`. */
   attribution: AttributionView;
+  /** What the cash tied up in this line costs. Owner-only, by construction —
+   *  see `WorkingCapitalView`. */
+  working_capital: WorkingCapitalView;
 };
 
 export type DiagnosisView = OperationsDiagnosisView | OwnerDiagnosisView;
@@ -305,6 +351,12 @@ export function OwnerDiagnosisCard({
           and the opportunity keep their order underneath. */}
       <AttributionBlock attribution={diagnosis.attribution} />
 
+      {/* Under it, because it answers a different question: the split above is
+          about the price that was decided, this is about the money that leaves
+          the bank before the customer pays it back. An owner reads the first
+          and then asks the second. */}
+      <WorkingCapitalBlock capital={diagnosis.working_capital} />
+
       <Box>
         <FieldLabel>What the evidence says</FieldLabel>
         <Stack spacing={1} sx={{ mt: 0.5 }}>
@@ -388,6 +440,104 @@ function AttributionBlock({ attribution }: { attribution?: AttributionView }) {
         </>
       ) : (
         <Alert severity="info" sx={{ mt: 0.5 }}>{note || NOTHING_ASSERTED}</Alert>
+      )}
+    </Box>
+  );
+}
+
+/** The one sentence in this block the server did not write — and it is about
+ *  this card's own input, not about the business.
+ *
+ *  A refusal arrives with a `note` naming what was missing, usually a Settings
+ *  field one person fills in. When even that is empty, or the key is absent
+ *  because the payload predates it, the block still has to say that nothing was
+ *  read. It names the absence and claims nothing else.
+ */
+const NOTHING_READ =
+  "What the cash tied up in this line costs was not read, and no reason was "
+  + "given.";
+
+/**
+ * What the money on this line costs while it is out.
+ *
+ * **A refusal is content here, not an empty state.** The rate this reading is
+ * levied at is owner-set with no default, so the commonest answer on a book
+ * nobody has configured is "no annual cost of capital is set" — and the fix is
+ * one person typing one number into Settings. The server's `note` names that
+ * field, so the refusal is printed rather than swallowed. A block that drew
+ * nothing would read as "this line ties up no cash", which is never true of a
+ * line, and is `CLAUDE.md` §1's *absence of evidence is not a pass* wearing a
+ * layout instead of an `or 0`.
+ *
+ * `info` rather than `warning`: an engine declining to price a cycle it has no
+ * rate for is the engine being honest, not a fault.
+ *
+ * **`assessed` decides the shape, `interrupts` decides the register.** The
+ * first is the server's own flag and is read rather than re-derived from
+ * whether a figure is present — a line whose supplier funds it outright is
+ * assessed and charged nothing, and asking "is there a number" would file that
+ * under refusal. The second is the surfacing gate: a reading worth interrupting
+ * somebody for leads with an `Alert`, and one that is not says the same
+ * sentence in the same words, quietly. Neither ever hides a figure.
+ *
+ * The prop is optional although `OwnerDiagnosisView.working_capital` is not, for
+ * the reason `AttributionBlock`'s is: a payload served before the key existed
+ * would otherwise take the Quote Builder down on a property read.
+ */
+function WorkingCapitalBlock({ capital }: { capital?: WorkingCapitalView }) {
+  const assessed = capital?.assessed === true;
+  const figures = capital?.figures ?? [];
+  const note = capital?.note ?? "";
+
+  return (
+    <Box>
+      <FieldLabel
+        tip={"The money leaves when the supplier is paid and comes back when "
+             + "the customer does. What is counted is the gap between the two "
+             + "— any time the goods sit on the shelf is not in it, so the "
+             + "charge is a floor rather than a ceiling."}
+      >
+        What the cash on this line costs
+      </FieldLabel>
+
+      {assessed ? (
+        <>
+          {capital?.interrupts ? (
+            <Alert severity="warning" sx={{ mt: 0.5 }}>{capital.headline}</Alert>
+          ) : (
+            <Typography variant="body2" sx={{ mt: 0.5 }}>
+              {capital?.headline}
+            </Typography>
+          )}
+
+          <Stack
+            direction="row"
+            spacing={1}
+            useFlexGap
+            sx={{ mt: 1, alignItems: "center", flexWrap: "wrap" }}
+          >
+            <StatusChip
+              label={capital?.severity ?? ""}
+              tone={SEVERITY_TONE[capital?.severity ?? ""] ?? "neutral"}
+              tip="How much this matters — the size of its effect on margin."
+            />
+            <Meta>Confidence in this: {capital?.strength_word}</Meta>
+          </Stack>
+
+          {/* A label and a value, seven rows — the case `ui-standards` §3 keeps
+              a `<table>` for. Its row count is fixed by the reading, not by the
+              size of the business. */}
+          <Box sx={{ mt: 1.5 }}>
+            <FactTable
+              label="What the cash on this line costs"
+              rows={figures.map((f) => [f.label, f.value])}
+            />
+          </Box>
+
+          {note && <Meta sx={{ mt: 1.5 }}>{note}</Meta>}
+        </>
+      ) : (
+        <Alert severity="info" sx={{ mt: 0.5 }}>{note || NOTHING_READ}</Alert>
       )}
     </Box>
   );

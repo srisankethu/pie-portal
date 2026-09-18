@@ -405,6 +405,9 @@ def _project(owner: rules.OwnerDiagnosis, opportunity, principal: Principal,
             # built from a type with no field for it, so there is nothing here
             # to forget to remove.
             "attribution": _attribution(report.attribution),
+            # RESTRICTED, and on this branch only, for the same reason. This is
+            # the most direct of the three: the capital is the purchase cost.
+            "working_capital": _working_capital(report.working_capital),
             "price_band": owner.price.to_dict(),
             "cost_baseline": owner.cost.to_dict(),
             "peer_band": owner.peer.to_dict(),
@@ -454,6 +457,11 @@ def _project_stored(row: models.QuoteDiagnosis, principal: Principal,
             # not mean.
             "attribution": _attribution(render.render_attribution(
                 render.NOT_STORED, surfaces=row.surfaces, th=th)),
+            # Likewise: no column, so the block is published carrying the
+            # refusal that says so. A manager who found no key would read the
+            # absence as "this line ties up no cash", which is never true.
+            "working_capital": _working_capital(render.render_working_capital(
+                render.WC_NOT_STORED, surfaces=row.surfaces, th=th)),
             "context": list(context), "price_band": row.price_band,
             "cost_baseline": row.cost_baseline, "peer_band": row.peer_band,
             "opportunity_detail": row.opportunity,
@@ -514,6 +522,26 @@ def _attribution(view: render.AttributionView) -> dict[str, Any]:
                          "strength_word": d.strength_word,
                          "effect": d.effect, "basis": d.basis}
                         for d in view.drivers],
+            "note": view.note}
+
+
+def _working_capital(view: render.WorkingCapitalView) -> dict[str, Any]:
+    """What the line's cash costs, as JSON. RESTRICTED — reached only from the
+    owner branches.
+
+    Every figure is already a string, for the reason ``_attribution``'s are: the
+    front end may not format money or compute a number (CLAUDE.md §3). The
+    figures travel as label/value pairs rather than as named numeric keys
+    precisely because there is nothing here for a browser to do but print them.
+    """
+    return {"assessed": view.assessed,
+            "interrupts": view.interrupts,
+            "renders": view.renders,
+            "headline": view.headline,
+            "figures": [{"label": label, "value": value}
+                        for label, value in view.figures],
+            "severity": view.severity,
+            "strength_word": view.strength_word,
             "note": view.note}
 
 

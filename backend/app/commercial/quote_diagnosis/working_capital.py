@@ -172,6 +172,13 @@ NO_QUANTITY = "NO_QUANTITY"
 NO_COST_BASELINE = "NO_COST_BASELINE"
 NO_SUPPLIER_TERMS = "NO_SUPPLIER_TERMS"
 NO_RECEIVABLE_DAYS = "NO_RECEIVABLE_DAYS"
+#: The line names no customer at all, so there is no account whose payment
+#: behaviour could be read. Distinct from NO_RECEIVABLE_DAYS, which is about an
+#: account that exists and has not settled enough: telling somebody pricing an
+#: unassigned line that "this account has settled nothing" describes an account
+#: that is not there. A refusal may be silent about what it cannot see; it may
+#: not be wrong about it.
+NO_CUSTOMER = "NO_CUSTOMER"
 
 
 @dataclass(frozen=True)
@@ -301,6 +308,7 @@ class WorkingCapital:
 def assess(*, quoted_unit_price: Optional[Decimal], qty: Decimal,
            cost: CostBaseline,
            settlements: Sequence[payments.Settlement],
+           has_customer: bool = True,
            supplier_term: Optional[terms.Term],
            supplier_term_recorded_at: Optional[datetime],
            supplier_erp_days: Optional[int],
@@ -410,6 +418,17 @@ def assess(*, quoted_unit_price: Optional[Decimal], qty: Decimal,
                 "invoices; the book's median is deliberately not substituted, "
                 "which would state a funding cost for the one account there is "
                 "no evidence about."), settlements=len(visible))
+        if not has_customer:
+            # PERMANENT for this line as it stands, not COLLECTABLE: nothing can
+            # be recorded that would complete the reading while the line names
+            # nobody. Naming a customer is a different act from recording a
+            # term, and offering "record the terms" here sends somebody to a
+            # screen that cannot help them.
+            return _refused(NO_CUSTOMER, absence.PERMANENT, (
+                "This line names no customer, so there is no account whose "
+                "payment behaviour could say when the money comes back. The "
+                "book's median is deliberately not substituted: it would state "
+                "a funding cost for an account this line does not have."))
         return _refused(NO_RECEIVABLE_DAYS, absence.COLLECTABLE, (
             "This account has settled nothing this quote could have seen and no "
             "credit term is recorded against its invoices, so there is no date "

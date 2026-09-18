@@ -389,9 +389,21 @@ def attribute(*, quoted_unit_price: Optional[Decimal],
         # the cost baseline this function was handed — which is the one thing it
         # must not do — and a baseline built partly from evidence the quoter did
         # not have is not repairable from here.
+        # Two different claims, because the two reasons are not the same
+        # strength. An unknowable row demonstrably post-dates the quote; an
+        # imputed one carries an estimated stamp, so what is missing is the
+        # confirmation, not the evidence. Saying the stronger sentence for the
+        # weaker fact is the kind of overclaim this engine refuses in numbers
+        # and must not make in words.
+        claim = (
+            f"purchase {evidence_id} carries an estimated rather than a "
+            "recorded visibility stamp, so it cannot be confirmed as evidence "
+            "this quote could have used"
+            if reason == COST_VISIBILITY_IMPUTED else
+            f"purchase {evidence_id} was not evidence this quote could have "
+            "used")
         return _refused(
-            f"{reason}: purchase {evidence_id} was not evidence this quote "
-            f"could have used ({total} of {len(cost_rows)} purchase"
+            f"{reason}: {claim} ({total} of {len(cost_rows)} purchase"
             f"{'' if len(cost_rows) == 1 else 's'} handed in). The cost "
             "baseline rests on it, so no split is asserted.")
 

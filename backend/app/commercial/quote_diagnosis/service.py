@@ -121,7 +121,12 @@ def diagnose_line(session: Session, org: str, *, quote_id: str, line_id: str,
         qty=qty, quantity_band=subject.band.label,
         quoted_unit_price=quoted_unit_price, as_of=as_of,
         knowable_by=knowable_by, axis=axis, peer=peer, price=price, cost=cost,
-        evidence=evset, th=th)
+        evidence=evset, th=th,
+        # The same cut-over the cost rows were filtered against. Threaded rather
+        # than left to default, so the attribution's re-check of visibility asks
+        # the question this load actually asked; a re-check with a different
+        # boundary verifies nothing.
+        backfill_before=backfill_before)
     opp = opportunity.compute(owner, th=th)
 
     # The cited set, not everything loaded: what the band was actually built

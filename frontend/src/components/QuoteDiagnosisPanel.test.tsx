@@ -38,6 +38,17 @@ function ownerView(over: Partial<OwnerDiagnosisView> = {}): OwnerDiagnosisView {
     opportunity: "Roughly \u20b96,065 on this line at the top of the band.",
     evidence: "11 usable, 0 excluded.",
     codes: ["ABOVE_HISTORICAL_RANGE"],
+    // Owner-only by construction — `DiagnosisCard.AttributionView`. A refusal
+    // here rather than a split: this file is about the panel choosing a card,
+    // and `DiagnosisCard.attribution.test.tsx` is where the block itself is
+    // pinned.
+    attribution: {
+      renders: false,
+      headline: "",
+      drivers: [],
+      note: "No cost is on record for this item, so the movement could not be "
+            + "split between price and cost.",
+    },
     qualification: "Historical prices may include exceptional deals.",
     actions: ["REVIEW_PRICE"],
     ...over,

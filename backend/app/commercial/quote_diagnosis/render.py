@@ -23,8 +23,12 @@ owner object for anything, that would be the bug.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from decimal import Decimal
+from typing import Optional
 
 from ..config import CommercialThresholds
+from .drivers import (Attribution, COST_LEVEL_EFFECT, Driver,
+                      PRICE_POSITION_EFFECT)
 from .opportunity import Opportunity
 from .rules import (ABOVE_HISTORICAL_RANGE, BELOW_HISTORICAL_RANGE,
                     BELOW_PEER_BAND_STRUCTURAL, COST_DRIVEN_MARGIN_RISK,
@@ -111,6 +115,87 @@ class OperationsCard:
     actions: tuple[str, ...] = (REVIEW_PRICE, DISMISS)
 
 
+# ── driver attribution, in words ─────────────────────────────────────────────
+#
+# RESTRICTED in its entirety. Every figure below is a margin movement, and a
+# margin beside the price the caller sent is the cost in one step. None of it
+# has a counterpart on the operations card and none of it may grow one.
+
+#: The noun a reader sees for each driver code. A map rather than a chain of
+#: ``if``s, so a code this renderer has never heard of comes out as itself
+#: rather than vanishing — a driver dropped in the rendering is a split that no
+#: longer adds up, presented as though it did.
+_DRIVER_LABEL = {PRICE_POSITION_EFFECT: "price", COST_LEVEL_EFFECT: "cost level"}
+
+#: Why a *stored* diagnosis carries no split. Its own reason rather than one of
+#: ``drivers``' — those name something about the evidence, and this names
+#: something about the record: ``quote_diagnoses`` has no attribution column, so
+#: a row read back cannot answer the question and must say so instead of
+#: answering it with silence.
+NOT_ON_STORED_RECORD = "NOT_ON_STORED_RECORD"
+
+#: An ``Attribution`` in its refusal shape — empty ``drivers``, ``reconciles``
+#: false, and a basis that says what stopped it — built here so the stored-row
+#: projection renders through the same function as a live one. A second renderer
+#: for the refusal case would be a second answer to what a refusal looks like.
+NOT_STORED = Attribution(
+    movement_pp=None, drivers=(), reconciles=False, residual_pp=None,
+    basis=(f"{NOT_ON_STORED_RECORD}: this is the diagnosis as it was stored, "
+           "and the split between the price decision and the cost level is not "
+           "one of its columns — it is computed when the engine runs over the "
+           "evidence. Re-assess this line to see it."))
+
+
+@dataclass(frozen=True)
+class DriverLine:
+    """One attributed factor, already in words and already in money.
+
+    ``effect`` is formatted here and not downstream. The front end may not
+    format money or compute a number (CLAUDE.md §3), and a percentage point
+    rendered in two places is two roundings of one figure.
+    """
+
+    #: ``drivers.PRICE_POSITION_EFFECT`` / ``COST_LEVEL_EFFECT``.
+    code: str
+    #: ``MAJOR`` / ``MINOR`` / ``NEGLIGIBLE`` — how much it matters.
+    severity: str
+    #: How much to believe it, in the one spelling ``strength_word`` gives.
+    strength_word: str
+    #: The margin effect and the money behind it, spelled: ``-3.16 pp
+    #: (-₹50 per unit)``.
+    effect: str
+    #: The counterfactual this number answers, in ``drivers``' own words.
+    basis: str
+
+
+@dataclass(frozen=True)
+class AttributionView:
+    """The split as an owner reads it, or the refusal to assert one. RESTRICTED.
+
+    Two shapes and no third. Either ``drivers`` holds both factors and
+    ``headline`` says how they divide the movement, or ``drivers`` is empty,
+    ``headline`` is blank and ``note`` names what stopped it. There is no state
+    where this renders as an empty panel: ``renders`` is false unless there is
+    something written in one of the two fields, which is what keeps a refusal
+    from reading as "nothing to report" (CLAUDE.md §1).
+    """
+
+    #: Whether this block draws. **Not a second surfacing gate.** It is
+    #: ``OwnerDiagnosis.surfaces`` — the one ``rules._surfaces`` decided —
+    #: narrowed by whether there is anything written here at all. It can only
+    #: ever be more silent than that gate, never less, so "should this interrupt
+    #: somebody" still has exactly one answer.
+    renders: bool
+    #: The split in one sentence, or ``""`` when nothing is asserted.
+    headline: str
+    drivers: tuple[DriverLine, ...]
+    #: The counterfactual the split was taken in, or the refusal and its reason
+    #: — ``drivers``' own basis either way, verbatim. Not re-worded here: it
+    #: carries the residual and the observation counts, and a second spelling of
+    #: "why there is no split" would drift from the one the engine states.
+    note: str
+
+
 @dataclass(frozen=True)
 class OwnerReport:
     """The full picture, economics included. RESTRICTED.
@@ -127,6 +212,10 @@ class OwnerReport:
     evidence: str
     codes: tuple[str, ...]
     context: tuple[str, ...]
+    #: RESTRICTED. The split of the margin movement, or the refusal to assert
+    #: one. Part of the report rather than a second object beside it: it is one
+    #: of the things this reader is being told about this line.
+    attribution: AttributionView
 
 
 def render_operations(ops: OperationsDiagnosis, *,
@@ -260,7 +349,115 @@ def render_owner(owner: OwnerDiagnosis, opportunity: Opportunity, *,
         evidence=_evidence_sentence(owner),
         codes=owner.codes,
         context=owner.context,
+        attribution=render_attribution(owner.attribution,
+                                       surfaces=owner.surfaces, th=th),
     )
+
+
+def render_attribution(attribution: Attribution, *, surfaces: bool,
+                       th: CommercialThresholds) -> AttributionView:
+    """The split, or the refusal, as an owner reads it. RESTRICTED.
+
+    Takes an ``Attribution`` rather than an ``OwnerDiagnosis``, so the
+    stored-row projection — which has a row and no diagnosis object — renders
+    its own refusal through this same function instead of a copy of it.
+
+    **The refusal is the case this is written around.** An attribution declines
+    far more often than it asserts: no cost on record, evidence too thin, a
+    purchase the quoter could not have seen, a residual the two effects cannot
+    account for. Each of those leaves ``drivers`` empty, and an empty block that
+    simply did not draw would read as "nothing to report" — which is the failure
+    CLAUDE.md §1 names, in a new place. So the refusal goes into ``note`` in the
+    engine's own words, naming what is missing, and ``renders`` stays true for
+    it exactly as it would for a split.
+
+    **The residual is never lost.** It is not a field here because it does not
+    need to be: ``drivers`` states it in the basis on both paths — the distance
+    the two effects miss the movement by when they reconcile, and the distance
+    that refused them when they do not.
+    """
+    lines = tuple(_driver_line(d, th) for d in attribution.drivers)
+    headline = _split_headline(attribution) if lines else ""
+    note = attribution.basis
+    # One gate, narrowed. ``surfaces`` is ``rules._surfaces``' answer and is
+    # never widened here; the second term only makes it impossible to publish a
+    # block with nothing written in it.
+    return AttributionView(renders=bool(surfaces and (headline or note)),
+                           headline=headline, drivers=lines, note=note)
+
+
+def _driver_line(driver: Driver, th: CommercialThresholds) -> DriverLine:
+    return DriverLine(
+        code=driver.code,
+        severity=driver.severity,
+        # The one spelling of a grade on either card, reused rather than
+        # restated: a second word for MODERATE would be a second answer.
+        strength_word=strength_word(driver.strength),
+        effect=(f"{_signed_pp(driver.effect_pp)} "
+                f"({_signed_money(driver.effect_per_unit, th)} per unit)"),
+        basis=driver.basis,
+    )
+
+
+def _split_headline(attribution: Attribution) -> str:
+    """Both factors, named and signed, in the order they were measured.
+
+    **Every driver appears, including one that moved nothing.** Reporting the
+    larger term alone is the defect this whole computation exists to prevent: a
+    cost rise of 7% beside a price cut of 3%, headlined "cost increase", is true
+    and excuses the half somebody chose. A flat factor is stated as flat rather
+    than dropped, because "cost level unchanged" is the sentence that tells a
+    reader the price is the whole of it.
+    """
+    parts = ", ".join(f"{_DRIVER_LABEL.get(d.code, d.code)} "
+                      f"{_signed_pp(d.effect_pp)}"
+                      for d in attribution.drivers)
+    reference = ("the same line at the band median price and the historical "
+                 "purchase cost")
+    movement = attribution.movement_pp
+    if movement is None or movement == 0:
+        return f"Margin on this line is level with {reference}: {parts}."
+    direction = "lower" if movement < 0 else "higher"
+    return (f"Margin on this line is {_pp_magnitude(movement)} {direction} than "
+            f"{reference}: {parts}.")
+
+
+def _signed_pp(value: Optional[Decimal]) -> str:
+    """``+3.16 pp`` / ``-3.16 pp`` / ``unchanged``.
+
+    Signed rather than magnitude-plus-a-word, because both signs appear in one
+    sentence here and "3.16 pp price, 10.53 pp cost level" reads as two losses
+    when one of them was a gain. ``commercial/diagnosis.py``'s ``_pp`` renders
+    the magnitude and carries direction in a separate verb, which that screen's
+    one-figure sentences can do and this one cannot.
+
+    Two decimal places: ``PP_QUANTUM`` holds four, which is four more than a
+    person can act on, and the unrounded figures are in ``note``.
+    """
+    if value is None:
+        return "not measured"
+    if value == 0:
+        return "unchanged"
+    return f"{'+' if value > 0 else '-'}{_pp_magnitude(value)}"
+
+
+def _pp_magnitude(value: Decimal) -> str:
+    return f"{abs(value) * 100:.2f} pp"
+
+
+def _signed_money(value: Optional[Decimal], th: CommercialThresholds) -> str:
+    """``+₹50`` / ``-₹50``, through the policy's own spelling of money.
+
+    ``th.money`` puts the sign inside the amount — ``₹-50`` — which reads as a
+    typo, so the magnitude goes through it and the sign is carried outside.
+    Whole units, like every other amount this platform prints: the percentage
+    points beside it carry the resolution.
+    """
+    if value is None:
+        return th.money(None)
+    if value == 0:
+        return th.money(value)
+    return f"{'+' if value > 0 else '-'}{th.money(abs(value))}"
 
 
 def _cost_lines(owner: OwnerDiagnosis, th: CommercialThresholds) -> list[str]:

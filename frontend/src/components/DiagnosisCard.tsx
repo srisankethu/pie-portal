@@ -1,3 +1,4 @@
+import Alert from "@mui/material/Alert";
 import Box from "@mui/material/Box";
 import Button from "@mui/material/Button";
 import DialogActions from "@mui/material/DialogActions";
@@ -41,6 +42,14 @@ import type { Tone } from "../platform/kit";
  * it, so the component has no `{mgmt && …}` guard and needs none. `MFLOOR` was
  * a guard that was right with one line below it that was not; this card cannot
  * have that shape because the data never arrives.
+ *
+ * **And the one thing that is withheld is withheld by the type.** The owner
+ * projection gained an `attribution` — how much of a line's margin movement the
+ * price decision owns and how much the cost level does — and every figure in it
+ * is derived from purchase cost. It is declared on `OwnerDiagnosisView` alone,
+ * so a salesperson's card cannot read one without a compile error. The desk's
+ * whole vocabulary for this stays the sentence it already had: margin
+ * compressed by supply cost, no number attached.
  *
  * **Silent by default.** `renders` is the server's answer to "is this worth
  * interrupting somebody for", and the component returns nothing when it is
@@ -97,6 +106,62 @@ export type OperationsDiagnosisView = DiagnosisCommon & {
   note: string;
 };
 
+/** One attributed factor: what it is, how much it matters, how much to believe
+ *  it, and why it is attributable — the browser-side face of `drivers.Driver`.
+ */
+export type AttributionDriverView = {
+  /** The engine's own vocabulary — `PRICE_POSITION_EFFECT`, `COST_LEVEL_EFFECT`.
+   *  No name is served for it and none is invented here: a term worded one way
+   *  on the server and another in the browser is two terms, and the one people
+   *  read is the one that was never reviewed. The underscores are opened out
+   *  and nothing else. */
+  code: string;
+  /** `MAJOR` / `MINOR` / `NEGLIGIBLE` — how much this factor matters, graded
+   *  against versioned thresholds. */
+  severity: string;
+  /** `Strong` / `Moderate` / `Weak` / `Not enough` — how much to believe it.
+   *  The same four words `DiagnosisCommon.strength_word` grades the whole
+   *  diagnosis on, deliberately: one evidence ladder, not a second one. */
+  strength_word: string;
+  /** **Already formatted, server-side** — money or percentage points, written
+   *  by `render_owner`. Rendered verbatim. Nothing in this file formats a
+   *  figure, picks a currency symbol, or does arithmetic; `CLAUDE.md` §3 puts
+   *  every number a screen renders in `commercial/`. */
+  effect: string;
+  /** The counterfactual this number answers, in words — not a restatement of
+   *  it. */
+  basis: string;
+};
+
+/** The split between the price decision and the cost level, or a refusal to
+ *  assert one.
+ *
+ *  **Declared on the owner projection and nowhere else, and that is the whole
+ *  guarantee.** Every figure in here is derived from purchase cost — which is
+ *  why `drivers.py` opens by saying an `Attribution` has no place on
+ *  `OperationsDiagnosis`. Here that is a type error rather than a review
+ *  comment: `d.attribution` on an un-narrowed `DiagnosisView` does not compile,
+ *  and an operations literal carrying the key is an excess-property error.
+ *
+ *  Deliberately **not** written as `attribution?: never` on the operations
+ *  half. That would put the property on both members of the union, typed
+ *  `… | undefined`, and a reader could then reach it with no narrowing at all.
+ *  Absent is stronger than absent-and-declared.
+ *
+ *  Two shapes, exactly as the server has: either `drivers` holds the factors
+ *  and `headline` is the split in one sentence, or `drivers` is empty and
+ *  `note` says what stopped it. There is no third state, and an empty one is
+ *  not silence — see `AttributionBlock`.
+ */
+export type AttributionView = {
+  renders: boolean;
+  /** The split in one sentence; `""` when nothing is asserted. */
+  headline: string;
+  drivers: AttributionDriverView[];
+  /** The qualification, or the refusal, in words; `""` when there is none. */
+  note: string;
+};
+
 /** A manager's or owner's line. RESTRICTED: `lines` and `opportunity` are
  *  written by `render_owner` and do carry cost and margin, which is why the
  *  server only ever builds this for a principal whose role may see them. The
@@ -109,6 +174,10 @@ export type OwnerDiagnosisView = DiagnosisCommon & {
   /** A sentence about the evidence, not a word — the word is `strength_word`. */
   evidence: string;
   codes: string[];
+  /** How much of this line's margin movement the price decision owns and how
+   *  much the cost level does. Owner-only, by construction — see
+   *  `AttributionView`. */
+  attribution: AttributionView;
 };
 
 export type DiagnosisView = OperationsDiagnosisView | OwnerDiagnosisView;
@@ -124,6 +193,28 @@ const STRENGTH_TONE: Record<string, Tone> = {
   Strong: "good",
   Moderate: "info",
   Weak: "warn",
+};
+
+/** How much a driver matters, as a `Chip` — `ui-standards` §6.
+ *
+ *  **A ramp of attention, not a verdict.** Severity is symmetric by design:
+ *  `drivers.severity` grades a five-point *gain* as hard as a five-point loss,
+ *  so a success/error hue would pass judgement on a sign this chip cannot see —
+ *  `effect` arrives already written and the component does not read it.
+ *
+ *  **It is the only chip in a driver row, and that is the point.** Severity is
+ *  how much a factor moved margin; strength is how much evidence stands behind
+ *  it. A nine-point effect off a two-row band is severe and unbelievable at
+ *  once, so the two cannot share a ramp — and two chips stepping through the
+ *  same five tones beside each other would be read as one whatever the words
+ *  said. So severity is a chip attached to the figure it grades, strength is a
+ *  labelled word attached to the sentence it grades, and each says in words
+ *  which question it answers.
+ */
+const SEVERITY_TONE: Record<string, Tone> = {
+  MAJOR: "warn",
+  MINOR: "info",
+  NEGLIGIBLE: "neutral",
 };
 
 export function DiagnosisCard({
@@ -207,6 +298,13 @@ export function OwnerDiagnosisCard({
       onDismiss={onDismiss}
       dismissing={dismissing}
     >
+      {/* First, because it is the thing an owner opened this card for. The
+          shell above says the line is above or below its band; this says which
+          half of that the price decision owns and which half the cost level
+          does — the question the engine could not answer until now. The report
+          and the opportunity keep their order underneath. */}
+      <AttributionBlock attribution={diagnosis.attribution} />
+
       <Box>
         <FieldLabel>What the evidence says</FieldLabel>
         <Stack spacing={1} sx={{ mt: 0.5 }}>
@@ -223,6 +321,122 @@ export function OwnerDiagnosisCard({
         </Typography>
       </Box>
     </DiagnosisShell>
+  );
+}
+
+/** The one sentence on this card the server did not write — and it is about
+ *  this card's own input, not about the business.
+ *
+ *  A refusal arrives with a `note` saying what was missing. When even that is
+ *  empty, or the key is absent altogether because the payload predates it, the
+ *  block still has to say that nothing was asserted. It names the absence and
+ *  claims nothing else.
+ */
+const NOTHING_ASSERTED =
+  "No split between the price decision and the cost level was asserted for "
+  + "this line, and no reason was given.";
+
+/**
+ * How much of this line's margin movement the price decision owns, and how
+ * much the cost level does.
+ *
+ * **A refusal is content here, not an empty state.** When the engine will not
+ * assert a split — no cost baseline, a purchase whose visibility had to be
+ * estimated, a reconciliation that did not hold — it says so in `note`, and
+ * that sentence is the output. A block that drew nothing in that case would
+ * read as "all clear", which is `CLAUDE.md` §1's *absence of evidence is not a
+ * pass* wearing a layout instead of an `or 0`. So the section header is printed
+ * either way and the refusal is an `Alert`, which is a thing on the screen
+ * rather than the absence of one.
+ *
+ * `info` rather than `warning`: an engine declining to split a movement it
+ * cannot account for is the engine being honest, not a fault.
+ *
+ * The prop is optional although `OwnerDiagnosisView.attribution` is not. A
+ * payload served before the key existed would otherwise take the whole Quote
+ * Builder down on a property read, and "nothing was asserted" is the true thing
+ * to say about it — which is the same answer the refusal branch already gives.
+ */
+function AttributionBlock({ attribution }: { attribution?: AttributionView }) {
+  const drivers = attribution?.drivers ?? [];
+  const asserted = attribution?.renders === true && drivers.length > 0;
+  const headline = attribution?.headline ?? "";
+  const note = attribution?.note ?? "";
+
+  return (
+    <Box>
+      <FieldLabel
+        tip={"Severity is how much a factor moved margin. Confidence is how "
+             + "much evidence stands behind it. They are different questions: "
+             + "a large effect read off a thin history is severe and weakly "
+             + "evidenced at the same time."}
+      >
+        What moved the margin
+      </FieldLabel>
+
+      {asserted ? (
+        <>
+          {headline && (
+            <Typography variant="body2" sx={{ mt: 0.5 }}>{headline}</Typography>
+          )}
+          <Stack spacing={1.5} sx={{ mt: 1.5 }}>
+            {drivers.map((d) => <AttributionDriver key={d.code} driver={d} />)}
+          </Stack>
+          {/* A qualification on an asserted split, in the same muted register
+              as the card's standing one. */}
+          {note && <Meta sx={{ mt: 1.5 }}>{note}</Meta>}
+        </>
+      ) : (
+        <Alert severity="info" sx={{ mt: 0.5 }}>{note || NOTHING_ASSERTED}</Alert>
+      )}
+    </Box>
+  );
+}
+
+/**
+ * One factor: the figure, how much it matters, why it is attributable, and how
+ * much of the evidence stands behind it — in that order, because that is the
+ * order somebody reads them in.
+ *
+ * Nothing here is computed. `effect` is money or percentage points the server
+ * already wrote, printed verbatim; `severity` and `strength_word` are its
+ * words; `code` is its vocabulary with the underscores opened out. The only
+ * decisions this component makes are which tone a severity chip takes and
+ * where on the row each thing sits.
+ */
+function AttributionDriver({ driver }: { driver: AttributionDriverView }) {
+  return (
+    <Box>
+      {/* No square: the card already carries one on its own mark, and a second
+          per driver would compete with it. */}
+      <PanelMark>{driver.code.replace(/_/g, " ")}</PanelMark>
+
+      <Stack
+        direction="row"
+        spacing={1}
+        useFlexGap
+        /* Wraps rather than overflowing: at 390px a long effect and its chip
+           do not share a row, and this desk quotes from a machine shop. */
+        sx={{ mt: 0.25, alignItems: "center", flexWrap: "wrap" }}
+      >
+        <Typography
+          variant="subtitle1"
+          sx={{ fontWeight: 600, fontVariantNumeric: "tabular-nums" }}
+        >
+          {driver.effect}
+        </Typography>
+        <StatusChip
+          label={driver.severity}
+          tone={SEVERITY_TONE[driver.severity] ?? "neutral"}
+          tip="How much this factor matters — the size of its effect on margin."
+        />
+      </Stack>
+
+      <Typography variant="body2" sx={{ mt: 0.5 }}>{driver.basis}</Typography>
+      {/* Strength, deliberately not a chip — see `SEVERITY_TONE`. The label is
+          the half that keeps it apart from severity; the word is the server's. */}
+      <Meta>Confidence in this: {driver.strength_word}</Meta>
+    </Box>
   );
 }
 

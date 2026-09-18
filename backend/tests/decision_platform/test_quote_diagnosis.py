@@ -844,3 +844,161 @@ def test_a_line_with_no_history_is_not_told_it_sits_above_a_range():
     assert not opp.exists
     assert "no range to sit below" in opp.basis
     assert "not below the range" not in opp.basis
+
+
+# ── driver attribution, carried and said ─────────────────────────────────────
+#
+# The split itself is tested in ``test_quote_diagnosis_drivers``. What is tested
+# here is the other half: that the diagnosis carries one, that the owner report
+# says it in a sentence naming *both* factors, that a refusal is visible rather
+# than an empty block, and that none of it can reach the desk.
+
+def _risen() -> list:
+    """Four purchases at 700 and one, latest, at 900 — a knowable cost rise.
+
+    Four at the old level is ``diagnosis_moderate_min_comparables``: one fewer
+    and the cost baseline grades WEAK and the attribution refuses, which is a
+    different test.
+    """
+    return [cost("c1", unit_cost="700", day=date(2026, 1, 10)),
+            cost("c2", unit_cost="700", day=date(2026, 2, 10)),
+            cost("c3", unit_cost="700", day=date(2026, 3, 10)),
+            cost("c4", unit_cost="700", day=date(2026, 4, 10)),
+            cost("c5", unit_cost="900", day=date(2026, 5, 10))]
+
+
+def test_the_diagnosis_carries_the_split_of_its_own_margin_movement():
+    """``attribute`` is reached through ``diagnose``, not only directly.
+
+    A computation nothing calls is a computation that drifts from the engine it
+    was written for, and the grade it is handed has to be the grade the
+    diagnosis publishes — not a second one derived on the way in.
+    """
+    out = _run(_steady(10), quoted="850", costs=_risen())
+
+    codes = [d.code for d in out.attribution.drivers]
+    assert codes == ["PRICE_POSITION_EFFECT", "COST_LEVEL_EFFECT"]
+    assert out.attribution.reconciles is True
+    assert all(d.strength in (rules.STRONG, rules.MODERATE)
+               for d in out.attribution.drivers)
+    # The grade the diagnosis publishes is the grade the price driver carries.
+    assert next(d for d in out.attribution.drivers
+                if d.code == "PRICE_POSITION_EFFECT").strength == out.strength
+
+
+def test_a_cost_rise_beside_a_price_cut_is_reported_as_both_and_not_the_larger():
+    """The sentence, and the defect it exists to prevent.
+
+    Quoted 850 against a band median of 1000, at a cost that moved 700 -> 900.
+    The cost term is the larger one; a headline naming it alone would be true
+    and would excuse the half somebody chose.
+    """
+    out = _run(_steady(10), quoted="850", costs=_risen())
+    report = render.render_owner(out, opportunity.compute(out, th=TH), th=TH)
+    headline = report.attribution.headline
+
+    assert headline == (
+        "Margin on this line is 35.88 pp lower than the same line at the band "
+        "median price and the historical purchase cost: price -12.35 pp, "
+        "cost level -23.53 pp.")
+    assert [d.effect for d in report.attribution.drivers] == [
+        "-12.35 pp (-₹150 per unit)", "-23.53 pp (-₹200 per unit)"]
+
+
+def test_a_factor_that_did_not_move_is_stated_as_flat_rather_than_dropped():
+    """"cost level unchanged" is the sentence that tells a reader the price is
+    the whole of it. A driver left out of the sentence is a split that no longer
+    adds up, presented as though it did."""
+    steady_cost = [cost("c1", unit_cost="700", day=date(2026, 1, 10)),
+                   cost("c2", unit_cost="700", day=date(2026, 2, 10)),
+                   cost("c3", unit_cost="700", day=date(2026, 3, 10)),
+                   cost("c4", unit_cost="700", day=date(2026, 4, 10)),
+                   cost("c5", unit_cost="700", day=date(2026, 5, 10))]
+    out = _run(_steady(10), quoted="850", costs=steady_cost)
+    report = render.render_owner(out, opportunity.compute(out, th=TH), th=TH)
+
+    assert report.attribution.headline.endswith(
+        "price -12.35 pp, cost level unchanged.")
+    assert report.attribution.drivers[1].effect == "unchanged (₹0 per unit)"
+
+
+def test_the_counterfactual_the_split_was_taken_in_is_on_the_card():
+    """Order-dependent decomposition, so the order is named in the output's own
+    words rather than left for a reader to guess — and the residual travels with
+    it, because it is never forced to zero and never hidden."""
+    out = _run(_steady(10), quoted="850", costs=_risen())
+    report = render.render_owner(out, opportunity.compute(out, th=TH), th=TH)
+
+    assert report.attribution.note.startswith("PRICE_THEN_COST:")
+    assert "at the price actually quoted" in report.attribution.note
+    assert "to within" in report.attribution.note
+
+
+def test_a_refusal_is_rendered_in_words_and_not_as_an_empty_block():
+    """Absence of evidence is not a pass, in a new place.
+
+    No purchase on record means no margin at all, so there is no movement to
+    split. A block that simply did not draw would read as "the price and the
+    cost both behaved", which is the one thing it does not mean.
+    """
+    out = _run(_steady(10), quoted="850", costs=[])
+    report = render.render_owner(out, opportunity.compute(out, th=TH), th=TH)
+
+    assert out.surfaces is True
+    assert report.attribution.renders is True
+    assert report.attribution.headline == ""
+    assert report.attribution.drivers == ()
+    assert report.attribution.note.startswith("NO_COST_BASELINE:")
+    assert "0 usable purchase observations on record" in report.attribution.note
+
+
+def test_a_thin_band_refuses_the_split_and_names_both_grades():
+    """The gate is on both sides, because both enter the movement itself."""
+    thin = [row("s0", price="1000", day=date(2026, 2, 1))]
+    out = _run(thin, quoted="850", costs=_risen())
+    report = render.render_owner(out, opportunity.compute(out, th=TH), th=TH)
+
+    assert out.attribution.drivers == ()
+    assert report.attribution.note.startswith("EVIDENCE_TOO_THIN:")
+    assert "MODERATE" in report.attribution.note
+
+
+def test_the_attribution_block_is_as_silent_as_the_surfacing_gate():
+    """Not a second gate. ``_surfaces`` decides interruption and this can only
+    narrow that answer, never widen it — a line quoted inside its own band is
+    silent whatever the cost did."""
+    out = _run(_steady(10), quoted="1000", costs=_risen())
+    report = render.render_owner(out, opportunity.compute(out, th=TH), th=TH)
+
+    assert rules.COST_DRIVEN_MARGIN_RISK in out.codes
+    assert out.surfaces is False
+    # Computed regardless — the gate governs interruption, not calculation.
+    assert out.attribution.reconciles is True
+    assert report.attribution.renders is False
+    assert report.attribution.headline != ""
+
+
+def test_no_driver_and_no_attribution_field_can_reach_the_operations_view():
+    """RESTRICTED in its entirety, held structurally rather than by a filter.
+
+    ``operations_view`` builds a type with no field to put a driver in, and
+    ``FORBIDDEN_OPERATIONS_FIELDS`` names every spelling one could arrive under
+    so a field added later fails this rather than a review somebody has to
+    catch. The serialised check is the second half: a code or a percentage point
+    smuggled into an existing field would pass the field-list assertion.
+    """
+    out = _run(_steady(10), quoted="850", costs=_risen())
+    ops = rules.operations_view(out)
+    serialised = str(dataclasses.asdict(ops))
+
+    names = rules.operations_field_names()
+    assert names.isdisjoint(rules.FORBIDDEN_OPERATIONS_FIELDS)
+    assert not [n for n in names
+                if "driver" in n or "attribution" in n or "effect" in n]
+    for word in ("PRICE_POSITION_EFFECT", "COST_LEVEL_EFFECT", "pp",
+                 "700", "900", "MAJOR"):
+        assert word not in serialised, word
+    # And the desk's card, which is what is actually served. A percentage point
+    # is how an attribution would arrive in an existing string field.
+    card = render.render_operations(ops, th=TH)
+    assert " pp" not in str(dataclasses.asdict(card))

@@ -377,3 +377,76 @@ def _snapshot(session, diagnosis_id: str) -> dict:
                  if isinstance(getattr(row, c.name), datetime)
                  else getattr(row, c.name))
         for c in models.QuoteDiagnosis.__table__.columns})
+
+
+# ── driver attribution is computed, not stored ───────────────────────────────
+#
+# The decision and its reasoning are in ``rules.ENGINE_VERSION``. These are the
+# checks that keep it true: nothing about the stored row moved, so nothing about
+# replaying one did either, and the stamp stays where it is.
+
+def test_the_stored_row_gains_no_column_and_the_engine_version_does_not_move():
+    """Why ``qd-1`` is still ``qd-1``.
+
+    ``engine_version`` answers "which code produced the columns in this row".
+    An attribution is computed from baselines that are already settled and
+    changes no code, no grade and no cited id, so every column ``record``
+    writes is what it would have been. Moving the stamp would mark every
+    pre-existing row as the product of different code when the rows are
+    identical.
+
+    The column assertion is the other half of the decision: if an attribution is
+    ever persisted, this fails, and persisting one is exactly the change that
+    must bump the stamp and bring a migration with it.
+    """
+    from app.commercial.quote_diagnosis import rules
+
+    columns = {c.name for c in models.QuoteDiagnosis.__table__.columns}
+
+    assert rules.ENGINE_VERSION == "qd-1"
+    assert not [c for c in columns
+                if "attribution" in c or "driver" in c or "effect" in c]
+
+
+def test_a_row_written_without_an_attribution_still_replays_clean(session):
+    """The stored rows are all "old" rows in the sense that matters: none of
+    them carries an attribution, and none of them needs to.
+
+    The hash covers the cited evidence ids; the verdict is ``codes`` and
+    ``strength``. A replay recomputes an attribution and compares neither, so
+    the recomputation cannot make a stored diagnosis stop reproducing.
+    """
+    _seed(session)
+    stored = service.record(session, ORG, quote_id="q1",
+                            result=_diagnose(session))
+    session.commit()
+
+    done = replay.rediagnose(session, ORG, quote_line_id="ln_1", th=TH)
+
+    assert done.result.evidence_hash == stored.evidence_hash
+    assert done.verdict_matches is True
+    assert done.stored_engine_version == done.current_engine_version == "qd-1"
+    # The recomputation did produce one — it is simply not part of what is
+    # compared, and not part of what was written.
+    assert done.result.owner.attribution is not None
+    assert "attribution" not in str(
+        {c.name: getattr(stored, c.name)
+         for c in models.QuoteDiagnosis.__table__.columns}).lower()
+
+
+def test_recording_a_diagnosis_writes_no_driver_code_anywhere_in_the_row(session):
+    """A serialised check beside the column one: a driver code smuggled into
+    ``codes``, ``context`` or one of the JSON blobs would pass a column-name
+    assertion and would still be a persisted shape nobody migrated."""
+    from app.commercial.quote_diagnosis import drivers
+
+    _seed(session)
+    stored = service.record(session, ORG, quote_id="q1",
+                            result=_diagnose(session))
+    session.commit()
+
+    body = str(_snapshot(session, stored.quote_diagnosis_id))
+
+    for code in drivers.DRIVER_CODES:
+        assert code not in body
+    assert "PRICE_THEN_COST" not in body

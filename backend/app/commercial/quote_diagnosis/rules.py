@@ -24,7 +24,7 @@ from __future__ import annotations
 from dataclasses import dataclass, fields
 from datetime import date, datetime, timedelta
 from decimal import Decimal
-from typing import Optional, Sequence
+from typing import TYPE_CHECKING, Optional, Sequence
 
 from ..config import CommercialThresholds
 from .baselines import CostBaseline, PriceBaseline
@@ -33,12 +33,35 @@ from .comparables import (CustomerAxis, PeerBand, SPECIFIC_TIERS,
                           TIER_SAME_CUSTOMER_SKU_BAND)
 from .evidence import EvidenceSet
 
+if TYPE_CHECKING:  # ``drivers`` imports this module's code vocabulary, so the
+    # dependency can only run one way at module scope. The annotation is a
+    # string under ``from __future__ import annotations`` and is never
+    # evaluated; ``diagnose`` imports the function itself at call time, the
+    # same arrangement ``service`` uses for ``render``.
+    from .drivers import Attribution
+
 _ZERO = Decimal("0")
 
 #: This module's own version, stamped on every diagnosis beside the thresholds
 #: hash. The two answer different questions — "which policy judged this" and
 #: "which code produced it" — and a rule change that did not move a version
 #: would make an old diagnosis unexplainable. Bump it when a rule changes.
+#:
+#: **Deliberately not bumped for driver attribution.** The stamp lives on a
+#: stored row and answers "which code produced the columns in *this row*".
+#: ``service.record`` writes no attribution column; ``service.evidence_hash``
+#: covers the cited evidence ids and nothing else; ``replay.rediagnose``
+#: compares that hash and then ``codes`` and ``strength``. Attribution touches
+#: none of the three — it is computed from the baselines after they are settled
+#: and changes no code, no grade and no cited id — so every row written after
+#: this change is byte-identical to the row that would have been written before
+#: it, and every row written before it still replays.
+#:
+#: Moving the stamp would mark every pre-existing row as the product of
+#: different code when the rows are identical, and a difference that is always
+#: there is a difference nobody reads. The bump belongs to whichever change
+#: first *persists* an attribution, because that is the change after which two
+#: rows carrying one stamp have different shapes.
 ENGINE_VERSION = "qd-1"
 
 
@@ -219,6 +242,18 @@ class OwnerDiagnosis:
     peer: PeerBand
     #: RESTRICTED. The reason this type exists separately from the one below.
     cost: CostBaseline
+    #: RESTRICTED. How much of this line's margin movement belongs to the price
+    #: decision and how much to the cost level — the attributable form of the
+    #: two conclusions ``codes`` already draws, with the arithmetic that has to
+    #: hold before either half is asserted. Cost-derived throughout, which is
+    #: why it sits on this type and has no counterpart on the one below.
+    #:
+    #: Always present and never ``None``. ``drivers.attribute`` returns an
+    #: ``Attribution`` on every path and a refusal is one of its two shapes, so
+    #: a reader is always told either the split or why there is not one. A field
+    #: that could simply be missing would read as "nothing to report", which is
+    #: the failure CLAUDE.md §1 names.
+    attribution: "Attribution"
 
     #: Per unit, positive when the quote is below the bottom of the band. The
     #: gate reads this; the opportunity *range* is computed downstream.
@@ -279,6 +314,13 @@ FORBIDDEN_OPERATIONS_FIELDS = frozenset({
     "cost", "unit_cost", "expected_cost", "cost_range", "landed_cost",
     "margin", "gross_profit", "cogs", "margin_floor", "min_margin",
     "opportunity", "opportunity_value", "peer", "peer_band", "peer_price",
+    # Driver attribution, in every spelling it could arrive under. These are
+    # cost fields wearing other names: an effect in percentage points beside
+    # the price the caller sent is a margin, and a margin with a price is the
+    # cost in one step — P x (1 - m). They are on this list for the reason the
+    # ones above are, not because the words look economic.
+    "attribution", "drivers", "driver", "movement_pp", "residual_pp",
+    "effect_pp", "effect_per_unit",
 })
 
 
@@ -329,6 +371,7 @@ def diagnose(*, line_id: str, subject_customer_id: Optional[str],
              axis: CustomerAxis, peer: PeerBand,
              price: PriceBaseline, cost: CostBaseline,
              evidence: EvidenceSet, th: CommercialThresholds,
+             backfill_before: Optional[date] = None,
              ) -> OwnerDiagnosis:
     """Run every rule over already-computed baselines. Pure and total.
 
@@ -414,12 +457,34 @@ def diagnose(*, line_id: str, subject_customer_id: Optional[str],
     surfaces = _surfaces(codes=codes, grade=grade, band_median=band.median,
                          deviation=deviation, line_value=line_value, th=th)
 
+    # ── the attributable form of the two conclusions above ──────────────────
+    #
+    # Computed on every line and surfaced on almost none: ``_surfaces`` gates
+    # interruption, not calculation (§11). ``grade`` is the grade this
+    # diagnosis publishes, so the split is believed exactly as much as the band
+    # it is measured against — a second grader here would disagree with the
+    # first on the rows nobody looks at.
+    #
+    # Imported at call time rather than at module scope because ``drivers``
+    # reads this module's code vocabulary; the dependency can only run one way.
+    from .drivers import attribute
+    attribution = attribute(
+        quoted_unit_price=quoted_unit_price, price=price, cost=cost,
+        # The cost rows the baselines were built from, already visibility
+        # filtered by ``service``. ``attribute`` re-checks them against the same
+        # ``evidence.is_knowable`` — a verification rather than a second filter,
+        # which is why ``backfill_before`` is threaded through instead of being
+        # re-derived: asking the question with a different cut-over would make
+        # the check answer something the filter never asked.
+        cost_rows=evidence.costs, strength=grade, knowable_by=knowable_by,
+        backfill_before=backfill_before, th=th)
+
     return OwnerDiagnosis(
         line_id=line_id, customer_id=subject_customer_id, product_id=product_id,
         qty=qty, quantity_band=quantity_band, as_of=as_of,
         knowable_by=knowable_by, quoted_unit_price=quoted_unit_price,
         codes=tuple(codes), context=tuple(sorted(set(context))), strength=grade,
-        price=price, peer=peer, cost=cost,
+        price=price, peer=peer, cost=cost, attribution=attribution,
         deviation_per_unit=deviation, line_deviation_value=line_value,
         evidence=evidence.summary(), tier_counts=axis.tier_counts(),
         surfaces=surfaces, thresholds_version=th.version)

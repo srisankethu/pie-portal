@@ -401,6 +401,10 @@ def _project(owner: rules.OwnerDiagnosis, opportunity, principal: Principal,
             "evidence": report.evidence, "codes": list(report.codes),
             "context": list(report.context), "strength": owner.strength,
             **_shared(owner.surfaces, owner.strength),
+            # RESTRICTED, and on this branch only. The desk's projection is
+            # built from a type with no field for it, so there is nothing here
+            # to forget to remove.
+            "attribution": _attribution(report.attribution),
             "price_band": owner.price.to_dict(),
             "cost_baseline": owner.cost.to_dict(),
             "peer_band": owner.peer.to_dict(),
@@ -442,6 +446,14 @@ def _project_stored(row: models.QuoteDiagnosis, principal: Principal,
                 **_shared(row.surfaces, row.strength)}
     return {**common, "view": "OWNER", "codes": list(codes),
             **_shared(row.surfaces, row.strength),
+            # A stored row has no attribution column — see the decision in
+            # ``rules.ENGINE_VERSION``. The block is published anyway, carrying
+            # the refusal that says so: a manager reading a diagnosis back who
+            # simply found no attribution key would read the absence as "the
+            # price and the cost both behaved", which is the one thing it does
+            # not mean.
+            "attribution": _attribution(render.render_attribution(
+                render.NOT_STORED, surfaces=row.surfaces, th=th)),
             "context": list(context), "price_band": row.price_band,
             "cost_baseline": row.cost_baseline, "peer_band": row.peer_band,
             "opportunity_detail": row.opportunity,
@@ -487,6 +499,22 @@ def _card(card: render.OperationsCard) -> dict[str, Any]:
             "historical": card.historical, "evidence": card.evidence,
             "evidence_detail": card.evidence_detail, "why": card.why,
             "note": card.note}
+
+
+def _attribution(view: render.AttributionView) -> dict[str, Any]:
+    """The split as JSON. RESTRICTED — reached only from the owner branches.
+
+    Every figure is already a string: the front end may not format money or
+    compute a number (CLAUDE.md §3), and a percentage point rounded in two
+    places is two answers to one question.
+    """
+    return {"renders": view.renders,
+            "headline": view.headline,
+            "drivers": [{"code": d.code, "severity": d.severity,
+                         "strength_word": d.strength_word,
+                         "effect": d.effect, "basis": d.basis}
+                        for d in view.drivers],
+            "note": view.note}
 
 
 def _money(value: Any) -> Optional[Decimal]:

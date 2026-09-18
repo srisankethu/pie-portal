@@ -71,6 +71,13 @@ type DiagnosisCommon = {
    *  the first is good news. */
   comparable: boolean;
   headline: string;
+  /** Qualifiers the engine attached, allowlist-filtered for the desk.
+   *
+   *  `EVIDENCE_WITHHELD` is the one a reader of an empty panel needs: it means
+   *  rows were found and left out because it is not clear when they became
+   *  visible, which is a different fact from this customer never having bought
+   *  the item — and only one of the two is something somebody can fix. */
+  context: string[];
   /** The grade as a word — "Strong", "Moderate", "Weak", "Not enough" — from
    *  `render.strength_word`, so both cards spell it the one way. */
   strength_word: string;
@@ -102,7 +109,6 @@ export type OwnerDiagnosisView = DiagnosisCommon & {
   /** A sentence about the evidence, not a word — the word is `strength_word`. */
   evidence: string;
   codes: string[];
-  context: string[];
 };
 
 export type DiagnosisView = OperationsDiagnosisView | OwnerDiagnosisView;

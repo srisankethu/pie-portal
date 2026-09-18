@@ -360,32 +360,67 @@ function ErpQuoteDiagnosis({ quote, lines, token }: {
  *  `renders`, so this sentence and the cards above it are finally reading the
  *  same field. It still counts rather than assuming, because the reason it was
  *  wrong was the assuming, not the missing card.
+ *
+ *  **And one sentence used to cover three different situations.** "No line
+ *  could be compared" was printed when the engine answered about nothing, when
+ *  it answered and found no history, and when it found history it was not
+ *  allowed to use — and it blamed the customer's history in all three. The
+ *  third is the one that matters: `EVIDENCE_WITHHELD` means rows were located
+ *  and dropped because their visibility could not be established, which is a
+ *  fixable data problem rather than a quiet account. It was reported on a real
+ *  book as "this customer had no purchase history" over sixteen excluded
+ *  transactions, which sent somebody looking for the wrong thing.
  */
 function settled(lineIds: string[], diagnosis: QuoteDiagnosisState,
                  raisedOn: string): string {
   const seen = lineIds.map((id) => diagnosis.byLineId[id]).filter(Boolean);
+  const answered = seen.length;
   const compared = seen.filter((d) => d.comparable).length;
   const flagged = seen.filter((d) => d.renders).length;
-  const total = seen.length;
+  // Rows the engine found and could not use, because it cannot tell when they
+  // became visible. Distinct from having found nothing, and the distinction is
+  // the whole point of saying it out loud.
+  const withheld = seen.some((d) => d.context?.includes("EVIDENCE_WITHHELD"));
+  // Lines the engine was never asked about: a line with no item code or no
+  // price is not something it can be put a question about, and counting those
+  // as "not comparable" would blame the customer's history for a blank field.
+  const unasked = lineIds.length - answered;
+  const alsoUnasked = unasked === 0 ? ""
+    : unasked === 1
+      ? " One more line carried no item code or no price, so it was not checked."
+      : ` ${unasked} more lines carried no item code or no price, so they were `
+        + "not checked.";
 
-  if (total === 0 || compared === 0) {
-    return `No line on this quote could be compared: this customer had no `
-      + `purchase history on record for these items by ${raisedOn}. That is an `
-      + `absence of evidence, not a verdict on the pricing.`;
+  if (answered === 0) {
+    return `No line on this quote could be checked: none of them carried both `
+      + `an item code and a price. That is a gap in the document, not a `
+      + `verdict on the pricing.`;
   }
-  const lead = compared < total
-    ? `${compared} of ${total} lines were compared against what this customer `
-      + `had paid by ${raisedOn}`
-    : `All ${total} lines were compared against what this customer had paid by `
-      + `${raisedOn}`;
-  const rest = compared < total
-    ? ` The other ${total - compared} had no comparable history to judge.`
+  if (compared === 0) {
+    return withheld
+      ? `No line on this quote could be compared — but this customer's history `
+        + `is not empty. The engine found past transactions for these items and `
+        + `could not use them, because it cannot tell when each one became `
+        + `visible to the business. Re-read the documents already held from `
+        + `Data & connection; until then nothing here is a verdict on the `
+        + `pricing.${alsoUnasked}`
+      : `No line on this quote could be compared: this customer had no `
+        + `purchase history on record for these items by ${raisedOn}. That is `
+        + `an absence of evidence, not a verdict on the pricing.${alsoUnasked}`;
+  }
+  const lead = compared < answered
+    ? `${compared} of ${answered} lines were compared against what this `
+      + `customer had paid by ${raisedOn}`
+    : `All ${answered} lines were compared against what this customer had paid `
+      + `by ${raisedOn}`;
+  const rest = compared < answered
+    ? ` The other ${answered - compared} had no comparable history to judge.`
     : "";
-  if (flagged > 0) {
-    return `${lead}, and ${flagged} of them ${flagged === 1 ? "sits" : "sit"} `
-      + `outside it.${rest}`;
-  }
-  return `${lead}, and nothing on those stood out.${rest}`;
+  const body = flagged > 0
+    ? `${lead}, and ${flagged} of them ${flagged === 1 ? "sits" : "sit"} `
+      + `outside it.${rest}`
+    : `${lead}, and nothing on those stood out.${rest}`;
+  return `${body}${alsoUnasked}`;
 }
 
 /** What the lines come to, beside what the ERP says the document came to.

@@ -119,18 +119,17 @@ function stubFetch() {
   });
 }
 
-/** One diagnosis, in the shape the endpoint projects. */
 /** The manager's projection — a different shape, not the same one filtered. */
 function owner(over: Record<string, unknown> = {}) {
   return {
     view: "OWNER",
     quote_diagnosis_id: null, line_id: "0", renders: true, comparable: true,
     headline: "Above this customer's historical pricing",
-    strength_word: "Strong",
+    strength_word: "Strong", context: [],
     lines: ["Quoted ₹339 per unit against a supported range of ₹218."],
     opportunity: "No opportunity is asserted.",
     evidence: "11 usable, 0 excluded.",
-    codes: ["ABOVE_HISTORICAL_RANGE"], context: [],
+    codes: ["ABOVE_HISTORICAL_RANGE"],
     qualification: "", actions: [],
     ...over,
   };
@@ -142,7 +141,7 @@ function diagnosis(over: Record<string, unknown> = {}) {
     quote_diagnosis_id: null, line_id: "0", renders: true, comparable: true,
     headline: "Below this customer's historical pricing",
     quoted: "₹450", historical: "₹500 – ₹520",
-    strength_word: "Strong",
+    strength_word: "Strong", context: [],
     evidence: "Strong", evidence_detail: "14 comparable transactions",
     why: "This customer has purchased this item 14 times.",
     note: "", qualification: "", actions: [],
@@ -522,6 +521,64 @@ describe("the diagnosis", () => {
 
     await waitFor(() =>
       expect(screen.getByText(/nothing on those stood out/i)).toBeTruthy());
+  });
+
+  it("does not blame the customer's history for history it was not allowed to use",
+     async () => {
+    // The production report this was written from. Sixteen transactions were
+    // found for these items and every one excluded, because the sync had not
+    // carried the stamp that says when each became visible — and the screen
+    // reported "this customer had no purchase history on record". Somebody
+    // went looking for missing invoices that were sitting right there.
+    diagnoses = {
+      "0": diagnosis({ renders: false, comparable: false,
+                       context: ["EVIDENCE_WITHHELD"] }),
+    };
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText(/history is not empty/)).toBeTruthy());
+    expect(screen.getByText(/cannot tell when each one became visible/))
+      .toBeTruthy();
+    expect(screen.queryByText(/had no purchase history on record/)).toBeNull();
+  });
+
+  it("still says plainly when there genuinely is no history", async () => {
+    // The other direction. Nothing was withheld, so the absence is real and
+    // naming it is the correct answer — this must not become a warning that
+    // cries data problem on every quiet account.
+    diagnoses = {
+      "0": diagnosis({ renders: false, comparable: false, context: [] }),
+    };
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText(/had no purchase history on record/)).toBeTruthy());
+    expect(screen.queryByText(/history is not empty/)).toBeNull();
+  });
+
+  it("separates a line it was never asked about from one it could not compare",
+     async () => {
+    // A line with no item code or no price never reaches the engine, so it
+    // comes back in no answer at all. Counting it as "not comparable" blames
+    // the customer's history for a blank field on the document.
+    erpQuoteLines.mockResolvedValue(lines({
+      lines: [0, 1].map((n) => ({
+        line_number: n, item_code: n === 0 ? "ITEM-0" : "", item_name: "",
+        description: `line ${n}`, product_id: null, qty: 1, unit: "pcs",
+        rate: 100, amount: 100,
+      })),
+    }));
+    // Only line 0 was answered; line 1 carried no code, so the engine has
+    // nothing for it.
+    diagnoses = { "0": diagnosis({ line_id: "0", renders: false,
+                                   comparable: true }) };
+    draw();
+
+    await waitFor(() =>
+      expect(screen.getByText(/All 1 lines were compared/)).toBeTruthy());
+    expect(screen.getByText(/One more line carried no item code or no price/))
+      .toBeTruthy();
   });
 
   it("says so when the check could not run, and never reads as clean", async () => {

@@ -34,6 +34,7 @@ function view(over: Partial<OperationsDiagnosisView> = {}): OperationsDiagnosisV
     renders: true,
     comparable: true,
     strength_word: "Strong",
+    context: [],
     headline: "Below this customer's historical pricing",
     quoted: "₹900",
     historical: "₹980 – ₹1,020",

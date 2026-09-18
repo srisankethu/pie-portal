@@ -380,8 +380,12 @@ def _project(owner: rules.OwnerDiagnosis, opportunity, principal: Principal,
     type and renders from that, so there is no field to forget to remove.
     """
     if principal.is_salesperson:
-        card = render.render_operations(rules.operations_view(owner), th=th)
+        ops = rules.operations_view(owner)
+        card = render.render_operations(ops, th=th)
         return {"quote_diagnosis_id": diagnosis_id, "view": "OPERATIONS",
+                # Allowlist-filtered by `operations_view`, so this is the
+                # desk's context and not the owner's narrowed afterwards.
+                "context": list(ops.context),
                 **_card(card), **_shared(card.renders, owner.strength)}
     report = render.render_owner(owner, opportunity, th=th)
     return {"quote_diagnosis_id": diagnosis_id, "view": "OWNER",
@@ -433,6 +437,7 @@ def _project_stored(row: models.QuoteDiagnosis, principal: Principal,
             context=tuple(c for c in context if c in rules.OPERATIONS_CODES),
             surfaces=row.surfaces)
         return {**common, "view": "OPERATIONS",
+                "context": list(ops.context),
                 **_card(render.render_operations(ops, th=th)),
                 **_shared(row.surfaces, row.strength)}
     return {**common, "view": "OWNER", "codes": list(codes),

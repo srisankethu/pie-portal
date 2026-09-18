@@ -396,3 +396,39 @@ def test_the_managers_card_fields_still_carry_no_cost_for_a_salesperson(client):
     payload = _erp(client, SALES).json()
     cost_sweep.assert_no_cost(payload, cost=PURCHASE_COST, words=("cost", "margin"),
                               id_keys=cost_sweep.ID_KEYS)
+
+
+def test_both_roles_are_told_when_evidence_was_found_and_could_not_be_used(client):
+    """The distinction an empty panel cannot otherwise make.
+
+    A row whose ``source_recorded_at`` is NULL is loaded, excluded, and counted
+    — ``_load`` is bounded on date rather than on visibility precisely so the
+    exclusion survives to be reported. ``EVIDENCE_WITHHELD`` is that report, and
+    it was reaching the owner projection and not the desk's, so the screen said
+    "this customer had no purchase history on record" over sixteen excluded
+    transactions on a live book.
+    """
+    # Exactly what an un-re-synced book holds: the rows are there and none of
+    # them says when the business could first have seen it.
+    s = client.Maker()
+    s.query(models.SalesTxn).update({models.SalesTxn.source_recorded_at: None})
+    s.commit()
+    s.close()
+
+    for who in (SALES, MANAGER):
+        lines = _erp(client, who).json()["lines"]
+        assert lines
+        assert any("EVIDENCE_WITHHELD" in ln["context"] for ln in lines), who
+        assert all(ln["comparable"] is False for ln in lines), who
+
+
+def test_nothing_is_withheld_when_the_stamps_are_there(client):
+    """The other direction, so the flag cannot become decoration.
+
+    A book whose history is genuinely quiet must not be reported as a data
+    problem — that would send somebody to re-read documents over an account
+    that simply has not bought anything.
+    """
+    for who in (SALES, MANAGER):
+        lines = _erp(client, who).json()["lines"]
+        assert not any("EVIDENCE_WITHHELD" in ln["context"] for ln in lines), who

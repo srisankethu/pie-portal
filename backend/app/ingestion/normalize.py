@@ -642,7 +642,7 @@ def dropped_an_undated_decision(q: QuoteDocIn, *, system: str = ZOHO) -> bool:
 #: type from anything else would be inventing a second answer to a question
 #: somebody already answered on the document.
 _QUOTE_ATTRIBUTE_KEYS = ("cf_quote_type", "cf_pricing_type", "cf_procurement_type",
-                         "branch_id")
+                         "branch_id", "branch_name")
 
 
 def normalize_quote_document(raw: dict[str, Any], *, system: str = ZOHO) -> QuoteDocIn:

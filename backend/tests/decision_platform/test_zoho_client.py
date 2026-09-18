@@ -1450,3 +1450,92 @@ def test_a_drafted_or_voided_vendor_credit_is_not_read_as_money_given_back():
     )).list_vendor_credits())
 
     assert [r["vendor_credit_id"] for r in rows] == ["VC3"]
+
+
+def test_the_stamp_that_says_when_the_book_knew_survives_the_projection():
+    """``created_time`` is the point-in-time engine's only visibility clock.
+
+    The failure this pins is silent in the worst way. ``normalize`` reads
+    ``created_time`` and degrades to ``None`` rather than raising, because a
+    document whose creation stamp cannot be placed is still a document; a row
+    with ``None`` is then *excluded* from point-in-time evidence and counted as
+    excluded, never imputed from its own date. That is the correct bargain when
+    Zoho genuinely does not say.
+
+    Zoho does say. Every invoice, bill and estimate payload carries
+    ``created_time`` — and none of the three projections copied it, so on real
+    data every ``SalesTxn`` and ``CostRecord`` landed with
+    ``source_recorded_at = None`` and the quote-diagnosis engine had no usable
+    evidence at all. Nothing failed: the sync reported success, the rows were
+    written, the numbers were right, and every line of every quote came back
+    INSUFFICIENT_EVIDENCE.
+
+    It survived because the seam was never tested with a real payload shape.
+    ``test_sync_persistence`` feeds ``created_time`` straight into a fake source
+    and correctly asserts the sync stores it — proving the half of the chain
+    that was never broken.
+    """
+    day = _today(5)
+    stamp = "2025-06-16T18:51:32+0530"
+
+    inv_listing = {"code": 0, "invoices": [{"invoice_id": "I1", "date": day,
+                                            "status": "sent"}],
+                   "page_context": {"has_more_page": False}}
+    inv_detail = {"code": 0, "invoice": {
+        "invoice_id": "I1", "customer_id": "C1", "date": day,
+        "created_time": stamp,
+        "line_items": [{"line_item_id": 1, "item_id": 9, "quantity": 1,
+                        "rate": 100, "item_total": 100}]}}
+    row = list(_src(http=FakeHttp(
+        {"/invoices/I1": inv_detail, "/invoices": inv_listing})).list_invoices())[0]
+    assert row["created_time"] == stamp
+
+    bill_listing = {"code": 0, "bills": [{"bill_id": "B1", "date": day,
+                                          "status": "open"}],
+                    "page_context": {"has_more_page": False}}
+    bill_detail = {"code": 0, "bill": {
+        "bill_id": "B1", "date": day, "created_time": stamp,
+        "line_items": [{"line_item_id": 1, "item_id": 9, "quantity": 1,
+                        "rate": 100, "item_total": 100}]}}
+    row = list(_src(http=FakeHttp(
+        {"/bills/B1": bill_detail, "/bills": bill_listing})).list_bills())[0]
+    assert row["created_time"] == stamp
+
+    est_listing = {"code": 0, "estimates": [{
+        "estimate_id": "E1", "date": day, "status": "sent",
+        "created_time": stamp, "customer_id": "C1"}],
+        "page_context": {"has_more_page": False}}
+    est_detail = {"code": 0, "estimate": {"estimate_id": "E1", "line_items": []}}
+    row = list(_src(http=FakeHttp(
+        {"/estimates/E1": est_detail, "/estimates": est_listing})).list_quotes())[0]
+    assert row["created_time"] == stamp
+
+
+def test_a_bill_the_client_projected_normalizes_to_a_usable_cost_row():
+    """End to end across the seam: Zoho payload in, usable evidence out.
+
+    The assertion that matters is the last one. A ``CostRecordIn`` with
+    ``recorded_at`` of ``None`` is not a slightly worse cost row — it is one the
+    diagnosis engine cannot use at all, so a cost that is present and correct
+    still buys nothing.
+    """
+    from app.ingestion.normalize import normalize_bill
+
+    day = _today(5)
+    listing = {"code": 0, "bills": [{"bill_id": "B1", "date": day,
+                                     "status": "open"}],
+               "page_context": {"has_more_page": False}}
+    # The real shape, from bill YGCT9941 on the 4U Precision book: a list rate
+    # well above what was paid, and a creation stamp six days after the date.
+    detail = {"code": 0, "bill": {
+        "bill_id": "B1", "date": day, "created_time": "2025-06-16T18:51:32+0530",
+        "vendor_id": "V1",
+        "line_items": [{"line_item_id": 1, "item_id": 9, "quantity": 50,
+                        "rate": 754, "discount": "83.42%", "item_total": 6251.5}]}}
+    row = list(_src(http=FakeHttp({"/bills/B1": detail, "/bills": listing})).list_bills())[0]
+
+    cost = normalize_bill(row)[0]
+    assert float(cost.unit_cost) == 125.03          # paid, not the ₹754 list rate
+    assert float(cost.rate) == 754.0                # kept for audit
+    assert cost.source_ref.recorded_at is not None  # and it is usable evidence
+    assert cost.source_ref.recorded_at.date() == date(2025, 6, 16)

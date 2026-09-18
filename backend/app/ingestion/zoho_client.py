@@ -1210,6 +1210,13 @@ class ZohoApiSource(ZohoTransport):
                                    _EXCLUDED_INVOICE_STATUS, skip=skip):
             yield {
                 "invoice_id": str(inv.get("invoice_id")),
+                # When the book itself recorded this document, as
+                # against when the commercial fact happened. The
+                # point-in-time engine's only visibility clock: a row
+                # without it is excluded from evidence rather than
+                # dated from its own `date`, so dropping it here does
+                # not make the engine wrong, it makes it blind.
+                "created_time": inv.get("created_time"),
                 "customer_id": str(inv.get("customer_id")),
                 # The customer's name as the document states it. Diagnostics
                 # only — resolution goes through customer_id — but the skip
@@ -1357,6 +1364,13 @@ class ZohoApiSource(ZohoTransport):
                                     _EXCLUDED_BILL_STATUS, skip=skip):
             yield {
                 "bill_id": str(bill.get("bill_id")),
+                # When the book itself recorded this document, as
+                # against when the commercial fact happened. The
+                # point-in-time engine's only visibility clock: a row
+                # without it is excluded from evidence rather than
+                # dated from its own `date`, so dropping it here does
+                # not make the engine wrong, it makes it blind.
+                "created_time": bill.get("created_time"),
                 "date": bill.get("date"),
                 "last_modified_time": bill.get("last_modified_time"),
                 # The mirror of what `list_invoices` carries, and the more
@@ -1680,6 +1694,13 @@ class ZohoApiSource(ZohoTransport):
                     self.documents_fetched += 1
             yield {
                 "estimate_id": estimate_id,
+                # When the book itself recorded this document, as
+                # against when the commercial fact happened. The
+                # point-in-time engine's only visibility clock: a row
+                # without it is excluded from evidence rather than
+                # dated from its own `date`, so dropping it here does
+                # not make the engine wrong, it makes it blind.
+                "created_time": est.get("created_time"),
                 "last_modified_time": est.get("last_modified_time"),
                 # Only the detail call carries these. Absent on a resumed row,
                 # which the normaliser reads as "not held" rather than "none".

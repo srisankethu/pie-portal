@@ -197,6 +197,15 @@ class BookQuoteLine:
 
     line_number: int
     item_code: str
+    #: The item master's name for this line, where the code resolved to one.
+    #: Read from ``Product`` rather than stored on the line: the ERP's own
+    #: ``name`` is on the payload, but a copy taken at quote time is a name that
+    #: drifts from the master the next time somebody renames the item, and this
+    #: screen is read against the catalogue rather than against the document.
+    #: Empty where the line resolved to no product, which is a real state — a
+    #: quote naming something that never became a catalogue item is still real
+    #: quoting activity, and the code is shown on its own rather than blanked.
+    item_name: str
     description: str
     product_id: Optional[str]
     qty: Optional[Decimal]
@@ -208,6 +217,7 @@ class BookQuoteLine:
         return {
             "line_number": self.line_number,
             "item_code": self.item_code,
+            "item_name": self.item_name,
             "description": self.description,
             "product_id": self.product_id,
             "qty": float(self.qty) if self.qty is not None else None,
@@ -230,8 +240,13 @@ def lines_for(session: Session, org: str, *, quote_ref: str) -> list[BookQuoteLi
     updated and the lines untouched, so the screen says "not held" rather than
     "none". Do not let an empty list here render as an empty quote.
     """
-    rows = session.scalars(
-        select(models.ErpQuoteLine)
+    # Outer join, not inner: a line whose code resolved to no product still
+    # belongs to the quote, and an inner join would silently drop it from a
+    # document the reader is holding in their other hand.
+    rows = session.execute(
+        select(models.ErpQuoteLine, models.Product.name)
+        .outerjoin(models.Product,
+                   models.ErpQuoteLine.product_id == models.Product.product_id)
         .where(models.ErpQuoteLine.organization_id == org,
                models.ErpQuoteLine.quote_ref == quote_ref)
         .order_by(models.ErpQuoteLine.line_number,
@@ -240,6 +255,7 @@ def lines_for(session: Session, org: str, *, quote_ref: str) -> list[BookQuoteLi
         BookQuoteLine(
             line_number=row.line_number,
             item_code=row.item_code or "",
+            item_name=name or "",
             description=row.description or "",
             product_id=row.product_id,
             qty=Decimal(row.qty) if row.qty is not None else None,
@@ -247,7 +263,7 @@ def lines_for(session: Session, org: str, *, quote_ref: str) -> list[BookQuoteLi
             rate=Decimal(row.rate) if row.rate is not None else None,
             amount=Decimal(row.amount) if row.amount is not None else None,
         )
-        for row in rows
+        for row, name in rows
     ]
 
 

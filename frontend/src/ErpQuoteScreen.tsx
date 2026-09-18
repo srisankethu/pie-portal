@@ -492,11 +492,23 @@ export function ErpQuoteLineGrid({ lines }: { lines?: ErpQuoteLines }) {
       width: 70, flex: 0,
       valueGetter: (p) => String((p.data?.line_number ?? 0) + 1),
     }),
-    text("item_code", "Item", {
-      minWidth: 180,
+    // Name first, then the code. Somebody reading a quote knows the tool, not
+    // the eight digits the ERP files it under — the SKU is what they check
+    // against a PO, which is a second act rather than the first. Two columns
+    // rather than one stacked cell: each is separately sortable and filterable,
+    // and the desk filters on the code as often as it scans the names.
+    text("item_name", "Item", {
+      minWidth: 240,
+      // Empty where the line resolved to no catalogue item. The code below
+      // still names it, so this says "not in the master" rather than going
+      // blank as though the line were nameless.
+      valueGetter: (p) => p.data?.item_name || "—",
+    }),
+    text("item_code", "SKU", {
+      minWidth: 150,
       valueGetter: (p) => p.data?.item_code || "—",
     }),
-    text("description", "Description", { minWidth: 260 }),
+    text("description", "Description", { minWidth: 220 }),
     numeric("qty", "Qty", (v) => (v === null || v === undefined ? "—" : String(v)),
             { width: 110, flex: 0 }),
     text("unit", "Unit", { width: 90, flex: 0 }),
@@ -519,7 +531,12 @@ export function ErpQuoteLineGrid({ lines }: { lines?: ErpQuoteLines }) {
       renderNarrow={(ln) => (
         <Box key={ln.line_number}
              sx={{ p: 2, borderBottom: 1, borderColor: "divider" }}>
-          <Box sx={{ fontWeight: 600 }}>{ln.item_code || "—"}</Box>
+          <Box sx={{ fontWeight: 600 }}>{ln.item_name || ln.item_code || "—"}</Box>
+          {/* The code under the name on a phone rather than beside it: two
+              columns of a grid become two lines of a card, and the name is
+              the one somebody scans a list by. Dropped when it would only
+              repeat the line above, which is the unresolved case. */}
+          {ln.item_name && ln.item_code && <Meta>{ln.item_code}</Meta>}
           <Box sx={{ color: "text.secondary", fontSize: 13 }}>
             {ln.description}
           </Box>

@@ -552,3 +552,56 @@ def test_a_quote_this_reader_may_not_see_is_a_404_rather_than_an_empty_list(clie
 def test_a_quote_that_does_not_exist_is_also_a_404(client):
     assert client.get("/api/v1/insight/quote-book/nope/lines",
                       headers=_hdr(client, MANAGER)).status_code == 404
+
+
+def test_a_line_carries_the_item_masters_name_beside_its_code(maker):
+    """The code alone is not what a reader recognises.
+
+    Read from ``Product`` rather than copied onto the line when the quote was
+    synced: the ERP payload does carry a name, but a copy taken at quote time
+    is a name that drifts the next time somebody renames the item, and this
+    screen is read against the catalogue rather than against the document.
+    """
+    s = maker()
+    _doc(s, "q1")
+    s.add(models.Product(product_id="p1", organization_id=ORG,
+                         external_id="22000865", name="CNMG120408-UC-D2 YC0014",
+                         uom="pcs"))
+    _line(s, "q1", "q1:a", code="22000865", product="p1")
+    s.commit()
+    s.close()
+
+    sess = maker()
+    try:
+        row = quote_book.lines_for(sess, ORG, quote_ref="q1")[0]
+    finally:
+        sess.close()
+
+    assert row.item_name == "CNMG120408-UC-D2 YC0014"
+    assert row.item_code == "22000865"
+    assert row.to_dict()["item_name"] == "CNMG120408-UC-D2 YC0014"
+
+
+def test_a_line_no_catalogue_item_matched_is_kept_and_simply_unnamed(maker):
+    """An outer join, not an inner one.
+
+    A quote line naming something that never became a catalogue item is real
+    quoting activity — freight, a one-off buy-in — and an inner join would drop
+    it from a document the reader is holding in their other hand. The name is
+    empty and the code still says what it was.
+    """
+    s = maker()
+    _doc(s, "q1")
+    _line(s, "q1", "q1:a", code="FREIGHT", product=None)
+    s.commit()
+    s.close()
+
+    sess = maker()
+    try:
+        rows = quote_book.lines_for(sess, ORG, quote_ref="q1")
+    finally:
+        sess.close()
+
+    assert len(rows) == 1
+    assert rows[0].item_name == ""
+    assert rows[0].item_code == "FREIGHT"

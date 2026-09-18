@@ -24,6 +24,8 @@ Two honesty notes, in the open rather than in a footnote:
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 import time
 from datetime import date
 from typing import Any, Iterable, Iterator, Optional
@@ -149,8 +151,11 @@ def _balance(row: dict[str, Any]) -> Any:
     if total in (None, "") or paid in (None, ""):
         return None
     try:
-        return float(total) - float(paid)
-    except (TypeError, ValueError):
+        # Decimal, not float: these are rupee amounts that get persisted as a
+        # balance. 217321.48 - 50616.58 comes out 166704.90000000002 in binary
+        # floating point, and base.money exists to keep that off the wire.
+        return Decimal(str(total)) - Decimal(str(paid))
+    except (ArithmeticError, TypeError, ValueError):
         return None
 
 

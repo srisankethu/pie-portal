@@ -30,6 +30,8 @@ agreement, and neither invents a number.
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 import hashlib
 import hmac
 import secrets as _secrets
@@ -202,8 +204,13 @@ def _negate_for_sale(value: Any, is_sale: bool) -> Any:
     if not is_sale or value in (None, ""):
         return value
     try:
-        return -float(value)
-    except (TypeError, ValueError):
+        # Negation through float is exact for realistic money, so this is a
+        # latent violation rather than a live one — but it is the Decimal-only
+        # invariant and the reason base.money normalises the same way, and a
+        # quantity or total that leaves here as a float is one the next hand
+        # has to know not to do arithmetic on.
+        return -Decimal(str(value))
+    except (ArithmeticError, TypeError, ValueError):
         return value
 
 

@@ -8,7 +8,7 @@ would, then lets the deterministic engine and AI layer do their normal work.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
@@ -16,6 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import memberships
+from .commercial import source_concepts
 from .config import settings
 from .domain import models
 from .domain.enums import Role
@@ -36,18 +37,82 @@ _DEMO_CUSTOMERS = [
     ("cst_brakes", "Brakes India", "usr_sales"),
     ("cst_tvs", "TVS Sundram Fasteners", "usr_sales"),
 ]
+# Every demo item states a unit. Without one ``evidence.normalize`` excludes
+# the row as ``NO_UNIT`` — a quantity in no unit has no meaning, and the engine
+# never guesses one — so an item master with a blank ``uom`` makes every
+# transaction for it unusable as evidence. "Nos" is how these books spell a
+# discrete count; ``evidence.canonical_unit`` folds it to ``each``.
 _DEMO_PRODUCTS = [
-    ("prd_cnmg", "CNMG 120408-MP insert"),
-    ("prd_dnmg", "DNMG 150608-MP insert"),
-    ("prd_holder", "25mm shank turning holder"),
-    ("prd_ream", "8.0mm HSS-Co machine reamer"),
+    ("prd_cnmg", "CNMG 120408-MP insert", "Nos"),
+    ("prd_dnmg", "DNMG 150608-MP insert", "Nos"),
+    ("prd_holder", "25mm shank turning holder", "Nos"),
+    ("prd_ream", "8.0mm HSS-Co machine reamer", "Nos"),
 ]
+# One supplier, with both readings of its payment term: what Zoho's dropdown
+# could express and what was actually agreed. ``VendorPaymentTerm`` exists for
+# exactly that gap, and the quote diagnosis's working-capital reading refuses
+# outright when neither is on record.
+_DEMO_VENDORS = [("vnd_kennametal", "Kennametal India Limited", 30)]
+_DEMO_VENDOR_ID = _DEMO_VENDORS[0][0]
+
+#: The system the demo documents claim to have come from. Every demo row
+#: already says ``{"system": "zoho"}`` in its ``source_ref``; the quote below
+#: needs it as a column because ``source_concepts.in_force`` matches a
+#: declaration to a record by connector and refuses to guess one.
+_DEMO_CONNECTOR = "zoho"
+
+#: The one quote the ERP "issued" in this dataset. Fixed and human-readable for
+#: the reason the customer and product ids are.
+_DEMO_QUOTE_REF = "est-demo-ace-01"
+
+#: The field this organization is declared to record a quote's intent in, and
+#: what it wrote on that quote. A source key, named here and nowhere
+#: downstream — the whole point of ``commercial/source_concepts``.
+_DEMO_QUOTE_INTENT_KEY = "cf_quote_type"
+
+#: Stamped on the declaration so a purge can find exactly this row and no
+#: administrator's. ``source_ref`` is the column's own purpose: where a
+#: declaration came from, so a wrong reading can be traced to whoever made it.
+_DEMO_DECLARATION_SOURCE = "PIE demo seed"
+
 DEMO_CUSTOMER_IDS = frozenset(c[0] for c in _DEMO_CUSTOMERS)
 DEMO_PRODUCT_IDS = frozenset(p[0] for p in _DEMO_PRODUCTS)
+DEMO_VENDOR_IDS = frozenset(v[0] for v in _DEMO_VENDORS)
+DEMO_QUOTE_REFS = frozenset({_DEMO_QUOTE_REF})
+
+#: How long after the commercial date the source system recorded the document.
+#: Not a rounding of "the same day": ``SalesTxn.source_recorded_at`` and
+#: ``CostRecord.source_recorded_at`` both record the measurement these come
+#: from — an invoice is authored in the ERP and 99.5% of them carry no lag at
+#: all, while a bill is transcribed from a supplier's document that arrived
+#: later and runs a three-day median. One number for both would make the sell
+#: side look slower than it is and the buy side faster.
+_INVOICE_ENTRY_LAG_DAYS = 0
+_BILL_ENTRY_LAG_DAYS = 3
+
+#: The time of day a document is stamped with — 10:00 in the book's own zone.
+#: Arbitrary but fixed: the demo may not read a clock, and the diagnosis
+#: engine's cut-off is the end of a day, so any working hour is inside it.
+_ENTRY_TIME = time(4, 30)
 
 
 def _d(days_ago: int) -> date:
     return AS_OF - timedelta(days=days_ago)
+
+
+def _stamp(when: date, *, lag_days: int = 0) -> datetime:
+    """When the source system recorded a document dated ``when``.
+
+    **Timezone-aware, and that is the whole of it.** This is the value
+    ``quote_diagnosis.evidence.is_knowable`` compares against a quote's
+    ``knowable_by`` to decide whether a row was visible yet, and a stamp with no
+    offset cannot be placed on the UTC line at all — which is why
+    ``clock.utc_stamp`` returns ``None`` for one rather than assuming a zone.
+    A row with no stamp is excluded as ``NO_RECORDED_AT``, so a demo history
+    without these is history no diagnosis may cite.
+    """
+    return datetime.combine(when + timedelta(days=lag_days), _ENTRY_TIME,
+                            tzinfo=timezone.utc)
 
 
 def _sale(org, cust, prod, when, qty, price, inv, line="l1"):
@@ -55,16 +120,24 @@ def _sale(org, cust, prod, when, qty, price, inv, line="l1"):
         organization_id=org, external_ref=f"{inv}:{line}", customer_id=cust,
         product_id=prod, date=when, qty=Decimal(str(qty)), unit_price=Decimal(str(price)),
         line_revenue=Decimal(str(qty)) * Decimal(str(price)),
+        source_recorded_at=_stamp(when, lag_days=_INVOICE_ENTRY_LAG_DAYS),
         source_ref={"system": "zoho", "record_type": "invoice", "record_id": inv, "line_id": line})
 
 
-def _cost(org, prod, when, qty, unit_cost, bill, line="l1"):
+def _cost(org, prod, when, qty, unit_cost, bill, line="l1",
+          vendor=_DEMO_VENDOR_ID):
     # Demo bills carry no discount, so rate == the effective cost and the
     # discount is 0% — the same shape a real, undiscounted bill line produces.
+    #
+    # ``vendor_id`` is set because the diagnosis reads the supplier off the
+    # purchases its cost baseline actually cited: a bill naming nobody funds
+    # nothing, and the working-capital reading then has no term to work from.
     cost = Decimal(str(unit_cost))
     return models.CostRecord(
         organization_id=org, external_ref=f"{bill}:{line}", product_id=prod, date=when,
+        vendor_id=vendor,
         qty=Decimal(str(qty)), unit_cost=cost, rate=cost, discount_percent=Decimal("0"),
+        source_recorded_at=_stamp(when, lag_days=_BILL_ENTRY_LAG_DAYS),
         source_ref={"system": "zoho", "record_type": "bill", "record_id": bill, "line_id": line})
 
 
@@ -139,8 +212,18 @@ def seed_demo(session: Session, *, organization_id: Optional[str] = None) -> dic
     for cid, name, uid in _DEMO_CUSTOMERS:
         session.add(models.Customer(customer_id=cid, organization_id=org, external_id=cid,
                                     name=name, assigned_user_id=uid, status="ACTIVE"))
-    for pid, name in _DEMO_PRODUCTS:
-        session.add(models.Product(product_id=pid, organization_id=org, external_id=pid, name=name))
+    for pid, name, uom in _DEMO_PRODUCTS:
+        session.add(models.Product(product_id=pid, organization_id=org, external_id=pid,
+                                   name=name, uom=uom))
+    for vid, name, zoho_days in _DEMO_VENDORS:
+        session.add(models.Vendor(vendor_id=vid, organization_id=org,
+                                  connector=_DEMO_CONNECTOR, external_id=vid,
+                                  name=name, payment_terms_days=zoho_days,
+                                  status="ACTIVE",
+                                  source_ref={"system": "zoho",
+                                              "record_type": "contact",
+                                              "record_id": vid}))
+    session.flush()
 
     rows: list = []
 
@@ -171,8 +254,25 @@ def seed_demo(session: Session, *, organization_id: Optional[str] = None) -> dic
     for i, da in enumerate([5, 3, 1]):
         rows.append(_sale(org, "cst_brakes", "prd_cnmg", _d(da), 30, 414, f"inv-brakes-r{i}"))
 
+    # ── what the demo supplier is actually bought on ─────────────────────────
+    #
+    # Purchases for the holder, so the diagnosis below has a cost baseline with
+    # something to trim rather than a single point. Five of the six sit in a
+    # narrow band; the sixth is a purchase well under it, which the trim removes
+    # and reports as ``POSSIBLE_COST_DRIVEN`` — context with its row attached,
+    # never an assertion about why it was cheap, because nothing in the ledger
+    # records that. The newest of them predates the quote, so it is knowable.
+    for i, (da, qty, unit_cost) in enumerate([
+            (300, 10, 1180), (240, 10, 1195), (180, 15, 1160),
+            (120, 10, 1190), (95, 5, 890), (40, 10, 1205)]):
+        rows.append(_cost(org, "prd_holder", _d(da), qty, unit_cost, f"bill-holder-{i}"))
+
     for r in rows:
         session.add(r)
+    session.flush()
+
+    _seed_supplier_terms(session, org)
+    _seed_erp_quote(session, org)
     session.flush()
 
     run_detectors(session, org, as_of=AS_OF)
@@ -180,6 +280,127 @@ def seed_demo(session: Session, *, organization_id: Optional[str] = None) -> dic
     summary = DecisionService(session, org).generate()
     session.flush()
     return summary
+
+
+def _seed_supplier_terms(session: Session, org: str) -> None:
+    """What we actually agreed to pay the demo supplier in.
+
+    Beside ``Vendor.payment_terms_days``, never over it: Zoho's dropdown can
+    say 30 and the agreement is 45, and the difference between the two is the
+    thing worth seeing — it is also the difference between the cash this
+    business plans around and the cash it actually has.
+
+    **The stamps are historical and set here rather than left to default.**
+    ``working_capital`` puts ``updated_at`` through the engine's own
+    ``is_knowable``: a term typed after a quote went out is not a term that
+    quote was priced against, and a row stamped with the moment the demo was
+    seeded would be excluded from every diagnosis of every demo quote — which
+    is the same defect as the missing ``source_recorded_at`` this seed used to
+    have, arriving through a different column.
+    """
+    agreed_on = _stamp(_d(200))
+    session.add(models.VendorPaymentTerm(
+        vendor_payment_term_id="vpt_demo_kennametal", organization_id=org,
+        vendor_id=_DEMO_VENDOR_ID, days=45, basis="NET",
+        note="Agreed at the annual distributor review; Zoho's dropdown can only "
+             "say 30.",
+        created_at=agreed_on, updated_at=agreed_on))
+
+
+def _seed_erp_quote(session: Session, org: str) -> None:
+    """One quote the ERP issued, worth opening.
+
+    Two lines, and each is a different finding rather than two of the same one:
+
+    * The **holder** is quoted at 1,650 against six invoices at 1,800 to this
+      same account at this same quantity — below the range that account's own
+      history supports, by enough per unit and in total to clear every gate in
+      ``rules._surfaces``. It earns money at the price quoted; what it gives up
+      is the difference.
+    * The **insert** is quoted at 312 against purchases at 320 and 349, so it
+      **loses money on every piece**. There is no history of this customer
+      buying it, so the price side honestly answers ``INSUFFICIENT_EVIDENCE``
+      and no card is raised — and the quote roll-up names the line anyway,
+      because ``rollup.loss_lines`` is deliberately independent of the gate that
+      decides what interrupts somebody.
+
+    ``source_attributes`` carries the field this business fills in, under the
+    key its own system wrote. Nothing reads that key except the declaration in
+    ``_declare_quote_intent``; every rule downstream reads the concept.
+    """
+    raised_on = _d(3)
+    # (product, qty, unit price, description). The line NUMBER is not written
+    # here: it comes from ``enumerate`` below, because ``normalize`` builds it
+    # that way (``for position, item in enumerate(...)``, no ``start=``) and a
+    # seeded row that numbered itself differently from a synced one would be a
+    # demo that disagrees with production about what line 1 is. It is
+    # zero-based on the wire, and ``ErpQuoteScreen`` adds the 1 a reader sees.
+    lines = [
+        ("prd_holder", Decimal("12"), Decimal("1650"),
+         "25mm shank turning holder"),
+        ("prd_cnmg", Decimal("30"), Decimal("312"),
+         "CNMG 120408-MP insert"),
+    ]
+    session.add(models.QuoteDoc(
+        quote_document_id="qdoc_demo_ace", organization_id=org,
+        connector=_DEMO_CONNECTOR, external_ref=_DEMO_QUOTE_REF,
+        number="QT-DEMO-0001", source_reference="ACE/RFQ/2026-114",
+        customer_id="cst_ace", customer_ref="ACE Designers",
+        date=raised_on, expires_on=raised_on + timedelta(days=30),
+        source_status="sent", outcome="UNRECORDED",
+        total=sum((qty * price for _, qty, price, _ in lines), Decimal("0")),
+        source_attributes={_DEMO_QUOTE_INTENT_KEY: "Repeat order"},
+        source_recorded_at=_stamp(raised_on),
+        source_ref={"system": "zoho", "record_type": "estimate",
+                    "record_id": _DEMO_QUOTE_REF}))
+    for number, (pid, qty, price, description) in enumerate(lines):
+        session.add(models.ErpQuoteLine(
+            erp_quote_line_id=f"eqln_demo_ace_{number}", organization_id=org,
+            connector=_DEMO_CONNECTOR,
+            external_ref=f"{_DEMO_QUOTE_REF}:{number}",
+            quote_ref=_DEMO_QUOTE_REF, line_number=number, product_id=pid,
+            item_code=pid, description=description, qty=qty, unit="Nos",
+            rate=price, amount=qty * price, discount_percent=Decimal("0"),
+            source_ref={"system": "zoho", "record_type": "estimate",
+                        "record_id": _DEMO_QUOTE_REF, "line_id": str(number)}))
+    _declare_quote_intent(session, org)
+
+
+def _declare_quote_intent(session: Session, org: str) -> None:
+    """Say what this organization's own quote field means.
+
+    Through ``source_concepts.declare`` rather than by writing the row, for the
+    reason CLAUDE.md §2 gives: that function owns the closed vocabularies, the
+    supersede rule and the effective-from asymmetry, and a seed that built the
+    row itself would be a second answer to all three — one that could put a
+    value outside the vocabulary into a table whose whole purpose is that it
+    cannot hold one.
+
+    A first declaration is effective from the beginning of time, which is
+    ``declare``'s own default and the only cut that is not arbitrary: it applies
+    to the quote above, which was raised before this database existed.
+
+    **The one value in this seed that is not derived from ``AS_OF``** is the
+    ``recorded_at`` stamp ``declare`` writes — the moment the declaration was
+    typed, which is what that column means and is the same class of value as the
+    ``created_at`` every other demo row carries. It is not what a diagnosis
+    reads: the point-in-time predicate is ``effective_from <= at <
+    superseded_at``, and ``recorded_at`` only tie-breaks two declarations made in
+    the same instant, of which this seed writes one.
+    """
+    # ``intent.ENTITY`` rather than the literal "quote": it is the record kind
+    # the diagnosis actually asks for, so a declaration filed under anything
+    # else would be in force and never read.
+    from .commercial.quote_diagnosis import intent
+
+    source_concepts.declare(
+        session, org, connector=_DEMO_CONNECTOR,
+        entity=intent.ENTITY, source_key=_DEMO_QUOTE_INTENT_KEY,
+        concept=source_concepts.QUOTE_INTENT,
+        value_map={"Repeat order": "REPEAT_ORDER", "Tender": "TENDER",
+                   "Budgetary": "BUDGETARY", "New enquiry": "FIRM_ENQUIRY",
+                   "Sample": "SAMPLE"},
+        source_ref=_DEMO_DECLARATION_SOURCE)
 
 
 def purge_demo_seed(session: Session, organization_id: str) -> dict[str, int]:
@@ -194,6 +415,15 @@ def purge_demo_seed(session: Session, organization_id: str) -> dict[str, int]:
     Every delete is scoped to the fixed demo ids, so it can never touch a real
     Zoho customer or product, and it is a no-op (all counts zero) once nothing
     demo-seeded remains — safe to call on every sync, not just the first.
+
+    **Ordered against the foreign keys**, which is why this is a literal dict
+    rather than a loop over tables: cost lines name a vendor, a payment term
+    names a vendor, and a quote names a customer, so each of those has to go
+    before the row it points at. The one delete that is *not* keyed on a fixed
+    id is the source-attribute declaration — that table is keyed on what a
+    field means rather than on a row this module minted — so it is narrowed by
+    the marker the seed writes into ``source_ref``, and an administrator's own
+    declaration of the same field is left alone.
     """
     subject_ids = list(DEMO_CUSTOMER_IDS | DEMO_PRODUCT_IDS)
     removed = {
@@ -219,6 +449,31 @@ def purge_demo_seed(session: Session, organization_id: str) -> dict[str, int]:
         "cost_records": session.query(models.CostRecord).filter(
             models.CostRecord.organization_id == organization_id,
             models.CostRecord.product_id.in_(list(DEMO_PRODUCT_IDS)),
+        ).delete(synchronize_session=False),
+        "erp_quote_lines": session.query(models.ErpQuoteLine).filter(
+            models.ErpQuoteLine.organization_id == organization_id,
+            models.ErpQuoteLine.quote_ref.in_(list(DEMO_QUOTE_REFS)),
+        ).delete(synchronize_session=False),
+        "erp_quotes": session.query(models.QuoteDoc).filter(
+            models.QuoteDoc.organization_id == organization_id,
+            models.QuoteDoc.external_ref.in_(list(DEMO_QUOTE_REFS)),
+        ).delete(synchronize_session=False),
+        # The agreed term before the vendor it hangs off, and both after the
+        # cost lines that name it.
+        "vendor_payment_terms": session.query(models.VendorPaymentTerm).filter(
+            models.VendorPaymentTerm.organization_id == organization_id,
+            models.VendorPaymentTerm.vendor_id.in_(list(DEMO_VENDOR_IDS)),
+        ).delete(synchronize_session=False),
+        "vendors": session.query(models.Vendor).filter(
+            models.Vendor.organization_id == organization_id,
+            models.Vendor.vendor_id.in_(list(DEMO_VENDOR_IDS)),
+        ).delete(synchronize_session=False),
+        "source_attribute_mappings": session.query(
+            models.SourceAttributeMapping).filter(
+            models.SourceAttributeMapping.organization_id == organization_id,
+            models.SourceAttributeMapping.connector == _DEMO_CONNECTOR,
+            models.SourceAttributeMapping.source_key == _DEMO_QUOTE_INTENT_KEY,
+            models.SourceAttributeMapping.source_ref == _DEMO_DECLARATION_SOURCE,
         ).delete(synchronize_session=False),
         "customers": session.query(models.Customer).filter(
             models.Customer.organization_id == organization_id,

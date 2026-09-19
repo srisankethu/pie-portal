@@ -138,6 +138,29 @@ CONSIDERATIONS: dict[str, str] = {
     REVIEW_THE_PAYMENT_TERMS: "Review the payment terms behind this line",
 }
 
+# ── why a line carries the options it carries ────────────────────────────────
+#
+# The machine-readable half of ``Considerations.basis``, and the same shape
+# ``working_capital.WorkingCapital.reason``, ``intent.Reading.reason`` and
+# ``drivers.Attribution.reason`` have. Two values, not three: ``_basis`` words
+# the two empty cases differently — a quiet line and a line whose finding
+# supports no option — but both are one answer to "what is on offer here",
+# which is nothing. A third code would be a distinction no caller has asked
+# for, readable from ``line_surfaces`` already.
+#
+# ``render.NOT_ON_STORED_RECORD`` is the third value this field takes and is
+# deliberately not named here: it is a fact about a stored row rather than
+# about a line's evidence, and ``render`` owns it for the same reason it owns
+# the other three blocks' stored refusals. This module imports nothing from
+# there — the renderer reads considerations, so the dependency runs one way.
+
+#: At least one option rests on what this line's evidence already showed.
+OFFERED = "OFFERED"
+
+#: The line was weighed and its evidence supports no option.
+NOTHING_TO_WEIGH = "NOTHING_TO_WEIGH"
+
+
 #: The considerations an operations reader may be offered. An allowlist — see
 #: the module docstring for what decides membership.
 OPERATIONS_CONSIDERATIONS = frozenset({
@@ -218,7 +241,14 @@ class Considerations:
     #: ``for_operations`` has to rebuild ``basis`` from the desk's own list.
     line_surfaces: bool
     items: tuple[Consideration, ...]
-    #: What was weighed, or why nothing is offered. Never empty.
+    #: ``OFFERED`` / ``NOTHING_TO_WEIGH``, or ``render.NOT_ON_STORED_RECORD``
+    #: on a row read back from the store. The code a caller reads, beside the
+    #: sentence a person reads — kept apart so neither has to be recovered from
+    #: the other, which is the lesson CLAUDE.md §1 draws from
+    #: ``_identity_candidate``.
+    reason: str
+    #: What was weighed, or why nothing is offered, in words. Never empty, and
+    #: never prefixed with its own code.
     basis: str
 
     @property
@@ -229,7 +259,7 @@ class Considerations:
     def to_dict(self) -> dict:
         return {"line_id": self.line_id, "line_surfaces": self.line_surfaces,
                 "items": [c.to_dict() for c in self.items],
-                "basis": self.basis}
+                "reason": self.reason, "basis": self.basis}
 
 
 # ── generation ───────────────────────────────────────────────────────────────
@@ -388,7 +418,7 @@ def propose(owner: OwnerDiagnosis, *,
 
     ordered = tuple(sorted(items, key=lambda c: ORDER.index(c.code)))
     return Considerations(line_id=owner.line_id, line_surfaces=owner.surfaces,
-                          items=ordered,
+                          items=ordered, reason=_reason(ordered),
                           basis=_basis(ordered, line_surfaces=owner.surfaces))
 
 
@@ -411,7 +441,8 @@ def for_operations(proposed: Considerations) -> Considerations:
                  if c.code in OPERATIONS_CONSIDERATIONS)
     return Considerations(
         line_id=proposed.line_id, line_surfaces=proposed.line_surfaces,
-        items=kept, basis=_basis(kept, line_surfaces=proposed.line_surfaces))
+        items=kept, reason=_reason(kept),
+        basis=_basis(kept, line_surfaces=proposed.line_surfaces))
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -451,6 +482,17 @@ def _driver_severity(owner: OwnerDiagnosis, code: str) -> Optional[str]:
         if driver.code == code:
             return driver.severity
     return None
+
+
+def _reason(items: Sequence[Consideration]) -> str:
+    """Whether anything is on offer, as a code.
+
+    Read off the same list ``_basis`` words, and rebuilt by ``for_operations``
+    over the desk's own list for that function's reason: a desk that was handed
+    nothing has nothing to weigh, whatever the owner's copy holds. Saying
+    otherwise would be a flag answering a margin question.
+    """
+    return OFFERED if items else NOTHING_TO_WEIGH
 
 
 def _basis(items: Sequence[Consideration], *, line_surfaces: bool) -> str:

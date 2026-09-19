@@ -214,9 +214,17 @@ def test_the_owner_gets_the_possibility_and_the_desk_has_no_trace_of_it(blank):
     desk = _assess(blank, SALES, quote_id=QUOTE_REF, record=False)
 
     claim = owner["intent"]["lines"][0]
-    assert claim.startswith("POSSIBLE_MARGIN_LEAKAGE:")
+    # The sentence carries no code and the code is on ``codes`` — two fields, so
+    # a screen can print one and a caller can read the other.
+    assert claim.startswith(
+        "This line is below the range this customer's own history supports")
+    assert "POSSIBLE_MARGIN_LEAKAGE" not in claim
     assert "potential margin leakage and no further" in claim
     assert "POSSIBLE_MARGIN_LEAKAGE" in owner["intent"]["codes"]
+    # And the block's own reason is the *reading*'s, which is why this key is
+    # safe on both roles: the possibility is a code, never a reason.
+    assert owner["intent"]["reason"] == "READ"
+    assert desk["intent"]["reason"] == "READ"
 
     # The desk gets the same four sentences and not the fifth.
     assert desk["intent"]["lines"] == owner["intent"]["lines"][1:]
@@ -279,7 +287,10 @@ def test_a_quote_drafted_here_says_it_has_no_source_record(blank):
     assert block["read"] is False
     assert block["headline"] == ""
     assert block["lines"] == []
-    assert block["note"].startswith("NO_SOURCE_RECORD:")
+    assert block["reason"] == "NO_SOURCE_RECORD"
+    assert "NO_SOURCE_RECORD" not in block["note"]
+    assert block["note"].startswith(
+        "No document from a source system was found")
     # It still draws. An empty block would read as "no reason was recorded".
     assert block["renders"] is True
 
@@ -298,7 +309,9 @@ def test_a_stored_diagnosis_says_it_has_no_reading_rather_than_showing_none(blan
 
     block = line["intent"]
     assert block["read"] is False
-    assert block["note"].startswith("NOT_ON_STORED_RECORD:")
+    assert block["reason"] == "NOT_ON_STORED_RECORD"
+    assert "NOT_ON_STORED_RECORD" not in block["note"]
+    assert block["note"].startswith("This is the diagnosis as it was stored")
     assert "Re-assess this line to see it." in block["note"]
     # The stored row's own columns are unchanged by any of this.
     assert line["engine_version"] == "qd-1"

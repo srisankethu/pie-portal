@@ -262,7 +262,12 @@ def test_the_owner_is_given_the_split_and_the_desk_has_no_trace_of_it(client):
     # the price is the whole of it — and saying so is the point.
     assert block["headline"].endswith(
         "price -6.55 pp, cost level unchanged.")
-    assert block["note"].startswith("PRICE_THEN_COST:")
+    # The order the split was taken in is its own key; the note is the
+    # sentence and carries no code.
+    assert block["reason"] == "PRICE_THEN_COST"
+    assert "PRICE_THEN_COST" not in block["note"]
+    assert block["note"].startswith(
+        "The price effect is measured at the historical purchase cost")
     # Every figure arrives formatted: the front end may not format money or
     # compute a number, so an `effect` is a string and never a pair of numbers.
     assert block["drivers"][0]["effect"] == "-6.55 pp (-₹150 per unit)"
@@ -288,7 +293,9 @@ def test_a_stored_diagnosis_says_it_has_no_split_rather_than_showing_none(client
     block = line["attribution"]
     assert block["drivers"] == []
     assert block["headline"] == ""
-    assert block["note"].startswith("NOT_ON_STORED_RECORD:")
+    assert block["reason"] == "NOT_ON_STORED_RECORD"
+    assert "NOT_ON_STORED_RECORD" not in block["note"]
+    assert block["note"].startswith("This is the diagnosis as it was stored")
     assert "Re-assess this line" in block["note"]
     # And it is as visible as the card it sits in.
     assert block["renders"] == line["renders"]
@@ -319,8 +326,9 @@ def test_a_line_with_no_purchase_history_is_told_so_rather_than_shown_nothing(
     block = again["lines"][0]["attribution"]
     assert block["renders"] is True
     assert block["drivers"] == []
-    assert block["note"].startswith("NO_COST_BASELINE:")
-    assert "no purchase was knowable" in block["note"]
+    assert block["reason"] == "NO_COST_BASELINE"
+    assert "NO_COST_BASELINE" not in block["note"]
+    assert block["note"].startswith("No purchase was knowable")
 
 
 def test_a_diagnosis_date_far_from_today_is_refused(client):
@@ -513,7 +521,9 @@ def test_a_stored_diagnosis_says_it_has_no_reading_rather_than_showing_none(
     assert block["assessed"] is False
     assert block["figures"] == []
     assert block["headline"] == ""
-    assert block["note"].startswith("NOT_ON_STORED_RECORD:")
+    assert block["reason"] == "NOT_ON_STORED_RECORD"
+    assert "NOT_ON_STORED_RECORD" not in block["note"]
+    assert block["note"].startswith("This is the diagnosis as it was stored")
     assert "Re-assess this line" in block["note"]
     assert block["renders"] == line["renders"]
 
@@ -528,7 +538,9 @@ def test_an_unset_rate_names_the_settings_field_on_the_owners_card(client):
     block = owner["working_capital"]
     assert block["assessed"] is False
     assert block["figures"] == []
-    assert block["note"].startswith("NO_RATE:")
+    assert block["reason"] == "NO_RATE"
+    assert "NO_RATE" not in block["note"]
+    assert block["note"].startswith("No annual cost of capital is set")
     assert "'Annual cost of capital' in Settings" in block["note"]
     assert "a receivable occupies no shelf" in block["note"]
 

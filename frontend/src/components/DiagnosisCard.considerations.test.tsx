@@ -88,6 +88,7 @@ const WEIGHED =
 const NOTHING: ConsiderationsView = {
   line_id: "L1",
   renders: true,
+  reason: "NOTHING_TO_WEIGH",
   items: [],
   note: "Nothing on this line was found worth interrupting anybody about, so "
         + "no option is put in front of you. What was checked, and what could "
@@ -98,33 +99,35 @@ const NOTHING: ConsiderationsView = {
 const NOT_STORED: ConsiderationsView = {
   line_id: "L1",
   renders: true,
+  reason: "NOT_ON_STORED_RECORD",
   items: [],
-  note: "NOT_ON_STORED_RECORD: this is the diagnosis as it was stored, and the "
-        + "options it would support are not among its columns. Re-assess this "
-        + "line to see them.",
+  note: "This is the diagnosis as it was stored, and the options it would "
+        + "support are not among its columns. Re-assess this line to see them.",
 };
 
 function options(over: Partial<ConsiderationsView> = {}): ConsiderationsView {
   return {
-    line_id: "L1", renders: true, items: [SHARED, RESTRICTED], note: WEIGHED,
+    line_id: "L1", renders: true, reason: "OFFERED",
+    items: [SHARED, RESTRICTED], note: WEIGHED,
     ...over,
   };
 }
 
 const INTENT: IntentView = {
-  read: false, renders: true, headline: "", lines: [], codes: [],
-  note: "NO_SOURCE_RECORD: no document from a source system was found.",
+  read: false, reason: "NO_SOURCE_RECORD", renders: true, headline: "",
+  lines: [], codes: [],
+  note: "No document from a source system was found.",
 };
 
 const ATTRIBUTION: AttributionView = {
-  renders: true, headline: "", drivers: [],
-  note: "NO_COST_BASELINE: no purchase was knowable.",
+  renders: true, reason: "NO_COST_BASELINE", headline: "", drivers: [],
+  note: "No purchase was knowable.",
 };
 
 const WORKING_CAPITAL: WorkingCapitalView = {
-  assessed: false, interrupts: false, renders: true, headline: "", figures: [],
-  severity: "", strength_word: "",
-  note: "NO_RATE: No annual cost of capital is set.",
+  assessed: false, reason: "NO_RATE", interrupts: false, renders: true,
+  headline: "", figures: [], severity: "", strength_word: "",
+  note: "No annual cost of capital is set.",
 };
 
 function deskView(over: Partial<OperationsDiagnosisView> = {}): OperationsDiagnosisView {

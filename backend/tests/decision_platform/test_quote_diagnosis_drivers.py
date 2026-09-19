@@ -181,8 +181,13 @@ def test_the_counterfactual_order_is_named_in_the_output():
     has to guess is one they will read as the other one."""
     got = _attribute(quoted="950", costs=_risen_cost())
 
-    assert drivers.PRICE_THEN_COST in got.basis
+    # The code is a field and the sentence is a sentence — separately
+    # checkable, which is the whole reason they are two fields.
+    assert got.reason == drivers.PRICE_THEN_COST
+    assert drivers.PRICE_THEN_COST not in got.basis
     # Contract §3's sentence: a statement about this line, never a forecast.
+    assert got.basis.startswith("The price effect is measured at the "
+                                "historical purchase cost")
     assert "At the previous purchase cost this line would carry" in got.basis
     assert "10.5263 pp more margin" in got.basis
 
@@ -276,8 +281,9 @@ def test_no_cost_on_record_refuses_and_names_what_is_missing():
     assert got.reconciles is False
     assert got.movement_pp is None          # no cost, so no margin to have moved
     assert got.residual_pp is None
-    assert drivers.NO_COST_BASELINE in got.basis
-    assert "no purchase was knowable for this item" in got.basis
+    assert got.reason == drivers.NO_COST_BASELINE
+    assert drivers.NO_COST_BASELINE not in got.basis
+    assert got.basis.startswith("No purchase was knowable for this item")
 
 
 def test_a_single_purchase_is_not_a_cost_baseline_either():
@@ -285,7 +291,7 @@ def test_a_single_purchase_is_not_a_cost_baseline_either():
     got = _attribute(quoted="950", costs=_steady_cost("600", 1))
 
     assert got.drivers == ()
-    assert drivers.EVIDENCE_TOO_THIN in got.basis
+    assert got.reason == drivers.EVIDENCE_TOO_THIN
     assert rules.INSUFFICIENT in got.basis
 
 
@@ -298,7 +304,7 @@ def test_a_thin_band_asserts_nothing_however_large_the_money():
     assert got.drivers == ()
     assert got.reconciles is False
     assert got.movement_pp is None
-    assert drivers.EVIDENCE_TOO_THIN in got.basis
+    assert got.reason == drivers.EVIDENCE_TOO_THIN
     assert rules.WEAK in got.basis
 
 
@@ -310,7 +316,7 @@ def test_a_thin_cost_baseline_refuses_even_behind_a_strong_band():
                      strength=rules.STRONG)
 
     assert got.drivers == ()
-    assert drivers.EVIDENCE_TOO_THIN in got.basis
+    assert got.reason == drivers.EVIDENCE_TOO_THIN
     assert rules.WEAK in got.basis
 
 
@@ -318,7 +324,8 @@ def test_a_line_with_no_quoted_price_has_no_movement_to_explain():
     got = _attribute(quoted=None, costs=_risen_cost())
 
     assert got.drivers == ()
-    assert drivers.NO_QUOTED_PRICE in got.basis
+    assert got.reason == drivers.NO_QUOTED_PRICE
+    assert got.basis.startswith("This line carries no quoted unit price")
 
 
 def test_no_comparable_price_history_leaves_no_reference_price():
@@ -326,7 +333,8 @@ def test_no_comparable_price_history_leaves_no_reference_price():
                      price=baselines.EMPTY_PRICE_BASELINE)
 
     assert got.drivers == ()
-    assert drivers.NO_PRICE_BASELINE in got.basis
+    assert got.reason == drivers.NO_PRICE_BASELINE
+    assert got.basis.startswith("No comparable price history supports a band")
 
 
 # ── point-in-time correctness ────────────────────────────────────────────────
@@ -339,8 +347,9 @@ def test_a_bill_entered_after_the_quote_refuses_rather_than_moving_the_cost():
     got = _attribute(quoted="950", costs=late)
 
     assert got.drivers == ()
-    assert drivers.COST_NOT_KNOWABLE in got.basis
-    assert evidence.RECORDED_AFTER in got.basis
+    # The composite reason names both halves — which refusal, and which of
+    # ``is_knowable``'s three answers produced it.
+    assert got.reason == f"{drivers.COST_NOT_KNOWABLE}/{evidence.RECORDED_AFTER}"
     assert "c_new" in got.basis
 
 
@@ -352,7 +361,7 @@ def test_the_refusal_names_a_reason_rather_than_answering_a_bool():
     got = _attribute(quoted="950", costs=no_stamp)
 
     assert got.drivers == ()
-    assert evidence.NO_RECORDED_AT in got.basis
+    assert got.reason == f"{drivers.COST_NOT_KNOWABLE}/{evidence.NO_RECORDED_AT}"
 
 
 def test_a_purchase_whose_visibility_was_estimated_is_refused_too():
@@ -362,7 +371,7 @@ def test_a_purchase_whose_visibility_was_estimated_is_refused_too():
     got = _attribute(quoted="950", costs=_risen_cost(imputed=True))
 
     assert got.drivers == ()
-    assert drivers.COST_VISIBILITY_IMPUTED in got.basis
+    assert got.reason == drivers.COST_VISIBILITY_IMPUTED
     assert "c_new" in got.basis
 
 

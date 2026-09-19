@@ -209,8 +209,12 @@ def test_a_below_band_line_with_a_declared_field_left_empty_is_a_possibility(ses
     got = _read(session, {"cf_quote_type": ""}, codes=BELOW,
                 strength=rules.MODERATE)
 
+    # The code is on ``codes`` and the sentence is a sentence. Separately
+    # checkable, which is the point of keeping them apart.
     assert rules.POSSIBLE_MARGIN_LEAKAGE in got.codes
-    assert got.exposure.startswith(f"{rules.POSSIBLE_MARGIN_LEAKAGE}:")
+    assert rules.POSSIBLE_MARGIN_LEAKAGE not in got.exposure
+    assert got.exposure.startswith(
+        "This line is below the range this customer's own history supports")
     # The strongest form permitted, and it is a possibility.
     assert "potential margin leakage and no further" in got.exposure
     assert "an unrecorded reason is not an absent one" in got.exposure
@@ -269,7 +273,9 @@ def test_a_quote_with_no_source_document_says_so(session):
     assert got.reading.reason == intent.NO_SOURCE_RECORD
     assert got.reading.reasons == ()
     assert got.reading.headline == ""
-    assert "no document from a source system was found" in got.reading.basis
+    assert intent.NO_SOURCE_RECORD not in got.reading.basis
+    assert got.reading.basis.startswith(
+        "No document from a source system was found")
     assert got.exposure == ""
 
 
@@ -436,7 +442,9 @@ def test_a_stored_row_refuses_rather_than_answering_with_silence():
     assert view.renders is True
     assert view.read is False
     assert view.lines == ()
-    assert view.note.startswith(f"{render.NOT_ON_STORED_RECORD}:")
+    assert view.reason == render.NOT_ON_STORED_RECORD
+    assert render.NOT_ON_STORED_RECORD not in view.note
+    assert view.note.startswith("This is the diagnosis as it was stored")
     assert "Re-assess this line to see it." in view.note
 
 

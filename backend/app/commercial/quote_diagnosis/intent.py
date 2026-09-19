@@ -309,8 +309,9 @@ class Reading:
     #: **"No pricing reason has been recorded for this quote."** ``""`` on a
     #: refusal.
     headline: str
-    #: The standing qualification, or the refusal and its reason. Never empty:
-    #: a block with nothing written in it would read as "nothing to report".
+    #: The standing qualification, or the refusal in words. No code prefix:
+    #: the code is ``reason``, one field above. Never empty: a block with
+    #: nothing written in it would read as "nothing to report".
     basis: str
 
     @property
@@ -416,16 +417,16 @@ def assess(*, record: SourceRecord, taxonomy: Optional[Taxonomy],
     if not record.found:
         return _refused(
             NO_SOURCE_RECORD,
-            f"{NO_SOURCE_RECORD}: no document from a source system was found "
-            f"for this quote, so there are no source fields to read. What a "
-            f"quote records about why it was priced is read from the record "
-            f"its own system holds, and a quote drafted here has none yet.")
+            "No document from a source system was found for this quote, so "
+            "there are no source fields to read. What a quote records about "
+            "why it was priced is read from the record its own system holds, "
+            "and a quote drafted here has none yet.")
     if record.connector is None or taxonomy is None:
         return _refused(
             SOURCE_NOT_RECORDED,
-            f"{SOURCE_NOT_RECORDED}: this quote's record does not say which "
-            f"system issued it, and a declaration is always about a named "
-            f"system. Nothing is read rather than a system being guessed at.")
+            "This quote's record does not say which system issued it, and a "
+            "declaration is always about a named system. Nothing is read "
+            "rather than a system being guessed at.")
 
     readings = taxonomy.read(record.attributes)
     reasons = tuple(
@@ -495,13 +496,15 @@ def _exposure(reading: Reading, *, codes: Sequence[str], strength: str) -> str:
         # unbelievable band cannot support a statement about a price sitting
         # under it — the gate ``drivers.attribute`` applies, for its reason.
         return ""
+    # The code is on ``PricingIntent.codes`` and is not repeated here: a
+    # sentence that carried its own code would be one field doing two jobs, and
+    # a renderer would be left splitting it back apart.
     return (
-        f"{POSSIBLE_MARGIN_LEAKAGE}: this line is below the range this "
-        f"customer's own history supports, and the field this organization "
-        f"records a pricing reason in is empty on this quote. Read that as a "
-        f"potential margin leakage and no further — an unrecorded reason is "
-        f"not an absent one, and nothing on the record says why this price was "
-        f"set.")
+        "This line is below the range this customer's own history supports, "
+        "and the field this organization records a pricing reason in is empty "
+        "on this quote. Read that as a potential margin leakage and no further "
+        "— an unrecorded reason is not an absent one, and nothing on the "
+        "record says why this price was set.")
 
 
 def _refused(reason: str, basis: str) -> PricingIntent:

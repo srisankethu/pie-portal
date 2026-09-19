@@ -447,6 +447,7 @@ def test_a_line_with_no_option_says_what_was_weighed_rather_than_nothing(client)
 
     block = line["considerations"]
     assert block["items"] == []
+    assert block["reason"] == considerations.NOTHING_TO_WEIGH
     assert block["note"].startswith(
         "Nothing on this line was found worth interrupting anybody about")
 
@@ -461,7 +462,10 @@ def test_a_stored_line_says_its_options_are_not_on_the_record(client):
         block = [ln for ln in stored["lines"]
                  if ln["line_id"] == "L1"][0]["considerations"]
         assert block["items"] == []
-        assert block["note"].startswith("NOT_ON_STORED_RECORD:")
+        assert block["reason"] == render.NOT_ON_STORED_RECORD
+        assert render.NOT_ON_STORED_RECORD not in block["note"]
+        assert block["note"].startswith(
+            "This is the diagnosis as it was stored")
         assert "Re-assess this line to see them." in block["note"]
 
 
@@ -506,7 +510,11 @@ def test_the_options_carry_no_reason_vocabulary_of_their_own(client):
     line = _assess(client, MANAGER, record=False)["lines"][0]
     block = line["considerations"]
 
-    assert set(block) == {"line_id", "renders", "items", "note"}
+    assert set(block) == {"line_id", "renders", "reason", "items", "note"}
+    # The block's own reason is its offered/nothing-to-weigh code and never a
+    # dismissal reason — one vocabulary, and this is not a second one.
+    assert block["reason"] == considerations.OFFERED
+    assert block["reason"] not in render.DISMISS_REASONS
     for option in block["items"]:
         assert set(option) == {"code", "label", "detail", "line_id",
                                "rests_on", "strength_word", "severity",
@@ -532,6 +540,7 @@ def _attributed(effect_per_unit: str, code: str) -> drivers.Attribution:
             cited=("ev_1",), basis="against the band median and the historical "
                                    "purchase cost"),),
         reconciles=True, residual_pp=Decimal("0"),
+        reason=drivers.PRICE_THEN_COST,
         basis="the same line at the band median price and the historical cost")
 
 

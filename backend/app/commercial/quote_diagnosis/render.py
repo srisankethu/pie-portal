@@ -157,10 +157,11 @@ NOT_ON_STORED_RECORD = "NOT_ON_STORED_RECORD"
 #: for the refusal case would be a second answer to what a refusal looks like.
 NOT_STORED = Attribution(
     movement_pp=None, drivers=(), reconciles=False, residual_pp=None,
-    basis=(f"{NOT_ON_STORED_RECORD}: this is the diagnosis as it was stored, "
-           "and the split between the price decision and the cost level is not "
-           "one of its columns — it is computed when the engine runs over the "
-           "evidence. Re-assess this line to see it."))
+    reason=NOT_ON_STORED_RECORD,
+    basis=("This is the diagnosis as it was stored, and the split between the "
+           "price decision and the cost level is not one of its columns — it "
+           "is computed when the engine runs over the evidence. Re-assess this "
+           "line to see it."))
 
 
 @dataclass(frozen=True)
@@ -203,13 +204,18 @@ class AttributionView:
     #: ever be more silent than that gate, never less, so "should this interrupt
     #: somebody" still has exactly one answer.
     renders: bool
+    #: ``drivers.PRICE_THEN_COST`` where a split is asserted, or the refusal
+    #: code — ``Attribution.reason``, carried rather than recovered from
+    #: ``note``. A screen prints the sentence; a caller reads this.
+    reason: str
     #: The split in one sentence, or ``""`` when nothing is asserted.
     headline: str
     drivers: tuple[DriverLine, ...]
-    #: The counterfactual the split was taken in, or the refusal and its reason
-    #: — ``drivers``' own basis either way, verbatim. Not re-worded here: it
-    #: carries the residual and the observation counts, and a second spelling of
-    #: "why there is no split" would drift from the one the engine states.
+    #: The counterfactual the split was taken in, or the refusal in words —
+    #: ``drivers``' own basis either way, verbatim and without its code. Not
+    #: re-worded here: it carries the residual and the observation counts, and a
+    #: second spelling of "why there is no split" would drift from the one the
+    #: engine states.
     note: str
 
 
@@ -235,10 +241,10 @@ WC_NOT_STORED = WorkingCapital(
     charge_per_unit=None, line_charge=None, effect_pp=None,
     severity="", strength="", days_strength="", cost_strength="",
     surfaces=False, cited=(), unavailable=(),
-    basis=(f"{NOT_ON_STORED_RECORD}: this is the diagnosis as it was stored, "
-           "and what the cash on this line costs is not one of its columns — it "
-           "is computed when the engine runs over this account's settled "
-           "invoices and this supplier's terms. Re-assess this line to see it."))
+    basis=("This is the diagnosis as it was stored, and what the cash on this "
+           "line costs is not one of its columns — it is computed when the "
+           "engine runs over this account's settled invoices and this "
+           "supplier's terms. Re-assess this line to see it."))
 
 
 @dataclass(frozen=True)
@@ -260,6 +266,9 @@ class WorkingCapitalView:
 
     #: Whether a figure was produced at all — ``WorkingCapital.assessed``.
     assessed: bool
+    #: ``working_capital.ASSESSED`` or the refusal code —
+    #: ``WorkingCapital.reason``, carried rather than recovered from ``note``.
+    reason: str
     #: Whether this reading should interrupt somebody — ``rules._surfaces``'
     #: answer for the line, narrowed by ``working_capital._surfaces``' answer for
     #: the reading. **A narrowing, never a widening**: it can only ever be more
@@ -287,10 +296,10 @@ class WorkingCapitalView:
     #: ``""`` on a refusal.
     strength_word: str
     #: The engine's own sentence — what the number answers, or the refusal and
-    #: the field that would finish it. Verbatim, never re-worded: it names a
-    #: Settings field by the label that screen actually uses, and a second
-    #: spelling of "why there is no figure" would drift from the one the engine
-    #: states.
+    #: the field that would finish it, without its code. Verbatim, never
+    #: re-worded: it names a Settings field by the label that screen actually
+    #: uses, and a second spelling of "why there is no figure" would drift from
+    #: the one the engine states.
     note: str
 
 
@@ -314,11 +323,10 @@ class WorkingCapitalView:
 #: been corrected.
 INTENT_NOT_STORED = Reading(
     read=False, reason=NOT_ON_STORED_RECORD, reasons=(), codes=(), headline="",
-    basis=(f"{NOT_ON_STORED_RECORD}: this is the diagnosis as it was stored, "
-           "and what the record says about why this quote was priced is not one "
-           "of its columns — it is read when the engine runs, against the "
-           "declarations in force at the moment the quote was written. "
-           "Re-assess this line to see it."))
+    basis=("This is the diagnosis as it was stored, and what the record says "
+           "about why this quote was priced is not one of its columns — it is "
+           "read when the engine runs, against the declarations in force at "
+           "the moment the quote was written. Re-assess this line to see it."))
 
 
 @dataclass(frozen=True)
@@ -338,6 +346,11 @@ class IntentView:
 
     #: Whether the record was read at all — ``intent.Reading.read``.
     read: bool
+    #: ``intent.READ`` or the refusal code. **From ``Reading.reason`` and from
+    #: nothing else**, which is what keeps this field publishable to both roles:
+    #: ``POSSIBLE_MARGIN_LEAKAGE`` lives on ``PricingIntent.codes`` and never on
+    #: the reading, so there is no owner-only code this can carry to a desk.
+    reason: str
     #: Whether this block draws. The line's own gate, narrowed by whether there
     #: is anything written here — never widened, for the reason
     #: ``AttributionView.renders`` is not.
@@ -354,9 +367,10 @@ class IntentView:
     #: The status codes, from ``rules``' one vocabulary.
     codes: tuple[str, ...]
     #: The standing qualification — that this is read from recorded fields and
-    #: that an unrecorded reason is not an absent one — or the refusal and its
-    #: reason. Verbatim from the engine, never re-worded: a second spelling of
-    #: "why there is nothing here" would drift from the one the engine states.
+    #: that an unrecorded reason is not an absent one — or the refusal in words,
+    #: without its code. Verbatim from the engine, never re-worded: a second
+    #: spelling of "why there is nothing here" would drift from the one the
+    #: engine states.
     note: str
 
 
@@ -381,11 +395,11 @@ class IntentView:
 #: vocabulary. A refusal that had to be exempted from the sweep would be a
 #: refusal nobody could tell from a leak.
 NOT_STORED_CONSIDERATIONS = (
-    f"{NOT_ON_STORED_RECORD}: this is the diagnosis as it was stored, and the "
-    "options it would support are not among its columns — each one rests on "
-    "something the engine works out while it runs, from what this item has been "
-    "bought for, from how long the money on this line is out, or from a reading "
-    "of the quote's own record. Re-assess this line to see them.")
+    "This is the diagnosis as it was stored, and the options it would support "
+    "are not among its columns — each one rests on something the engine works "
+    "out while it runs, from what this item has been bought for, from how long "
+    "the money on this line is out, or from a reading of the quote's own "
+    "record. Re-assess this line to see them.")
 
 
 def considerations_not_stored(line_id: str, *,
@@ -399,6 +413,7 @@ def considerations_not_stored(line_id: str, *,
     stored projection refuses through the same renderer a live one is drawn by.
     """
     return Considerations(line_id=line_id, line_surfaces=surfaces, items=(),
+                          reason=NOT_ON_STORED_RECORD,
                           basis=NOT_STORED_CONSIDERATIONS)
 
 
@@ -453,9 +468,14 @@ class ConsiderationsView:
     #: ``AttributionView.renders`` is not.
     renders: bool
     items: tuple[ConsiderationView, ...]
+    #: ``considerations.OFFERED`` / ``NOTHING_TO_WEIGH``, or
+    #: ``NOT_ON_STORED_RECORD`` — ``Considerations.reason``, carried rather than
+    #: recovered from ``note``.
+    reason: str
     #: What was weighed, or why nothing is offered — ``Considerations.basis``,
-    #: verbatim. Never re-worded: a second spelling of "nothing here supports an
-    #: option" would drift from the one the engine states.
+    #: verbatim and without its code. Never re-worded: a second spelling of
+    #: "nothing here supports an option" would drift from the one the engine
+    #: states.
     note: str
 
 
@@ -780,6 +800,11 @@ def render_intent(reading: "Reading | PricingIntent", *,
         # something the sentences do not say: a book with nothing declared is a
         # successful reading with four sentences saying exactly that.
         read=said.read,
+        # The reading's own, on both projections. ``PricingIntent`` has no
+        # ``reason`` to take it from, and that is the property rather than an
+        # accident: the owner-only half of this block is ``exposure`` and its
+        # code, and neither may reach a desk.
+        reason=said.reason,
         renders=bool(surfaces and (said.headline or said.basis)),
         headline=said.headline, lines=lines,
         # Each projection's own codes: the reading's four, or those plus the
@@ -819,7 +844,8 @@ def render_attribution(attribution: Attribution, *, surfaces: bool,
     # never widened here; the second term only makes it impossible to publish a
     # block with nothing written in it.
     return AttributionView(renders=bool(surfaces and (headline or note)),
-                           headline=headline, drivers=lines, note=note)
+                           reason=attribution.reason, headline=headline,
+                           drivers=lines, note=note)
 
 
 def _driver_line(driver: Driver, th: CommercialThresholds) -> DriverLine:
@@ -923,6 +949,7 @@ def render_working_capital(capital: WorkingCapital, *, surfaces: bool,
     note = capital.basis
     return WorkingCapitalView(
         assessed=assessed,
+        reason=capital.reason,
         # Two gates conjoined, so this can only be more silent than either.
         interrupts=bool(surfaces and capital.surfaces),
         renders=bool(surfaces and (headline or note)),
@@ -1028,7 +1055,7 @@ def render_considerations(proposed: Considerations, *,
     return ConsiderationsView(
         line_id=proposed.line_id,
         renders=bool(surfaces and (items or proposed.basis)),
-        items=items, note=proposed.basis)
+        items=items, reason=proposed.reason, note=proposed.basis)
 
 
 def _consideration(option: Consideration) -> ConsiderationView:

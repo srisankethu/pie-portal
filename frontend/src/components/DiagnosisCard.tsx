@@ -108,6 +108,75 @@ type DiagnosisCommon = {
    *  property read, and "nothing was read" is the true thing to say about it —
    *  which is the same answer the refusal branch already gives. */
   intent?: IntentView;
+  /** What a person might weigh on this line, where the evidence already carries
+   *  an option.
+   *
+   *  **On the common type, and the second block that is.** The two lists are not
+   *  one filtered: `considerations.for_operations` builds the desk's from an
+   *  allowlist, so an option resting on the purchase ledger or on the cash cycle
+   *  is simply not in a salesperson's payload — there is nothing here for a
+   *  `{mgmt && …}` to guard, which is the shape both of this repository's
+   *  boundary leaks had.
+   *
+   *  Optional for the reason `intent` is. */
+  considerations?: ConsiderationsView;
+};
+
+/** One option, and what it rests on.
+ *
+ *  Every string arrived written. `label` and `detail` are the engine's own
+ *  words — `CLAUDE.md` §3 puts every sentence a screen renders in the server —
+ *  and nothing here composes, shortens or re-grades one.
+ */
+export type ConsiderationView = {
+  /** The engine's own vocabulary — `RECORD_THE_PRICING_REASON`,
+   *  `CHECK_THE_COMPARISON`, and the three beside them. */
+  code: string;
+  /** The option in a reader's words, **written server-side**. Rendered
+   *  verbatim: an option offered under a name the engine never chose is an
+   *  option nobody reviewed. */
+  label: string;
+  /** One sentence saying what this rests on and what the option is. Never a
+   *  money figure — those are on the blocks above it. */
+  detail: string;
+  /** The line whose stored diagnosis a rejection is posted against.
+   *
+   *  **This is the whole of how a rejection gets back**, and it is deliberately
+   *  the card's own line: the Dismiss button in the footer already posts to
+   *  `POST /{quote_diagnosis_id}/dismiss` with a reason from `GET /reasons`.
+   *  Rejecting the finding rejects the option resting on it, because no option
+   *  here survives its finding being wrong — and a second dismissal path would
+   *  split the one labelled dataset this engine has into two nobody can join. */
+  line_id: string;
+  /** The engine codes this rests on, so "extends rather than invents" is
+   *  something a reader can check. */
+  rests_on: string[];
+  /** `Strong` / `Moderate` / `Weak` / `Not enough` — the grade of the finding
+   *  under it, in the one spelling `DiagnosisCommon.strength_word` uses. */
+  strength_word: string;
+  /** `MAJOR` / `MINOR` / `NEGLIGIBLE`, or **`null` where the finding published
+   *  no magnitude** — which is not `NEGLIGIBLE`. Every option a salesperson is
+   *  offered carries `null` here, because a margin grade beside the price the
+   *  caller sent is the cost in one step. */
+  severity: string | null;
+  /** Whether this one is why the card interrupted anybody. Every option is on
+   *  the card either way: a card somebody opened is not an interruption, which
+   *  is the same line `WorkingCapitalView.interrupts` draws. */
+  surfaces: boolean;
+};
+
+/** The options on one line, or what was weighed when there are none.
+ *
+ *  Two shapes, exactly as the server has: either `items` holds the options, or
+ *  `items` is empty and `note` says what was weighed instead. There is no third
+ *  state, and an empty one is not silence — see `ConsiderationsBlock`.
+ */
+export type ConsiderationsView = {
+  line_id: string;
+  renders: boolean;
+  items: ConsiderationView[];
+  /** What was weighed, or why nothing is offered. **Never empty.** */
+  note: string;
 };
 
 /** What the record says about why this quote was priced as it was, or a refusal
@@ -360,6 +429,12 @@ export function DiagnosisCard({
           </Typography>
         )}
       </Box>
+
+      {/* Last, and directly above the two buttons, because that is what a
+          reader does next: weigh an option, or say the finding under it is
+          wrong. The Dismiss button in the footer is how the second happens —
+          there is no second dismissal path and this block does not open one. */}
+      <ConsiderationsBlock considerations={diagnosis.considerations} />
     </DiagnosisShell>
   );
 }
@@ -435,6 +510,11 @@ export function OwnerDiagnosisCard({
           {diagnosis.opportunity}
         </Typography>
       </Box>
+
+      {/* Last, for the reason it is last on the desk's card: everything above
+          is what the engine found, and this is the only part that is about what
+          a person might do. Same position on both, one rule. */}
+      <ConsiderationsBlock considerations={diagnosis.considerations} />
     </DiagnosisShell>
   );
 }
@@ -737,6 +817,139 @@ function AttributionDriver({ driver }: { driver: AttributionDriverView }) {
       {/* Strength, deliberately not a chip — see `SEVERITY_TONE`. The label is
           the half that keeps it apart from severity; the word is the server's. */}
       <Meta>Confidence in this: {driver.strength_word}</Meta>
+    </Box>
+  );
+}
+
+/** The one sentence in this block the server did not write — and it is about
+ *  this card's own input, not about the business.
+ *
+ *  A line with nothing to offer arrives with a `note` saying what was weighed.
+ *  When even that is empty, or the key is absent because the payload predates
+ *  it, the block still has to say that nothing was weighed. It names the absence
+ *  and claims nothing else — in particular it does **not** say there is nothing
+ *  to do about this line, which is a statement about the quote rather than about
+ *  this card's input.
+ *
+ *  Worded to share no phrase with the three blocks above it, each of which has
+ *  its own sentence for its own missing input. Four refusals on one card all
+ *  ending "and no reason was given" are four refusals a reader — and a test
+ *  querying by text — cannot tell apart.
+ */
+const NOTHING_WEIGHED =
+  "What this line's evidence supports was not weighed, and nothing on this card "
+  + "says why.";
+
+/**
+ * What a person might weigh on this line.
+ *
+ * **Options, never instructions.** Every label is a choice somebody may make and
+ * none of them names a supplier, a price or a number — the engine does not make
+ * the pricing decision and `considerations.py` argues at length why naming one
+ * would be a claim about a record that does not exist. Nothing here re-words
+ * that: `CLAUDE.md` §3 puts every sentence a screen renders in the server.
+ *
+ * **On both cards, and the two lists are different objects rather than one
+ * filtered.** `for_operations` builds the desk's from an allowlist, so an option
+ * resting on the purchase ledger or on the cash cycle is absent from a
+ * salesperson's payload rather than hidden in this component.
+ *
+ * **Every option computed for this line is drawn, including the ones that did
+ * not interrupt anybody.** `surfaces` is on the payload and is deliberately not
+ * read here: the card itself is the interruption, and a card somebody opened is
+ * not one — the same line `WorkingCapitalBlock` draws with `interrupts`, where
+ * a `MINOR` reading still belongs on the card. The server's fixed order is kept
+ * as it arrived, so a reader scanning two lines of one quote finds the same
+ * option in the same place on both.
+ *
+ * **A refusal is content here, not an empty state.** Most lines support no
+ * option at all — that is the design, and an option on every quote is alert
+ * fatigue with a new name. A block that drew nothing would read as "nothing to
+ * do here", which is indistinguishable from "nothing was looked at" and is
+ * `CLAUDE.md` §1's *absence of evidence is not a pass* wearing a layout. So the
+ * engine's own sentence goes into an `Alert` and the block still draws.
+ *
+ * `info` rather than `warning`: an engine that found no option worth putting in
+ * front of somebody is the engine being quiet on purpose, not a fault.
+ */
+function ConsiderationsBlock({ considerations }: {
+  considerations?: ConsiderationsView;
+}) {
+  const items = considerations?.items ?? [];
+  const note = considerations?.note ?? "";
+
+  return (
+    <Box>
+      <FieldLabel
+        tip={"Options, not instructions. Each one rests on a finding this card "
+             + "already carries and says what a person could do about it; the "
+             + "pricing decision is not the engine's to make. If the finding "
+             + "under one is wrong, Dismiss says so — that is what tunes this."}
+      >
+        What you could do about this
+      </FieldLabel>
+
+      {items.length > 0 ? (
+        <>
+          <Stack spacing={1.5} sx={{ mt: 0.5 }}>
+            {items.map((option) => (
+              <Consideration key={option.code} option={option} />
+            ))}
+          </Stack>
+          {/* What was weighed, in the same muted register as the card's own
+              standing qualification. It is the sentence that keeps the options
+              above it from reading as instructions, so it is never dropped. */}
+          {note && <Meta sx={{ mt: 1.5 }}>{note}</Meta>}
+        </>
+      ) : (
+        <Alert severity="info" sx={{ mt: 0.5 }}>{note || NOTHING_WEIGHED}</Alert>
+      )}
+    </Box>
+  );
+}
+
+/**
+ * One option: what it is, how much it matters where that was published, what it
+ * rests on, and how much to believe it — in that order, because that is the
+ * order somebody reads them in, and the same order `AttributionDriver` uses.
+ *
+ * Nothing here is computed or worded. The only decisions this component makes
+ * are which tone a severity chip takes and where on the row each thing sits.
+ *
+ * **The severity chip is conditional and that is not cosmetic.** `severity` is
+ * `null` where the finding published no magnitude, which is a different answer
+ * from `NEGLIGIBLE` — "this finding is not a movement" against "this movement is
+ * small". Drawing a chip for the first would report a fact about a field on a
+ * document as a margin of nearly zero. Every option a salesperson is offered
+ * carries `null`, so this chip is never drawn on the desk's card.
+ */
+function Consideration({ option }: { option: ConsiderationView }) {
+  return (
+    <Box>
+      <Stack
+        direction="row"
+        spacing={1}
+        useFlexGap
+        /* Wraps rather than overflowing: at 390px a long label and its chip do
+           not share a row, and this desk quotes from a machine shop. */
+        sx={{ alignItems: "center", flexWrap: "wrap" }}
+      >
+        <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
+          {option.label}
+        </Typography>
+        {option.severity && (
+          <StatusChip
+            label={option.severity}
+            tone={SEVERITY_TONE[option.severity] ?? "neutral"}
+            tip="How much this matters — the size of its effect on margin."
+          />
+        )}
+      </Stack>
+
+      <Typography variant="body2" sx={{ mt: 0.5 }}>{option.detail}</Typography>
+      {/* Strength, deliberately not a chip — see `SEVERITY_TONE`. The label is
+          the half that keeps it apart from severity; the word is the server's. */}
+      <Meta>Confidence in this: {option.strength_word}</Meta>
     </Box>
   );
 }

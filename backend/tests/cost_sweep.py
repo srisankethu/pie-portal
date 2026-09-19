@@ -60,10 +60,22 @@ ID_KEYS = frozenset({"quote_diagnosis_id"})
 #: ordinary English ("accurate", "separate") and a check that fires on prose is a
 #: check people learn to scroll past. The key that would carry it is named
 #: instead.
+#: The fourth line is the quote-level roll-up, added when the engine learned to
+#: total a quote and name the lines its total does not show. Every word on it is
+#: a figure the desk's own half structurally cannot carry — ``QuoteCoverage`` has
+#: no money field at all — so any of them appearing means the owner's object
+#: reached the wrong payload. ``loss`` is the one worth naming: a count of
+#: loss-making lines is a margin question with a yes/no answer per line, which is
+#: exactly the shape ``filterCounts.MFLOOR`` had, and a *list* of them is that
+#: same oracle with the answer already worked out. ``value`` is deliberately
+#: **not** here — it is the key every label/value pair on every card is served
+#: under, and a check that fires on the payload's own scaffolding is a check
+#: people learn to scroll past.
 WORDS = ("cost", "margin", "purchase_price", "opportunity", "peer",
          "attribution", "driver", "effect", "movement_pp", "residual_pp",
          "capital", "charge", "funding", "funded_days", "receivable_days",
-         "supplier_credit", "cost_of_capital")
+         "supplier_credit", "cost_of_capital",
+         "loss", "profit", "gross", "revenue")
 
 #: Keys whose value **is** the caller's own input, spelled back. They move when
 #: the caller moves the price, by definition, so a price walk cannot compare

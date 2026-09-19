@@ -27,10 +27,15 @@ from decimal import Decimal
 from typing import Optional
 
 from ..config import CommercialThresholds
+# ``considerations`` and ``rollup`` are imported here and import nothing from
+# this module: the renderer reads them, so the dependency runs one way and a
+# reader of either file is never sent back to this one.
+from .considerations import Consideration, Considerations
 from .drivers import (Attribution, COST_LEVEL_EFFECT, Driver,
                       PRICE_POSITION_EFFECT)
 from .intent import PricingIntent, Reading
 from .opportunity import Opportunity
+from .rollup import LossLine, QuoteCoverage, QuoteRollup
 from .working_capital import ASSESSED, WorkingCapital
 from .rules import (ABOVE_HISTORICAL_RANGE, BELOW_HISTORICAL_RANGE,
                     BELOW_PEER_BAND_STRUCTURAL, COST_DRIVEN_MARGIN_RISK,
@@ -352,6 +357,200 @@ class IntentView:
     #: that an unrecorded reason is not an absent one — or the refusal and its
     #: reason. Verbatim from the engine, never re-worded: a second spelling of
     #: "why there is nothing here" would drift from the one the engine states.
+    note: str
+
+
+# ── the options on a line, in words ──────────────────────────────────────────
+#
+# **Not restricted as a block**, and that is decided upstream rather than here:
+# ``considerations.for_operations`` builds the desk's list from an allowlist, so
+# the renderer below is handed whichever list its caller is entitled to and has
+# nothing to withhold. One renderer, two inputs, exactly as ``render_intent``
+# takes either projection of one reading.
+
+#: Why a *stored* diagnosis carries no options. The same
+#: ``NOT_ON_STORED_RECORD`` the attribution, working-capital and intent blocks
+#: use, because it is the same fact about the same record — and this is the
+#: fourth instance of one pattern, not a new one. Every consideration rests on
+#: something ``quote_diagnoses`` has no column for: the cost side, the cash
+#: cycle, or the reading of the quote's own record.
+#:
+#: The sentence names what each option rests on without naming any of it in the
+#: vocabulary of economics, which is not delicacy: this block reaches the desk,
+#: and ``tests/cost_sweep`` screens a salesperson's whole payload for that
+#: vocabulary. A refusal that had to be exempted from the sweep would be a
+#: refusal nobody could tell from a leak.
+NOT_STORED_CONSIDERATIONS = (
+    f"{NOT_ON_STORED_RECORD}: this is the diagnosis as it was stored, and the "
+    "options it would support are not among its columns — each one rests on "
+    "something the engine works out while it runs, from what this item has been "
+    "bought for, from how long the money on this line is out, or from a reading "
+    "of the quote's own record. Re-assess this line to see them.")
+
+
+def considerations_not_stored(line_id: str, *,
+                              surfaces: bool) -> Considerations:
+    """The refusal shape, for a row read back from the store.
+
+    A function rather than a module constant — unlike ``NOT_STORED``,
+    ``WC_NOT_STORED`` and ``INTENT_NOT_STORED`` — because ``Considerations``
+    carries the line it is about and the line's own gate, and a constant would
+    have to lie about both. It is still built here and not in the router, so the
+    stored projection refuses through the same renderer a live one is drawn by.
+    """
+    return Considerations(line_id=line_id, line_surfaces=surfaces, items=(),
+                          basis=NOT_STORED_CONSIDERATIONS)
+
+
+@dataclass(frozen=True)
+class ConsiderationView:
+    """One option, as a reader sees it.
+
+    The wording is carried from the engine, never composed here: ``label`` and
+    ``detail`` are written by ``considerations`` and travel verbatim. What this
+    adds is the one spelling of a grade the rest of the card uses — a second word
+    for MODERATE would be a second answer.
+    """
+
+    code: str
+    label: str
+    detail: str
+    #: The line whose stored diagnosis a rejection is posted against. Carried
+    #: because it is the whole of how an option reaches the dismissal path that
+    #: already exists: there is no second one, and nothing here mints a reason.
+    line_id: str
+    rests_on: tuple[str, ...]
+    #: How much to believe the finding under it, in the one spelling
+    #: ``strength_word`` gives.
+    strength_word: str
+    #: ``MAJOR`` / ``MINOR`` / ``NEGLIGIBLE``, or ``None`` where the finding
+    #: published no magnitude. **Never ``""`` and never ``NEGLIGIBLE`` in that
+    #: case**: "this movement is small" and "this finding is not a movement" are
+    #: different answers, which is the distinction ``Consideration.severity``
+    #: exists to keep, and flattening it in the rendering would undo it at the
+    #: last step.
+    severity: Optional[str]
+    #: Whether this one interrupts anybody. The rest are computed and available
+    #: on the card a reader opened.
+    surfaces: bool
+
+
+@dataclass(frozen=True)
+class ConsiderationsView:
+    """The options on this line, or what was weighed when there are none.
+
+    Two shapes and no third, which is the shape ``Considerations`` itself has.
+    Either ``items`` holds the options, or ``items`` is empty and ``note`` says
+    what was weighed instead. **There is no state where this renders as an empty
+    panel** — ``note`` is never empty, because a block that drew nothing would
+    read as "nothing to do here", which is indistinguishable from "nothing was
+    looked at" and is the failure CLAUDE.md §1 names three times.
+    """
+
+    line_id: str
+    #: Whether this block draws. The line's own gate, narrowed by whether there
+    #: is anything written here — never widened, for the reason
+    #: ``AttributionView.renders`` is not.
+    renders: bool
+    items: tuple[ConsiderationView, ...]
+    #: What was weighed, or why nothing is offered — ``Considerations.basis``,
+    #: verbatim. Never re-worded: a second spelling of "nothing here supports an
+    #: option" would drift from the one the engine states.
+    note: str
+
+
+# ── the quote as a whole, in words ───────────────────────────────────────────
+#
+# Two views because there are two readers and ``rollup`` already declares two
+# types for them. ``CoverageView`` is drawn from ``QuoteCoverage``, which has no
+# money field at all; ``RollupView`` is drawn from ``QuoteRollup`` and is
+# RESTRICTED in its entirety. The split is structural at the source, so nothing
+# here filters anything.
+
+
+@dataclass(frozen=True)
+class CoverageView:
+    """What was checked on this quote and what could not be. No money anywhere.
+
+    Every value on this type is a count or a word the engine wrote, for the
+    reason ``QuoteCoverage`` has no money field: a count computed over cost is a
+    sharper oracle than a per-line flag, not a blunter one, which is the line
+    ``filterCounts.MFLOOR`` crossed.
+    """
+
+    quote_id: str
+    #: **True on every path, including the quote where nothing was diagnosed.**
+    #: That is the point rather than a quirk: an empty panel reads as "all
+    #: clear", so the sentence saying what was checked and what could not be is
+    #: printed whatever the answer. A test asserts it rather than this comment.
+    renders: bool
+    #: ``QuoteCoverage.basis``, verbatim. Never empty.
+    headline: str
+    #: Label and value, a fixed handful of rows — the case ``ui-standards`` §3
+    #: keeps a ``<table>`` for. Its row count is a property of this type, not of
+    #: the size of the business.
+    figures: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True)
+class LossLineView:
+    """One line that loses money at the price quoted, in one sentence. RESTRICTED.
+
+    A sentence rather than labelled figures because of where it is read: this is
+    the thing a total does not show, so it has to survive being skimmed, and a
+    row of numbers under a heading is read as part of the total rather than as
+    the exception to it. The figures are on the line's own card.
+    """
+
+    line_id: str
+    #: The platform's identifier for the item. Carried for a caller that wants
+    #: it and **not printed in ``sentence``** — see ``_loss_line``.
+    product_id: str
+    #: Already spelled, in the tenant's own currency. The front end may not
+    #: format money (CLAUDE.md §3) and a figure rounded in two places is two
+    #: answers to one question.
+    sentence: str
+
+
+@dataclass(frozen=True)
+class RollupView:
+    """What this quote comes to, and the lines its total does not show. RESTRICTED.
+
+    ``loss_lines`` is present on every instance, empty where none were found,
+    because that is the guarantee ``rollup`` publishes and a rendering that
+    dropped it on the healthy path would undo the whole point at the last step.
+    ``headline`` leads with the loss wherever there is one.
+
+    Holds no coverage. ``QuoteRollup`` does — so the two readers cannot be told
+    different counts — and the wire publishes that half once, under its own key,
+    to both roles. Serialising it twice into one owner payload would be two
+    copies of one answer, which is the thing holding it there was avoiding.
+    """
+
+    quote_id: str
+    #: Whether this block draws. True whenever there is anything written in it,
+    #: which is every quote — an empty roll-up block would read as "nothing to
+    #: total", and ``rollup._basis`` says in as many words that a quote with
+    #: nothing diagnosed "is not a quote with nothing wrong with it".
+    renders: bool
+    #: What this quote comes to, in one sentence — **the loss first where there
+    #: is one**, whatever the total says.
+    headline: str
+    #: Whether reading the total alone would miss a line that loses money.
+    #: ``QuoteRollup.total_hides_a_loss``, carried rather than re-derived: the
+    #: producer decides it once so two screens cannot decide it differently.
+    total_hides_a_loss: bool
+    #: Every loss-making line, worst first. Empty means checked and none found.
+    loss_lines: tuple[LossLineView, ...]
+    #: The totals as labelled figures, already spelled.
+    figures: tuple[tuple[str, str], ...]
+    #: The factor with the largest effect across the quote, **or the refusal to
+    #: name one, in words**. Never blank: a stored roll-up totals money and can
+    #: name no factor at all, and a blank line there would read as "the price
+    #: and the cost both behaved".
+    dominant: str
+    #: ``QuoteRollup.basis``, verbatim — what the totals rest on and what is
+    #: left out of them, with the loss lines named first.
     note: str
 
 
@@ -794,6 +993,259 @@ def _annual_pct(value: Optional[Decimal]) -> str:
     if value is None:
         return "unknown"
     return f"{value * 100:.2f}% a year"
+
+
+def render_considerations(proposed: Considerations, *,
+                          surfaces: bool) -> ConsiderationsView:
+    """The options on a line, as either reader sees them. One wording, two lists.
+
+    **Takes whichever list the caller is entitled to**, for the reason
+    ``render_intent`` takes either projection of one reading: the narrowing was
+    done by ``considerations.for_operations``, which builds the desk's list from
+    an allowlist rather than removing things from the owner's, so there is
+    nothing here to withhold and no branch that could forget to. A second
+    renderer for the desk's copy would be a second answer to how an option is
+    worded, and the copy nobody reads is the one that drifts.
+
+    **Nothing is re-worded and nothing is re-graded.** ``label`` and ``detail``
+    arrive written; ``strength`` goes through ``strength_word``, the one spelling
+    of a grade on either card; ``severity`` is passed through including its
+    ``None``, which is not the same answer as ``NEGLIGIBLE``.
+
+    **The refusal is a case this is written around**, as it is for the three
+    blocks above. An ordinary line offers nothing, and a block that simply did
+    not draw would read as "nothing to do here" — indistinguishable from "nothing
+    was looked at", which is CLAUDE.md §1's *absence of evidence is not a pass*
+    wearing a layout. ``Considerations.basis`` is never empty and goes into
+    ``note`` verbatim, so the block still draws.
+    """
+    items = tuple(_consideration(c) for c in proposed.items)
+    # One gate, narrowed. ``surfaces`` is ``rules._surfaces``' answer and is
+    # never widened here; the second term only makes it impossible to publish a
+    # block with nothing written in it. Nothing in the options feeds that gate:
+    # ``considerations.propose`` already implies the line's own answer on every
+    # path, and this cannot be less silent than it.
+    return ConsiderationsView(
+        line_id=proposed.line_id,
+        renders=bool(surfaces and (items or proposed.basis)),
+        items=items, note=proposed.basis)
+
+
+def _consideration(option: Consideration) -> ConsiderationView:
+    return ConsiderationView(
+        code=option.code, label=option.label, detail=option.detail,
+        line_id=option.line_id, rests_on=option.rests_on,
+        # The one spelling of a grade on either card, reused rather than
+        # restated: a second word for MODERATE would be a second answer.
+        strength_word=strength_word(option.strength),
+        severity=option.severity, surfaces=option.surfaces)
+
+
+def render_coverage(coverage: QuoteCoverage) -> CoverageView:
+    """What was checked on this quote and what could not be. No money anywhere.
+
+    Takes ``QuoteCoverage`` and nothing else — the type with no cost, margin or
+    value field on it — for the reason ``render_operations`` takes
+    ``OperationsDiagnosis``: if it needed the roll-up for anything, that would be
+    the bug. It is served to both roles under one key, which is only safe
+    because the narrowing happened at the source rather than here.
+
+    **It always draws.** ``QuoteCoverage.basis`` is never empty, including on the
+    quote where nothing was diagnosed, and that is the whole point: a panel that
+    said nothing would read as "all clear", which is the failure CLAUDE.md §1
+    names three times. Nothing here is gated on a finding — a quote with nothing
+    unusual on it is exactly the case this sentence exists for.
+
+    No ``th``. There is no money on this type to spell, which is the guarantee
+    rather than an omission, and a thresholds argument here would be a place for
+    one to arrive later.
+    """
+    return CoverageView(
+        quote_id=coverage.quote_id,
+        renders=bool(coverage.basis),
+        headline=coverage.basis,
+        figures=(
+            ("Lines diagnosed", str(coverage.lines)),
+            ("Compared against history", str(coverage.lines_compared)),
+            ("Not compared", str(coverage.lines_not_compared)),
+            ("Carrying no quoted price", str(coverage.lines_without_price)),
+            ("Raised something worth reading", str(coverage.lines_surfacing)),
+        ))
+
+
+def render_rollup(quote: QuoteRollup, *,
+                  th: CommercialThresholds) -> RollupView:
+    """What the quote comes to, and the lines its total does not show. RESTRICTED.
+
+    **The loss lines lead.** ``headline`` names them before anything else where
+    there are any, and ``loss_lines`` is built on every path — empty where none
+    were found. A quote at 22% with one line at −14% is the ordinary case this
+    whole line-level engine exists for, and a rendering that printed the 22% and
+    dropped the list would be the most convincing wrong number on the screen,
+    which is exactly what ``rollup`` publishes the list unconditionally to
+    prevent. Undoing it at the last step would be the same defect one layer up.
+
+    **Every figure is formatted here and nowhere else**, for the reason the
+    attribution's and the working-capital reading's are: the front end may not
+    format money or compute a number (CLAUDE.md §3), and a figure rounded in two
+    places is two answers to one question.
+
+    **``dominant`` is never blank.** A roll-up over stored rows totals money
+    perfectly well and can name no factor at all — ``quote_diagnoses`` has no
+    attribution column, so every line arrives carrying ``NOT_STORED`` — and an
+    empty line there would read as "the price and the cost both behaved". So the
+    refusal is written out, and it names both of the two ways it is reached
+    without claiming which one this is.
+    """
+    return RollupView(
+        quote_id=quote.quote_id,
+        # True on every quote. ``rollup._basis`` is never empty and says in as
+        # many words that a quote with nothing diagnosed "is not a quote with
+        # nothing wrong with it", which is the sentence that must not be dropped.
+        renders=bool(quote.basis),
+        headline=_rollup_headline(quote, th),
+        # Carried from the producer, never re-derived from ``margin`` and
+        # ``loss_lines`` here: it is decided once so two screens cannot decide it
+        # differently, which is what its own docstring says it is for.
+        total_hides_a_loss=quote.total_hides_a_loss,
+        loss_lines=tuple(_loss_line(ln, th) for ln in quote.loss_lines),
+        figures=_rollup_figures(quote, th),
+        dominant=_dominant_sentence(quote, th),
+        note=quote.basis)
+
+
+def _rollup_headline(quote: QuoteRollup, th: CommercialThresholds) -> str:
+    """What this quote comes to, in one sentence — the loss first where there is one.
+
+    Three cases and no fourth. The order is the point: a reader who is told the
+    total before being told a line loses money has already formed a view of the
+    quote, and the sentence that follows is read as a footnote to it.
+    """
+    losses = len(quote.loss_lines)
+    if losses:
+        it = "it" if losses == 1 else "them"
+        buried = (f" The quote's own total does not show {it}."
+                  if quote.total_hides_a_loss else "")
+        amount = (f"{th.money(quote.loss_value)} on it" if losses == 1
+                  else f"{th.money(quote.loss_value)} between them")
+        noun = "line loses" if losses == 1 else "lines lose"
+        return (f"{losses} {noun} money at the price quoted — "
+                f"{amount}.{buried}")
+    if quote.margin is None:
+        # Deliberately says only that no margin is asserted, and leaves *why* to
+        # the note. Two shapes reach here — nothing on the quote had a purchase
+        # cost, and nothing on it had a price to earn one on — and the engine's
+        # own basis tells them apart. A second sentence guessing between them
+        # would be the one people read.
+        return (f"This quote comes to {th.money(quote.value)}. No margin is "
+                f"asserted for it — not a margin of nothing, and the note below "
+                f"says what is missing.")
+    return (f"This quote comes to {th.money(quote.value)} and earns "
+            f"{th.money(quote.gross_profit)}, a margin of "
+            f"{_ratio_pct(quote.margin)} over the "
+            f"{_ratio_pct(quote.revenue_coverage)} of it whose cost is on "
+            f"record. No line on it loses money at the price quoted.")
+
+
+def _loss_line(loss: LossLine, th: CommercialThresholds) -> LossLineView:
+    """One loss-making line, in one sentence. RESTRICTED.
+
+    **Named by its line, and not by its product id.** The quote gave the line an
+    id, the grid above this draws that line with the item on it, and that is what
+    finds the row — which is the same thing every card under here does
+    ("Price comparison for line L1"). ``product_id`` is on the view for a caller
+    that wants it and is deliberately not printed: it is a platform identifier,
+    ``ui-standards`` keeps a raw id off a screen wherever a name exists, and the
+    name exists on the grid rather than on this object. Fetching one here would
+    be a second answer to what a line is called.
+    """
+    econ = loss.economics
+    lost = -(econ.gross_profit or Decimal("0"))
+    margin = (f", a margin of {_ratio_pct(econ.margin)}"
+              if econ.margin is not None else "")
+    return LossLineView(
+        line_id=loss.line_id, product_id=loss.product_id,
+        sentence=(f"Line {loss.line_id} loses {th.money(lost)} at the price "
+                  f"quoted: {th.money(econ.quoted_unit_price)} per unit "
+                  f"against a cost of {th.money(econ.unit_cost)}, on "
+                  f"{_qty(econ.qty)}{margin}."))
+
+
+def _rollup_figures(quote: QuoteRollup, th: CommercialThresholds,
+                    ) -> tuple[tuple[str, str], ...]:
+    """The totals as labelled figures, in the order the arithmetic runs.
+
+    The value before the part of it that is costed, the profit before the margin
+    taken over it, and the coverage last — which is the order ``rollup``'s own
+    basis walks, so a reader checking one against the other reads down rather
+    than hunting. A fixed handful of rows, which is the case ``ui-standards`` §3
+    keeps a ``<table>`` for.
+    """
+    # ``None`` covers two things — the lines disagreed about which policy judged
+    # them, or none of them carried a stamp at all — and the engine's own basis
+    # tells them apart. Naming one of them here would be wrong half the time.
+    version = quote.thresholds_version or "no single version — see the note"
+    return (
+        ("Quote value", th.money(quote.value)),
+        ("Value with a cost on record", th.money(quote.costed_value)),
+        ("Gross profit", th.money(quote.gross_profit, unknown="not asserted")),
+        ("Margin", _ratio_pct(quote.margin)),
+        ("Margin speaks for", _ratio_pct(quote.revenue_coverage)),
+        ("Priced lines with no cost", str(quote.lines_without_cost)),
+        ("Judged by policy", version),
+    )
+
+
+def _dominant_sentence(quote: QuoteRollup, th: CommercialThresholds) -> str:
+    """The largest factor across the quote, or the refusal to name one.
+
+    Money and not percentage points, which is what makes it summable at all —
+    ``DriverTotal`` says why at length, and adding per-line ``effect_pp`` figures
+    would be the mean-of-margins mistake in a different hat.
+    """
+    if not quote.driver_totals:
+        return ("No line's margin movement on this quote could be split between "
+                "the price decision and the cost level, so no dominant factor "
+                "is named. Either no line's evidence supported a split, or "
+                "these are diagnoses read back from the store — the split is "
+                "computed when the engine runs and is not one of its columns.")
+    top = quote.driver_totals[0]
+    noun = "line" if quote.lines_attributed == 1 else "lines"
+    split = f"{quote.lines_attributed} {noun} whose movement could be split"
+    # How many lines a total is drawn from is part of the claim: a dominant
+    # factor measured on one line of forty is not a statement about the quote,
+    # which is why ``DriverTotal`` carries the count at all.
+    scope = (f"all {split}" if top.lines == quote.lines_attributed
+             else f"{top.lines} of the {split}")
+    return (f"The largest factor across this quote is the "
+            f"{_DRIVER_LABEL.get(top.code, top.code)}, at "
+            f"{_signed_money(top.effect, th)} over {scope}. Negative means "
+            f"that factor cost margin.")
+
+
+def _ratio_pct(value: Optional[float]) -> str:
+    """A ratio as a reader sees it. One decimal, the way every other percentage
+    on this platform is spelled — ``commercial/diagnosis.py`` sets it.
+
+    ``None`` is "not asserted" rather than ``0.0%``: a quote with nothing costed
+    made no margin that anybody measured, and printing a nought would report the
+    platform's own ignorance as a break-even.
+    """
+    if value is None:
+        return "not asserted"
+    return f"{value * 100:.1f}%"
+
+
+def _qty(value: Decimal) -> str:
+    """A quantity without the trailing zeros a ``Numeric(18, 4)`` column carries.
+
+    ``10.0000 pieces`` in the middle of a sentence reads as a measurement
+    somebody took; the quantity on a quote line is a count somebody typed.
+    """
+    trimmed = value.normalize()
+    if trimmed == trimmed.to_integral_value():
+        trimmed = trimmed.quantize(Decimal(1))
+    return f"{trimmed:f}"
 
 
 def _cost_lines(owner: OwnerDiagnosis, th: CommercialThresholds) -> list[str]:

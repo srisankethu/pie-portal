@@ -92,7 +92,13 @@ function view(over: Partial<OperationsDiagnosisView> = {}): OperationsDiagnosisV
 }
 
 function state(over: Partial<QuoteDiagnosisState> = {}): QuoteDiagnosisState {
-  return { byLineId: {}, loading: false, error: null, ...over };
+  // `coverage` and `rollup` default to null — the state of a panel nobody has
+  // asked a question of. They are required on the interface rather than
+  // optional so that a caller who forgets one is a compile error: "the server
+  // said nothing" and "the server was never asked" are different answers, and
+  // the whole reason they are carried is that a panel must not confuse them.
+  return { byLineId: {}, coverage: null, rollup: null,
+           loading: false, error: null, ...over };
 }
 
 describe("a diagnosis the server surfaced", () => {

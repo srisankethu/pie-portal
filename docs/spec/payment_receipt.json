@@ -119,6 +119,7 @@
       }
     }
   },
+  "description": "One payment in, at receipt grain \u2014 the money that arrived, and which\ndocuments it was set against.\n\nOne receipt settling four invoices is one record carrying four\n``applications``: ``amount`` is the cash and the applications are how it was\ndistributed, so a connector emitting a receipt per invoice counts the same\nmoney four times.\n\n``applications`` may legitimately be empty \u2014 money received against no\ninvoice yet. Say that with ``is_advance`` and ``unapplied_amount`` rather\nthan leaving an empty list to carry the meaning.",
   "properties": {
     "amount": {
       "anyOf": [

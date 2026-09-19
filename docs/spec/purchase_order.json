@@ -54,6 +54,7 @@
       }
     }
   },
+  "description": "One order placed on a supplier, and how much of it has arrived. Header\ngrain, and the supply-side mirror of ``SalesOrderIn``.\n\n``ordered_qty`` and ``pending_qty`` are the document's own totals across\nevery line \u2014 the source's sum, in whatever units those lines carried \u2014 and\nnot a quantity for any one item: this record holds no lines at all.\n\n``received_on`` is absent both when an order is still open and when a\nreceipt was never logged. The record cannot tell those apart, so do not\nderive it from ``status`` to make the field look complete.",
   "properties": {
     "date": {
       "format": "date",

@@ -55,6 +55,18 @@ class SourceRef(BaseModel):
 
 
 class CustomerIn(BaseModel):
+    """One party this business sells to, as the source system holds it.
+
+    ``external_id`` is that system's own id for the record, and it is the
+    identity: every ``customer_external_id`` elsewhere in this contract joins on
+    it, while a name is not a key — two connected companies can each hold an
+    "ABC Industries" and they are two different customers.
+
+    A source that keeps one contact list for both sides of the trade has to
+    split it. A supplier is ``VendorIn``, even where the ERP separates the two
+    by nothing more than a type flag on one record.
+    """
+
     external_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     status: CustomerStatus = CustomerStatus.ACTIVE
@@ -82,6 +94,20 @@ class CustomerIn(BaseModel):
 
 
 class ProductIn(BaseModel):
+    """One item as the catalogue holds it — the master record, not a price, a
+    cost or a position. What is on the shelf is ``StockSnapshotIn``; what it
+    cost is ``CostRecordIn``.
+
+    ``category``, ``manufacturer``, ``source_item_type`` and
+    ``source_item_category`` are carried in the source's own words and mapped
+    only at read time, so send them verbatim rather than translated — and leave
+    them out where the source keeps no such taxonomy rather than inferring one
+    from the item's name.
+
+    ``manufacturer`` is who makes the item and never who it was bought from;
+    the supplier on a purchase is ``CostRecordIn.vendor_external_id``.
+    """
+
     external_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     uom: Optional[str] = None
@@ -107,6 +133,21 @@ class ProductIn(BaseModel):
 
 
 class SalesTxnIn(BaseModel):
+    """One invoice line: what one customer bought, of one product, on one day.
+    Invoice-line grain — ``external_ref`` is ``{invoice_id}:{line_id}``, and the
+    invoice's own header, balance and due date are ``InvoiceIn``.
+
+    A line, never a document: an invoice of six lines is six of these beside one
+    ``InvoiceIn``, and rolling them into one record discards the per-product
+    grain every number in this platform is computed at.
+
+    ``unit_price`` and ``line_revenue`` are both net of the line discount and
+    before tax — what the customer actually paid for the goods. ``rate`` is the
+    same line's pre-discount list price, carried for audit only; sending it as
+    ``unit_price`` overstates revenue, and so does a tax-inclusive
+    ``line_revenue``.
+    """
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     external_ref: str = Field(min_length=1)          # invoice_id:line_id
@@ -131,6 +172,20 @@ class SalesTxnIn(BaseModel):
 
 
 class CostRecordIn(BaseModel):
+    """One line of one bill: what was bought, from whom, and what it cost.
+    Bill-line grain — ``external_ref`` is ``{bill_id}:{line_id}``, and the
+    bill's own payable terms are ``BillIn``.
+
+    A purchase event, not a valuation. It states what was paid on a date for a
+    quantity and says nothing about what stock is worth now; the holding, and
+    the last purchase price the source keeps beside it, are ``StockSnapshotIn``.
+
+    ``unit_cost`` is effective — net of the line discount — and is the figure
+    every cost consumer in this platform reads. ``rate`` is the same line's
+    pre-discount list rate, carried for audit only; sending it as ``unit_cost``
+    overstates cost on every margin computed from it.
+    """
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     external_ref: str = Field(min_length=1)          # bill_id:line_id
@@ -165,6 +220,20 @@ class CostRecordIn(BaseModel):
 
 # ── API read DTOs ────────────────────────────────────────────────────────────
 class VendorIn(BaseModel):
+    """One party this business buys from, as the source system holds it. The
+    buy-side counterpart of ``CustomerIn``, and a separate record rather than a
+    flag on one — a source that keeps a single contact list has to send each
+    side under its own entity.
+
+    A vendor is who was paid, which is not who made the goods:
+    ``ProductIn.manufacturer`` is the maker, and for an authorised distributor
+    the two usually coincide without being the same fact.
+
+    ``payment_terms_days`` of 0 is a real term, "due on receipt". Only absence
+    means the terms are unknown, so leave the field out rather than sending zero
+    for a vendor nobody has recorded terms for.
+    """
+
     external_id: str = Field(min_length=1)
     name: str = Field(min_length=1)
     gstin: Optional[str] = None
@@ -180,6 +249,20 @@ class VendorIn(BaseModel):
 
 
 class StockSnapshotIn(BaseModel):
+    """What one item held across the whole organization, on one day. One row per
+    item per day; the same item at one location is ``StockLocationSnapshotIn``.
+
+    A position at an instant, not a movement. Nothing here is a receipt, an
+    issue or an adjustment, and no history can be reconstructed from it — a
+    source that reports only a current number leaves a series exactly as dense
+    as the days on which something wrote one down.
+
+    An absent quantity is unknown and never zero. That matters most on
+    ``reorder_level``, where "no reorder point set" is not "reorder at zero",
+    and on ``tracked``: a service or other non-inventory item sets it false
+    rather than reporting a holding of nothing.
+    """
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     product_external_id: str = Field(min_length=1)
@@ -238,6 +321,19 @@ class DocumentApplicationIn(BaseModel):
 
 
 class PaymentReceiptIn(BaseModel):
+    """One payment in, at receipt grain — the money that arrived, and which
+    documents it was set against.
+
+    One receipt settling four invoices is one record carrying four
+    ``applications``: ``amount`` is the cash and the applications are how it was
+    distributed, so a connector emitting a receipt per invoice counts the same
+    money four times.
+
+    ``applications`` may legitimately be empty — money received against no
+    invoice yet. Say that with ``is_advance`` and ``unapplied_amount`` rather
+    than leaving an empty list to carry the meaning.
+    """
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     external_ref: str = Field(min_length=1)
@@ -760,6 +856,18 @@ class VendorPaymentIn(BaseModel):
 
 
 class PurchaseOrderIn(BaseModel):
+    """One order placed on a supplier, and how much of it has arrived. Header
+    grain, and the supply-side mirror of ``SalesOrderIn``.
+
+    ``ordered_qty`` and ``pending_qty`` are the document's own totals across
+    every line — the source's sum, in whatever units those lines carried — and
+    not a quantity for any one item: this record holds no lines at all.
+
+    ``received_on`` is absent both when an order is still open and when a
+    receipt was never logged. The record cannot tell those apart, so do not
+    derive it from ``status`` to make the field look complete.
+    """
+
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     external_ref: str = Field(min_length=1)

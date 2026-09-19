@@ -54,6 +54,7 @@
       }
     }
   },
+  "description": "One item as the catalogue holds it \u2014 the master record, not a price, a\ncost or a position. What is on the shelf is ``StockSnapshotIn``; what it\ncost is ``CostRecordIn``.\n\n``category``, ``manufacturer``, ``source_item_type`` and\n``source_item_category`` are carried in the source's own words and mapped\nonly at read time, so send them verbatim rather than translated \u2014 and leave\nthem out where the source keeps no such taxonomy rather than inferring one\nfrom the item's name.\n\n``manufacturer`` is who makes the item and never who it was bought from;\nthe supplier on a purchase is ``CostRecordIn.vendor_external_id``.",
   "properties": {
     "active": {
       "default": true,

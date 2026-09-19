@@ -217,7 +217,8 @@ def normalize_customer(raw: dict[str, Any], *, system: str = ZOHO) -> CustomerIn
         name=str(_require(raw, "contact_name", "contact")),
         status=CustomerStatus.ACTIVE if status == "active" else CustomerStatus.INACTIVE,
         source_attributes=_source_attributes(raw),
-        source_ref=SourceRef(system=system, record_type="contact", record_id=str(cid)),
+        source_ref=SourceRef(system=system, record_type="contact", record_id=str(cid),
+                             recorded_at=_recorded_at(raw, f"contact {cid}")),
     )
 
 
@@ -238,7 +239,8 @@ def normalize_product(raw: dict[str, Any], *, system: str = ZOHO) -> ProductIn:
                               if raw.get("source_item_category") else None),
         active=(status == "active"),
         source_attributes=_source_attributes(raw),
-        source_ref=SourceRef(system=system, record_type="item", record_id=str(iid)),
+        source_ref=SourceRef(system=system, record_type="item", record_id=str(iid),
+                             recorded_at=_recorded_at(raw, f"item {iid}")),
     )
 
 
@@ -404,7 +406,8 @@ def normalize_vendor(raw: dict[str, Any], *, system: str = ZOHO) -> VendorIn:
         payment_terms_days=(int(terms) if terms not in (None, "") else None),
         status=CustomerStatus.ACTIVE if status == "active" else CustomerStatus.INACTIVE,
         source_attributes=_source_attributes(raw),
-        source_ref=SourceRef(system=system, record_type="vendor", record_id=str(vid)),
+        source_ref=SourceRef(system=system, record_type="vendor", record_id=str(vid),
+                             recorded_at=_recorded_at(raw, f"vendor {vid}")),
     )
 
 
@@ -428,7 +431,12 @@ def normalize_stock(raw: dict[str, Any], as_of: date, *, system: str = ZOHO) -> 
         # A service has no shelf. Counting it as "zero on hand" would put every
         # service line in the out-of-stock list forever.
         tracked=bool(raw.get("track_inventory")) and item_type != "service",
-        source_ref=SourceRef(system=system, record_type="item", record_id=str(iid)),
+        # Of the *item*, which is what this provenance points at — when the
+        # source recorded the master record these figures were read off, not
+        # when the count was taken. The reading's own day is ``as_of`` above;
+        # a snapshot has no source record of its own to have been created.
+        source_ref=SourceRef(system=system, record_type="item", record_id=str(iid),
+                             recorded_at=_recorded_at(raw, f"item {iid} stock")),
     )
 
 
@@ -482,7 +490,9 @@ def normalize_payment(raw: dict[str, Any], *, system: str = ZOHO) -> PaymentRece
         is_advance=bool(raw.get("is_advance_payment")),
         unapplied_amount=raw.get("unused_amount"),
         applications=applications,
-        source_ref=SourceRef(system=system, record_type="customerpayment", record_id=str(pid)),
+        source_ref=SourceRef(system=system, record_type="customerpayment",
+                             record_id=str(pid),
+                             recorded_at=_recorded_at(raw, ctx)),
     )
 
 
@@ -510,7 +520,9 @@ def normalize_sales_order(raw: dict[str, Any], *, system: str = ZOHO) -> SalesOr
         salesperson_external_id=(str(raw["salesperson_id"])
                                  if raw.get("salesperson_id") else None),
         source_attributes=_source_attributes(raw),
-        source_ref=SourceRef(system=system, record_type="salesorder", record_id=str(soid)),
+        source_ref=SourceRef(system=system, record_type="salesorder",
+                             record_id=str(soid),
+                             recorded_at=_recorded_at(raw, ctx)),
     )
 
 
@@ -701,6 +713,22 @@ def _recorded_at(raw: dict[str, Any], ctx: str) -> Optional[datetime]:
     is the larger loss. The degradation is safe in the direction that matters —
     ``None`` makes the row unusable as point-in-time evidence and it is counted
     as such, never imputed from ``date``. Evidence is discarded, not invented.
+
+    **Called by every normalizer that builds a ``SourceRef``, and that is the
+    contract rather than a convenience.** ``domain/spec.py`` publishes
+    ``SourceRef.recorded_at`` as EXPECTED keyed on the declaring type, so the
+    marker reaches all nineteen entities; for a long time three normalizers set
+    it and fourteen dropped whatever a connector had carried. A connector that
+    reads its ERP's creation stamp and a normalizer that throws it away are
+    indistinguishable downstream from an ERP that has no such concept, which is
+    the shape of the incident ``spec.py`` exists for.
+
+    Passing it through does not conjure a value. A payload with no
+    ``created_time`` still yields ``None`` here, and that stays ``None``: the
+    document's own ``date`` is never substituted, because a bill dated before a
+    quote but entered three weeks after it is not evidence the quoter had. Where
+    no connector supplies the stamp for an entity, the gap is the connector's
+    and is reported as one.
     """
     value = raw.get("created_time")
     if not value:
@@ -944,7 +972,8 @@ def normalize_bill_terms(raw: dict[str, Any], *, system: str = ZOHO) -> BillIn:
         total=raw.get("total"),
         balance=raw.get("balance"),
         source_attributes=_source_attributes(raw),
-        source_ref=SourceRef(system=system, record_type="bill", record_id=bill_id),
+        source_ref=SourceRef(system=system, record_type="bill", record_id=bill_id,
+                             recorded_at=_recorded_at(raw, ctx)),
     )
 
 
@@ -1020,7 +1049,9 @@ def normalize_invoice_terms(raw: dict[str, Any], *, system: str = ZOHO) -> Invoi
         balance=raw.get("balance"),
         sales_orders=_invoice_sales_orders(raw),
         source_attributes=_source_attributes(raw),
-        source_ref=SourceRef(system=system, record_type="invoice", record_id=invoice_id),
+        source_ref=SourceRef(system=system, record_type="invoice",
+                             record_id=invoice_id,
+                             recorded_at=_recorded_at(raw, ctx)),
     )
 
 
@@ -1040,7 +1071,8 @@ def normalize_location(raw: dict[str, Any], *, system: str = ZOHO) -> LocationIn
                    else bool(raw["is_location_active"])),
         is_primary=bool(raw.get("is_primary_location")),
         tax_reg_no=(str(raw["tax_reg_no"]) if raw.get("tax_reg_no") else None),
-        source_ref=SourceRef(system=system, record_type="location", record_id=loc_id),
+        source_ref=SourceRef(system=system, record_type="location", record_id=loc_id,
+                             recorded_at=_recorded_at(raw, f"location {loc_id}")),
     )
 
 
@@ -1062,8 +1094,12 @@ def normalize_item_location(raw: dict[str, Any], as_of: date, *, system: str = Z
         on_hand=raw.get("on_hand"),
         available=raw.get("available"),
         asset_value=raw.get("asset_value"),
+        # Of the source's item-location record, for the reason
+        # ``normalize_stock`` gives: the day of the reading is ``as_of``.
         source_ref=SourceRef(system=system, record_type="item_location",
-                             record_id=item_id, line_id=location_id),
+                             record_id=item_id, line_id=location_id,
+                             recorded_at=_recorded_at(
+                                 raw, f"item {item_id} location {location_id}")),
     )
 
 
@@ -1091,6 +1127,12 @@ def normalize_credit_note(
     note_id = str(_require(raw, "creditnote_id", "credit note"))
     ctx = f"credit note {note_id}"
     customer_ext = str(raw["customer_id"]) if raw.get("customer_id") else None
+    # Read once, from the credit note's own payload, and stamped on the header
+    # and on every application alike: an application's provenance points at
+    # this credit note (``record_id`` is the note, ``line_id`` the invoice it
+    # was set against), so the source record whose creation is being stated is
+    # the note. The applications carry no creation stamp of their own.
+    recorded = _recorded_at(raw, ctx)
     header = CreditNoteIn(
         external_ref=note_id,
         number=(str(raw["creditnote_number"]) if raw.get("creditnote_number") else None),
@@ -1099,7 +1141,8 @@ def normalize_credit_note(
         status=str(raw.get("status") or ""),
         total=raw.get("total"),
         balance=raw.get("balance"),
-        source_ref=SourceRef(system=system, record_type="credit_note", record_id=note_id),
+        source_ref=SourceRef(system=system, record_type="credit_note",
+                             record_id=note_id, recorded_at=recorded),
     )
     applications: list[CreditNoteApplicationIn] = []
     for i, a in enumerate(raw.get("invoices_credited") or []):
@@ -1130,7 +1173,8 @@ def normalize_credit_note(
             applied_on=_parse_date(applied_raw, ctx),
             amount_applied=_parse_decimal(amount, ctx, "amount_applied"),
             source_ref=SourceRef(system=system, record_type="credit_note",
-                                 record_id=note_id, line_id=invoice_ref),
+                                 record_id=note_id, line_id=invoice_ref,
+                                 recorded_at=recorded),
         ))
     return header, applications
 
@@ -1155,6 +1199,10 @@ def normalize_vendor_credit(
     vc_id = str(_require(raw, "vendor_credit_id", "vendor credit"))
     ctx = f"vendor credit {vc_id}"
     vendor_ext = str(raw["vendor_id"]) if raw.get("vendor_id") else None
+    # One read for the header and every application, for the reason
+    # ``normalize_credit_note`` gives: an application's provenance names this
+    # credit, so the creation being stated is the credit's own.
+    recorded = _recorded_at(raw, ctx)
     header = VendorCreditIn(
         external_ref=vc_id,
         number=(str(raw["vendor_credit_number"])
@@ -1165,7 +1213,7 @@ def normalize_vendor_credit(
         total=raw.get("total"),
         balance=raw.get("balance"),
         source_ref=SourceRef(system=system, record_type="vendor_credit",
-                             record_id=vc_id),
+                             record_id=vc_id, recorded_at=recorded),
     )
     applications: list[VendorCreditApplicationIn] = []
     for i, a in enumerate(raw.get("bills_credited") or []):
@@ -1190,7 +1238,8 @@ def normalize_vendor_credit(
             bill_number=(str(a["bill_number"]) if a.get("bill_number") else None),
             amount_applied=_parse_decimal(amount, ctx, "amount"),
             source_ref=SourceRef(system=system, record_type="vendor_credit",
-                                 record_id=vc_id, line_id=bill_ref),
+                                 record_id=vc_id, line_id=bill_ref,
+                                 recorded_at=recorded),
         ))
     return header, applications
 
@@ -1220,7 +1269,9 @@ def normalize_vendor_payment(raw: dict[str, Any], *, system: str = ZOHO) -> Vend
         applications=_applications(
             raw, str(pid), ctx, listed_under="bills", document_key="bill_id",
             number_key="bill_number", application_key="bill_payment_id"),
-        source_ref=SourceRef(system=system, record_type="vendorpayment", record_id=str(pid)),
+        source_ref=SourceRef(system=system, record_type="vendorpayment",
+                             record_id=str(pid),
+                             recorded_at=_recorded_at(raw, ctx)),
     )
 
 
@@ -1246,5 +1297,7 @@ def normalize_purchase_order(raw: dict[str, Any], *, system: str = ZOHO) -> Purc
         total=raw.get("total"),
         received_on=received_on,
         source_attributes=_source_attributes(raw),
-        source_ref=SourceRef(system=system, record_type="purchaseorder", record_id=str(poid)),
+        source_ref=SourceRef(system=system, record_type="purchaseorder",
+                             record_id=str(poid),
+                             recorded_at=_recorded_at(raw, ctx)),
     )

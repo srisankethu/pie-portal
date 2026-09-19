@@ -1,6 +1,6 @@
 """The published ingestion contract, as assertions rather than as a convention.
 
-Three things are pinned here, and they fail for three different reasons.
+Four things are pinned here, and they fail for four different reasons.
 
 **Membership.** Every ``BaseModel`` in ``domain/schemas.py`` is an entity, a
 declared component, or a declared non-ingestion type. A DTO added to that module
@@ -20,6 +20,13 @@ INSUFFICIENT_EVIDENCE, and the sync reported success. The expectation that says
 its absence is a defect is published *in* the document and therefore *in* the
 hash, so a downgrade moves the version — and the test that proves that is the
 one to look at first if this file ever needs trusting.
+
+**Description.** An entity whose DTO carries no class docstring publishes with
+no ``description`` at all, and nothing anywhere fails — which is how eight of
+the nineteen went out saying nothing about what they were. ``spec_export.py``
+renders that absence honestly, but the artifact is the only thing an integrator
+reads, so the gap belongs in a failing assertion here rather than in a note in
+the published document.
 
 These assertions are the second line and not the first. A test can be edited in
 the same commit as the change it guards, which is why the marker is in the hash
@@ -207,6 +214,19 @@ def test_shared_components_ride_in_defs_rather_than_being_entities():
     assert customer["properties"]["source_ref"]["$ref"] == "#/$defs/SourceRef"
     assert "source_ref" not in ENTITY_NAMES  # never an entity of its own
     assert "SourceRef" not in {m.__name__ for m in spec.SPEC_ENTITIES}
+
+
+def test_every_entity_publishes_a_description():
+    """Pydantic lifts a class docstring into ``description`` and lifts nothing
+    else, so a DTO written with only field comments joins the contract saying
+    nothing about what it is. An integrator has this artifact and no access to
+    ``schemas.py``, which makes a silent entity a gap in the contract rather
+    than a record whose meaning is obvious."""
+    silent = sorted(name for name, document in spec.entity_schemas().items()
+                    if not (document.get("description") or "").strip())
+    assert not silent, (
+        f"{silent} publish no description at all. Give the DTO in schemas.py a "
+        "class docstring — that is the only prose pydantic lifts.")
 
 
 def test_canonical_json_is_the_sorted_compact_serialisation_of_the_schemas():

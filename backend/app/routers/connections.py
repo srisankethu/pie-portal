@@ -164,7 +164,39 @@ def _last_run(session: Session, row: models.ZohoConnection) -> Optional[models.S
             f"`{FIX}` against it and reload. No data is lost.") from e
 
 
-def _dict(session: Session, row: models.ZohoConnection) -> dict:
+def _credential_config(connector: str, cred) -> Optional[dict]:
+    """The readable half of a stored sign-in: the non-secret credential fields
+    this connector's spec declares, as they are on file.
+
+    Rebuilt from the spec rather than served as stored, which is what
+    ``rotate_erp_credential`` does when it *writes* this dictionary and for the
+    same reason it gives — a key the spec has dropped, or has since moved into
+    the secrets, is not resurrected into something a reader can read. Nothing
+    rewrites the rows already on file when a spec reclassifies a field, so
+    until a credential is next rotated its stored dict still holds the old key;
+    the write path defended against that and the read path did not, and it is
+    the read path that discloses.
+
+    A connector the registry no longer holds gets nothing. With no spec there
+    is no ``secret`` flag to sort the halves by, and not publishing is the safe
+    direction. Zoho arrives here the same way — it predates the registry and is
+    not in it — which is the answer that row wants anyway.
+    """
+    from ..ingestion import erp
+
+    if cred is None:
+        return None
+    try:
+        spec = erp.get_spec(connector)
+    except erp.UnknownConnectorError:
+        return None
+    stored = cred.config or {}
+    return {f.name: stored[f.name] for f in spec.credential_fields
+            if not f.secret and stored.get(f.name) is not None} or None
+
+
+def _dict(session: Session, row: models.ZohoConnection,
+          *, owner: bool = True) -> dict:
     from ..domain.origin import CONNECTORS, fallback_company_label
 
     cred = row.credential
@@ -212,6 +244,35 @@ def _dict(session: Session, row: models.ZohoConnection) -> dict:
         # endpoint …) so an owner can see what was entered. Secrets are not
         # here and are not anywhere else in a response either.
         "config": dict(row.config or {}) or None,
+        # The *credential's* non-secret settings, which are a different
+        # dictionary from the one above and disjoint from it on every connector
+        # in the registry: ``split_inputs`` files the per-company fields on the
+        # connection and the sign-in's own — a Business Central ``environment``,
+        # an Acumatica ``endpoint_version``, Prophet 21's OData path — on the
+        # shared credential row.
+        #
+        # Published because the rotate form has to show an owner which stored
+        # settings it is about to carry forward, and had nothing to read them
+        # from. Written against ``config`` first, which is the same word for the
+        # other dictionary: every box came up empty on a screen that had just
+        # promised "a box left blank keeps its stored value", and nothing
+        # failed, because an empty prefill and no prefill render identically.
+        #
+        # Which half a field is in is the spec's own ``secret`` flag, and the
+        # secret half never leaves ``secrets_encrypted``. What is left is still
+        # a sign-in: an ERP service account's user name and the base URL it
+        # signs in at, NetSuite's consumer key and token id, a Business Central
+        # tenant. So unlike everything else in this response it is owner-only.
+        #
+        # It reads like ``client_id`` two lines up and is not the same case.
+        # That one tells two grants apart in a list every reader of this
+        # response can see; this one exists for a single consumer — the rotate
+        # form, rendered behind ``canManage`` and posting to an endpoint behind
+        # ``require_owner``. Serving it to a manager widens who holds a
+        # service account's name to a role that can never use it, and the
+        # widening is invisible: the card renders ``config``, not this, so
+        # nothing on any screen would have shown it arriving.
+        "credential_config": _credential_config(connector, cred) if owner else None,
         "credential_rotated_at": (clock.iso(cred.rotated_at)
                                   if cred and cred.rotated_at else None),
         "accounts_base": row.accounts_base,
@@ -236,8 +297,12 @@ def list_connections(
     org = principal.organization_id
     rows = conn.list_connections(session, org)
     credentials = conn.usable_credentials(session, org)
+    # The one caller of ``_dict`` that is not owner-only — every other route in
+    # this file is behind ``require_owner``, which is why that is the default
+    # there and this is the single place it has to be said.
+    owner = principal.role is Role.OWNER
     return {
-        "connections": [_dict(session, r) for r in rows],
+        "connections": [_dict(session, r, owner=owner) for r in rows],
         "credentials": [
             {"credential_id": c.credential_id,
              "connector": getattr(c, "connector", None) or conn.ZOHO_CONNECTOR,
@@ -248,7 +313,7 @@ def list_connections(
              "used_by": len(conn.connections_using(session, c.credential_id))}
             for c in credentials
         ],
-        "can_manage": principal.role is Role.OWNER,
+        "can_manage": owner,
         "source_mode": settings.ZOHO_SOURCE,
         # Said on the screen rather than left to be discovered.
         "pooling_note": (
@@ -891,7 +956,7 @@ def _check_erp(session: Session, row: models.ZohoConnection) -> dict:
     """The check for a registered connector: sign in, reach the company,
     record the outcome.
 
-    No scope probe — none of the five speaks Zoho's per-scope grant model, and
+    No scope probe — none of the six speaks Zoho's per-scope grant model, and
     a probe list that is always empty would read as "all permissions verified".
     What their APIs *do* refuse per-permission arrives as a
     ``SourceScopeError`` at sync time and is reported per stage there.

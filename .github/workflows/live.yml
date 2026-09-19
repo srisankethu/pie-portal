@@ -1,10 +1,11 @@
 # The contract suites that talk to something real, on a schedule.
 #
 # Both suites in `backend/tests/live/` were written, reviewed and merged, and
-# then never ran. `pytest.ini` carries `addopts = -m "not live"`, which is
-# correct — they cost money and need credentials, so they must not run on every
-# push — but nothing else ran them either. A test that never runs is
-# documentation with a misleading file extension.
+# then never ran. `pytest.ini` excludes them by default — its `addopts` carry
+# `not live` (alongside `not matrix`, which is there for time rather than for
+# money) — and that is correct, they cost money and need credentials, so they
+# must not run on every push. But nothing else ran them either. A test that
+# never runs is documentation with a misleading file extension.
 #
 # So they run here, weekly and on demand. Weekly rather than per-push because
 # what they watch changes on someone else's release schedule, not on ours: a

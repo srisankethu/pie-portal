@@ -164,6 +164,27 @@ else
   fail "backend pytest"
 fi
 
+# The connector matrix, which the line above cannot reach: `pytest.ini` carries
+# `addopts = -m "not live and not matrix"`, so `pytest tests` deselects all of
+# it. It landed with no runner at all — no make target, no workflow, nothing in
+# here — while its own docstring said it ran nightly. That is the state
+# `live.yml`'s header calls "documentation with a misleading file extension",
+# and worse than the live suites were: those at least cost money and needed
+# credentials, and this costs half a minute. Two of its own guards depend on it
+# running — the one that fails when an eighth connector gets no row, and a
+# deliberate copy of a stub whose docstring prices the duplication at "it goes
+# stale loudly".
+#
+# Here rather than in a nightly job so that guard blocks, and outside `--fast`
+# for the reason pytest.ini excludes it from the default run: the edit loop
+# should not pay for it, and --fast is not enough to merge on anyway.
+if [ "$FAST" = "1" ]; then
+  printf '      connector matrix skipped (--fast).\n'
+else
+  run_step "connector matrix" \
+    env -C backend $PY -m pytest -m matrix -q "${NARG[@]}"
+fi
+
 if [ "$FAST" = "1" ]; then
   step "5-8/8  skipped (--fast)"
   printf '      frontend build, the empty-database migration checks and the\n'

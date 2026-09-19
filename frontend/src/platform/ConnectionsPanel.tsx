@@ -624,6 +624,7 @@ function ConnectionCard({
         <ErpRotateForm
           entry={catalogEntry}
           credentialLabel={conn.credential_label}
+          credentialConfig={conn.credential_config}
           busy={busy}
           onCancel={() => setRotating(false)}
           onSubmit={(values) => run(async () => {
@@ -991,27 +992,83 @@ function FieldInput({
   );
 }
 
+/** What the rotate form opens on: the settings this connection's sign-in
+ *  already has, for the non-secret credential fields its connector declares.
+ *
+ *  Both halves of that matter, and the first version got the second one wrong.
+ *  A connection carries two dictionaries of non-secret settings and they are
+ *  DISJOINT, not nested: `config` is the per-company half (a company GUID, a
+ *  tenant, a branch) and `credential_config` is the sign-in's own (a Business
+ *  Central `environment`, an Acumatica `endpoint_version`). This form rotates
+ *  the sign-in, so it must read the second — seeded from the first, every box
+ *  came up blank on a screen that had just told the operator a filled box is
+ *  the value the connection is on, and nothing anywhere failed, because an
+ *  empty prefill renders exactly like no prefill.
+ *
+ *  Walked over `credential_fields` rather than over the dictionary's own keys
+ *  for the other half of the same distinction: the rotate endpoint refuses any
+ *  key the credential half does not declare, so posting a per-company key
+ *  turns a rotation into a 400.
+ *
+ *  Secret fields are skipped and stay blank. They are write-only: no response
+ *  has ever carried one back, so anything rendered into a secret box could only
+ *  be a guess presented as the stored value.
+ */
+function rotatePrefill(
+  entry: ConnectorCatalogEntry,
+  credentialConfig: Record<string, string> | null,
+): Record<string, string> {
+  const seeded: Record<string, string> = {};
+  for (const f of entry.credential_fields) {
+    const stored = credentialConfig?.[f.name];
+    if (!f.secret && stored) seeded[f.name] = stored;
+  }
+  return seeded;
+}
+
 function ErpRotateForm({
   entry,
   credentialLabel,
+  credentialConfig,
   busy,
   onCancel,
   onSubmit,
 }: {
   entry: ConnectorCatalogEntry;
   credentialLabel: string;
+  /** The non-secret half of the stored sign-in, as the connections list
+   *  carries it — not the connection's per-company `config`. Null for a
+   *  sign-in that stores none. */
+  credentialConfig: Record<string, string> | null;
   busy: boolean;
   onCancel: () => void;
   onSubmit: (values: Record<string, string>) => void;
 }) {
-  const [values, setValues] = useState<Record<string, string>>({});
+  // Seeded once, on open. The card mounts this form when rotation starts and
+  // unmounts it on cancel and on a completed rotation, so re-opening re-reads
+  // what is stored instead of showing a draft that was explicitly abandoned —
+  // the same reason `cancelRename` puts the stored name back.
+  const [values, setValues] = useState<Record<string, string>>(
+    () => rotatePrefill(entry, credentialConfig));
   const ready = entry.credential_fields.every(
     (f) => !f.required || (values[f.name] ?? "").trim() !== "");
   return (
     <div className="cx-rotate">
+      {/* Two halves with opposite rules, so the sentence states both. The
+          secrets are replaced whole. The settings beside them are carried
+          forward on omission, which is the half that was invisible: a Business
+          Central rotation that did not re-type `environment` read as "put it
+          back to the default", and the connection moved from sandbox onto
+          production with a check that passed, because the same company GUID
+          exists on the live tenant. A box that arrives filled in is now showing
+          the value that is about to be carried forward, so changing it is a
+          decision rather than an omission. */}
       <Typography variant="body2">
-        Enter the fresh sign-in for {entry.label}. All of it — a half-replaced
-        credential is how a working connection gets broken.
+        Enter the fresh sign-in for {entry.label}. All of it — the secrets are
+        replaced whole, and a half-replaced credential is how a working
+        connection gets broken. The settings beside them work the other way: a
+        box that arrives filled in is the value this connection is on, and one
+        left blank keeps its stored value rather than reverting to a default.
       </Typography>
       {entry.credential_fields.map((f) => (
         <FieldInput key={f.name} field={f} idPrefix="cx-erp-rotate"

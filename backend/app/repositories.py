@@ -817,13 +817,16 @@ class ReadModelRepository:
     # duplicating — which is what makes a resumed or overlapping sync safe.
 
     def upsert_vendor(self, v: VendorIn) -> models.Vendor:
-        row = self.s.scalar(
-            select(models.Vendor).where(
-                models.Vendor.organization_id == self.org,
-                models.Vendor.external_id == v.external_id,
-                *self._source(models.Vendor),
-            )
-        )
+        # An exact-source select used to sit here, and being the one master
+        # upsert that looked up its own row made this the one that never
+        # adopted. On the pull after a connection is first recorded, customers,
+        # products, sales and cost records were re-stamped in place and the
+        # whole vendor master was re-inserted beside itself: one duplicate
+        # supplier each, the old row reading "source not recorded" with nothing
+        # left hanging off it, because `get_vendor_by_external` finds the
+        # exact-source match first. That is the twinning `_for_upsert` exists to
+        # end, on the one table that was not asking it.
+        row = self._for_upsert(models.Vendor, v.external_id)
         if row is None:
             row = models.Vendor(organization_id=self.org, external_id=v.external_id,
                                connector=self.connector,

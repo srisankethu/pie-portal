@@ -1109,7 +1109,12 @@ def rotate_erp_credential(session: Session, organization_id: str,
                           values: dict) -> models.ZohoCredential:
     """Replace a registered connector's secrets. Every connection follows —
     the same one-operation rotation the credential split exists for, with the
-    same owner-only rule ``rotate_credential`` enforces."""
+    same owner-only rule ``rotate_credential`` enforces.
+
+    The secrets are replaced whole; the non-secret settings stored beside them
+    are carried forward where this call did not name them. See the comment on
+    the merge below for why those two halves are treated differently.
+    """
     import json
 
     from . import erp
@@ -1121,6 +1126,38 @@ def rotate_erp_credential(session: Session, organization_id: str,
     spec = erp.get_spec(getattr(cred, "connector", None) or "")
     require_safe_source_urls(values, label=spec.label)
     secrets, cred_config = erp.split_credential_inputs(spec, values)
+    # An optional non-secret field the caller left out keeps the value already
+    # on file instead of being erased. ``split_credential_inputs`` emits only
+    # the keys that arrived non-empty, so replacing ``config`` wholesale meant a
+    # rotation that re-typed the sign-in and nothing else blanked every optional
+    # setting beside it — and blanking one is not neutral, because the
+    # connectors read those fields with a default. A Business Central credential
+    # rotated without re-entering ``environment`` lost "sandbox", the source
+    # fell back to production, the call returned 200 and the follow-up check
+    # reported success, because the same company GUID exists on the live tenant.
+    # Acumatica's endpoint version and Prophet 21's OData path and view prefix
+    # revert to their own defaults exactly the same way.
+    #
+    # The secret document is still replaced whole. That half of the contract is
+    # correct and is deliberately not merged: secrets carried forward key by key
+    # would let a rotation leave half an old sign-in behind.
+    #
+    # Rebuilt from the spec rather than merged over the stored dict, so the
+    # readable half stays exactly the declared non-secret credential fields: a
+    # key the spec has dropped, or has since moved into the secrets, is not
+    # resurrected into a column anyone who can read this row can read.
+    #
+    # The accepted consequence, and it is a trade rather than an oversight:
+    # rotation can no longer *clear* an optional field by omitting it. Clearing
+    # one means reconnecting. An omission is overwhelmingly "I did not re-type
+    # it", and reading it as "put this back to the default" is the reading that
+    # moved a sandbox connection onto production.
+    stored = dict(cred.config or {})
+    cred_config = {
+        f.name: cred_config.get(f.name, stored.get(f.name))
+        for f in spec.credential_fields
+        if not f.secret and (f.name in cred_config or f.name in stored)
+    }
     cred.secrets_encrypted = crypto.encrypt(json.dumps(secrets, sort_keys=True))
     cred.config = cred_config
     cred.rotated_at = datetime.now(timezone.utc)

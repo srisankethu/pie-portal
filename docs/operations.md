@@ -931,8 +931,9 @@ Runs weekly (Mondays, 04:00 UTC / 09:30 IST) and on demand via
 `ai`, `zoho` or both.
 
 It exercises `backend/tests/live/`, which the default suite deliberately
-excludes (`pytest.ini` carries `addopts = -m "not live"`) because these tests
-call a real model and a real Zoho book. That exclusion was right and the suites
+excludes (`pytest.ini` carries `not live` in its `addopts`, alongside the
+unrelated `not matrix`) because these tests call a real model and a real Zoho
+book. That exclusion was right and the suites
 still ended up never running anywhere, which is why this workflow exists.
 
 It fails loudly when a contract breaks — a red scheduled workflow emails the

@@ -92,6 +92,56 @@ type DiagnosisCommon = {
   strength_word: string;
   qualification: string;
   actions: string[];
+  /** What this quote's own record says about why it was priced as it was.
+   *
+   *  **On the common type on purpose, and it is the only block that is.** Every
+   *  sentence in it is a fact about a field on the source document — what
+   *  somebody wrote down, or that nothing was written — so there is no margin
+   *  claim to withhold and both roles are told the same thing in the same
+   *  words. The one sentence that *is* a margin claim never arrives here: the
+   *  server put it in the owner's `lines` from a field declared on
+   *  `OwnerDiagnosis` alone, and a salesperson's projection has no object it
+   *  could have come from.
+   *
+   *  Optional for the reason the block props below are: a payload served before
+   *  the key existed would otherwise take the whole Quote Builder down on a
+   *  property read, and "nothing was read" is the true thing to say about it —
+   *  which is the same answer the refusal branch already gives. */
+  intent?: IntentView;
+};
+
+/** What the record says about why this quote was priced as it was, or a refusal
+ *  to say.
+ *
+ *  Two shapes, exactly as the server has: either `lines` holds a sentence per
+ *  concept and `headline` says what was recorded, or `lines` is empty and `note`
+ *  says what stopped it. There is no third state, and an empty one is not
+ *  silence — see `IntentBlock`.
+ */
+export type IntentView = {
+  /** Whether the record was read at all. **Read this, never `lines.length`:** a
+   *  quote whose organization has declared nothing is read successfully and has
+   *  four sentences saying so, and a quote drafted here has no source document
+   *  to read and has none. The server knows which it is and says so; asking
+   *  "are there sentences" would file the first under refusal. */
+  read: boolean;
+  renders: boolean;
+  /** What was recorded, in one sentence — or **"No pricing reason has been
+   *  recorded for this quote."** `""` on a refusal. */
+  headline: string;
+  /** One sentence per concept, **already written server-side**. Four statuses
+   *  are four different sentences and nothing here collapses them: "no field was
+   *  declared for this" is not "the field is empty" is not "the field holds
+   *  something nobody declared a meaning for". Nothing in this file words a
+   *  rule; `CLAUDE.md` §3 puts every sentence a screen renders in the engine. */
+  lines: string[];
+  /** The engine's own vocabulary — `PRICING_REASON_RECORDED`,
+   *  `NO_PRICING_REASON_RECORDED`, and the two beside them. */
+  codes: string[];
+  /** The standing qualification — that this is read from recorded fields, and
+   *  that absence of a recorded reason is not evidence there was no reason — or
+   *  the refusal and its reason. */
+  note: string;
 };
 
 /** A salesperson's line. No cost, margin, opportunity or peer field exists on
@@ -284,6 +334,12 @@ export function DiagnosisCard({
       onDismiss={onDismiss}
       dismissing={dismissing}
     >
+      {/* First, because it qualifies everything under it and the headline over
+          it. A quote recorded as a tender is a different card from the same
+          quote with nothing recorded, and a reader who learns that after the
+          price comparison has already read the comparison as unexplained. */}
+      <IntentBlock intent={diagnosis.intent} />
+
       {/* A label and a value, two rows — the case `ui-standards` §3 keeps a
           `<table>` for. Its row count is fixed by the card, not by the size
           of the business, so a DataGrid here would be a grid for two rows. */}
@@ -344,11 +400,18 @@ export function OwnerDiagnosisCard({
       onDismiss={onDismiss}
       dismissing={dismissing}
     >
-      {/* First, because it is the thing an owner opened this card for. The
-          shell above says the line is above or below its band; this says which
-          half of that the price decision owns and which half the cost level
-          does — the question the engine could not answer until now. The report
-          and the opportunity keep their order underneath. */}
+      {/* Above the split, because it qualifies it. The two blocks under this
+          one explain a movement in numbers; this one says whether anybody
+          recorded a reason for it — and "recorded as a tender" changes how the
+          whole card reads. An owner who learns it afterwards has already read
+          the split as unexplained. Same position on the desk's card, one rule. */}
+      <IntentBlock intent={diagnosis.intent} />
+
+      {/* Then the thing an owner opened this card for. The shell above says the
+          line is above or below its band; this says which half of that the
+          price decision owns and which half the cost level does — the question
+          the engine could not answer until now. The report and the opportunity
+          keep their order underneath. */}
       <AttributionBlock attribution={diagnosis.attribution} />
 
       {/* Under it, because it answers a different question: the split above is
@@ -373,6 +436,94 @@ export function OwnerDiagnosisCard({
         </Typography>
       </Box>
     </DiagnosisShell>
+  );
+}
+
+/** The one sentence in this block the server did not write — and it is about
+ *  this card's own input, not about the business.
+ *
+ *  A refusal arrives with a `note` saying what stopped the reading. When even
+ *  that is empty, or the key is absent because the payload predates it, the
+ *  block still has to say that nothing was read. It names the absence and claims
+ *  nothing else — in particular it does **not** say no reason was recorded,
+ *  which is a statement about the quote rather than about this card's input.
+ *
+ *  Worded to share no phrase with the two blocks it sits above, each of which
+ *  has its own sentence for its own missing input. Three refusals on one card
+ *  all ending "and no reason was given" are three refusals a reader — and a
+ *  test querying by text — cannot tell apart.
+ */
+const NOTHING_READ_FROM_THE_RECORD =
+  "This quote's own record was not read, and nothing on this card says why.";
+
+/**
+ * What the record says about why this quote was priced as it was.
+ *
+ * **On both cards, in the same words.** Every sentence here is a fact about a
+ * field on the source document, so there is nothing to withhold from a
+ * salesperson — and a desk that knows the quote was recorded as a tender argues
+ * the price better than one that does not. The single sentence that is a margin
+ * claim is put into `lines` by the server, on the owner's projection only, from
+ * a field a salesperson's payload has no object to carry.
+ *
+ * **A refusal is content here, not an empty state.** A quote drafted in the
+ * builder has no source document; a book whose administrator has declared
+ * nothing has no field to read. The server says which in `note`, and that
+ * sentence is the output. A block that drew nothing would read as "no reason was
+ * recorded" — which is the one thing an unread record does not mean, and is
+ * `CLAUDE.md` §1's *absence of evidence is not a pass* wearing a layout.
+ *
+ * `info` rather than `warning`: an engine declining to read a record it does not
+ * have is the engine being honest, not a fault.
+ *
+ * **`read` decides the shape, and it is the server's flag rather than a count of
+ * sentences.** A quote whose organization has declared nothing is read
+ * successfully and has four sentences saying exactly that; asking "are there
+ * lines" would file a real reading under refusal. The producer knows — the
+ * `_identity_candidate` lesson, in a browser.
+ *
+ * Nothing here is computed, worded or shortened. The four statuses are four
+ * different sentences on the server and they stay four different sentences here.
+ */
+function IntentBlock({ intent }: { intent?: IntentView }) {
+  const read = intent?.read === true;
+  const lines = intent?.lines ?? [];
+  const note = intent?.note ?? "";
+
+  return (
+    <Box>
+      <FieldLabel
+        tip={"Read from the fields this quote's own system holds, through this "
+             + "organization's declaration of what they mean. Nothing here is "
+             + "inferred from free text, and an unrecorded reason is not an "
+             + "absent one."}
+      >
+        What the record says about this quote
+      </FieldLabel>
+
+      {read ? (
+        <>
+          {intent?.headline && (
+            <Typography variant="body2" sx={{ mt: 0.5, fontWeight: 600 }}>
+              {intent.headline}
+            </Typography>
+          )}
+          <Stack spacing={0.5} sx={{ mt: 1 }}>
+            {lines.map((line, i) => (
+              <Typography key={i} variant="body2">{line}</Typography>
+            ))}
+          </Stack>
+          {/* The standing qualification, in the same muted register as the
+              card's own. It is the sentence that keeps every line above it from
+              being read as a verdict, so it is never dropped. */}
+          {note && <Meta sx={{ mt: 1.5 }}>{note}</Meta>}
+        </>
+      ) : (
+        <Alert severity="info" sx={{ mt: 0.5 }}>
+          {note || NOTHING_READ_FROM_THE_RECORD}
+        </Alert>
+      )}
+    </Box>
   );
 }
 

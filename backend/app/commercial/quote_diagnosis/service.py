@@ -8,7 +8,8 @@ Three jobs, in order:
 
 **Gather.** Load what the engine needs — this customer's and the market's
 transactions, the item's purchases, the product's unit and family, the segment
-roster, this customer's settled invoices, the supplier's payment term, and the
+roster, this customer's settled invoices, the supplier's payment term, the
+quote's own source record with the declarations in force over it, and the
 connection's migration cut-over — and shape them into ``EvidenceRow`` and
 ``CostObservation``.
 
@@ -33,7 +34,8 @@ from ...domain import models
 from ..config import CommercialThresholds
 from ..insight import payments, settlements, terms
 from ..quantity import band_for, bands
-from . import baselines, comparables, evidence, opportunity, rules
+from .. import source_concepts
+from . import baselines, comparables, evidence, intent, opportunity, rules
 
 _ZERO = Decimal("0")
 
@@ -119,6 +121,7 @@ def diagnose_line(session: Session, org: str, *, quote_id: str, line_id: str,
         backfill_cutover_unknown=(backfill_before is None))
 
     supplier = _supplier_credit(session, org, cost=cost, costs=kept_costs)
+    record = _source_record(session, org, quote_id=quote_id)
 
     owner = rules.diagnose(
         line_id=line_id, subject_customer_id=customer_id, product_id=product_id,
@@ -138,7 +141,18 @@ def diagnose_line(session: Session, org: str, *, quote_id: str, line_id: str,
         settlements=_settlements(session, org, customer_id),
         supplier_term=supplier.term,
         supplier_term_recorded_at=supplier.term_recorded_at,
-        supplier_erp_days=supplier.erp_days)
+        supplier_erp_days=supplier.erp_days,
+        # The quote's own record and the declarations in force over it, as a
+        # pair from one row so the system named on the first and the system the
+        # second was loaded for cannot disagree. ``knowable_by`` and not
+        # ``as_of``: a declaration is evidence like any other and one typed after
+        # the quote was written is not a reading the quoter had, which is the
+        # instant ``source_concepts.in_force`` asks for by name and refuses to
+        # default.
+        source_record=record,
+        taxonomy=(source_concepts.in_force(
+            session, org, connector=record.connector, entity=intent.ENTITY,
+            at=knowable_by) if record.connector else None))
     opp = opportunity.compute(owner, th=th)
 
     # The cited set, not everything loaded: what the band was actually built
@@ -148,6 +162,52 @@ def diagnose_line(session: Session, org: str, *, quote_id: str, line_id: str,
     return DiagnosisResult(owner=owner, opportunity=opp,
                            evidence_hash=evidence_hash(price_ids, cost_ids),
                            evidence_ids=price_ids, cost_ids=cost_ids)
+
+
+# ── the quote's own record ───────────────────────────────────────────────────
+
+def _source_record(session: Session, org: str, *,
+                   quote_id: str) -> intent.SourceRecord:
+    """The document the source system holds for this quote, if there is one.
+
+    ``quote_id`` is an ``erp_quotes.external_ref`` on the path that diagnoses an
+    issued quote, and the Quote Builder's own draft id on the path that diagnoses
+    one being written. The second finds nothing, and that is the honest answer
+    rather than a gap: a draft exists here and in no ERP, so it carries no source
+    fields, and ``intent`` refuses with ``NO_SOURCE_RECORD`` and says so. It is
+    deliberately not looked for anywhere else — this platform's own quote form is
+    ``quote_field_definitions``, a different table about keys PIE mints, and
+    reading one where the other is meant is the responsibility duplication
+    CLAUDE.md §2 names.
+
+    **Sorted in Python rather than in SQL.** ``external_ref`` is unique per
+    (organization, connector, connection, ref) so two connections could in
+    principle hold the same reference, and both keys are nullable — SQLite orders
+    NULLs first and Postgres last, so an ``ORDER BY`` here would make the same
+    book read differently on two engines. The platform already treats the
+    reference as this organization's key for a quote (``insight/quote_book``
+    builds its whole index on it), so this follows that rather than inventing a
+    second answer; the sort only fixes which row wins if that assumption is ever
+    wrong.
+
+    One read per line, like the settlement load above — and unlike that one it is
+    the *same* row every time, because every line of a request shares a quote.
+    Kept here anyway: hoisting it would mean the router deciding which record the
+    engine reads its concepts from, which is the shape §3 keeps out of routers,
+    and ``replay.rediagnose`` calls this function directly and would need its own
+    copy of the load. It is one indexed lookup on a column that already carries
+    an index, against a per-line evidence query over a whole family's sales
+    history.
+    """
+    rows = session.scalars(
+        select(models.QuoteDoc).where(
+            models.QuoteDoc.organization_id == org,
+            models.QuoteDoc.external_ref == quote_id)).all()
+    if not rows:
+        return intent.NO_RECORD
+    row = sorted(rows, key=lambda r: (r.connector or "", r.connection_id or ""))[0]
+    return intent.SourceRecord(found=True, connector=row.connector,
+                               attributes=row.source_attributes)
 
 
 # ── the working-capital reading's own evidence ───────────────────────────────

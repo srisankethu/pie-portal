@@ -29,6 +29,7 @@ from typing import Optional
 from ..config import CommercialThresholds
 from .drivers import (Attribution, COST_LEVEL_EFFECT, Driver,
                       PRICE_POSITION_EFFECT)
+from .intent import PricingIntent, Reading
 from .opportunity import Opportunity
 from .working_capital import ASSESSED, WorkingCapital
 from .rules import (ABOVE_HISTORICAL_RANGE, BELOW_HISTORICAL_RANGE,
@@ -112,6 +113,11 @@ class OperationsCard:
     evidence_detail: str
     why: str
     note: str
+    #: What this quote's own record says about why it was priced as it was.
+    #: Required and never defaulted, for the reason ``OperationsDiagnosis.intent``
+    #: is: a card that inherited a silence would be telling a salesperson nothing
+    #: was recorded when nothing was read.
+    intent: "IntentView"
     qualification: str = QUALIFICATION
     actions: tuple[str, ...] = (REVIEW_PRICE, DISMISS)
 
@@ -283,6 +289,72 @@ class WorkingCapitalView:
     note: str
 
 
+# ── what the record says, in words ───────────────────────────────────────────
+#
+# **Not restricted, with one exception that is not declared here.** Every
+# sentence this block prints is a fact about a field on a document — what was
+# written down, or that nothing was — so it reaches both roles under one
+# wording. The owner's card carries one more sentence, the potential-leakage
+# one, and it is not a field on any type this module declares: it arrives on
+# ``intent.PricingIntent``, which only the owner's path has. See
+# ``render_intent``.
+
+#: An unread reading for a row read back from the store. The same
+#: ``NOT_ON_STORED_RECORD`` the attribution and the working-capital reading use,
+#: because it is the same fact about the same record: ``quote_diagnoses`` has no
+#: column for any of the three, so a stored row cannot answer and must say so
+#: rather than answering with silence. Why there is no column is argued at
+#: ``rules.ENGINE_VERSION`` — a taxonomy can move retroactively under a stored
+#: diagnosis, so a stored reading would be a claim about a mapping that has since
+#: been corrected.
+INTENT_NOT_STORED = Reading(
+    read=False, reason=NOT_ON_STORED_RECORD, reasons=(), codes=(), headline="",
+    basis=(f"{NOT_ON_STORED_RECORD}: this is the diagnosis as it was stored, "
+           "and what the record says about why this quote was priced is not one "
+           "of its columns — it is read when the engine runs, against the "
+           "declarations in force at the moment the quote was written. "
+           "Re-assess this line to see it."))
+
+
+@dataclass(frozen=True)
+class IntentView:
+    """What the record says, as either reader sees it, or the refusal to say.
+
+    Two shapes and no third, which is the shape ``intent.Reading`` itself has.
+    Either ``lines`` holds a sentence per concept and ``headline`` says what was
+    recorded, or ``lines`` is empty, ``headline`` is blank and ``note`` names
+    what stopped it. There is no state where this renders as an empty panel.
+
+    ``read`` is **carried from the engine, never re-derived** from whether a
+    sentence happens to be present. A predicate rebuilt downstream from published
+    fields is a guess about what the producer meant, which is the lesson
+    CLAUDE.md §1 draws from ``_identity_candidate``.
+    """
+
+    #: Whether the record was read at all — ``intent.Reading.read``.
+    read: bool
+    #: Whether this block draws. The line's own gate, narrowed by whether there
+    #: is anything written here — never widened, for the reason
+    #: ``AttributionView.renders`` is not.
+    renders: bool
+    #: What was recorded in one sentence, or that nothing was. ``""`` on a
+    #: refusal.
+    headline: str
+    #: One sentence per concept, in the engine's own words — and, on an owner's
+    #: card only, the potential-leakage sentence first. Four different statuses
+    #: are four different sentences here and are never collapsed: "no field was
+    #: declared for this" is not "the field is empty" is not "the field holds
+    #: something nobody declared a meaning for".
+    lines: tuple[str, ...]
+    #: The status codes, from ``rules``' one vocabulary.
+    codes: tuple[str, ...]
+    #: The standing qualification — that this is read from recorded fields and
+    #: that an unrecorded reason is not an absent one — or the refusal and its
+    #: reason. Verbatim from the engine, never re-worded: a second spelling of
+    #: "why there is nothing here" would drift from the one the engine states.
+    note: str
+
+
 @dataclass(frozen=True)
 class OwnerReport:
     """The full picture, economics included. RESTRICTED.
@@ -306,6 +378,12 @@ class OwnerReport:
     #: RESTRICTED. What the cash tied up in this line costs, or the refusal to
     #: say — on the report for the same reason the attribution is.
     working_capital: WorkingCapitalView
+    #: What this quote's own record says about why it was priced as it was. The
+    #: one block on this report that is **not** restricted — the desk's card
+    #: carries the same type — except for the potential-leakage sentence the
+    #: owner's copy leads with, which arrives from ``OwnerDiagnosis.intent`` and
+    #: is on no type the desk's renderer can reach.
+    intent: IntentView
 
 
 def render_operations(ops: OperationsDiagnosis, *,
@@ -329,6 +407,10 @@ def render_operations(ops: OperationsDiagnosis, *,
         why=_ops_why(ops, _range_words(ops.historical_low, ops.historical_high,
                                        th)),
         note=_ops_note(ops.context),
+        # A ``Reading`` and never a ``PricingIntent``: this function takes
+        # ``OperationsDiagnosis`` and nothing else, and that type's ``intent`` is
+        # declared as the half with no field a margin claim could sit in.
+        intent=render_intent(ops.intent, surfaces=ops.surfaces),
     )
 
 
@@ -443,7 +525,70 @@ def render_owner(owner: OwnerDiagnosis, opportunity: Opportunity, *,
                                        surfaces=owner.surfaces, th=th),
         working_capital=render_working_capital(owner.working_capital,
                                                surfaces=owner.surfaces, th=th),
+        intent=render_intent(owner.intent, surfaces=owner.surfaces),
     )
+
+
+def render_intent(reading: "Reading | PricingIntent", *,
+                  surfaces: bool) -> IntentView:
+    """What the record says, as either reader sees it. One wording, three callers.
+
+    **Takes either projection**, for the reason ``rules.had_enough_to_compare``
+    does: both carry ``codes``, both describe one record, and the two roles must
+    be told the same facts in the same words. A second renderer for the owner's
+    copy would be a second answer to what the record says, and the copy nobody
+    reads is the one that drifts. The stored-row projection — which has a row and
+    no engine object — refuses through this same function too, from
+    ``INTENT_NOT_STORED``.
+
+    **What the owner's projection adds is one sentence, and it is the only
+    RESTRICTED thing here.** ``PricingIntent.exposure`` says a line below its band
+    has an empty pricing-reason field on it, which is a claim about this line's
+    margin rather than about the record; ``PricingIntent.codes`` is the same fact
+    in the engine's vocabulary. They arrive together on one object because they
+    are one fact — passing them as two arguments would let a caller supply the
+    sentence without the code, and neither is ever re-derived from the other
+    here. It leads the block because it is the finding and the four sentences
+    under it are the support.
+
+    The desk cannot reach that branch: ``render_operations`` takes
+    ``OperationsDiagnosis`` and nothing else, and that type's ``intent`` is
+    declared a ``Reading``. So this is a type error rather than a check that
+    could be forgotten.
+
+    **The refusal is a case this is written around**, as it is for the two blocks
+    above. A quote drafted in the builder has no source document; a book whose
+    administrator has declared nothing has no field to read. Each leaves ``lines``
+    empty, and an empty block that simply did not draw would read as "no reason
+    was recorded" — which is the one thing an unread record does not mean, and is
+    CLAUDE.md §1's *absence of evidence is not a pass* wearing a layout. So the
+    refusal goes into ``note`` in the engine's own words and the block still
+    draws.
+    """
+    restricted = reading if isinstance(reading, PricingIntent) else None
+    said = restricted.reading if restricted is not None else reading
+    lines = tuple(r.sentence for r in said.reasons)
+    if restricted is not None and restricted.exposure:
+        lines = (restricted.exposure,) + lines
+    # One gate, narrowed. ``surfaces`` is ``rules._surfaces``' answer and is
+    # never widened here; the second term only makes it impossible to publish a
+    # block with nothing written in it. Nothing in this reading feeds that gate:
+    # a recorded intent may explain an interruption and must never cause one.
+    return IntentView(
+        # The producer's own flag, not ``reason == READ`` rebuilt from it. A
+        # predicate re-derived downstream from published fields is a guess about
+        # what the producer meant (CLAUDE.md §1), and here the producer knows
+        # something the sentences do not say: a book with nothing declared is a
+        # successful reading with four sentences saying exactly that.
+        read=said.read,
+        renders=bool(surfaces and (said.headline or said.basis)),
+        headline=said.headline, lines=lines,
+        # Each projection's own codes: the reading's four, or those plus the
+        # claim. Read off whichever object arrived rather than rebuilt from the
+        # sentence above, because a predicate re-derived downstream is a guess
+        # about what the producer meant.
+        codes=reading.codes,
+        note=said.basis)
 
 
 def render_attribution(attribution: Attribution, *, surfaces: bool,

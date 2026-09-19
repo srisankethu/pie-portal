@@ -33,15 +33,17 @@ from .comparables import (CustomerAxis, PeerBand, SPECIFIC_TIERS,
                           TIER_SAME_CUSTOMER_SKU_BAND)
 from .evidence import EvidenceSet
 
-if TYPE_CHECKING:  # ``drivers`` and ``working_capital`` both import this
-    # module's code vocabulary, so the dependency can only run one way at module
-    # scope. The annotations are strings under ``from __future__ import
+if TYPE_CHECKING:  # ``drivers``, ``working_capital`` and ``intent`` all import
+    # this module's code vocabulary, so the dependency can only run one way at
+    # module scope. The annotations are strings under ``from __future__ import
     # annotations`` and are never evaluated; ``diagnose`` imports the functions
     # themselves at call time, the same arrangement ``service`` uses for
     # ``render``.
     from ..insight.payments import Settlement
     from ..insight.terms import Term
+    from ..source_concepts import Taxonomy
     from .drivers import Attribution
+    from .intent import PricingIntent, Reading, SourceRecord
     from .working_capital import WorkingCapital
 
 _ZERO = Decimal("0")
@@ -83,6 +85,44 @@ _ZERO = Decimal("0")
 #: today's rows and can legitimately get a different figure from the one an
 #: owner saw — which is exactly why it is not stored and not compared. The bump
 #: belongs to whichever change first persists one.
+#:
+#: **And deliberately not bumped for the recorded-reason reading**, by the same
+#: three facts checked a third time — and this one needed checking rather than
+#: assuming, because the reading's codes look at first like ``context``, and
+#: ``context`` *is* a persisted column. The three facts:
+#:
+#: * ``service.record`` writes ``codes`` and ``context`` and no column for this
+#:   reading. It rides on ``OwnerDiagnosis.intent`` and
+#:   ``OperationsDiagnosis.intent``, which are not written, so nothing about a
+#:   stored row's shape changes and ``render.INTENT_NOT_STORED`` is what a row
+#:   read back says instead of answering with silence.
+#: * ``service.evidence_hash`` covers the cited price and cost ids. A declaration
+#:   is not an evidence row and cannot move it.
+#: * ``replay.rediagnose`` raises on that hash, then reports ``verdict_matches``
+#:   over ``codes`` and ``strength``. It does **not** compare ``context`` — no
+#:   reader of a stored diagnosis does; ``replay.evaluate`` scores ``codes``
+#:   alone — so context would have been the quiet place to put this, which is
+#:   exactly why it is not there either.
+#:
+#: The reason it is not in ``codes`` is sharper than convenience, and it is the
+#: one fact about A4.2 that changes this calculation. **A taxonomy can move
+#: retroactively under a stored diagnosis.** ``source_concepts.declare`` makes a
+#: *first* declaration effective from the beginning of time, on purpose, so that
+#: reading the existing book works at all — and on a live book nothing is
+#: declared yet, so the first declaration an organization ever makes is
+#: guaranteed to land after quotes have already been diagnosed. A correction may
+#: also be back-dated past a stored quote, which ``declare`` permits and argues
+#: for. Either way the concept read at replay is a legitimately different concept
+#: from the one an owner saw, with nothing wrong with the engine and no version
+#: to name the difference. In ``codes`` that would come back as
+#: ``verdict_matches: False`` on every row written before an organization
+#: finished its configuration — a failure report for somebody filling in a
+#: settings screen, which is a check people learn to ignore.
+#:
+#: So the reading is computed on every diagnosis, published to both roles, and
+#: stored nowhere. Every column written after this change is byte-identical to
+#: the column written before it. The bump belongs, as before, to whichever
+#: change first persists one.
 ENGINE_VERSION = "qd-1"
 
 
@@ -164,6 +204,59 @@ PRICE_RESISTANCE_OBSERVED = "PRICE_RESISTANCE_OBSERVED"
 #: data gap rather than as a quiet account.
 EVIDENCE_WITHHELD = "EVIDENCE_WITHHELD"
 
+# ── recorded-reason codes ────────────────────────────────────────────────────
+#
+# What this quote's own record says about why it was priced as it was, read
+# through ``commercial/source_concepts`` — a concept, never a source key. They
+# live in this vocabulary rather than in a second one of ``intent``'s own,
+# because a code the desk may see is decided by exactly one allowlist and a
+# second list would be a second answer.
+#
+# **They are not appended to ``codes`` or to ``context``**, and that is a
+# decision rather than an omission: both are persisted columns and a taxonomy
+# can move retroactively under a stored diagnosis. See ``ENGINE_VERSION``. They
+# ride on ``OwnerDiagnosis.intent`` and ``OperationsDiagnosis.intent``, which
+# ``service.record`` writes no column for.
+
+#: At least one concept was read from this quote's own fields. Somebody recorded
+#: why this was priced as it was, and the diagnosis can say what they wrote.
+PRICING_REASON_RECORDED = "PRICING_REASON_RECORDED"
+
+#: This organization has a declared field for a pricing reason and this quote is
+#: blank in it. **Not "there was no reason"** — the record holds whether anybody
+#: wrote one down, which is a different fact. It fires only where a field was
+#: actually declared, because a book with nothing declared has no absence to
+#: observe and reporting one would be this engine's own *absence of evidence is
+#: not a pass*, on every row.
+NO_PRICING_REASON_RECORDED = "NO_PRICING_REASON_RECORDED"
+
+#: Nothing at all has been declared for this system's quotes, so no field on
+#: this quote is read as a pricing reason. A gap in the configuration rather
+#: than in the data, and the ordinary answer on a live book today — which is why
+#: it is its own code and not collapsed into the one above.
+PRICING_REASON_NOT_DECLARED = "PRICING_REASON_NOT_DECLARED"
+
+#: This quote holds a value the organization's declaration does not give a
+#: meaning for. Somebody entered something and nobody finished the declaration,
+#: which is neither "recorded" nor "blank".
+PRICING_REASON_UNRECOGNISED = "PRICING_REASON_UNRECOGNISED"
+
+#: The line sits below the range this customer's own history supports, the band
+#: is believable, and the field this organization records a pricing reason in is
+#: empty. **A possibility and never a finding** — the strongest form permitted,
+#: in the register ``POSSIBLE_EXCEPTIONAL_PRICE`` and ``POSSIBLE_COST_DRIVEN``
+#: already set.
+#:
+#: Deliberately **outside** the allowlist below. It is a claim about the money on
+#: the line rather than about the record, so it is a margin claim, and the desk
+#: gets the reading without it — a salesperson told "no pricing reason has been
+#: recorded" can go and record one, and told "this may be leaking margin" has
+#: been handed a judgement about a number they may not see. ``intent`` declares
+#: the sentence on ``PricingIntent`` alone, so the type stops it as well as the
+#: allowlist does, and the word "margin" in this code is itself caught by
+#: ``tests/cost_sweep.WORDS`` if either guard is ever undone.
+POSSIBLE_MARGIN_LEAKAGE = "POSSIBLE_MARGIN_LEAKAGE"
+
 #: The codes an operations view may carry. An **allowlist**, so a code added
 #: later is silent to the desk until somebody decides otherwise — the opposite
 #: failure direction from a denylist, which leaks anything nobody remembered.
@@ -176,10 +269,19 @@ EVIDENCE_WITHHELD = "EVIDENCE_WITHHELD"
 #: the price cannot find a cost boundary, because there is not one in it.
 #: ``BELOW_PEER_BAND_STRUCTURAL`` is absent for a commercial reason rather than
 #: a disclosure one, and ``KNOWN_COST_CHANGE`` because its boundary *is* a cost.
+#:
+#: The four recorded-reason codes are here because every one of them is a fact
+#: about a field on a document — what was written down, or that nothing was —
+#: and none of them is about the money. ``quote_intent = TENDER`` explains a low
+#: price to a salesperson without revealing anything about cost, and a desk that
+#: knows the quote was a tender argues it better. ``POSSIBLE_MARGIN_LEAKAGE`` is
+#: absent for the opposite reason: it is a claim about this line's margin.
 OPERATIONS_CODES = frozenset({
     WITHIN_HISTORICAL_RANGE, BELOW_HISTORICAL_RANGE, ABOVE_HISTORICAL_RANGE,
     COST_DRIVEN_MARGIN_RISK, INSUFFICIENT_EVIDENCE,
     POSSIBLE_EXCEPTIONAL_PRICE, PRICE_RESISTANCE_OBSERVED, EVIDENCE_WITHHELD,
+    PRICING_REASON_RECORDED, NO_PRICING_REASON_RECORDED,
+    PRICING_REASON_NOT_DECLARED, PRICING_REASON_UNRECOGNISED,
 })
 
 
@@ -290,6 +392,24 @@ class OwnerDiagnosis:
     #: field would finish it. A key that could simply be absent would read as
     #: "nothing to report", which is the failure CLAUDE.md §1 names.
     working_capital: "WorkingCapital"
+    #: RESTRICTED. What this quote's own record says about why it was priced as
+    #: it was — read as a *concept* through ``commercial/source_concepts``, never
+    #: as a source key — plus the one observation the desk may not have: that a
+    #: line below its band has an empty pricing-reason field on it.
+    #:
+    #: Restricted for that last part alone. ``PricingIntent.reading`` is a fact
+    #: about fields on a document and reaches both roles; ``exposure`` is a claim
+    #: about this line's margin and is declared on this object's type and on no
+    #: other, which is why ``operations_view`` hands over the reading rather than
+    #: filtering this.
+    #:
+    #: Always present and never ``None``, for the reason ``attribution`` and
+    #: ``working_capital`` are: ``intent.assess`` returns an object on every path
+    #: and a refusal is one of its two shapes, so a reader is told either what
+    #: was recorded or why nothing could be read. A key that could simply be
+    #: absent would read as "no reason was recorded", which is the one thing it
+    #: does not mean.
+    intent: "PricingIntent"
 
     #: Per unit, positive when the quote is below the bottom of the band. The
     #: gate reads this; the opportunity *range* is computed downstream.
@@ -337,6 +457,19 @@ class OperationsDiagnosis:
     codes: tuple[str, ...]
     context: tuple[str, ...]
     surfaces: bool
+    #: What this quote's own record says about why it was priced as it was.
+    #: An ``intent.Reading`` and never a ``PricingIntent``: every sentence on
+    #: that type is a fact about a field on a document, so there is no margin
+    #: claim here to withhold — the type has no field for one. A salesperson
+    #: told the quote was recorded as a tender has been given the reason a price
+    #: is low without being given a number.
+    #:
+    #: Required and never defaulted, although two fields below it are. A
+    #: projection built by hand — ``routers.quote_diagnosis._project_stored``
+    #: builds one from a stored row that has no column for this — has to state
+    #: its refusal rather than inherit a silence, which is the same reason
+    #: ``Resolution.identity_candidate`` proposes nothing until it says so.
+    intent: "Reading"
     #: Every card carries it: history may contain exceptional pricing that was
     #: never recorded in the ERP, and a reader who is not told that will read a
     #: band as a rule.
@@ -367,6 +500,14 @@ FORBIDDEN_OPERATIONS_FIELDS = frozenset({
     "working_capital", "capital_per_unit", "capital_at_risk",
     "charge_per_unit", "line_charge", "funded_days", "receivable_days",
     "supplier_credit_days", "rate", "cost_of_capital", "financing", "funding",
+    # The recorded-reason reading's margin claim, in every spelling it could
+    # arrive under. The reading itself is on the desk's type and is meant to be:
+    # every sentence in it is a fact about a field on a document, which is why
+    # ``intent`` is deliberately NOT on this list. What may never join it there
+    # is the sentence saying a line with no recorded reason may be leaking
+    # margin — a judgement about the money on the line, and a judgement about
+    # margin beside the price the caller sent is the same shape as MFLOOR.
+    "exposure", "leakage", "margin_leakage", "pricing_intent",
 })
 
 
@@ -380,6 +521,12 @@ def operations_view(owner: OwnerDiagnosis, *,
     structural peer finding or a known cost change simply is not present. Where
     that empties the list the card does not render, which is correct: there is
     nothing the desk can act on.
+
+    The recorded-reason reading crosses whole, because it is not a filtering
+    question: ``PricingIntent.reading`` is the half with no margin claim on it,
+    so what the desk is handed is a *sub-object the engine built*, not the
+    owner's object with a sentence removed. ``exposure`` stays behind because
+    there is no field here to put it in.
     """
     codes = tuple(c for c in owner.codes if c in OPERATIONS_CODES)
     context = tuple(c for c in owner.context if c in OPERATIONS_CODES)
@@ -395,6 +542,7 @@ def operations_view(owner: OwnerDiagnosis, *,
         strength=owner.strength,
         codes=codes,
         context=context,
+        intent=owner.intent.reading,
         # A card the owner sees is not automatically a card the desk sees: the
         # surfacing gate already ran, but a diagnosis whose only operational
         # code is WITHIN_HISTORICAL_RANGE has nothing to say here.
@@ -422,6 +570,8 @@ def diagnose(*, line_id: str, subject_customer_id: Optional[str],
              supplier_term: Optional["Term"] = None,
              supplier_term_recorded_at: Optional[datetime] = None,
              supplier_erp_days: Optional[int] = None,
+             source_record: Optional["SourceRecord"] = None,
+             taxonomy: Optional["Taxonomy"] = None,
              ) -> OwnerDiagnosis:
     """Run every rule over already-computed baselines. Pure and total.
 
@@ -440,6 +590,13 @@ def diagnose(*, line_id: str, subject_customer_id: Optional[str],
     ``settlements`` are **one customer's**, unfiltered. ``working_capital``
     applies the window and the visibility cut itself, and refuses a mixed-party
     list outright; pre-filtering here would put two windows in one product.
+
+    ``source_record`` and ``taxonomy`` are the recorded-reason reading's own
+    evidence and arrive as a pair from one row, for the reason the four above
+    arrive at all: this function holds no ``Session``. Both defaulting to
+    ``None`` means "the caller handed no record", and the reading then refuses
+    with ``NO_SOURCE_RECORD`` — the correct answer for a caller that has none,
+    and not a plausible-looking stand-in.
     """
     codes: list[str] = []
     context: list[str] = []
@@ -565,13 +722,35 @@ def diagnose(*, line_id: str, subject_customer_id: Optional[str],
         supplier_erp_days=supplier_erp_days,
         as_of=as_of, knowable_by=knowable_by, th=th)
 
+    # ── what the record says about why this was priced as it was ────────────
+    #
+    # Computed on every line and, unlike the two above, published on every card
+    # the engine already decided to show — it adds nothing to ``_surfaces`` and
+    # could not: the gate reads the price finding, and a reading of a source
+    # field is not one. An intent signal that fired on its own would be alert
+    # fatigue with a new name.
+    #
+    # It is given ``codes`` and ``grade`` because the one claim it may make —
+    # that a line below its band has an empty pricing-reason field — rests on
+    # the price finding this function has just made and on the grade it
+    # publishes. A second grader here would disagree with the first on the rows
+    # nobody looks at, which is the reason the attribution above is handed one
+    # too.
+    #
+    # Imported at call time rather than at module scope because ``intent`` reads
+    # this module's code vocabulary; the dependency can only run one way.
+    from .intent import NO_RECORD, assess as _assess_intent
+    recorded_reason = _assess_intent(
+        record=source_record if source_record is not None else NO_RECORD,
+        taxonomy=taxonomy, codes=codes, strength=grade)
+
     return OwnerDiagnosis(
         line_id=line_id, customer_id=subject_customer_id, product_id=product_id,
         qty=qty, quantity_band=quantity_band, as_of=as_of,
         knowable_by=knowable_by, quoted_unit_price=quoted_unit_price,
         codes=tuple(codes), context=tuple(sorted(set(context))), strength=grade,
         price=price, peer=peer, cost=cost, attribution=attribution,
-        working_capital=capital,
+        working_capital=capital, intent=recorded_reason,
         deviation_per_unit=deviation, line_deviation_value=line_value,
         evidence=evidence.summary(), tier_counts=axis.tier_counts(),
         surfaces=surfaces, thresholds_version=th.version)

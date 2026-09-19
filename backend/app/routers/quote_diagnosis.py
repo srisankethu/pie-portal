@@ -408,6 +408,12 @@ def _project(owner: rules.OwnerDiagnosis, opportunity, principal: Principal,
             # RESTRICTED, and on this branch only, for the same reason. This is
             # the most direct of the three: the capital is the purchase cost.
             "working_capital": _working_capital(report.working_capital),
+            # **Not** restricted, and the only block published under one key to
+            # both roles. Every sentence in it is a fact about a field on the
+            # source document; the one sentence that is a margin claim reached
+            # this view from ``OwnerDiagnosis.intent.exposure``, which the
+            # salesperson's projection has no object to read it from.
+            "intent": _intent(report.intent),
             "price_band": owner.price.to_dict(),
             "cost_baseline": owner.cost.to_dict(),
             "peer_band": owner.peer.to_dict(),
@@ -442,7 +448,12 @@ def _project_stored(row: models.QuoteDiagnosis, principal: Principal,
             strength=row.strength,
             codes=tuple(c for c in codes if c in rules.OPERATIONS_CODES),
             context=tuple(c for c in context if c in rules.OPERATIONS_CODES),
-            surfaces=row.surfaces)
+            surfaces=row.surfaces,
+            # A stored row has no column for what the record said — see the
+            # decision in ``rules.ENGINE_VERSION`` — so the refusal is stated
+            # rather than a reading being re-run against today's declarations,
+            # which is the one thing a stored diagnosis must not be re-judged by.
+            intent=render.INTENT_NOT_STORED)
         return {**common, "view": "OPERATIONS",
                 "context": list(ops.context),
                 **_card(render.render_operations(ops, th=th)),
@@ -462,6 +473,12 @@ def _project_stored(row: models.QuoteDiagnosis, principal: Principal,
             # absence as "this line ties up no cash", which is never true.
             "working_capital": _working_capital(render.render_working_capital(
                 render.WC_NOT_STORED, surfaces=row.surfaces, th=th)),
+            # And likewise: no column, so the block is published carrying the
+            # refusal. A manager who found no key would read the absence as "no
+            # pricing reason was recorded", which is a statement about the quote
+            # rather than about the row it was read back from.
+            "intent": _intent(render.render_intent(
+                render.INTENT_NOT_STORED, surfaces=row.surfaces)),
             "context": list(context), "price_band": row.price_band,
             "cost_baseline": row.cost_baseline, "peer_band": row.peer_band,
             "opportunity_detail": row.opportunity,
@@ -506,7 +523,12 @@ def _card(card: render.OperationsCard) -> dict[str, Any]:
             "headline": card.headline, "quoted": card.quoted,
             "historical": card.historical, "evidence": card.evidence,
             "evidence_detail": card.evidence_detail, "why": card.why,
-            "note": card.note}
+            "note": card.note,
+            # The desk's half of the recorded-reason reading, under the same key
+            # and the same wording the owner gets. There is nothing to withhold:
+            # ``OperationsDiagnosis.intent`` is an ``intent.Reading``, whose
+            # every sentence is a fact about a field on the source document.
+            "intent": _intent(card.intent)}
 
 
 def _attribution(view: render.AttributionView) -> dict[str, Any]:
@@ -542,6 +564,28 @@ def _working_capital(view: render.WorkingCapitalView) -> dict[str, Any]:
                         for label, value in view.figures],
             "severity": view.severity,
             "strength_word": view.strength_word,
+            "note": view.note}
+
+
+def _intent(view: render.IntentView) -> dict[str, Any]:
+    """What the record says, as JSON. Published to both roles, under one key.
+
+    Not restricted, and this is the one block on the owner branch that is not.
+    The sentences are the engine's own and travel verbatim — the front end may
+    not word a rule (CLAUDE.md §3), and a claim worded one way on the server and
+    another in the browser is two claims, of which the one people read is the one
+    nobody reviewed.
+
+    The owner's ``lines`` may lead with the potential-leakage sentence. That
+    difference was made by ``render_owner``, which had an ``OwnerDiagnosis`` to
+    read it from; nothing here decides it, and the salesperson branch has no
+    object it could have come from.
+    """
+    return {"read": view.read,
+            "renders": view.renders,
+            "headline": view.headline,
+            "lines": list(view.lines),
+            "codes": list(view.codes),
             "note": view.note}
 
 

@@ -280,8 +280,15 @@ class Attribution:
     #: What the effects do not account for. Reported, never hidden and never
     #: forced to zero.
     residual_pp: Optional[Decimal]
-    #: The counterfactual order and what it means, or the refusal and its
-    #: reason.
+    #: ``PRICE_THEN_COST`` where a split is asserted, or the refusal code. The
+    #: machine-readable half of ``basis``, carried as its own field so a reader
+    #: is handed the sentence and a caller the code — rather than a renderer
+    #: recovering one from the other, which is a predicate re-derived downstream
+    #: from a published field (CLAUDE.md §1). ``working_capital.WorkingCapital``
+    #: and ``intent.Reading`` are the same shape and this is the third of it.
+    reason: str
+    #: The counterfactual order and what it means, or the refusal in words. No
+    #: code prefix: the code is ``reason``, one field above.
     basis: str
 
 
@@ -357,15 +364,16 @@ def attribute(*, quoted_unit_price: Optional[Decimal],
     """
     if quoted_unit_price is None or quoted_unit_price <= _ZERO:
         return _refused(
-            f"{NO_QUOTED_PRICE}: this line carries no quoted unit price, so the "
-            "margin it earns is undefined and there is no movement to explain.")
+            NO_QUOTED_PRICE,
+            "This line carries no quoted unit price, so the margin it earns is "
+            "undefined and there is no movement to explain.")
 
     p0 = price.band.median
     if p0 is None or p0 <= _ZERO:
         return _refused(
-            f"{NO_PRICE_BASELINE}: no comparable price history supports a band "
-            "for this line, so there is no reference price to measure a price "
-            "effect against.")
+            NO_PRICE_BASELINE,
+            "No comparable price history supports a band for this line, so "
+            "there is no reference price to measure a price effect against.")
 
     c0 = cost.historical_cost
     c1 = cost.expected_cost
@@ -373,12 +381,13 @@ def attribute(*, quoted_unit_price: Optional[Decimal],
         # Absence of evidence is not a pass (CLAUDE.md §1). No cost means no
         # margin at all — not a zero cost effect, not last-known, not the
         # price's own median standing in.
-        missing = "no purchase was knowable for this item" if not cost.cited \
-            else "the knowable purchases produced no usable cost level"
+        missing = "No purchase was knowable for this item" if not cost.cited \
+            else "The knowable purchases produced no usable cost level"
         return _refused(
-            f"{NO_COST_BASELINE}: {missing}, so the margin this line earns "
-            "cannot be computed and neither half of the movement can be "
-            f"attributed. {cost.observations} usable purchase observation"
+            NO_COST_BASELINE,
+            f"{missing}, so the margin this line earns cannot be "
+            "computed and neither half of the movement can be attributed. "
+            f"{cost.observations} usable purchase observation"
             f"{'' if cost.observations == 1 else 's'} on record.")
 
     unknowable = _first_unknowable(cost_rows, knowable_by=knowable_by,
@@ -396,14 +405,15 @@ def attribute(*, quoted_unit_price: Optional[Decimal],
         # weaker fact is the kind of overclaim this engine refuses in numbers
         # and must not make in words.
         claim = (
-            f"purchase {evidence_id} carries an estimated rather than a "
+            f"Purchase {evidence_id} carries an estimated rather than a "
             "recorded visibility stamp, so it cannot be confirmed as evidence "
             "this quote could have used"
             if reason == COST_VISIBILITY_IMPUTED else
-            f"purchase {evidence_id} was not evidence this quote could have "
+            f"Purchase {evidence_id} was not evidence this quote could have "
             "used")
         return _refused(
-            f"{reason}: {claim} ({total} of {len(cost_rows)} purchase"
+            reason,
+            f"{claim} ({total} of {len(cost_rows)} purchase"
             f"{'' if len(cost_rows) == 1 else 's'} handed in). The cost "
             "baseline rests on it, so no split is asserted.")
 
@@ -424,10 +434,11 @@ def attribute(*, quoted_unit_price: Optional[Decimal],
         # unbelievable. A figure published next to "there was not enough to
         # judge this" is the one a reader would take away.
         return _refused(
-            f"{EVIDENCE_TOO_THIN}: the price band grades {strength} and the "
-            f"cost baseline {cost_grade}; below {MODERATE} on either side there "
-            "is no reference to measure a movement against, whatever the "
-            "movement would have been.")
+            EVIDENCE_TOO_THIN,
+            f"The price band grades {strength} and the cost baseline "
+            f"{cost_grade}; below {MODERATE} on either side there is no "
+            "reference to measure a movement against, whatever the movement "
+            "would have been.")
 
     p1 = quoted_unit_price
 
@@ -455,8 +466,9 @@ def attribute(*, quoted_unit_price: Optional[Decimal],
     residual_money = movement_money - (price_money + cost_money)
     if not ok_pp or residual_money != _ZERO:
         return _refused(
-            f"{DOES_NOT_RECONCILE}: the two effects miss the observed movement "
-            f"by {_pp_text(residual_pp)} and the money split by "
+            DOES_NOT_RECONCILE,
+            "The two effects miss the observed movement by "
+            f"{_pp_text(residual_pp)} and the money split by "
             f"{residual_money}, past the {_pp_text(RECONCILIATION_TOLERANCE_PP)} "
             "that rounding can account for. The split is not asserted.",
             movement_pp=movement_pp, residual_pp=residual_pp)
@@ -492,9 +504,10 @@ def attribute(*, quoted_unit_price: Optional[Decimal],
         drivers=(price_driver, cost_driver),
         reconciles=True,
         residual_pp=residual_pp,
+        reason=PRICE_THEN_COST,
         basis=(
-            f"{PRICE_THEN_COST}: the price effect is measured at the historical "
-            "purchase cost and the cost effect at the price actually quoted. "
+            "The price effect is measured at the historical purchase cost and "
+            "the cost effect at the price actually quoted. "
             f"At the previous purchase cost this line would carry "
             f"{_more_or_less(-cost_pp)}; at that same cost, pricing at the band "
             f"median rather than at the quoted price is worth "
@@ -550,12 +563,19 @@ def _q(value: Decimal) -> Decimal:
     return value.quantize(PP_QUANTUM, rounding=ROUND_HALF_EVEN)
 
 
-def _refused(basis: str, *, movement_pp: Optional[Decimal] = None,
+def _refused(reason: str, basis: str, *,
+             movement_pp: Optional[Decimal] = None,
              residual_pp: Optional[Decimal] = None) -> Attribution:
     """The one shape a refusal takes. ``reconciles`` is false on every one of
-    them, so a caller reading that field alone is never told a split held."""
+    them, so a caller reading that field alone is never told a split held.
+
+    ``reason`` is the code and ``basis`` the sentence, kept apart because they
+    are read by different things: the code by a caller, the sentence by a
+    person. A sentence that carried its own code would make the two one field
+    and leave a renderer to split them back.
+    """
     return Attribution(movement_pp=movement_pp, drivers=(), reconciles=False,
-                       residual_pp=residual_pp, basis=basis)
+                       residual_pp=residual_pp, reason=reason, basis=basis)
 
 
 def _first_unknowable(rows: Sequence[CostObservation], *, knowable_by: datetime,

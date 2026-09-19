@@ -35,6 +35,7 @@ const REASONS = [{ code: "PRICE_IS_CORRECT", label: "The price is right" }];
 function assessed(over: Partial<WorkingCapitalView> = {}): WorkingCapitalView {
   return {
     assessed: true,
+    reason: "ASSESSED",
     interrupts: true,
     renders: true,
     headline: "Funding this line's cash costs ₹49 (₹5 per unit), taking "
@@ -60,21 +61,22 @@ function assessed(over: Partial<WorkingCapitalView> = {}): WorkingCapitalView {
  *  them, which is why it is the case this block is written around. */
 const NO_RATE: WorkingCapitalView = {
   assessed: false,
+  reason: "NO_RATE",
   interrupts: false,
   renders: true,
   headline: "",
   figures: [],
   severity: "",
   strength_word: "",
-  note: "NO_RATE: No annual cost of capital is set, so there is no rate at "
-        + "which to charge the money this line ties up. Set 'Annual cost of "
-        + "capital' in Settings — what a rupee actually costs this business to "
-        + "fund for a year.",
+  note: "No annual cost of capital is set, so there is no rate at which to "
+        + "charge the money this line ties up. Set 'Annual cost of capital' in "
+        + "Settings — what a rupee actually costs this business to fund for a "
+        + "year.",
 };
 
 const ATTRIBUTION: AttributionView = {
-  renders: true, headline: "", drivers: [],
-  note: "NO_COST_BASELINE: no purchase was knowable.",
+  renders: true, reason: "NO_COST_BASELINE", headline: "", drivers: [],
+  note: "No purchase was knowable.",
 };
 
 function ownerView(over: Partial<OwnerDiagnosisView> = {}): OwnerDiagnosisView {

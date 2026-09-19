@@ -359,8 +359,10 @@ def test_contacts_are_mapped_to_the_normalizer_shape():
     # whether the key was missing or the value was. `source_attributes` is
     # present and empty for the same reason, and the emptiness is not a claim:
     # `normalize._source_attributes` turns it into NULL, which says only that
-    # none are held.
-    assert rows == [{"contact_id": "123", "contact_name": "4U Customer",
+    # none are held. `created_time` is present and None on the same terms: this
+    # payload carries no stamp, and the key says so rather than going missing.
+    assert rows == [{"contact_id": "123", "created_time": None,
+                     "contact_name": "4U Customer",
                      "gst_no": None, "status": "active",
                      "source_attributes": {}}]
 
@@ -1456,7 +1458,109 @@ def test_a_drafted_or_voided_vendor_credit_is_not_read_as_money_given_back():
     assert [r["vendor_credit_id"] for r in rows] == ["VC3"]
 
 
-def test_the_stamp_that_says_when_the_book_knew_survives_the_projection():
+#: The stamp every case below plants, in the offset dress Zoho really sends.
+_SOURCE_STAMP = "2025-06-16T18:51:32+0530"
+
+
+def _one_page(key: str, row: dict) -> dict:
+    return {"code": 0, key: [row], "page_context": {"has_more_page": False}}
+
+
+def _source_clock_routes(day: str) -> dict[str, dict]:
+    """``list_* name -> the routes one pull of it needs``.
+
+    ``created_time`` is planted on exactly the payload that pull's projection
+    reads and on no other. Zoho sends it on both the list row and the detail
+    for most of these; planting it on one of the two is what makes each
+    assertion say *which* payload the projection read — the distinction a
+    fixture carrying it everywhere cannot express, and the one this seam had
+    wrong.
+    """
+    stamp = {"created_time": _SOURCE_STAMP}
+    return {
+        # List-row pulls: no detail call is made at all.
+        "list_contacts": {"/contacts": _one_page(
+            "contacts", {"contact_id": "C1", "contact_name": "A", **stamp})},
+        "list_vendors": {"/contacts": _one_page(
+            "contacts", {"contact_id": "V1", "vendor_name": "K", **stamp})},
+        "list_items": {"/items": _one_page(
+            "items", {"item_id": "I9", "name": "Insert", **stamp})},
+        "list_purchase_orders": {"/purchaseorders": _one_page(
+            "purchaseorders", {"purchaseorder_id": "PO1", "date": day, **stamp})},
+        "list_sales_orders": {"/salesorders": _one_page(
+            "salesorders", {"salesorder_id": "SO1", "date": day,
+                            "status": "open", **stamp})},
+        # The quote pull reads its header off the list row even when the
+        # detail call is skipped, so the stamp belongs there and not on the
+        # detail — see ``list_quotes``.
+        "list_quotes": {
+            "/estimates": _one_page("estimates", {
+                "estimate_id": "E1", "date": day, "status": "sent",
+                "customer_id": "C1", **stamp}),
+            "/estimates/E1": {"code": 0, "estimate": {"estimate_id": "E1",
+                                                      "line_items": []}}},
+        # Detail pulls: the projection reads the fetched document, so a stamp
+        # on the list row alone must not satisfy these.
+        "list_invoices": {
+            "/invoices": _one_page("invoices", {"invoice_id": "INV1",
+                                                "date": day, "status": "sent"}),
+            "/invoices/INV1": {"code": 0, "invoice": {
+                "invoice_id": "INV1", "customer_id": "C1", "date": day,
+                "line_items": [], **stamp}}},
+        "list_bills": {
+            "/bills": _one_page("bills", {"bill_id": "B1", "date": day,
+                                          "status": "open"}),
+            "/bills/B1": {"code": 0, "bill": {
+                "bill_id": "B1", "vendor_id": "V1", "date": day,
+                "line_items": [], **stamp}}},
+        "list_credit_notes": {
+            "/creditnotes": _one_page("creditnotes", {"creditnote_id": "CN1",
+                                                      "date": day,
+                                                      "status": "open"}),
+            "/creditnotes/CN1": {"code": 0, "creditnote": {
+                "creditnote_id": "CN1", "customer_id": "C1", "date": day,
+                "invoices_credited": [], **stamp}}},
+        "list_vendor_credits": {
+            "/vendorcredits": _one_page("vendor_credits",
+                                        {"vendor_credit_id": "VC1",
+                                         "date": day, "status": "open"}),
+            "/vendorcredits/VC1": {"code": 0, "vendor_credit": {
+                "vendor_credit_id": "VC1", "vendor_id": "V1", "date": day,
+                "bills_credited": [], **stamp}}},
+        "list_customer_payments": {
+            "/customerpayments": _one_page("customerpayments",
+                                           {"payment_id": "P1", "date": day}),
+            "/customerpayments/P1": {"code": 0, "payment": {
+                "payment_id": "P1", "customer_id": "C1", "date": day,
+                "amount": 100, "invoices": [], **stamp}}},
+        "list_vendor_payments": {
+            "/vendorpayments": _one_page("vendorpayments",
+                                         {"payment_id": "VP1", "date": day}),
+            "/vendorpayments/VP1": {"code": 0, "vendorpayment": {
+                "payment_id": "VP1", "vendor_id": "V1", "date": day,
+                "amount": 100, "bills": [], **stamp}}},
+    }
+
+
+_CARRIES_SOURCE_CLOCK = frozenset(_source_clock_routes("2025-06-16"))
+
+#: The pulls that carry no ``created_time``, each with the reason it is the
+#: source's gap rather than this client's. Written out so a new pull cannot
+#: join them silently: the guard below fails at a pull in neither set.
+_NO_SOURCE_CLOCK = {
+    "list_locations": "Zoho returns no created_time on any /locations row — "
+                      "measured against the live book, and the endpoint offers "
+                      "no created_time sort either. The gap is the API's.",
+    "list_item_locations": "Per-location stock comes out of an item's own "
+                           "`locations` array, which carries no creation stamp "
+                           "of its own — only the item above it does.",
+    "list_users": "A user is not a document and no normalizer builds a "
+                  "SourceRef from one, so there is no record here to date.",
+}
+
+
+@pytest.mark.parametrize("pull", sorted(_CARRIES_SOURCE_CLOCK))
+def test_the_stamp_that_says_when_the_book_knew_survives_the_projection(pull):
     """``created_time`` is the point-in-time engine's only visibility clock.
 
     The failure this pins is silent in the worst way. ``normalize`` reads
@@ -1466,53 +1570,77 @@ def test_the_stamp_that_says_when_the_book_knew_survives_the_projection():
     excluded, never imputed from its own date. That is the correct bargain when
     Zoho genuinely does not say.
 
-    Zoho does say. Every invoice, bill and estimate payload carries
-    ``created_time`` — and none of the three projections copied it, so on real
-    data every ``SalesTxn`` and ``CostRecord`` landed with
-    ``source_recorded_at = None`` and the quote-diagnosis engine had no usable
-    evidence at all. Nothing failed: the sync reported success, the rows were
-    written, the numbers were right, and every line of every quote came back
-    INSUFFICIENT_EVIDENCE.
+    Zoho does say, on every pull below. Three projections carried the stamp —
+    invoices, bills and estimates — and the other nine dropped it, so on real
+    data a synced contact, item, sales order, purchase order, credit note,
+    vendor credit, vendor or payment landed with ``source_recorded_at = None``
+    and could never be evidence. Nothing failed: the sync reported success, the
+    rows were written, the numbers were right.
 
     It survived because the seam was never tested with a real payload shape.
     ``test_sync_persistence`` feeds ``created_time`` straight into a fake source
     and correctly asserts the sync stores it — proving the half of the chain
-    that was never broken.
+    that was never broken. So this runs over *every* pull rather than the three
+    somebody thought of, and ``test_every_pull_either_carries_the_source_clock
+    _or_records_why_not`` is what stops a tenth being added outside it.
     """
     day = _today(5)
-    stamp = "2025-06-16T18:51:32+0530"
+    rows = list(getattr(_src(http=FakeHttp(_source_clock_routes(day)[pull])), pull)())
 
-    inv_listing = {"code": 0, "invoices": [{"invoice_id": "I1", "date": day,
-                                            "status": "sent"}],
-                   "page_context": {"has_more_page": False}}
-    inv_detail = {"code": 0, "invoice": {
-        "invoice_id": "I1", "customer_id": "C1", "date": day,
-        "created_time": stamp,
-        "line_items": [{"line_item_id": 1, "item_id": 9, "quantity": 1,
-                        "rate": 100, "item_total": 100}]}}
-    row = list(_src(http=FakeHttp(
-        {"/invoices/I1": inv_detail, "/invoices": inv_listing})).list_invoices())[0]
-    assert row["created_time"] == stamp
+    assert rows, f"{pull} yielded nothing — a fixture fault, not a projection one"
+    assert rows[0]["created_time"] == _SOURCE_STAMP
 
-    bill_listing = {"code": 0, "bills": [{"bill_id": "B1", "date": day,
-                                          "status": "open"}],
-                    "page_context": {"has_more_page": False}}
-    bill_detail = {"code": 0, "bill": {
-        "bill_id": "B1", "date": day, "created_time": stamp,
-        "line_items": [{"line_item_id": 1, "item_id": 9, "quantity": 1,
-                        "rate": 100, "item_total": 100}]}}
-    row = list(_src(http=FakeHttp(
-        {"/bills/B1": bill_detail, "/bills": bill_listing})).list_bills())[0]
-    assert row["created_time"] == stamp
 
-    est_listing = {"code": 0, "estimates": [{
-        "estimate_id": "E1", "date": day, "status": "sent",
-        "created_time": stamp, "customer_id": "C1"}],
-        "page_context": {"has_more_page": False}}
-    est_detail = {"code": 0, "estimate": {"estimate_id": "E1", "line_items": []}}
-    row = list(_src(http=FakeHttp(
-        {"/estimates/E1": est_detail, "/estimates": est_listing})).list_quotes())[0]
-    assert row["created_time"] == stamp
+def test_every_pull_either_carries_the_source_clock_or_records_why_not():
+    """The vacuity guard, in the shape ``test_normalizer_source_time`` uses.
+
+    A table of twelve pulls proves nothing about the thirteenth. Every
+    ``list_*`` on the source must be in one of the two sets above, so a pull
+    added without a stamp fails here and its author has to say whether the
+    source sends one — which is the question, and the one that went unasked.
+    """
+    pulls = {name for name in dir(ZohoApiSource) if name.startswith("list_")}
+    assert pulls, "found no pulls at all — a screen with nothing in it reports clean"
+    assert pulls == _CARRIES_SOURCE_CLOCK | set(_NO_SOURCE_CLOCK), (
+        "a pull is in neither set: "
+        f"{sorted(pulls ^ (_CARRIES_SOURCE_CLOCK | set(_NO_SOURCE_CLOCK)))}")
+    for name, reason in _NO_SOURCE_CLOCK.items():
+        assert len(reason.strip()) > 40, (
+            f"{name}: say why the source has no stamp, not that it has none")
+
+
+def test_the_by_id_item_fetch_carries_the_stamp_the_listing_does():
+    """The racing path, which is the one nobody exercises.
+
+    ``get_item`` and ``list_items`` share ``_item_payload`` precisely so the
+    two cannot drift, and an item created mid-pull reaches the platform only
+    through the by-id fetch. A product written on that path with no source
+    clock would be indistinguishable from one Zoho never dated.
+    """
+    detail = {"code": 0, "item": {"item_id": "I9", "name": "Insert",
+                                  "created_time": _SOURCE_STAMP}}
+    row = _src(http=FakeHttp({"/items/I9": detail})).get_item("I9")
+
+    assert row is not None
+    assert row["created_time"] == _SOURCE_STAMP
+
+
+def test_a_pull_with_no_stamp_on_it_invents_none():
+    """Absent stays absent — and is never the document's own ``date``.
+
+    The projection's job is to carry what the source sent, so the interesting
+    case is the payload that sent nothing. ``normalize._recorded_at`` turns the
+    missing key into ``None`` and the row is then counted out of evidence,
+    which is the honest answer; a stamp quietly filled from ``date`` would
+    instead let ``is_knowable`` pass a row the quoter could not have seen.
+    """
+    day = _today(5)
+    routes = {"/purchaseorders": _one_page("purchaseorders",
+                                           {"purchaseorder_id": "PO1", "date": day})}
+    row = list(_src(http=FakeHttp(routes)).list_purchase_orders())[0]
+
+    assert row["created_time"] is None
+    assert row["date"] == day
 
 
 def test_a_bill_the_client_projected_normalizes_to_a_usable_cost_row():

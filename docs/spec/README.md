@@ -1,6 +1,6 @@
 # The PIE canonical ingestion spec
 
-`spec_d906bc550e` · 19 entities · 300 field contracts (142 REQUIRED, 20 EXPECTED, 138 OPTIONAL)
+`spec_24e093775f` · 19 entities · 300 field contracts (142 REQUIRED, 20 EXPECTED, 138 OPTIONAL)
 
 > **Generated — do not edit any file in this directory by hand.**
 > `scripts/spec_export.py` writes it from `backend/app/domain/schemas.py`,
@@ -92,7 +92,7 @@ element that is present; it never means the list must be non-empty.
 ## Versioning and compatibility
 
 **The stamp is a content hash, not a semantic version.**
-`spec_d906bc550e` is sha256 over all 19 documents, truncated. It
+`spec_24e093775f` is sha256 over all 19 documents, truncated. It
 moves on *any* change to any of them,
 including a reworded description — deliberately, because a contract whose
 stated meaning can be rewritten under a stable stamp is not a contract. It
@@ -145,7 +145,7 @@ print("spec_" + hashlib.sha256(pre.encode()).hexdigest()[:10])
 EOF
 ```
 
-That prints `spec_d906bc550e`. A hash does not invert, so publishing the
+That prints `spec_24e093775f`. A hash does not invert, so publishing the
 pre-image is what makes the stamp explainable rather than merely
 distinguishable — the same reason this platform publishes the serialised
 form behind its other policy stamps.
@@ -382,9 +382,11 @@ One place the business trades from. Zoho calls these locations; the books
 call them branches, and the invoice payload carries both names for the same
 id.
 
-Not merely a label. Head Office and the Bangalore branch hold **separate GST
-registrations**, which is what makes "which branch earned this" a real
-question rather than a reporting preference.
+Not merely a label. Two branches of one company can hold **separate tax
+registrations**, and where they do the location on a document is the fact
+that decides which registration raised it. That is what makes "which branch
+earned this" a real question rather than a reporting preference — the answer
+is already in the record, not a grouping picked at read time.
 
 | Field | Status | Why absence is a defect |
 |---|---|---|
@@ -749,10 +751,14 @@ A vendor credit's header — money a supplier gave back, at document grain.
 
 The buy-side mirror of ``CreditNoteIn``, and read for a different reason. A
 customer credit note was needed to reconstruct a *past* receivable; a vendor
-credit is read because ``11-procurement.md`` measured ₹4.83 lakh of stock
-returned on one Kennametal document alone and found that it reduces nothing
-the platform computes — not the cost of a line, not a principal's slab base,
-not a supplier's credit-note rate.
+credit is read because material value returned against a supplier reduces
+nothing the platform computes — not the cost of a line, not a principal's
+slab base, not a supplier's credit-note rate. ``11-procurement.md`` measured
+that on a single supplier document, one carrying a return large enough that
+whether it nets off the slab base changes where the slab sits. One document
+was enough to make the case, because the gap is structural rather than a
+matter of size: no vendor credit reaches a computed number under any
+treatment, so a larger one only makes the same hole wider.
 
 **This is store-only, and deliberately so.** Nothing here adjusts
 ``CostRecord`` and nothing here feeds ``economics.line_economics``. Doing
@@ -793,11 +799,12 @@ One vendor credit set against one bill.
 omission.** ``CreditNoteApplicationIn`` has ``applied_on`` because Zoho's
 ``invoices_credited`` states both the invoice's date and the application's.
 ``bills_credited`` states one ``date`` and does not say which it is, and the
-evidence points at the bill: on Kennametal ``01/FY25`` the eight
-applications carry eight distinct dates spread over five months, while the
-document's own system comments record every one of them applied on two days
-in May 2026. Storing that under ``applied_on`` would put money on a timeline
-it never sat on.
+observed evidence points at it being the bill's: on a single supplier credit
+the eight applications carry eight distinct dates spread over five months,
+while the document's own system comments record every one of them applied on
+two days. A date that was genuinely the application's could not disagree with
+the document's own record of when those applications were made. Storing it
+under ``applied_on`` would put money on a timeline it never sat on.
 
 Nothing this table is for needs it. A return reducing a principal's slab
 base is dated by the credit's own header date; a bill-specific price credit

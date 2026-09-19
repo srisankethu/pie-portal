@@ -943,7 +943,12 @@ def test_the_counterfactual_the_split_was_taken_in_is_on_the_card():
     out = _run(_steady(10), quoted="850", costs=_risen())
     report = render.render_owner(out, opportunity.compute(out, th=TH), th=TH)
 
-    assert report.attribution.note.startswith("PRICE_THEN_COST:")
+    # The order is a field and the sentence is a sentence — separately
+    # checkable, which is why the code is not spelled into the prose.
+    assert report.attribution.reason == "PRICE_THEN_COST"
+    assert "PRICE_THEN_COST" not in report.attribution.note
+    assert report.attribution.note.startswith(
+        "The price effect is measured at the historical purchase cost")
     assert "at the price actually quoted" in report.attribution.note
     assert "to within" in report.attribution.note
 
@@ -962,7 +967,10 @@ def test_a_refusal_is_rendered_in_words_and_not_as_an_empty_block():
     assert report.attribution.renders is True
     assert report.attribution.headline == ""
     assert report.attribution.drivers == ()
-    assert report.attribution.note.startswith("NO_COST_BASELINE:")
+    assert report.attribution.reason == "NO_COST_BASELINE"
+    assert "NO_COST_BASELINE" not in report.attribution.note
+    assert report.attribution.note.startswith(
+        "No purchase was knowable for this item")
     assert "0 usable purchase observations on record" in report.attribution.note
 
 
@@ -973,7 +981,9 @@ def test_a_thin_band_refuses_the_split_and_names_both_grades():
     report = render.render_owner(out, opportunity.compute(out, th=TH), th=TH)
 
     assert out.attribution.drivers == ()
-    assert report.attribution.note.startswith("EVIDENCE_TOO_THIN:")
+    assert report.attribution.reason == "EVIDENCE_TOO_THIN"
+    assert "EVIDENCE_TOO_THIN" not in report.attribution.note
+    assert report.attribution.note.startswith("The price band grades")
     assert "MODERATE" in report.attribution.note
 
 
@@ -1103,7 +1113,9 @@ def test_an_unset_rate_names_the_settings_field_that_finishes_it():
     assert view.renders == out.surfaces
     assert render.render_working_capital(
         out.working_capital, surfaces=True, th=TH).renders is True
-    assert view.note.startswith("NO_RATE:")
+    assert view.reason == "NO_RATE"
+    assert "NO_RATE" not in view.note
+    assert view.note.startswith("No annual cost of capital is set")
     assert "'Annual cost of capital' in Settings" in view.note
     # And it does not offer the stock carrying rate as a substitute.
     assert "a receivable occupies no shelf" in view.note
@@ -1230,5 +1242,7 @@ def test_a_stored_row_says_it_has_no_reading_rather_than_showing_none():
     assert view.assessed is False
     assert view.figures == ()
     assert view.renders is True
-    assert view.note.startswith("NOT_ON_STORED_RECORD:")
+    assert view.reason == render.NOT_ON_STORED_RECORD
+    assert render.NOT_ON_STORED_RECORD not in view.note
+    assert view.note.startswith("This is the diagnosis as it was stored")
     assert "Re-assess this line" in view.note

@@ -54,7 +54,7 @@
       }
     }
   },
-  "description": "One place the business trades from. Zoho calls these locations; the books\ncall them branches, and the invoice payload carries both names for the same\nid.\n\nNot merely a label. Head Office and the Bangalore branch hold **separate GST\nregistrations**, which is what makes \"which branch earned this\" a real\nquestion rather than a reporting preference.",
+  "description": "One place the business trades from. Zoho calls these locations; the books\ncall them branches, and the invoice payload carries both names for the same\nid.\n\nNot merely a label. Two branches of one company can hold **separate tax\nregistrations**, and where they do the location on a document is the fact\nthat decides which registration raised it. That is what makes \"which branch\nearned this\" a real question rather than a reporting preference \u2014 the answer\nis already in the record, not a grouping picked at read time.",
   "properties": {
     "external_ref": {
       "minLength": 1,

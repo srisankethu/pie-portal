@@ -54,6 +54,34 @@ _EXCLUDED_CREDIT_NOTE_STATUS = {"draft", "void"}
 #: given back, so as far as this platform is concerned it never happened.
 _EXCLUDED_VENDOR_CREDIT_STATUS = {"draft", "void"}
 
+# ── the source's own clock ──────────────────────────────────────────────────
+#
+# ``created_time`` is when the *book* recorded a record, as against when the
+# commercial fact happened (``date``) and when this platform synced it (the
+# row's own ``created_at``). It is the point-in-time engine's only visibility
+# clock: ``normalize._recorded_at`` reads exactly this key, and a record that
+# reaches it without one is excluded from quote-diagnosis evidence and counted
+# as excluded — never dated from its own ``date``, because a bill dated before
+# a quote but entered three weeks after it is not evidence the quoter had.
+# Dropping it in a projection does not make the engine wrong, it makes it
+# blind, and nothing fails while it happens: the sync reports success, the rows
+# are written, the numbers are right, and every quote line comes back
+# INSUFFICIENT_EVIDENCE. Three projections here carried it and the rest did
+# not, for exactly that reason.
+#
+# So every projection below copies it, under this name, off whichever payload
+# that projection already reads — and where Zoho sends none, nothing is put in
+# its place. One endpoint in this client genuinely has no such field:
+# ``/locations`` returns no ``created_time`` on any row (measured against the
+# live SLS Engineers book, 2026-09-19; the endpoint offers no ``created_time``
+# sort either, unlike every other list this client calls), so
+# ``list_locations`` carries none and a location reaches ``normalize`` with no
+# stamp. That gap is the API's, and it stays visible as one.
+#
+# ``created_time_formatted`` — Zoho's rendering of the same instant under this
+# book's locale — is dropped everywhere, for the reason the custom-field twins
+# below are: the value travels, the rendering does not.
+
 # ── a record's own custom fields, whichever way Zoho spelled them ────────────
 #
 # What an administrator configured on this book, read off one record and handed
@@ -909,6 +937,8 @@ class ZohoApiSource(ZohoTransport):
                                 filter_by="Status.All"):
             yield {
                 "contact_id": str(c.get("contact_id")),
+                # When the book itself recorded it. See "the source's own clock".
+                "created_time": c.get("created_time"),
                 "contact_name": c.get("contact_name") or c.get("company_name") or "",
                 # The identity layer's strongest customer key. Zoho names it
                 # gst_no on the India edition; other editions omit it entirely,
@@ -990,6 +1020,8 @@ class ZohoApiSource(ZohoTransport):
                   if key not in _ITEM_FIELDS_NOT_COPIED}
         return {
                 "item_id": str(i.get("item_id")),
+                # When the book itself recorded it. See "the source's own clock".
+                "created_time": i.get("created_time"),
                 "name": i.get("name") or "",
                 # The identity layer's item key. Often blank in Zoho — an item
                 # with no SKU simply gets no suggestion, which is the honest
@@ -1124,6 +1156,12 @@ class ZohoApiSource(ZohoTransport):
         Small, unpaginated in practice, and read once per sync. On this book it
         returns three: a head office, a branch in another state with its own
         GSTIN, and an inactive godown nested under the head office.
+
+        **No ``created_time``, and that is the endpoint rather than this
+        projection.** ``/locations`` sends none on any row — the one list in
+        this client that does not — so a location reaches ``normalize`` with no
+        source clock and nothing is substituted for it. See "the source's own
+        clock" above before adding one.
         """
         for loc in self._paginate("locations", "locations"):
             yield {
@@ -1339,12 +1377,7 @@ class ZohoApiSource(ZohoTransport):
                                    _EXCLUDED_INVOICE_STATUS, skip=skip):
             yield {
                 "invoice_id": str(inv.get("invoice_id")),
-                # When the book itself recorded this document, as
-                # against when the commercial fact happened. The
-                # point-in-time engine's only visibility clock: a row
-                # without it is excluded from evidence rather than
-                # dated from its own `date`, so dropping it here does
-                # not make the engine wrong, it makes it blind.
+                # When the book itself recorded it. See "the source's own clock".
                 "created_time": inv.get("created_time"),
                 "customer_id": str(inv.get("customer_id")),
                 # The customer's name as the document states it. Diagnostics
@@ -1465,6 +1498,8 @@ class ZohoApiSource(ZohoTransport):
                                     skip=skip):
             yield {
                 "creditnote_id": str(note.get("creditnote_id")),
+                # When the book itself recorded it. See "the source's own clock".
+                "created_time": note.get("created_time"),
                 "creditnote_number": note.get("creditnote_number"),
                 "customer_id": (str(note["customer_id"])
                                 if note.get("customer_id") else None),
@@ -1497,12 +1532,7 @@ class ZohoApiSource(ZohoTransport):
                                     _EXCLUDED_BILL_STATUS, skip=skip):
             yield {
                 "bill_id": str(bill.get("bill_id")),
-                # When the book itself recorded this document, as
-                # against when the commercial fact happened. The
-                # point-in-time engine's only visibility clock: a row
-                # without it is excluded from evidence rather than
-                # dated from its own `date`, so dropping it here does
-                # not make the engine wrong, it makes it blind.
+                # When the book itself recorded it. See "the source's own clock".
                 "created_time": bill.get("created_time"),
                 "date": bill.get("date"),
                 "last_modified_time": bill.get("last_modified_time"),
@@ -1582,6 +1612,8 @@ class ZohoApiSource(ZohoTransport):
                                   _EXCLUDED_VENDOR_CREDIT_STATUS, skip=skip):
             yield {
                 "vendor_credit_id": str(vc.get("vendor_credit_id")),
+                # When the book itself recorded it. See "the source's own clock".
+                "created_time": vc.get("created_time"),
                 "vendor_credit_number": vc.get("vendor_credit_number"),
                 "vendor_id": (str(vc["vendor_id"]) if vc.get("vendor_id") else None),
                 "date": vc.get("date"),
@@ -1618,6 +1650,8 @@ class ZohoApiSource(ZohoTransport):
                                 filter_by="Status.All"):
             yield {
                 "contact_id": str(v.get("contact_id")),
+                # When the book itself recorded it. See "the source's own clock".
+                "created_time": v.get("created_time"),
                 "contact_name": (v.get("vendor_name") or v.get("contact_name")
                                  or v.get("company_name") or ""),
                 "gst_no": v.get("gst_no") or v.get("gst_treatment_gstin"),
@@ -1660,6 +1694,8 @@ class ZohoApiSource(ZohoTransport):
             self.documents_fetched += 1
             yield {
                 "payment_id": payment_id,
+                # When the book itself recorded it. See "the source's own clock".
+                "created_time": detail.get("created_time"),
                 "customer_id": str(detail.get("customer_id") or ""),
                 "date": detail.get("date"),
                 "last_modified_time": (detail.get("last_modified_time")
@@ -1705,6 +1741,8 @@ class ZohoApiSource(ZohoTransport):
                 continue
             yield {
                 "purchaseorder_id": str(po.get("purchaseorder_id")),
+                # When the book itself recorded it. See "the source's own clock".
+                "created_time": po.get("created_time"),
                 "purchaseorder_number": po.get("purchaseorder_number"),
                 "vendor_id": (str(po["vendor_id"]) if po.get("vendor_id") else None),
                 "date": po.get("date"),
@@ -1753,6 +1791,8 @@ class ZohoApiSource(ZohoTransport):
                 continue
             yield {
                 "salesorder_id": str(so.get("salesorder_id")),
+                # When the book itself recorded it. See "the source's own clock".
+                "created_time": so.get("created_time"),
                 "salesorder_number": so.get("salesorder_number"),
                 "customer_id": (str(so["customer_id"]) if so.get("customer_id") else None),
                 "date": so.get("date"),
@@ -1834,12 +1874,7 @@ class ZohoApiSource(ZohoTransport):
                     self.documents_fetched += 1
             yield {
                 "estimate_id": estimate_id,
-                # When the book itself recorded this document, as
-                # against when the commercial fact happened. The
-                # point-in-time engine's only visibility clock: a row
-                # without it is excluded from evidence rather than
-                # dated from its own `date`, so dropping it here does
-                # not make the engine wrong, it makes it blind.
+                # When the book itself recorded it. See "the source's own clock".
                 "created_time": est.get("created_time"),
                 "last_modified_time": est.get("last_modified_time"),
                 # Only the detail call carries these. Absent on a resumed row,
@@ -1935,6 +1970,8 @@ class ZohoApiSource(ZohoTransport):
             source = detail or p
             yield {
                 "payment_id": payment_id,
+                # When the book itself recorded it. See "the source's own clock".
+                "created_time": source.get("created_time"),
                 "vendor_id": (str(source["vendor_id"]) if source.get("vendor_id")
                               else None),
                 "date": source.get("date"),

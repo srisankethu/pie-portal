@@ -168,11 +168,23 @@ names each skipped row. Nothing estimates around a gap.
   invented anywhere** — which zone a book states is an owner's answer, and a
   fixed one for NetSuite would be a DST bug.
 
-  A second ceiling sits behind that: `normalize` populates `SourceRef.recorded_at`
-  on invoices, bills and quote documents only — three of its seventeen
-  normalizers — although the field exists on every entity and `domain/spec.py`
-  marks it EXPECTED at all nineteen. The connectors carry it on payments already;
-  normalisation is what has not caught up.
+  A second ceiling used to sit behind that, and it is gone: `normalize`
+  populated `SourceRef.recorded_at` on invoices, bills and quote documents only
+  — three of its seventeen normalizers — although the field exists on every
+  entity and `domain/spec.py` marks it EXPECTED at all nineteen. Every
+  normalizer that builds a `SourceRef` now calls `_recorded_at`, so what a
+  connector carries is what reaches the record, and a missing stamp is once
+  again a statement about the source rather than about this layer.
+
+  The Zoho client is the other half of that and was the last to close: it
+  projected `created_time` on invoices, bills and estimates and dropped it from
+  every other pull, so a synced contact, item, sales order, purchase order,
+  credit note, vendor credit, vendor, customer payment or vendor payment
+  carried no source clock at all. All of those carry it now. `/locations` is
+  the one Zoho list that sends none, so a location still reaches `normalize`
+  without one — the API's gap, not the projection's. Zoho is not in the
+  `ingestion/erp/` registry and so declares no `ConnectorSpec`; there is no
+  `records_source_time` for it to state.
 
   The degradation is deliberate and safe at every one of those steps:
   `_recorded_at` returns `None` rather than a guess, and a row with no recorded

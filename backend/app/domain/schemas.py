@@ -60,6 +60,24 @@ class CustomerIn(BaseModel):
     status: CustomerStatus = CustomerStatus.ACTIVE
     first_seen: Optional[date] = None
     assigned_user_id: Optional[str] = None
+    #: The source's own fields on this record, verbatim — the custom fields an
+    #: administrator added to their ERP, under the keys and with the values that
+    #: system wrote. **Carried, never interpreted**: nothing in this platform
+    #: reads a key out of here to decide a number, and a mapping from a source
+    #: key onto a concept this codebase reasons with is a separate, versioned
+    #: exercise. A JSON bag rather than typed columns because one tenant's ERP
+    #: configuration is not a schema every connector has to share, and an absent
+    #: key stays absent: "not set" is not a category.
+    #:
+    #: ``None``, not ``{}``, when nothing was found, and that is the whole of the
+    #: design decision. ``{}`` would assert *the source holds no custom fields on
+    #: this record* — a claim this layer cannot make, because a payload reaches
+    #: it already projected by a connector, and an adapter that never read them
+    #: is indistinguishable here from an ERP that has none. So the empty case
+    #: says only what is true: no source fields are held for this row. A
+    #: non-empty bag is the only positive statement, which is why ``{}`` is not
+    #: a value this field takes.
+    source_attributes: Optional[dict[str, Any]] = None
     source_ref: SourceRef
 
 
@@ -81,6 +99,10 @@ class ProductIn(BaseModel):
     source_item_type: Optional[str] = None
     source_item_category: Optional[str] = None
     active: bool = True
+    #: The source's own fields on this record, verbatim. See
+    #: ``CustomerIn.source_attributes`` for what is carried, and for why the
+    #: empty case is ``None`` rather than ``{}``.
+    source_attributes: Optional[dict[str, Any]] = None
     source_ref: SourceRef
 
 
@@ -150,6 +172,10 @@ class VendorIn(BaseModel):
     #: 0 is "due on receipt" — a real term. Only ``None`` means unknown.
     payment_terms_days: Optional[int] = None
     status: CustomerStatus = CustomerStatus.ACTIVE
+    #: The source's own fields on this record, verbatim. See
+    #: ``CustomerIn.source_attributes`` for what is carried, and for why the
+    #: empty case is ``None`` rather than ``{}``.
+    source_attributes: Optional[dict[str, Any]] = None
     source_ref: SourceRef
 
 
@@ -248,6 +274,10 @@ class SalesOrderIn(BaseModel):
     shipped_status: Optional[str] = None
     total: Optional[Decimal] = None
     salesperson_external_id: Optional[str] = None
+    #: The source's own fields on this record, verbatim. See
+    #: ``CustomerIn.source_attributes`` for what is carried, and for why the
+    #: empty case is ``None`` rather than ``{}``.
+    source_attributes: Optional[dict[str, Any]] = None
     source_ref: SourceRef
 
     @field_validator("total", mode="before")
@@ -370,13 +400,24 @@ class QuoteDocIn(BaseModel):
     #: nobody has opened it — which is why an unparseable stamp is rejected
     #: rather than nulled: the two are read as the same thing downstream.
     client_viewed_at: Optional[datetime] = None
-    #: The business's own taxonomy on the quote — Zoho's ``cf_quote_type``,
-    #: ``cf_pricing_type``, ``cf_procurement_type`` and the branch it was
-    #: raised at — carried verbatim, keys and values as the source wrote them.
+    #: The source's own fields on this record, verbatim — the custom fields an
+    #: administrator added to their ERP, under the keys and with the values that
+    #: system wrote. Carried, never interpreted: nothing in this platform reads
+    #: a key out of here to decide a number, and a mapping from a source key to
+    #: a concept this codebase reasons with is a separate, versioned exercise.
+    #:
     #: A JSON bag rather than typed columns because one tenant's ERP
-    #: configuration is not a schema every connector has to share, and an
-    #: absent key stays absent: "not set" is not a category.
-    attributes: dict[str, Any] = Field(default_factory=dict)
+    #: configuration is not a schema every connector has to share, and an absent
+    #: key stays absent: "not set" is not a category.
+    #:
+    #: ``None``, not ``{}``, when nothing was found, and the difference is the
+    #: whole of the design decision. ``{}`` would assert *the source has no
+    #: custom fields on this record* — a claim this layer cannot make, because a
+    #: payload reaches it already projected by a connector and an adapter that
+    #: never read them is indistinguishable here from an ERP that has none. So
+    #: the empty case says only what is true: no source fields are held for this
+    #: row. A non-empty bag is the only positive statement.
+    source_attributes: Optional[dict[str, Any]] = None
     #: What was on the quote. Empty where the pull did not buy the detail call
     #: or the ERP returned no breakdown — an absence, and read as one: the
     #: reader says the lines are not held rather than that the quote had none.
@@ -409,6 +450,10 @@ class BillIn(BaseModel):
     #: What Zoho says is still owed. ``None`` where the field is absent —
     #: never coerced to 0, which would read as "settled".
     balance: Optional[Decimal] = None
+    #: The source's own fields on this record, verbatim. See
+    #: ``CustomerIn.source_attributes`` for what is carried, and for why the
+    #: empty case is ``None`` rather than ``{}``.
+    source_attributes: Optional[dict[str, Any]] = None
     source_ref: SourceRef
 
     @field_validator("total", "balance", mode="before")
@@ -464,6 +509,10 @@ class InvoiceIn(BaseModel):
     #: stock sold across the counter has no order behind it — and it means the
     #: order-to-invoice lag for this invoice is unknown, never zero.
     sales_orders: list[InvoiceSalesOrderRef] = Field(default_factory=list)
+    #: The source's own fields on this record, verbatim. See
+    #: ``CustomerIn.source_attributes`` for what is carried, and for why the
+    #: empty case is ``None`` rather than ``{}``.
+    source_attributes: Optional[dict[str, Any]] = None
     source_ref: SourceRef
 
     @field_validator("total", "balance", mode="before")
@@ -724,6 +773,10 @@ class PurchaseOrderIn(BaseModel):
     pending_qty: Optional[Decimal] = None
     total: Optional[Decimal] = None
     received_on: Optional[date] = None
+    #: The source's own fields on this record, verbatim. See
+    #: ``CustomerIn.source_attributes`` for what is carried, and for why the
+    #: empty case is ``None`` rather than ``{}``.
+    source_attributes: Optional[dict[str, Any]] = None
     source_ref: SourceRef
 
     @field_validator("ordered_qty", "pending_qty", "total", mode="before")

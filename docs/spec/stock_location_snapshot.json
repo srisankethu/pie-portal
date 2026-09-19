@@ -1,0 +1,134 @@
+{
+  "$defs": {
+    "SourceRef": {
+      "description": "A pointer back to the originating ERP record (provenance).\n\n``system`` is required, and that is the point. It used to default to\n``\"zoho\"``, which meant no normalizer ever had to say where a record came\nfrom \u2014 and every row in the database claimed Zoho whether or not it was\ntrue. A second connector would have had to *remember* to override it, and\nforgetting would have been silent: the evidence a decision cites would name\nthe wrong system, and nothing anywhere would disagree.\n\nProvenance that defaults is not provenance. This is the layer that must not\nknow which ERP exists, so the value comes from the adapter that read the\nrecord.",
+      "properties": {
+        "line_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line Id"
+        },
+        "record_id": {
+          "title": "Record Id",
+          "type": "string"
+        },
+        "record_type": {
+          "title": "Record Type",
+          "type": "string"
+        },
+        "recorded_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recorded At"
+        },
+        "system": {
+          "minLength": 1,
+          "title": "System",
+          "type": "string"
+        }
+      },
+      "required": [
+        "system",
+        "record_type",
+        "record_id"
+      ],
+      "title": "SourceRef",
+      "type": "object",
+      "x-pie-expected": {
+        "recorded_at": "When the source system recorded the document. A row without it is not usable as point-in-time evidence: it is counted, never imputed, and every quote line that needed it answers INSUFFICIENT_EVIDENCE. A connector whose source exposes a creation timestamp and omits this is defective; one whose source has none must say so, because silence here is what the incident behind this module looked like."
+      }
+    }
+  },
+  "description": "What one item held at one location, on one day.\n\n**Deliberately not columns on ``StockSnapshotIn``.** That record is\norganization-grain \u2014 one row per item per day \u2014 and several readers count on\nexactly that. Adding a location column would turn one row into one row per\nlocation and silently multiply every existing total. Two grains, two\nrecords, the same reason ``InvoiceDoc`` sits beside ``SalesTxn``.",
+  "properties": {
+    "as_of": {
+      "format": "date",
+      "title": "As Of",
+      "type": "string"
+    },
+    "asset_value": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Asset Value"
+    },
+    "available": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Available"
+    },
+    "location_external_ref": {
+      "minLength": 1,
+      "title": "Location External Ref",
+      "type": "string"
+    },
+    "on_hand": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "On Hand"
+    },
+    "product_external_id": {
+      "minLength": 1,
+      "title": "Product External Id",
+      "type": "string"
+    },
+    "source_ref": {
+      "$ref": "#/$defs/SourceRef"
+    }
+  },
+  "required": [
+    "product_external_id",
+    "location_external_ref",
+    "as_of",
+    "source_ref"
+  ],
+  "title": "StockLocationSnapshotIn",
+  "type": "object"
+}

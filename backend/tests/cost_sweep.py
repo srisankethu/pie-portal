@@ -43,7 +43,45 @@ ID_KEYS = frozenset({"quote_diagnosis_id"})
 #: The vocabulary of economics. A salesperson's projection is built from a type
 #: that declares none of these, so any of them appearing is a structural failure
 #: rather than a wording problem.
-WORDS = ("cost", "margin", "purchase_price", "opportunity", "peer")
+#:
+#: The second line is driver attribution, added when the engine learned to split
+#: a line's margin movement between its price and its cost level. Those figures
+#: are percentage points rather than rupees, so the numeric half of this sweep
+#: would not have caught one: a margin beside the price the caller sent is the
+#: cost in one step, P x (1 - m), exactly. They are economics words because the
+#: thing they name is a cost, not because they sound like one.
+#: The third line is the working-capital reading, added when the engine learned
+#: what the cash tied up in a line costs. It is on this list for a blunter reason
+#: than the attribution above: ``capital_per_unit`` **is** the purchase cost,
+#: carried rather than derived, so a leak here is not a boundary somebody could
+#: walk — it is the number itself. The charge fields are no safer, because one
+#: organization-wide rate and a day count turn any of them back into the cost
+#: with one division. ``rate`` is deliberately **not** here: it is a substring of
+#: ordinary English ("accurate", "separate") and a check that fires on prose is a
+#: check people learn to scroll past. The key that would carry it is named
+#: instead.
+#: The fourth line is the quote-level roll-up, added when the engine learned to
+#: total a quote and name the lines its total does not show. Every word on it is
+#: a figure the desk's own half structurally cannot carry — ``QuoteCoverage`` has
+#: no money field at all — so any of them appearing means the owner's object
+#: reached the wrong payload. ``loss`` is the one worth naming: a count of
+#: loss-making lines is a margin question with a yes/no answer per line, which is
+#: exactly the shape ``filterCounts.MFLOOR`` had, and a *list* of them is that
+#: same oracle with the answer already worked out. ``value`` is deliberately
+#: **not** here — it is the key every label/value pair on every card is served
+#: under, and a check that fires on the payload's own scaffolding is a check
+#: people learn to scroll past.
+WORDS = ("cost", "margin", "purchase_price", "opportunity", "peer",
+         "attribution", "driver", "effect", "movement_pp", "residual_pp",
+         "capital", "charge", "funding", "funded_days", "receivable_days",
+         "supplier_credit", "cost_of_capital",
+         "loss", "profit", "gross", "revenue")
+
+#: Keys whose value **is** the caller's own input, spelled back. They move when
+#: the caller moves the price, by definition, so a price walk cannot compare
+#: them — and they are named here rather than skipped inside one test, because a
+#: field that quietly joined this list is exactly where a boundary would hide.
+ECHOED = frozenset({"quoted"})
 
 
 def assert_no_cost(payload: Any, *, cost: int | str,
@@ -65,6 +103,38 @@ def assert_no_cost(payload: Any, *, cost: int | str,
         f"the cost {cost} reached a recipient who may not see it, in:\n{body}")
     for word in words:
         assert word not in body.lower(), f"{word!r} reached a salesperson"
+
+
+def answer(payload: Any, *, id_keys: Iterable[str] = ID_KEYS,
+           echoed: Iterable[str] = ECHOED) -> str:
+    """Everything in ``payload`` that the SERVER decided, as one comparable string.
+
+    What a price walk compares. **Not a handful of named fields**: the point of
+    walking the price is to find any answer that moves as it crosses the cost,
+    and a walk that watches only the three fields somebody remembered is this
+    repository's original leak with a loop around it. Every key the server
+    decided is in here, including ones added after this was written.
+
+    Two kinds come out. Server-minted identifiers, for the reason in this
+    module's docstring — and asserted opaque on the way, so nothing can be
+    smuggled into one. And the caller's own inputs echoed back, which move with
+    the price because they *are* the price: a test that includes them proves
+    nothing, and one that drops them silently would let a real boundary hide
+    behind ``quoted``. Naming them here makes that list reviewable.
+    """
+    scrubbed = _without_keys(_without_ids(payload, frozenset(id_keys)),
+                             frozenset(echoed))
+    return json.dumps(scrubbed, sort_keys=True)
+
+
+def _without_keys(value: Any, keys: frozenset[str]) -> Any:
+    """``value`` with ``keys`` removed at every depth, not only the top."""
+    if isinstance(value, dict):
+        return {k: _without_keys(v, keys) for k, v in value.items()
+                if k not in keys}
+    if isinstance(value, list):
+        return [_without_keys(item, keys) for item in value]
+    return value
 
 
 def _without_ids(value: Any, id_keys: frozenset[str]) -> Any:

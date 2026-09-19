@@ -24,6 +24,14 @@ reference and reads the rest from the document. That is not a convenience —
 date a caller can move is a date a caller can walk an item's price history with,
 and the ERP quote page needed documents far older than that bound. A reference
 names one date, fixed by a table no endpoint writes.
+
+**A quote is also answered as a whole**, on the responses that already carried
+its lines rather than from a parallel endpoint: ``coverage`` — what was checked
+and what could not be, to both roles — and ``rollup`` — the totals and the lines
+those totals do not show, on the owner branch and absent from the other. The
+split is the one ``commercial.quote_diagnosis.rollup`` already declares: the
+first is built from a type with no money field on it at all, the second from one
+that is RESTRICTED in its entirety, so nothing here filters anything.
 """
 from __future__ import annotations
 
@@ -40,7 +48,8 @@ from ..clock import aware
 from ..commercial.policy import load_for_org
 from ..commercial.quote_service import _resolve_products, resolve_customer
 from ..commercial.insight import quote_book
-from ..commercial.quote_diagnosis import render, replay, rules, service
+from ..commercial.quote_diagnosis import (considerations, render, replay,
+                                          rollup, rules, service)
 from ..db import get_session
 # The one answer to "which accounts is this principal narrowed to". Imported
 # rather than re-derived: that helper's own docstring is about two disagreeing
@@ -236,6 +245,10 @@ def _diagnose(session: Session, principal: Principal, *, quote_id: str,
                                  {ln.product_id for ln in lines})
 
     out: list[dict[str, Any]] = []
+    # What the roll-up reads, gathered in the same pass that diagnoses. The
+    # live producer: `from_diagnosis` reads the engine's own figures, including
+    # the attribution a stored row has no column for.
+    facts: list[rollup.LineFacts] = []
     for line in lines:
         product = products.get((line.product_id or "").strip())
         result = service.diagnose_line(
@@ -259,13 +272,16 @@ def _diagnose(session: Session, principal: Principal, *, quote_id: str,
         stored = (service.record(session, principal.organization_id,
                                  quote_id=quote_id, result=result)
                   if record else None)
+        facts.append(rollup.from_diagnosis(result.owner))
         out.append(_project(result.owner, result.opportunity, principal, th,
                             diagnosis_id=(stored.quote_diagnosis_id
                                           if stored is not None else None)))
     if record:
         session.commit()
     return {"quote_id": quote_id, "as_of": as_of.isoformat(),
-            "cutover_known": cutover is not None, "lines": out}
+            "cutover_known": cutover is not None,
+            **_quote_level(facts, principal, th, quote_id=quote_id),
+            "lines": out}
 
 
 @router.get("/quote/{quote_id}")
@@ -277,11 +293,19 @@ def for_quote(quote_id: str,
     Reads the stored rows rather than re-running the engine. A card somebody was
     shown last Tuesday is a fact about last Tuesday, and recomputing it on every
     page load would quietly re-judge it against today's thresholds.
+
+    The roll-up over those rows is real arithmetic over stored figures — the
+    price, the quantity and the cost baseline are all columns — and names no
+    dominant factor, because the attribution is not. ``_stored_facts`` says so
+    by passing ``render.NOT_STORED``, and ``render_rollup`` writes the refusal
+    out rather than leaving the line blank.
     """
     rows = service.for_quote(session, principal.organization_id,
                              quote_id=quote_id)
     th = load_for_org(session, principal.organization_id)
     return {"quote_id": quote_id,
+            **_quote_level([_stored_facts(row) for row in rows], principal, th,
+                           quote_id=quote_id),
             "lines": [_project_stored(row, principal, th) for row in rows]}
 
 
@@ -376,9 +400,22 @@ def _project(owner: rules.OwnerDiagnosis, opportunity, principal: Principal,
              th, *, diagnosis_id: Optional[str]) -> dict[str, Any]:
     """One line, as the principal may see it.
 
-    The salesperson branch never touches ``owner``. It builds the operations
-    type and renders from that, so there is no field to forget to remove.
+    **The salesperson branch never reaches into ``owner`` and removes
+    anything.** It passes the owner diagnosis to two functions that *construct*
+    the desk's types from it — ``rules.operations_view``, which declares no
+    cost, margin, opportunity or peer field, and
+    ``considerations.for_operations``, which keeps an allowlist — and renders
+    from what comes back. There is no field on this branch to forget to take
+    out, which is the property that matters; "does not touch the owner object"
+    was the shorter way of saying it and stopped being literally true when the
+    options arrived, because an option is derived from the finding under it and
+    there is nowhere else to derive it from.
     """
+    # Computed once and narrowed for whoever asked, which is the shape
+    # `operations_view` already has: `for_operations` builds the desk's list
+    # from an allowlist rather than removing anything from the owner's, so
+    # there is no field here to forget to take out.
+    proposed = considerations.propose(owner, th=th)
     if principal.is_salesperson:
         ops = rules.operations_view(owner)
         card = render.render_operations(ops, th=th)
@@ -386,6 +423,12 @@ def _project(owner: rules.OwnerDiagnosis, opportunity, principal: Principal,
                 # Allowlist-filtered by `operations_view`, so this is the
                 # desk's context and not the owner's narrowed afterwards.
                 "context": list(ops.context),
+                # The desk's own options, built from `OPERATIONS_CONSIDERATIONS`
+                # — the two that rest on the purchase ledger and on the cash
+                # cycle are not present rather than removed.
+                "considerations": _considerations(render.render_considerations(
+                    considerations.for_operations(proposed),
+                    surfaces=owner.surfaces)),
                 **_card(card), **_shared(card.renders, owner.strength)}
     report = render.render_owner(owner, opportunity, th=th)
     return {"quote_diagnosis_id": diagnosis_id, "view": "OWNER",
@@ -401,6 +444,27 @@ def _project(owner: rules.OwnerDiagnosis, opportunity, principal: Principal,
             "evidence": report.evidence, "codes": list(report.codes),
             "context": list(report.context), "strength": owner.strength,
             **_shared(owner.surfaces, owner.strength),
+            # RESTRICTED, and on this branch only. The desk's projection is
+            # built from a type with no field for it, so there is nothing here
+            # to forget to remove.
+            "attribution": _attribution(report.attribution),
+            # RESTRICTED, and on this branch only, for the same reason. This is
+            # the most direct of the three: the capital is the purchase cost.
+            "working_capital": _working_capital(report.working_capital),
+            # **Not** restricted, and the only block published under one key to
+            # both roles. Every sentence in it is a fact about a field on the
+            # source document; the one sentence that is a margin claim reached
+            # this view from ``OwnerDiagnosis.intent.exposure``, which the
+            # salesperson's projection has no object to read it from.
+            "intent": _intent(report.intent),
+            # Published to both roles under one key, and the two lists are
+            # different objects rather than one filtered: two of these rest on
+            # the purchase ledger and on the cash cycle and are outside
+            # `OPERATIONS_CONSIDERATIONS`, so the desk's payload does not carry
+            # them at all.
+            "considerations": _considerations(
+                render.render_considerations(proposed,
+                                             surfaces=owner.surfaces)),
             "price_band": owner.price.to_dict(),
             "cost_baseline": owner.cost.to_dict(),
             "peer_band": owner.peer.to_dict(),
@@ -435,13 +499,53 @@ def _project_stored(row: models.QuoteDiagnosis, principal: Principal,
             strength=row.strength,
             codes=tuple(c for c in codes if c in rules.OPERATIONS_CODES),
             context=tuple(c for c in context if c in rules.OPERATIONS_CODES),
-            surfaces=row.surfaces)
+            surfaces=row.surfaces,
+            # A stored row has no column for what the record said — see the
+            # decision in ``rules.ENGINE_VERSION`` — so the refusal is stated
+            # rather than a reading being re-run against today's declarations,
+            # which is the one thing a stored diagnosis must not be re-judged by.
+            intent=render.INTENT_NOT_STORED)
         return {**common, "view": "OPERATIONS",
                 "context": list(ops.context),
+                # And likewise: every option rests on something this row has no
+                # column for, so the refusal is published rather than an empty
+                # list, which a reader would take for "there is nothing you
+                # could do about this line".
+                "considerations": _considerations(render.render_considerations(
+                    render.considerations_not_stored(row.quote_line_id,
+                                                     surfaces=row.surfaces),
+                    surfaces=row.surfaces)),
                 **_card(render.render_operations(ops, th=th)),
                 **_shared(row.surfaces, row.strength)}
     return {**common, "view": "OWNER", "codes": list(codes),
             **_shared(row.surfaces, row.strength),
+            # A stored row has no attribution column — see the decision in
+            # ``rules.ENGINE_VERSION``. The block is published anyway, carrying
+            # the refusal that says so: a manager reading a diagnosis back who
+            # simply found no attribution key would read the absence as "the
+            # price and the cost both behaved", which is the one thing it does
+            # not mean.
+            "attribution": _attribution(render.render_attribution(
+                render.NOT_STORED, surfaces=row.surfaces, th=th)),
+            # Likewise: no column, so the block is published carrying the
+            # refusal that says so. A manager who found no key would read the
+            # absence as "this line ties up no cash", which is never true.
+            "working_capital": _working_capital(render.render_working_capital(
+                render.WC_NOT_STORED, surfaces=row.surfaces, th=th)),
+            # And likewise: no column, so the block is published carrying the
+            # refusal. A manager who found no key would read the absence as "no
+            # pricing reason was recorded", which is a statement about the quote
+            # rather than about the row it was read back from.
+            "intent": _intent(render.render_intent(
+                render.INTENT_NOT_STORED, surfaces=row.surfaces)),
+            # The fourth instance of one pattern. Every option rests on the cost
+            # side, on the cash cycle or on the record reading, and none of the
+            # three is a column here — so the block carries the refusal rather
+            # than an empty list a reader would take for "nothing to weigh".
+            "considerations": _considerations(render.render_considerations(
+                render.considerations_not_stored(row.quote_line_id,
+                                                 surfaces=row.surfaces),
+                surfaces=row.surfaces)),
             "context": list(context), "price_band": row.price_band,
             "cost_baseline": row.cost_baseline, "peer_band": row.peer_band,
             "opportunity_detail": row.opportunity,
@@ -452,6 +556,66 @@ def _project_stored(row: models.QuoteDiagnosis, principal: Principal,
             "engine_version": row.engine_version,
             "created_at": (aware(row.created_at).isoformat()
                            if row.created_at else None)}
+
+
+def _quote_level(facts: list[rollup.LineFacts], principal: Principal, th, *,
+                 quote_id: str) -> dict[str, Any]:
+    """What this quote says about itself as a whole, for whoever is asking.
+
+    **One roll-up, two keys, and the split is structural.** ``coverage`` is
+    ``QuoteCoverage`` — a type with no cost, margin or value field on it, not one
+    field withheld — and goes to both roles under one key. ``rollup`` is
+    ``QuoteRollup``, RESTRICTED in its entirety, and is simply **absent** from a
+    salesperson's payload: there is no key here for a future author to forget to
+    remove, which is the shape both of this repository's boundary leaks did not
+    have.
+
+    The coverage published here is the roll-up's own, so the two readers cannot
+    come to be told different counts about one quote — which is why
+    ``QuoteRollup`` holds a ``QuoteCoverage`` rather than restating one. It is
+    published once, beside the roll-up rather than inside it, because the same
+    dict serialised twice into one payload is two copies of one answer.
+
+    **Both endpoints call this**, for the reason ``_diagnose`` exists at all: two
+    places totalling one quote would be two answers to what a quote comes to, on
+    the screen whose whole job is to be trusted about prices.
+    """
+    quote = rollup.roll_up(facts, quote_id=quote_id)
+    out: dict[str, Any] = {
+        "coverage": _coverage(render.render_coverage(quote.coverage))}
+    if not principal.is_salesperson:
+        out["rollup"] = _rollup(render.render_rollup(quote, th=th))
+    return out
+
+
+def _stored_facts(row: models.QuoteDiagnosis) -> rollup.LineFacts:
+    """The second producer: one diagnosis as it was written, not as it is re-run.
+
+    ``rollup.from_diagnosis`` is the live half and cannot be used here — there is
+    no ``OwnerDiagnosis`` to read, only columns. That is exactly why the roll-up
+    takes a record rather than the diagnosis itself: a shape only one of the two
+    callers can build is a shape the other one copies badly.
+
+    **The attribution is ``render.NOT_STORED``**, the same refusal the per-line
+    block on this branch publishes, because it is the same fact about the same
+    row: ``quote_diagnoses`` has no attribution column. A roll-up over stored
+    rows therefore totals money perfectly well and names no dominant factor, and
+    ``render_rollup`` writes that out rather than leaving the line blank.
+
+    Every other field is a column read straight off. ``expected_cost`` is the
+    level the quote should have been priced against — the one figure on
+    ``cost_baseline`` the roll-up wants — and ``None`` stays ``None``: a nought
+    cost would report a 100% margin on the platform's own ignorance.
+    """
+    baseline = row.cost_baseline or {}
+    return rollup.LineFacts(
+        line_id=row.quote_line_id, product_id=row.product_id or "",
+        qty=Decimal(str(row.quantity or 0)),
+        quoted_unit_price=_money(row.quoted_unit_price),
+        unit_cost=_money(baseline.get("expected_cost")),
+        codes=tuple(row.codes or []), strength=row.strength,
+        surfaces=row.surfaces, attribution=render.NOT_STORED,
+        thresholds_version=row.thresholds_version or None)
 
 
 def _shared(surfaces: bool, strength: str) -> dict[str, Any]:
@@ -486,7 +650,140 @@ def _card(card: render.OperationsCard) -> dict[str, Any]:
             "headline": card.headline, "quoted": card.quoted,
             "historical": card.historical, "evidence": card.evidence,
             "evidence_detail": card.evidence_detail, "why": card.why,
-            "note": card.note}
+            "note": card.note,
+            # The desk's half of the recorded-reason reading, under the same key
+            # and the same wording the owner gets. There is nothing to withhold:
+            # ``OperationsDiagnosis.intent`` is an ``intent.Reading``, whose
+            # every sentence is a fact about a field on the source document.
+            "intent": _intent(card.intent)}
+
+
+def _attribution(view: render.AttributionView) -> dict[str, Any]:
+    """The split as JSON. RESTRICTED — reached only from the owner branches.
+
+    Every figure is already a string: the front end may not format money or
+    compute a number (CLAUDE.md §3), and a percentage point rounded in two
+    places is two answers to one question.
+    """
+    return {"renders": view.renders,
+            "headline": view.headline,
+            "drivers": [{"code": d.code, "severity": d.severity,
+                         "strength_word": d.strength_word,
+                         "effect": d.effect, "basis": d.basis}
+                        for d in view.drivers],
+            "note": view.note}
+
+
+def _working_capital(view: render.WorkingCapitalView) -> dict[str, Any]:
+    """What the line's cash costs, as JSON. RESTRICTED — reached only from the
+    owner branches.
+
+    Every figure is already a string, for the reason ``_attribution``'s are: the
+    front end may not format money or compute a number (CLAUDE.md §3). The
+    figures travel as label/value pairs rather than as named numeric keys
+    precisely because there is nothing here for a browser to do but print them.
+    """
+    return {"assessed": view.assessed,
+            "interrupts": view.interrupts,
+            "renders": view.renders,
+            "headline": view.headline,
+            "figures": [{"label": label, "value": value}
+                        for label, value in view.figures],
+            "severity": view.severity,
+            "strength_word": view.strength_word,
+            "note": view.note}
+
+
+def _intent(view: render.IntentView) -> dict[str, Any]:
+    """What the record says, as JSON. Published to both roles, under one key.
+
+    Not restricted, and this is the one block on the owner branch that is not.
+    The sentences are the engine's own and travel verbatim — the front end may
+    not word a rule (CLAUDE.md §3), and a claim worded one way on the server and
+    another in the browser is two claims, of which the one people read is the one
+    nobody reviewed.
+
+    The owner's ``lines`` may lead with the potential-leakage sentence. That
+    difference was made by ``render_owner``, which had an ``OwnerDiagnosis`` to
+    read it from; nothing here decides it, and the salesperson branch has no
+    object it could have come from.
+    """
+    return {"read": view.read,
+            "renders": view.renders,
+            "headline": view.headline,
+            "lines": list(view.lines),
+            "codes": list(view.codes),
+            "note": view.note}
+
+
+def _considerations(view: render.ConsiderationsView) -> dict[str, Any]:
+    """The options on a line, as JSON. Published to both roles, under one key.
+
+    Not restricted as a block. The narrowing happened at the source —
+    ``considerations.for_operations`` builds the desk's list from an allowlist —
+    so this maps whichever list it was given and chooses nothing.
+
+    **No dismissal vocabulary travels here, and that is the point.** A
+    consideration hangs off the line whose diagnosis produced it, ``line_id``
+    says which, and that line's stored diagnosis is what ``POST
+    /{quote_diagnosis_id}/dismiss`` already points at with a reason from
+    ``GET /reasons``. Rejecting the finding rejects the option resting on it,
+    because no option here survives its finding being wrong — and a second
+    dismissal path would split the one labelled dataset this engine has into two
+    nobody can join.
+    """
+    return {"line_id": view.line_id,
+            "renders": view.renders,
+            "items": [{"code": c.code, "label": c.label, "detail": c.detail,
+                       "line_id": c.line_id, "rests_on": list(c.rests_on),
+                       "strength_word": c.strength_word,
+                       # ``None`` travels as ``null``. It is not
+                       # ``NEGLIGIBLE``: "this finding is not a movement" and
+                       # "this movement is small" are different answers.
+                       "severity": c.severity,
+                       "surfaces": c.surfaces}
+                      for c in view.items],
+            "note": view.note}
+
+
+def _coverage(view: render.CoverageView) -> dict[str, Any]:
+    """What was checked on this quote, as JSON. Published to both roles.
+
+    Built from ``QuoteCoverage``, which declares no cost, margin or value field,
+    so there is nothing here to withhold and no branch that could forget to. It
+    is served on every response including the quiet one — an absent coverage key
+    would read as "all clear", which is the failure CLAUDE.md §1 names.
+    """
+    return {"quote_id": view.quote_id,
+            "renders": view.renders,
+            "headline": view.headline,
+            "figures": [{"label": label, "value": value}
+                        for label, value in view.figures]}
+
+
+def _rollup(view: render.RollupView) -> dict[str, Any]:
+    """What the quote comes to, as JSON. RESTRICTED — the owner branch only.
+
+    Every figure is already a string, for the reason ``_attribution``'s and
+    ``_working_capital``'s are: the front end may not format money or compute a
+    number (CLAUDE.md §3).
+
+    ``loss_lines`` is emitted unconditionally, exactly as ``QuoteRollup.to_dict``
+    emits it. An empty list means checked and none found; a missing key would be
+    read as the same thing and means something else entirely.
+    """
+    return {"quote_id": view.quote_id,
+            "renders": view.renders,
+            "headline": view.headline,
+            "total_hides_a_loss": view.total_hides_a_loss,
+            "loss_lines": [{"line_id": ln.line_id,
+                            "product_id": ln.product_id,
+                            "sentence": ln.sentence}
+                           for ln in view.loss_lines],
+            "figures": [{"label": label, "value": value}
+                        for label, value in view.figures],
+            "dominant": view.dominant,
+            "note": view.note}
 
 
 def _money(value: Any) -> Optional[Decimal]:

@@ -290,12 +290,12 @@ def test_the_organizations_own_fields_on_the_quote_travel(maker):
         customer_ref="Acme Engineering", date=date(2026, 5, 1),
         source_status="sent", outcome=QuoteDocOutcome.UNRECORDED.value,
         total=Decimal("1000"),
-        attributes={"cf_quote_type": "Tender", "branch_id": "b1"})
+        source_attributes={"cf_quote_type": "Tender", "branch_id": "b1"})
     s.add(row)
     s.commit()
     s.close()
 
-    assert _build(maker)[0].attributes == {
+    assert _build(maker)[0].source_attributes == {
         "cf_quote_type": "Tender", "branch_id": "b1"}
 
 
@@ -308,7 +308,7 @@ def test_a_quote_nobody_classified_carries_an_empty_set_not_a_bucket(maker):
     s.commit()
     s.close()
 
-    assert _build(maker)[0].attributes == {}
+    assert _build(maker)[0].source_attributes == {}
 
 
 # ── role scope ───────────────────────────────────────────────────────────────

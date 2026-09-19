@@ -551,7 +551,7 @@ def drill(server_url: str, workdir: Path) -> tuple[list[str], dict[str, Any]]:
         # archive is a complete dump of a tenant's database — names, documents,
         # the audit chain — and the first version of this wrote it to a fixed
         # world-readable path under /tmp and left it there after every run.
-        # verify.sh's own step 5 uses mktemp for exactly this reason.
+        # verify.sh's own step 6 uses mktemp for exactly this reason.
         dump_dir = Path(tempfile.mkdtemp(prefix="restore-drill-", dir=workdir))
         os.chmod(dump_dir, 0o700)
         timings = _run_documented_procedure(bin_dir, source, restored,

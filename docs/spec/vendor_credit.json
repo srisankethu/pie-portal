@@ -1,0 +1,141 @@
+{
+  "$defs": {
+    "SourceRef": {
+      "description": "A pointer back to the originating ERP record (provenance).\n\n``system`` is required, and that is the point. It used to default to\n``\"zoho\"``, which meant no normalizer ever had to say where a record came\nfrom \u2014 and every row in the database claimed Zoho whether or not it was\ntrue. A second connector would have had to *remember* to override it, and\nforgetting would have been silent: the evidence a decision cites would name\nthe wrong system, and nothing anywhere would disagree.\n\nProvenance that defaults is not provenance. This is the layer that must not\nknow which ERP exists, so the value comes from the adapter that read the\nrecord.",
+      "properties": {
+        "line_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line Id"
+        },
+        "record_id": {
+          "title": "Record Id",
+          "type": "string"
+        },
+        "record_type": {
+          "title": "Record Type",
+          "type": "string"
+        },
+        "recorded_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recorded At"
+        },
+        "system": {
+          "minLength": 1,
+          "title": "System",
+          "type": "string"
+        }
+      },
+      "required": [
+        "system",
+        "record_type",
+        "record_id"
+      ],
+      "title": "SourceRef",
+      "type": "object",
+      "x-pie-expected": {
+        "recorded_at": "When the source system recorded the document. A row without it is not usable as point-in-time evidence: it is counted, never imputed, and every quote line that needed it answers INSUFFICIENT_EVIDENCE. A connector whose source exposes a creation timestamp and omits this is defective; one whose source has none must say so, because silence here is what the incident behind this module looked like."
+      }
+    }
+  },
+  "description": "A vendor credit's header \u2014 money a supplier gave back, at document grain.\n\nThe buy-side mirror of ``CreditNoteIn``, and read for a different reason. A\ncustomer credit note was needed to reconstruct a *past* receivable; a vendor\ncredit is read because ``11-procurement.md`` measured \u20b94.83 lakh of stock\nreturned on one Kennametal document alone and found that it reduces nothing\nthe platform computes \u2014 not the cost of a line, not a principal's slab base,\nnot a supplier's credit-note rate.\n\n**This is store-only, and deliberately so.** Nothing here adjusts\n``CostRecord`` and nothing here feeds ``economics.line_economics``. Doing\nthat moves every per-line margin in the platform, and it turns on an\naccounting question ``11-procurement.md`` \u00a71 establishes cannot be settled\nfrom inside this repository \u2014 whether a rebate is booked as income, as a\npurchase reduction, or against inventory. Ingesting the evidence is what\nlets that conversation happen against numbers rather than impressions.\n\n``balance`` is what remains unapplied, passed through exactly as Zoho states\nit and never derived as ``total`` minus the applications below: a refund\nagainst the credit (``vendor_credit_refunds``) would make that subtraction\noverstate the credit still available.",
+  "properties": {
+    "balance": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Balance"
+    },
+    "date": {
+      "format": "date",
+      "title": "Date",
+      "type": "string"
+    },
+    "external_ref": {
+      "minLength": 1,
+      "title": "External Ref",
+      "type": "string"
+    },
+    "number": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Number"
+    },
+    "source_ref": {
+      "$ref": "#/$defs/SourceRef"
+    },
+    "status": {
+      "default": "",
+      "title": "Status",
+      "type": "string"
+    },
+    "total": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Total"
+    },
+    "vendor_external_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Vendor External Id"
+    }
+  },
+  "required": [
+    "external_ref",
+    "date",
+    "source_ref"
+  ],
+  "title": "VendorCreditIn",
+  "type": "object"
+}

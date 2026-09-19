@@ -24,6 +24,8 @@ Two honesty notes, in the open rather than in a footnote:
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 import time
 from datetime import date
 from typing import Any, Iterable, Iterator, Optional
@@ -149,8 +151,11 @@ def _balance(row: dict[str, Any]) -> Any:
     if total in (None, "") or paid in (None, ""):
         return None
     try:
-        return float(total) - float(paid)
-    except (TypeError, ValueError):
+        # Decimal, not float: these are rupee amounts that get persisted as a
+        # balance. 217321.48 - 50616.58 comes out 166704.90000000002 in binary
+        # floating point, and base.money exists to keep that off the wire.
+        return Decimal(str(total)) - Decimal(str(paid))
+    except (ArithmeticError, TypeError, ValueError):
         return None
 
 
@@ -169,6 +174,13 @@ def translate_invoice(header: dict[str, Any],
         "balance": _balance(header),
         "last_modified_time": str(
             iso_date(header.get("date_last_modified")) or ""),
+        # When P21 itself recorded the document. This row already reads
+        # ``date_created`` above — but only as a fallback for the document's own
+        # date, which threw the distinct fact away. The two are not the same
+        # clock: the diagnosis engine cuts evidence off at this one, and an
+        # invoice dated before a quote but keyed in after it is not evidence the
+        # quoter had. Verbatim, so whatever precision P21 states survives.
+        "created_time": header.get("date_created") or None,
         "line_items": [
             {
                 "line_item_id": str(first(ln, "line_no", "line_number") or i),
@@ -200,6 +212,7 @@ def translate_bill(header: dict[str, Any],
         "total": first(header, "invoice_amount", "total_amount"),
         "last_modified_time": str(
             iso_date(header.get("date_last_modified")) or ""),
+        "created_time": header.get("date_created") or None,
         "line_items": [
             {
                 "line_item_id": str(first(ln, "line_no", "apinv_line_uid") or i),
@@ -429,4 +442,18 @@ SPEC = register(ConnectorSpec(
                    required=False, reads=("purchase_orders",)),
     ),
     build_source=_build_source,
+    records_source_time=True,
+    source_time_note=(
+        "``date_created`` — P21's own audit column, the pair of the "
+        "``date_last_modified`` this connector already reads, and present on "
+        "the ``invoice_hdr`` and ``apinv_hdr`` views it lists from. Established "
+        "here rather than assumed: ``translate_invoice`` was already reading "
+        "``date_created`` off the header before this field existed, as a "
+        "fallback for the document date — the row plainly carries it. The views "
+        "are read without ``$select``, so the whole row arrives and the column "
+        "needs no request change. Now carried as ``created_time`` in its own "
+        "right, and the document date no longer stands in for it. The direct "
+        "evidence is the sales side; ``apinv_hdr`` rests on the same audit-pair "
+        "convention, and a site whose view omits the column yields ``None`` "
+        "rather than a substitute."),
 ))

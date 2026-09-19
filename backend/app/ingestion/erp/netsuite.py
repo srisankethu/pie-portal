@@ -30,6 +30,8 @@ agreement, and neither invents a number.
 """
 from __future__ import annotations
 
+from decimal import Decimal
+
 import hashlib
 import hmac
 import secrets as _secrets
@@ -202,8 +204,13 @@ def _negate_for_sale(value: Any, is_sale: bool) -> Any:
     if not is_sale or value in (None, ""):
         return value
     try:
-        return -float(value)
-    except (TypeError, ValueError):
+        # Negation through float is exact for realistic money, so this is a
+        # latent violation rather than a live one — but it is the Decimal-only
+        # invariant and the reason base.money normalises the same way, and a
+        # quantity or total that leaves here as a float is one the next hand
+        # has to know not to do arithmetic on.
+        return -Decimal(str(value))
+    except (ArithmeticError, TypeError, ValueError):
         return value
 
 
@@ -228,6 +235,11 @@ def translate_document(header: dict[str, Any], lines: list[dict[str, Any]], *,
         "currency_code": (str(header.get("currency_code")).upper()
                           if header.get("currency_code") else None),
         "last_modified_time": header.get("lastmodified") or "",
+        # Carried verbatim, never reformatted and never defaulted from
+        # ``trandate``: ``normalize._recorded_at`` is the one place that decides
+        # whether a stamp can be placed on the UTC line, and a row it refuses is
+        # excluded from evidence rather than dated from the document.
+        "created_time": header.get("createdtime") or None,
         "line_items": [
             {
                 "line_item_id": str(ln.get("line_id")),
@@ -251,6 +263,7 @@ def translate_payment(row: dict[str, Any]) -> dict[str, Any]:
         # A customer payment's foreigntotal carries the GL's negative sign.
         "amount": _negate_for_sale(row.get("foreigntotal"), True),
         "last_modified_time": row.get("lastmodified") or "",
+        "created_time": row.get("createdtime") or None,
         "invoices": [],
     }
 
@@ -337,7 +350,13 @@ class NetSuiteSource:
         "TO_CHAR(t.duedate, 'YYYY-MM-DD') AS duedate, t.entity, "
         "BUILTIN.DF(t.status) AS status, t.foreigntotal, "
         "t.foreignamountunpaid, c.symbol AS currency_code, "
-        "TO_CHAR(t.lastmodifieddate, 'YYYY-MM-DD\"T\"HH24:MI:SS') AS lastmodified")
+        "TO_CHAR(t.lastmodifieddate, 'YYYY-MM-DD\"T\"HH24:MI:SS') AS lastmodified, "
+        # When NetSuite itself recorded the transaction, as against when the
+        # commercial fact happened. Selected beside ``lastmodifieddate`` because
+        # it is the same kind of column on the same table — and separately,
+        # because the diagnosis engine cuts evidence off at this stamp and the
+        # document's own ``trandate`` must never stand in for it.
+        "TO_CHAR(t.createddate, 'YYYY-MM-DD\"T\"HH24:MI:SS') AS createdtime")
 
     def _documents(self, ns_type: str, kind: str) -> Iterator[dict[str, Any]]:
         """Headers joined to their item lines, for one transaction type."""
@@ -570,7 +589,9 @@ class NetSuiteSource:
             "SELECT t.id, TO_CHAR(t.trandate, 'YYYY-MM-DD') AS trandate, "
             "t.entity, t.foreigntotal, "
             "TO_CHAR(t.lastmodifieddate, 'YYYY-MM-DD\"T\"HH24:MI:SS') "
-            "AS lastmodified "
+            "AS lastmodified, "
+            "TO_CHAR(t.createddate, 'YYYY-MM-DD\"T\"HH24:MI:SS') "
+            "AS createdtime "
             f"FROM transaction t WHERE {where} ORDER BY t.id"))
 
     def list_purchase_orders(self) -> Iterable[dict[str, Any]]:
@@ -684,4 +705,14 @@ SPEC = register(ConnectorSpec(
                    required=False, reads=("purchase_orders",)),
     ),
     build_source=_build_source,
+    records_source_time=True,
+    source_time_note=(
+        "``transaction.createddate`` — a datetime column of the same table this "
+        "connector already reads ``lastmodifieddate`` from, selected alongside "
+        "it and carried as ``created_time``. One caveat a reader should have: "
+        "NetSuite states this column in PST whatever zone the account keeps, "
+        "and the query formats it without an offset, so ``clock.utc_stamp`` "
+        "cannot place it and ``normalize._recorded_at`` drops it. The value is "
+        "exposed by the ERP and carried by this connector; putting it on the "
+        "UTC line needs a zone decision this spec cannot make."),
 ))

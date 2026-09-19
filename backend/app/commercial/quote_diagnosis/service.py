@@ -8,8 +8,10 @@ Three jobs, in order:
 
 **Gather.** Load what the engine needs — this customer's and the market's
 transactions, the item's purchases, the product's unit and family, the segment
-roster, and the connection's migration cut-over — and shape them into
-``EvidenceRow`` and ``CostObservation``.
+roster, this customer's settled invoices, the supplier's payment term, the
+quote's own source record with the declarations in force over it, and the
+connection's migration cut-over — and shape them into ``EvidenceRow`` and
+``CostObservation``.
 
 **Run.** Push them through the same pipeline the tests exercise, in the same
 order, with the same thresholds.
@@ -30,8 +32,10 @@ from sqlalchemy.orm import Session
 
 from ...domain import models
 from ..config import CommercialThresholds
+from ..insight import payments, settlements, terms
 from ..quantity import band_for, bands
-from . import baselines, comparables, evidence, opportunity, rules
+from .. import source_concepts
+from . import baselines, comparables, evidence, intent, opportunity, rules
 
 _ZERO = Decimal("0")
 
@@ -116,12 +120,39 @@ def diagnose_line(session: Session, org: str, *, quote_id: str, line_id: str,
         rows=kept, costs=kept_costs, excluded=excluded + held,
         backfill_cutover_unknown=(backfill_before is None))
 
+    supplier = _supplier_credit(session, org, cost=cost, costs=kept_costs)
+    record = _source_record(session, org, quote_id=quote_id)
+
     owner = rules.diagnose(
         line_id=line_id, subject_customer_id=customer_id, product_id=product_id,
         qty=qty, quantity_band=subject.band.label,
         quoted_unit_price=quoted_unit_price, as_of=as_of,
         knowable_by=knowable_by, axis=axis, peer=peer, price=price, cost=cost,
-        evidence=evset, th=th)
+        evidence=evset, th=th,
+        # The same cut-over the cost rows were filtered against. Threaded rather
+        # than left to default, so the attribution's re-check of visibility asks
+        # the question this load actually asked; a re-check with a different
+        # boundary verifies nothing.
+        backfill_before=backfill_before,
+        # The working-capital reading's own evidence. Handed over whole and
+        # unfiltered: the window and the visibility cut belong to the engine,
+        # which applies this diagnosis's own lookback to them, and a filter here
+        # would be a second window nobody could see.
+        settlements=_settlements(session, org, customer_id),
+        supplier_term=supplier.term,
+        supplier_term_recorded_at=supplier.term_recorded_at,
+        supplier_erp_days=supplier.erp_days,
+        # The quote's own record and the declarations in force over it, as a
+        # pair from one row so the system named on the first and the system the
+        # second was loaded for cannot disagree. ``knowable_by`` and not
+        # ``as_of``: a declaration is evidence like any other and one typed after
+        # the quote was written is not a reading the quoter had, which is the
+        # instant ``source_concepts.in_force`` asks for by name and refuses to
+        # default.
+        source_record=record,
+        taxonomy=(source_concepts.in_force(
+            session, org, connector=record.connector, entity=intent.ENTITY,
+            at=knowable_by) if record.connector else None))
     opp = opportunity.compute(owner, th=th)
 
     # The cited set, not everything loaded: what the band was actually built
@@ -131,6 +162,158 @@ def diagnose_line(session: Session, org: str, *, quote_id: str, line_id: str,
     return DiagnosisResult(owner=owner, opportunity=opp,
                            evidence_hash=evidence_hash(price_ids, cost_ids),
                            evidence_ids=price_ids, cost_ids=cost_ids)
+
+
+# ── the quote's own record ───────────────────────────────────────────────────
+
+def _source_record(session: Session, org: str, *,
+                   quote_id: str) -> intent.SourceRecord:
+    """The document the source system holds for this quote, if there is one.
+
+    ``quote_id`` is an ``erp_quotes.external_ref`` on the path that diagnoses an
+    issued quote, and the Quote Builder's own draft id on the path that diagnoses
+    one being written. The second finds nothing, and that is the honest answer
+    rather than a gap: a draft exists here and in no ERP, so it carries no source
+    fields, and ``intent`` refuses with ``NO_SOURCE_RECORD`` and says so. It is
+    deliberately not looked for anywhere else — this platform's own quote form is
+    ``quote_field_definitions``, a different table about keys PIE mints, and
+    reading one where the other is meant is the responsibility duplication
+    CLAUDE.md §2 names.
+
+    **Sorted in Python rather than in SQL.** ``external_ref`` is unique per
+    (organization, connector, connection, ref) so two connections could in
+    principle hold the same reference, and both keys are nullable — SQLite orders
+    NULLs first and Postgres last, so an ``ORDER BY`` here would make the same
+    book read differently on two engines. The platform already treats the
+    reference as this organization's key for a quote (``insight/quote_book``
+    builds its whole index on it), so this follows that rather than inventing a
+    second answer; the sort only fixes which row wins if that assumption is ever
+    wrong.
+
+    One read per line, like the settlement load above — and unlike that one it is
+    the *same* row every time, because every line of a request shares a quote.
+    Kept here anyway: hoisting it would mean the router deciding which record the
+    engine reads its concepts from, which is the shape §3 keeps out of routers,
+    and ``replay.rediagnose`` calls this function directly and would need its own
+    copy of the load. It is one indexed lookup on a column that already carries
+    an index, against a per-line evidence query over a whole family's sales
+    history.
+    """
+    rows = session.scalars(
+        select(models.QuoteDoc).where(
+            models.QuoteDoc.organization_id == org,
+            models.QuoteDoc.external_ref == quote_id)).all()
+    if not rows:
+        return intent.NO_RECORD
+    row = sorted(rows, key=lambda r: (r.connector or "", r.connection_id or ""))[0]
+    return intent.SourceRecord(found=True, connector=row.connector,
+                               attributes=row.source_attributes)
+
+
+# ── the working-capital reading's own evidence ───────────────────────────────
+
+def _settlements(session: Session, org: str, customer_id: Optional[str],
+                 ) -> Sequence[payments.Settlement]:
+    """This customer's settled invoices, or nothing when there is no customer.
+
+    ``insight/settlements.load`` is the platform's one read of them — the same
+    rows the payments screen and ``insight/financing`` compute over — and it is
+    called rather than copied for the reason CLAUDE.md §2 gives: two loaders for
+    one concept agree until somebody edits one, and the copy nobody reads is the
+    one that drifts.
+
+    **A line with no customer gets an empty sequence, not the book's.** Narrowing
+    to one account is not a convenience here. ``payments.lag`` reads the party
+    from its first row, so a mixed list would measure one account's habit and
+    label it with another's name — ``working_capital.assess`` refuses one
+    outright, and handing it the whole book would be that mistake with a
+    ``ValueError`` at the end of it.
+
+    The reading then refuses with ``NO_RECEIVABLE_DAYS``, which is the honest
+    answer: a quote written against no account has no payment behaviour to read
+    and no terms on record, and its refusal names the terms as what would finish
+    it.
+    """
+    if customer_id is None:
+        return ()
+    # One read per line, like the evidence load above and for the same reason:
+    # a line names its own customer and two lines on one quote need not name the
+    # same one. It is the smallest of this function's per-line reads — one
+    # account's settled invoices against a family's whole sales history — so it
+    # does not change what a long quote costs; hoisting it would mean the router
+    # deciding which rows the engine reasons over, which is the shape §3 keeps
+    # out of routers.
+    return settlements.load(session, org, customer_id)
+
+
+@dataclass(frozen=True)
+class _SupplierCredit:
+    """How long this line's supplier lets us hold the money, from both records.
+
+    Both, never one resolved into the other: ``terms.effective_days`` owns which
+    of them wins and is the only place that decision is made. ``term_recorded_at``
+    travels with the agreement because an agreement typed after the quote is not
+    evidence the quoter had, and ``working_capital`` puts it through the engine's
+    own ``is_knowable`` rather than comparing dates itself.
+    """
+
+    term: Optional[terms.Term]
+    #: When the agreement last acquired the values above. ``updated_at`` rather
+    #: than ``created_at``: ``vendor_payment_terms`` is upserted one row per
+    #: vendor, so the creation stamp would vouch for a term that has since been
+    #: retyped, and there is no earlier version kept to fall back on.
+    term_recorded_at: Optional[datetime]
+    #: ``Vendor.payment_terms_days`` — what Zoho's dropdown could express.
+    erp_days: Optional[int]
+
+
+_NO_SUPPLIER = _SupplierCredit(term=None, term_recorded_at=None, erp_days=None)
+
+
+def _supplier_credit(session: Session, org: str, *, cost: baselines.CostBaseline,
+                     costs: Sequence[evidence.CostObservation],
+                     ) -> _SupplierCredit:
+    """Whose credit this line is bought on, and on what terms.
+
+    **The vendor comes from the purchases the cost baseline actually cited**,
+    not from every purchase loaded and not from the item's whole history. The
+    capital at risk is that baseline's ``expected_cost``, so the credit that
+    funds it has to be the credit behind the same rows — reading a supplier off
+    a purchase the baseline trimmed away would charge this line against a
+    relationship its cost figure does not rest on.
+
+    The **latest** of those rows wins, by the engine's own
+    ``(event_date, evidence_id)`` order. An item bought from two suppliers has no
+    single answer and this one is at least the current one; the alternative,
+    blending two terms, would invent a supplier nobody trades with. Rows naming
+    no vendor are passed over rather than treated as a supplier without terms.
+
+    Nothing is filtered by visibility here. ``costs`` has already been through
+    ``evidence.costs_knowable_at``, and the agreement's own stamp is checked by
+    ``working_capital`` against the engine's one ``is_knowable`` — which is where
+    the exclusion reason is reported from, so a second test here would be a
+    second answer with nowhere to publish it.
+    """
+    cited = set(cost.cited)
+    rows = sorted((c for c in costs
+                   if c.evidence_id in cited and c.vendor_id),
+                  key=lambda c: (c.event_date, c.evidence_id))
+    if not rows:
+        return _NO_SUPPLIER
+    vendor_id = rows[-1].vendor_id
+
+    agreed = session.scalar(
+        select(models.VendorPaymentTerm).where(
+            models.VendorPaymentTerm.organization_id == org,
+            models.VendorPaymentTerm.vendor_id == vendor_id))
+    vendor = session.get(models.Vendor, vendor_id)
+    return _SupplierCredit(
+        term=(terms.Term(days=agreed.days, basis=agreed.basis)
+              if agreed is not None else None),
+        term_recorded_at=agreed.updated_at if agreed is not None else None,
+        erp_days=(vendor.payment_terms_days
+                  if vendor is not None and vendor.organization_id == org
+                  else None))
 
 
 def _family_of(product: Optional[models.Product]) -> Optional[str]:

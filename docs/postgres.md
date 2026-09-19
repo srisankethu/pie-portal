@@ -4,7 +4,7 @@ PostgreSQL is the database this platform deploys on. SQLite remains what a
 fresh clone and the test suite run on by default — zero infrastructure, and
 the honest fidelity caveats below — but **nothing in production assumes
 SQLite**, and the gate proves the Postgres path on every run
-(`scripts/verify.sh`, step 6: the full Alembic chain onto an empty Postgres
+(`scripts/verify.sh`, step 7: the full Alembic chain onto an empty Postgres
 database, then models-vs-schema drift).
 
 One URL decides everything: set `DATABASE_URL` to a
@@ -266,7 +266,7 @@ at rather than inferring it from a row count.
 ## What stays SQLite, and the honest caveat
 
 Dev-by-default and the test suite. The caveat: SQLite stores `Numeric` as
-float and drops timezone info, which is exactly why the gate's step 6 and the
+float and drops timezone info, which is exactly why the gate's step 7 and the
 `PIE_TEST_DATABASE_URL` suite mode exist — the dialect production runs is
 exercised by machinery, not by hoping the dialects agree. Before a deploy
 that touches money arithmetic or timestamp comparisons, run the suite once in

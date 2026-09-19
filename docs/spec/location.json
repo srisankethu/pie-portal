@@ -1,0 +1,125 @@
+{
+  "$defs": {
+    "SourceRef": {
+      "description": "A pointer back to the originating ERP record (provenance).\n\n``system`` is required, and that is the point. It used to default to\n``\"zoho\"``, which meant no normalizer ever had to say where a record came\nfrom \u2014 and every row in the database claimed Zoho whether or not it was\ntrue. A second connector would have had to *remember* to override it, and\nforgetting would have been silent: the evidence a decision cites would name\nthe wrong system, and nothing anywhere would disagree.\n\nProvenance that defaults is not provenance. This is the layer that must not\nknow which ERP exists, so the value comes from the adapter that read the\nrecord.",
+      "properties": {
+        "line_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line Id"
+        },
+        "record_id": {
+          "title": "Record Id",
+          "type": "string"
+        },
+        "record_type": {
+          "title": "Record Type",
+          "type": "string"
+        },
+        "recorded_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recorded At"
+        },
+        "system": {
+          "minLength": 1,
+          "title": "System",
+          "type": "string"
+        }
+      },
+      "required": [
+        "system",
+        "record_type",
+        "record_id"
+      ],
+      "title": "SourceRef",
+      "type": "object",
+      "x-pie-expected": {
+        "recorded_at": "When the source system recorded the document. A row without it is not usable as point-in-time evidence: it is counted, never imputed, and every quote line that needed it answers INSUFFICIENT_EVIDENCE. A connector whose source exposes a creation timestamp and omits this is defective; one whose source has none must say so, because silence here is what the incident behind this module looked like."
+      }
+    }
+  },
+  "description": "One place the business trades from. Zoho calls these locations; the books\ncall them branches, and the invoice payload carries both names for the same\nid.\n\nNot merely a label. Head Office and the Bangalore branch hold **separate GST\nregistrations**, which is what makes \"which branch earned this\" a real\nquestion rather than a reporting preference.",
+  "properties": {
+    "external_ref": {
+      "minLength": 1,
+      "title": "External Ref",
+      "type": "string"
+    },
+    "is_active": {
+      "default": true,
+      "title": "Is Active",
+      "type": "boolean"
+    },
+    "is_primary": {
+      "default": false,
+      "title": "Is Primary",
+      "type": "boolean"
+    },
+    "kind": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Kind"
+    },
+    "name": {
+      "title": "Name",
+      "type": "string"
+    },
+    "parent_external_ref": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Parent External Ref"
+    },
+    "source_ref": {
+      "$ref": "#/$defs/SourceRef"
+    },
+    "tax_reg_no": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Tax Reg No"
+    }
+  },
+  "required": [
+    "external_ref",
+    "name",
+    "source_ref"
+  ],
+  "title": "LocationIn",
+  "type": "object"
+}

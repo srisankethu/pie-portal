@@ -64,6 +64,21 @@ NOT_A_POLICY_STAMP: dict[str, str] = {
         "0.8 mm corner radius is a reading of the world; whether 0.8 is close "
         "enough to 0.4 is policy, it lives in the equivalence bands, and it is "
         "applied at read time by a layer that has not been built yet.",
+    "sync_runs.spec_version":
+        "which version of the canonical ingestion spec an ingestion run wrote "
+        "its rows under — the shape of the ingestion contract, content-hashed. "
+        "The same class as products.pie_catalog_version and "
+        "quote_decisions.engine_version above: it says what was read and by "
+        "which agreement, not which policy judged a number. No margin floor, "
+        "target or band goes into a JSON Schema. It is also the case where the "
+        "registry would buy least even if it did apply: a threshold pre-image "
+        "is unrecoverable once minted, which is the whole reason that table "
+        "exists, while this one is spec.canonical_json() — public, "
+        "deterministic and regenerable from any checkout — so the stamp is "
+        "dereferenceable from the code rather than only from a row somebody "
+        "remembered to write. Marking it would also be inert and look like it "
+        "worked: threshold_registry._PREFIXES does not know spec_, so kind_of "
+        "returns \"unknown\" and the flush recorder skips it in silence.",
     "threshold_versions.version":
         "the registry's own primary key — the stamp being dereferenced, not a "
         "stamp on a computed row. Marking it would make the recorder try to "

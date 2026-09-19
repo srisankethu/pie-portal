@@ -1077,6 +1077,31 @@ class Customer(Base):
     # ``commercial.incentive.may_pay_third_party`` for why it fails closed and
     # why nothing infers this from the customer's name.
     incentive_eligibility: Mapped[Optional[str]] = mapped_column(String(16))
+    #: The source's own fields on this record, verbatim — the custom fields an
+    #: administrator added to their ERP, under the keys and with the values that
+    #: system wrote. **Carried, never interpreted**: no rule, threshold or
+    #: computed number reads a key out of here, and a mapping from a source key
+    #: onto a concept this platform reasons with is a separate, versioned
+    #: exercise. A JSON bag rather than typed columns because one tenant's ERP
+    #: configuration is not a schema every connector has to share, and an absent
+    #: key stays absent: "not set" is not a category.
+    #:
+    #: **Not ``attributes``, and the collision is the reason.** ``attributes/``
+    #: is this codebase's word for a *decoded technical fact about a product* —
+    #: a corner radius, a grade — held in ``product_attribute_values`` with its
+    #: own provenance and supersede semantics. One word over two unrelated
+    #: concepts on the same entity is the thing this repository does not do.
+    #:
+    #: **NULL, not ``{}``, when nothing is held, and the two are not the same
+    #: claim.** ``{}`` would assert *the source holds no custom fields on this
+    #: record*; NULL says only that none are held here. Nothing in this platform
+    #: can make the first claim — a row may predate the column, and a payload is
+    #: projected by a connector before normalisation ever sees it, so an adapter
+    #: that never read them is indistinguishable from an ERP that has none. The
+    #: migration adds the column nullable, with no server default and no
+    #: backfill, for exactly that reason. A non-empty bag is the only positive
+    #: statement this column makes.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -1213,6 +1238,10 @@ class Product(Base):
     #: rather than merely stale.
     pie_catalog_version: Mapped[Optional[str]] = mapped_column(String(128))
 
+    #: The source's own fields on this record, verbatim. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -2387,6 +2416,13 @@ class SyncRun(Base):
     a duplicate. Staleness is judged from it rather than from ``started_at``,
     because a legitimate four-hour pull and a job that died after ten seconds
     look identical by start time.
+
+    ``spec_version`` says which version of the canonical ingestion spec was in
+    force when the run wrote its rows. It is the same idea as the
+    ``thresholds_version`` on a computed row and answers a different question:
+    not which policy judged a number, but which contract the rows were written
+    against — so a field the spec later adds, or an omission it later catches,
+    can be placed against the runs that predate it.
     """
 
     __tablename__ = "sync_runs"
@@ -2499,6 +2535,28 @@ class SyncRun(Base):
     documents_fetched: Mapped[int] = mapped_column(Integer, default=0)
     documents_resumed: Mapped[int] = mapped_column(Integer, default=0)
     assignments: Mapped[int] = mapped_column(Integer, default=0)
+    # Which version of the canonical ingestion spec was in force when this run
+    # wrote its rows — ``spec_…`` from ``domain.spec.spec_version``, stamped by
+    # ``jobs.start_sync`` at the moment the row is queued rather than when the
+    # run ends. A run that dies part-way has already written rows, and they were
+    # written under the contract in force when it started; a stamp applied at
+    # completion would describe only the runs that survived, which is the
+    # opposite of the set an audit asks about.
+    #
+    # Nullable, with no default and nothing backfilled. Every row already in
+    # this table was written before the spec existed, and filling them with
+    # today's stamp would turn "no contract judged this" into a claim that one
+    # did — absence of evidence read as a pass (§1), with a version number on it
+    # to make it convincing. NULL is the honest value and reads as what it is: a
+    # run from before the contract. The same reasoning as ``source_recorded_at``
+    # next door, which is the field the spec exists to protect.
+    #
+    # Deliberately **not** marked ``policy_stamp``, and listed in
+    # ``NOT_A_POLICY_STAMP`` with that reason. No threshold goes into it: it is
+    # the shape of the ingestion contract, the same class of stamp as
+    # ``products.pie_catalog_version``, and its pre-image is the public
+    # ``spec.canonical_json()`` rather than bytes only the registry could hold.
+    spec_version: Mapped[Optional[str]] = mapped_column(String(32))
 
 
 class SyncSkip(Base):
@@ -4009,6 +4067,10 @@ class Vendor(Base):
     #: which is a real term and not a missing value.
     payment_terms_days: Mapped[Optional[int]] = mapped_column(Integer)
     status: Mapped[str] = mapped_column(String(32), default="ACTIVE")
+    #: The source's own fields on this record, verbatim. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -4194,6 +4256,10 @@ class SalesOrderDoc(Base):
     shipped_status: Mapped[Optional[str]] = mapped_column(String(48))
     total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
     salesperson_external_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: The source's own fields on this record, verbatim. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -4328,13 +4394,16 @@ class QuoteDoc(Base):
     #: it. It is deliberately *not* an input to the outcome classification: a
     #: customer reading a quote is not a customer deciding on one.
     client_viewed_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
-    #: The business's own taxonomy on the quote — Zoho's ``cf_quote_type``,
-    #: ``cf_pricing_type``, ``cf_procurement_type`` and the branch it was raised
-    #: at — verbatim, keys and values as the source wrote them. A JSON bag rather
-    #: than typed columns because one tenant's ERP configuration is not a schema
-    #: every connector has to share, and an absent key stays absent: "not set" is
-    #: not a category.
-    attributes: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: The source's own fields on the quote, verbatim — every custom field this
+    #: business configured, plus the branch it was raised at. ``cf_quote_type``,
+    #: ``cf_pricing_type`` and ``cf_procurement_type`` are examples rather than
+    #: the set: those three were hand-listed until A4.1, and a fourth field
+    #: configured tomorrow travels with no code change, which was the point. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case. This
+    #: column was called ``attributes`` until it stopped being the only one of
+    #: its kind; ``s6srcattr`` renames it forward.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     #: When the source system recorded this quote. See
     #: ``SalesTxn.source_recorded_at``. Here it does double duty: it is the
     #: visibility stamp when this quote is *evidence* for a later one, and it is
@@ -4470,6 +4539,10 @@ class BillDoc(Base):
     status: Mapped[str] = mapped_column(String(48), default="")
     total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
     balance: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    #: The source's own fields on this record, verbatim. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -4525,6 +4598,10 @@ class InvoiceDoc(Base):
     status: Mapped[str] = mapped_column(String(48), default="")
     total: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
     balance: Mapped[Optional[Any]] = mapped_column(Numeric(18, 4))
+    #: The source's own fields on this record, verbatim. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -5066,6 +5143,10 @@ class PurchaseOrderDoc(Base):
     #: for an *actual* lead time; absent means the order is still open or the
     #: receipt was never logged, and those are not the same thing.
     received_on: Mapped[Optional[date]] = mapped_column(Date)
+    #: The source's own fields on this record, verbatim. See
+    #: ``Customer.source_attributes`` for what is carried, why it is not called
+    #: ``attributes``, and why NULL rather than ``{}`` is the empty case.
+    source_attributes: Mapped[Optional[dict[str, Any]]] = mapped_column(JSON)
     source_ref: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
@@ -5334,6 +5415,149 @@ class CustomerPhraseAlias(Base):
     superseded_by: Mapped[Optional[str]] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now,
                                                  index=True)
+
+
+class SourceAttributeMapping(Base):
+    """"In this organization's ERP, that field means this concept."
+
+    One organization's declaration of what its own custom fields *mean*, so
+    that nothing downstream ever has to name one. A customer running Epicor
+    with ``UD_Field_07 = "TENDER"`` declares once that the field carries
+    ``quote_intent`` and that ``"TENDER"`` means ``TENDER``; every rule after
+    that reads the concept. It is the whole reason anything built on
+    ``source_attributes`` works for a second ERP — without it the first rule to
+    read the bag would name a key, and the second tenant would need a fork.
+
+    ``source_attributes`` is carried verbatim and deliberately uninterpreted:
+    ``normalize._source_attributes``, ``zoho_client.source_attributes`` and
+    ``Customer.source_attributes`` all say that mapping a source key onto a
+    concept this platform reasons with is "a separate, versioned exercise".
+    This table is that exercise.
+
+    **Keyed by (organization, connector, entity, concept), not by the source
+    key.** The row *names* a source key, but what is unique is which field
+    answers a concept: an organization declares at most one live reading of
+    ``quote_intent`` for its Epicor quotes. Re-declaring it — onto a different
+    value map, or onto a different field entirely — supersedes, and
+    ``uq_source_attribute_mapping_live`` makes that a database guarantee rather
+    than a convention. Keying on the source key instead would let two fields
+    answer one concept with no rule for which wins, and a resolution with two
+    answers is not deterministic.
+
+    **Superseded rather than mutated**, on ``ConfirmedCodeMapping``'s reason and
+    it applies here word for word: a mapping that was true and was later
+    corrected is how you explain a quote sent last March, and overwriting the
+    row in place destroys exactly that. So this table carries the
+    ``inbound_line_dispositions`` stamps — the claim is immutable and only
+    ``superseded_at`` is ever written to an existing row.
+
+    **Three timestamps, because two of the questions are different.**
+    ``effective_from`` is when this became the organization's reading;
+    ``recorded_at`` is when the platform wrote it down; ``superseded_at`` is
+    when a later declaration replaced it, and it is set to that declaration's
+    ``effective_from`` so the intervals tile with no gap and no overlap. Which
+    mapping was in force when a quote was written is then one predicate —
+    ``effective_from <= at < superseded_at`` — the same question ``knowable_by``
+    answers for evidence, answered the same way.
+
+    **The mapping decides interpretation, never arithmetic.** Nothing a
+    declaration *supplies* is a number: there is no numeric column at all, the
+    three timestamps above are this row's own provenance and are never read out
+    as a value, and ``value_map``'s targets are members of a closed per-concept
+    vocabulary (``commercial/source_concepts.py``) rather than free text — so a
+    tenant may decide that ``"TND"`` means ``TENDER`` and cannot decide that it
+    means 4500. A tenant-configurable input to a money calculation is an
+    unauditable number, which is CLAUDE.md §1's first line reaching
+    configuration by the same argument it reaches a model.
+
+    **The concept vocabulary is closed and it is four.** A mapping onto a
+    concept nothing consumes is one that silently does nothing, so the four are
+    enumerated in ``source_concepts.CONCEPTS`` and a declaration naming a fifth
+    is refused. Every concept is a one-way door: once a rule reads one, an
+    organization's data is shaped around it.
+
+    **Not ``quote_field_definitions``.** That table is the shape of *this
+    platform's own* quote form — keys PIE mints, edited in place, rendered by
+    the builder. This one is about keys another system minted, and it is
+    superseded rather than edited for the reason above. One word over two
+    unrelated concepts is the thing this repository does not do.
+    """
+
+    __tablename__ = "source_attribute_mappings"
+    __table_args__ = (
+        # One *live* declaration per concept per (connector, entity). Unique
+        # over the live rows only: a correction writes a second row, and a
+        # plain unique constraint would refuse the very write this table is
+        # shaped around. Both backends support partial indexes, so this needs
+        # no dialect branch beyond naming the predicate twice — the
+        # ``uq_inbound_line_disposition_live`` idiom.
+        Index("uq_source_attribute_mapping_live",
+              "organization_id", "connector", "entity", "pie_concept",
+              unique=True,
+              sqlite_where=text("superseded_at IS NULL"),
+              postgresql_where=text("superseded_at IS NULL")),
+        # The read: every declaration this organization has ever made for one
+        # connector and record kind, which is what a point-in-time resolution
+        # filters and what a history read walks.
+        Index("ix_source_attribute_mapping_lookup",
+              "organization_id", "connector", "entity", "effective_from"),
+    )
+
+    mapping_id: Mapped[str] = mapped_column(String(64), primary_key=True, default=_uuid)
+    organization_id: Mapped[str] = mapped_column(String(64), index=True)
+    #: Which system's spelling this declares — a key from the ``ingestion/erp``
+    #: registry, or ``zoho``. NOT NULL: a declaration is always about a named
+    #: system. A *record* whose own ``connector`` is NULL cannot be attributed
+    #: after the fact, so it matches no declaration and reads as not declared,
+    #: which is the same true statement the rest of the platform makes about it.
+    connector: Mapped[str] = mapped_column(String(32))
+    #: Which record kind the field sits on — ``quote``, ``customer``, one of the
+    #: eight that carry ``source_attributes``. This platform's word, not a table
+    #: name: the same concept is declared once per kind because the same ERP
+    #: spells a field differently on a quote and on an account.
+    entity: Mapped[str] = mapped_column(String(32))
+    #: The source's own field name, verbatim — ``UD_Field_07``, ``cf_quote_type``.
+    #: **The only place in this platform where a source key is named**, which is
+    #: the point: it is written here by an administrator and read by nothing
+    #: except the resolver that turns it into a concept. Nothing downstream is
+    #: given it, and the resolver's signature has no parameter that could carry
+    #: one back in.
+    source_key: Mapped[str] = mapped_column(String(128))
+    #: One of ``source_concepts.CONCEPTS``. Closed, four, one-way doors.
+    pie_concept: Mapped[str] = mapped_column(String(32))
+    #: ``{source value → concept value}``. ``"TENDER"``, ``"Tender"`` and
+    #: ``"TND"`` may all mean one thing, so the left side is open — it is the
+    #: tenant's own vocabulary — and stored upper-cased with whitespace
+    #: collapsed, because case and padding are not meaning while a different
+    #: spelling is. The right side is closed: every target is a member of that
+    #: concept's vocabulary, so this column cannot carry a number.
+    #:
+    #: A source value with no entry here is **not** silently nothing: the
+    #: resolver reports it as unrecognised and carries what the source said, so
+    #: a field nobody finished declaring is visible rather than dropped. A field
+    #: dropped in silence is the failure this whole layer exists to end.
+    value_map: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    #: Where the declaration came from — "seeded 2026-09 from the 4U field
+    #: audit" — so a wrong reading can be traced to whoever made it.
+    source_ref: Mapped[str] = mapped_column(String(255), default="")
+    declared_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
+    #: When this became the organization's reading. A *first* declaration is
+    #: effective from the beginning: there is no earlier reading it could be
+    #: contradicting, so applying it to the whole book is the only cut that is
+    #: not arbitrary, and a default of "now" would silently leave every quote
+    #: already on the book unreadable. A supersession defaults to the present
+    #: instead, which is what keeps March explained by March's row.
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                     default=_now)
+    #: When the platform wrote it down. Distinct from ``effective_from`` for the
+    #: reason ``InboundLineDisposition`` keeps ``decided_at`` beside
+    #: ``recorded_at``: backdating a declaration is legitimate and the audit
+    #: still needs to know when it was typed.
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True),
+                                                  default=_now, index=True)
+    #: Set to the replacing declaration's ``effective_from``. NULL is live. The
+    #: row stays, and is never edited again.
+    superseded_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True))
 
 
 class QueuedMessage(Base):

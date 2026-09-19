@@ -12,7 +12,6 @@ previous leak passed while the endpoint gave up cost.
 """
 from __future__ import annotations
 
-import json
 from datetime import date, timedelta
 from decimal import Decimal
 
@@ -170,11 +169,11 @@ def test_a_stored_diagnosis_is_read_back_under_the_same_role_rules(client):
 
     r = client.get("/api/v1/quote-diagnosis/quote/q1", headers=_hdr(client, SALES))
     assert r.status_code == 200, r.text
-    body = json.dumps(r.json())
 
-    assert str(PURCHASE_COST) not in body
-    for word in ("cost", "margin", "opportunity", "peer"):
-        assert word not in body.lower()
+    # The shared definition of a leak rather than a second one written here:
+    # this path projects the same diagnosis and must not come to disagree with
+    # `/assess` about what may not appear.
+    cost_sweep.assert_no_cost(r.json(), cost=PURCHASE_COST)
 
     owner = client.get("/api/v1/quote-diagnosis/quote/q1",
                        headers=_hdr(client, MANAGER)).json()
@@ -201,14 +200,127 @@ def test_a_salesperson_cannot_walk_the_price_to_recover_cost(client):
     already seen — so there is no boundary at cost to find. This test is what
     says so rather than the argument that says so.
     """
-    seen = {}
+    seen, echoed = {}, {}
     for price in range(PURCHASE_COST - 3, PURCHASE_COST + 4):
         line = _assess(client, SALES, price=float(price), record=False)["lines"][0]
-        seen[price] = (line["headline"], line["renders"], line["evidence"])
+        # The whole line, not three named fields. Watching only the fields
+        # somebody remembered is this repository's original leak with a loop
+        # around it, and `cost_sweep.answer` is where that list is kept so both
+        # endpoints walk the same one.
+        seen[price] = cost_sweep.answer(line)
+        echoed[price] = line["quoted"]
 
-    # Every probe either side of cost answers identically; nothing in the
-    # response moves as the price crosses it.
+    # Every probe either side of cost answers identically; nothing the server
+    # decided moves as the price crosses it.
     assert len(set(seen.values())) == 1, seen
+    # And the one field that did move is the caller's own number, spelled back —
+    # not a boundary hiding behind an exclusion.
+    assert all(str(price) in text for price, text in echoed.items()), echoed
+
+
+# ── driver attribution: owner only, on both projections ──────────────────────
+
+def _enough_purchases(client, extra: int = 2) -> None:
+    """Bring the cost baseline up to a grade the attribution will speak from.
+
+    The fixture seeds three purchases, and ``diagnosis_moderate_min_comparables``
+    is four — below MODERATE on either side the split is refused rather than
+    asserted, which is correct and is tested on its own. Same item, same price,
+    so nothing but the count moves.
+    """
+    with client.Maker() as s:
+        for i in range(extra):
+            day = AS_OF - timedelta(days=120 - 10 * i)
+            s.add(models.CostRecord(
+                cost_record_id=f"cst_x{i}", organization_id=ORG,
+                external_ref=f"BILL-X{i}:1", product_id="p1", date=day,
+                qty=Decimal("10"), unit_cost=Decimal(PURCHASE_COST),
+                rate=Decimal(PURCHASE_COST), source_recorded_at=_stamp(day),
+                source_ref={"record_type": "bill"}))
+        s.commit()
+
+
+def test_the_owner_is_given_the_split_and_the_desk_has_no_trace_of_it(client):
+    """Cost-derived throughout, so it goes on one branch and not the other.
+
+    The desk half is not "the same block with the numbers removed" — the
+    salesperson's projection is built from a type with no field to put a driver
+    in, so there is nothing here to forget to remove. This asserts both halves,
+    because a withholding test that passes because the endpoint returns nothing
+    to anyone is not evidence of withholding.
+    """
+    _enough_purchases(client)
+    owner = _assess(client, MANAGER, price=850.0, quote_id="q-attr")["lines"][0]
+    desk = _assess(client, SALES, price=850.0, quote_id="q-attr2")["lines"][0]
+
+    block = owner["attribution"]
+    assert block["renders"] is True
+    assert [d["code"] for d in block["drivers"]] == ["PRICE_POSITION_EFFECT",
+                                                     "COST_LEVEL_EFFECT"]
+    # Both factors, including the one that did not move. This customer has paid
+    # 1000 twelve times and is being quoted 850 at a cost that never changed, so
+    # the price is the whole of it — and saying so is the point.
+    assert block["headline"].endswith(
+        "price -6.55 pp, cost level unchanged.")
+    assert block["note"].startswith("PRICE_THEN_COST:")
+    # Every figure arrives formatted: the front end may not format money or
+    # compute a number, so an `effect` is a string and never a pair of numbers.
+    assert block["drivers"][0]["effect"] == "-6.55 pp (-₹150 per unit)"
+    assert block["drivers"][0]["strength_word"] == "Strong"
+
+    assert "attribution" not in desk
+    cost_sweep.assert_no_cost({"lines": [desk]}, cost=PURCHASE_COST)
+
+
+def test_a_stored_diagnosis_says_it_has_no_split_rather_than_showing_none(client):
+    """The second projection site, and the one where an absence would lie.
+
+    `quote_diagnoses` has no attribution column, so a row read back cannot
+    answer the question. A manager who simply found no `attribution` key would
+    read that as "the price and the cost both behaved" — the benign default
+    CLAUDE.md §1 is about. The block is published, carrying the refusal.
+    """
+    _assess(client, MANAGER, price=850.0)
+
+    line = client.get("/api/v1/quote-diagnosis/quote/q1",
+                      headers=_hdr(client, MANAGER)).json()["lines"][0]
+
+    block = line["attribution"]
+    assert block["drivers"] == []
+    assert block["headline"] == ""
+    assert block["note"].startswith("NOT_ON_STORED_RECORD:")
+    assert "Re-assess this line" in block["note"]
+    # And it is as visible as the card it sits in.
+    assert block["renders"] == line["renders"]
+
+
+def test_a_line_with_no_purchase_history_is_told_so_rather_than_shown_nothing(
+        client):
+    """A product the ledger has never priced. The split refuses and names what
+    is missing; it does not report a cost effect of zero."""
+    r = client.post("/api/v1/quote-diagnosis/assess",
+                    headers=_hdr(client, MANAGER),
+                    json={"quote_id": "q-nocost", "record": False,
+                          "lines": [{"line_id": "L1", "product_id": "p1",
+                                     "customer_id": "c1", "qty": 10,
+                                     "quoted_unit_price": 850}]})
+    assert r.status_code == 200, r.text
+
+    with client.Maker() as s:
+        s.query(models.CostRecord).delete()
+        s.commit()
+    again = client.post("/api/v1/quote-diagnosis/assess",
+                        headers=_hdr(client, MANAGER),
+                        json={"quote_id": "q-nocost2", "record": False,
+                              "lines": [{"line_id": "L1", "product_id": "p1",
+                                         "customer_id": "c1", "qty": 10,
+                                         "quoted_unit_price": 850}]}).json()
+
+    block = again["lines"][0]["attribution"]
+    assert block["renders"] is True
+    assert block["drivers"] == []
+    assert block["note"].startswith("NO_COST_BASELINE:")
+    assert "no purchase was knowable" in block["note"]
 
 
 def test_a_diagnosis_date_far_from_today_is_refused(client):
@@ -304,3 +416,139 @@ def test_a_product_the_master_has_never_held_is_answered_not_refused(client):
 
     assert r.status_code == 200, r.text
     assert r.json()["lines"][0]["renders"] is False
+
+
+# ── working capital: owner only, on both projections ─────────────────────────
+
+def _fund_the_line(client) -> None:
+    """Everything the working-capital reading needs, and nothing else.
+
+    A rate the owner set, a supplier with a payment term, purchases that name
+    that supplier, and a settlement history for this account. Each of the five
+    refusals is one of these rows missing, and they are tested one at a time in
+    ``test_quote_diagnosis_working_capital``; here they are all present so the
+    wiring can be seen to produce a figure at all.
+    """
+    with client.Maker() as s:
+        s.add(models.CommercialPolicy(
+            organization_id=ORG,
+            overrides={"cost_of_capital_annual_pct": 0.12}))
+        s.add(models.Vendor(vendor_id="v1", organization_id=ORG,
+                            external_id="V-1", name="Toolmakers Ltd",
+                            payment_terms_days=30))
+        # Flushed before the rows that point at it: SQLAlchemy batches inserts
+        # per table and the purchases would otherwise reach the database first.
+        s.flush()
+        for i in range(5):
+            day = AS_OF - timedelta(days=150 - 25 * i)
+            s.add(models.CostRecord(
+                cost_record_id=f"cst_v{i}", organization_id=ORG,
+                external_ref=f"BILL-V{i}:1", product_id="p1", vendor_id="v1",
+                date=day, qty=Decimal("10"), unit_cost=Decimal(PURCHASE_COST),
+                rate=Decimal(PURCHASE_COST), source_recorded_at=_stamp(day),
+                source_ref={"record_type": "bill"}))
+        for i in range(8):
+            raised = AS_OF - timedelta(days=340 - 20 * i)
+            s.add(models.PaymentReceipt(
+                payment_receipt_id=f"rcp_{i}", organization_id=ORG,
+                external_ref=f"RCP-{i}", customer_id="c1",
+                date=raised + timedelta(days=70), amount=Decimal("10000")))
+        s.flush()
+        for i in range(8):
+            raised = AS_OF - timedelta(days=340 - 20 * i)
+            s.add(models.PaymentApplication(
+                payment_application_id=f"pa_{i}", organization_id=ORG,
+                external_ref=f"PA-{i}", payment_receipt_id=f"rcp_{i}",
+                customer_id="c1", invoice_external_ref=f"INV-{i}",
+                invoice_number=f"INV-{i}", invoice_date=raised,
+                invoice_due_date=raised + timedelta(days=45),
+                paid_on=raised + timedelta(days=70),
+                amount_applied=Decimal("10000")))
+        s.commit()
+
+
+def test_the_owner_is_told_what_the_cash_costs_and_the_desk_is_not(client):
+    """The most directly cost-revealing block on the card.
+
+    ``capital_per_unit`` **is** the purchase cost, carried rather than derived,
+    so this is not a boundary a caller could walk — it is the number. It goes on
+    one branch and the other is built from a type with no field to put it in, so
+    there is nothing there to forget to remove. Both halves are asserted,
+    because a withholding test that passes because nothing was produced is not
+    evidence of withholding.
+    """
+    _fund_the_line(client)
+    owner = _assess(client, MANAGER, price=850.0, quote_id="q-wc")["lines"][0]
+    desk = _assess(client, SALES, price=850.0, quote_id="q-wc2")["lines"][0]
+
+    block = owner["working_capital"]
+    assert block["assessed"] is True
+    figures = {f["label"]: f["value"] for f in block["figures"]}
+    assert figures["Customer pays in"] == "70 days"
+    assert figures["Supplier credit"] == "30 days"
+    assert figures["Money out for"] == "40 days"
+    assert figures["Cost of capital"] == "12.00% a year"
+    # Formatted on the server, every one of them: the front end may not format
+    # money or compute a number.
+    assert figures["Capital at risk"].startswith("₹")
+    assert block["headline"].startswith("Funding this line's cash costs ₹")
+    assert block["note"].startswith("Money is out for 40 days on this line")
+
+    assert "working_capital" not in desk
+    cost_sweep.assert_no_cost({"lines": [desk]}, cost=PURCHASE_COST)
+
+
+def test_a_stored_diagnosis_says_it_has_no_reading_rather_than_showing_none(
+        client):
+    """The second projection site. `quote_diagnoses` has no column for this, so
+    a row read back cannot answer — and a manager who found no key would read
+    the absence as "this line ties up no cash", which is never true."""
+    _fund_the_line(client)
+    _assess(client, MANAGER, price=850.0)
+
+    line = client.get("/api/v1/quote-diagnosis/quote/q1",
+                      headers=_hdr(client, MANAGER)).json()["lines"][0]
+
+    block = line["working_capital"]
+    assert block["assessed"] is False
+    assert block["figures"] == []
+    assert block["headline"] == ""
+    assert block["note"].startswith("NOT_ON_STORED_RECORD:")
+    assert "Re-assess this line" in block["note"]
+    assert block["renders"] == line["renders"]
+
+
+def test_an_unset_rate_names_the_settings_field_on_the_owners_card(client):
+    """The commonest state of a fresh book, and the one a blank panel would
+    misreport. One person typing one number finishes it, so the card says which
+    field — and it does not offer the stock carrying rate instead."""
+    owner = _assess(client, MANAGER, price=850.0,
+                    quote_id="q-norate")["lines"][0]
+
+    block = owner["working_capital"]
+    assert block["assessed"] is False
+    assert block["figures"] == []
+    assert block["note"].startswith("NO_RATE:")
+    assert "'Annual cost of capital' in Settings" in block["note"]
+    assert "a receivable occupies no shelf" in block["note"]
+
+
+def test_a_salesperson_still_cannot_walk_the_price_with_the_reading_wired(
+        client):
+    """The walk again, with every working-capital row present.
+
+    The reading is computed on the desk's line too — ``_surfaces`` gates
+    interruption, not calculation — so the question is whether any of it reaches
+    the projection. It sweeps the whole payload rather than the keys this change
+    added, which is the only version of this test that has ever caught anything.
+    """
+    _fund_the_line(client)
+    seen, echoed = {}, {}
+    for price in range(PURCHASE_COST - 3, PURCHASE_COST + 4):
+        line = _assess(client, SALES, price=float(price), record=False,
+                       quote_id="q-walk")["lines"][0]
+        seen[price] = cost_sweep.answer(line)
+        echoed[price] = line["quoted"]
+
+    assert len(set(seen.values())) == 1, seen
+    assert all(str(price) in text for price, text in echoed.items()), echoed

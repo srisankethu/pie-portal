@@ -556,10 +556,22 @@ class SyncService:
             # been touched since the last pull stops on its first page.
             self.arm_incremental_listing(self.source)
             suffix = f" · {label}" if label else ""
-            self._phase(f"Reading bills{suffix}")
-            self._sync_bills()
-            self._phase(f"Reading invoices{suffix}")
-            self._sync_invoices()
+            # Probed, the way run_supply probes every stage it reads. A
+            # connector need not implement every document stage: Sage 100's AP
+            # history carries GL distributions rather than item lines, so its
+            # spec declares no bills permission and its source has no
+            # list_bills. Calling it regardless raised AttributeError here, and
+            # jobs.py catches that at the top of the run — so a Sage 100 pull
+            # wrote customers, items and vendors and then lost every invoice,
+            # sales order and purchase order to a stage it was never going to
+            # read. A stage a source does not implement is a stage to skip, not
+            # a sync to fail whole.
+            if hasattr(self.source, "list_bills"):
+                self._phase(f"Reading bills{suffix}")
+                self._sync_bills()
+            if hasattr(self.source, "list_invoices"):
+                self._phase(f"Reading invoices{suffix}")
+                self._sync_invoices()
             self._count_documents()
         finally:
             self.source = previous

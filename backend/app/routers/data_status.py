@@ -131,6 +131,15 @@ def _run_dict(r: Optional[models.SyncRun], *,
         "documents_fetched": r.documents_fetched,
         "documents_resumed": r.documents_resumed,
         "assignments": r.assignments,
+        # Which version of the ingestion contract this run's rows were written
+        # under. Served because the database is not reachable from where the
+        # question gets asked: the reader of a bad sync has a browser, no shell
+        # and quite possibly no server log (the sentence ``SyncRunLog`` exists
+        # to answer), and a stamp that never leaves the row cannot tell them
+        # that today's run and last month's wrote against different contracts.
+        # ``None`` means the run predates the stamp — it is not a failure to
+        # record one, and nothing here fills it in to look tidier.
+        "spec_version": r.spec_version,
         "notes": r.notes or {},
     }
 

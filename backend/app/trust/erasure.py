@@ -331,6 +331,21 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # a time from its endpoint. An export that carried them would be hundreds of
     # megabytes of base64 in a file this module expects to travel by email.
     ("rfq_documents", models.RfqDocument),
+    # ── how they told us to read their own ERP ──────────────────────────────
+    #
+    # What each of this organization's custom fields means, and what each of
+    # its values means. Exported, and the reason is the one ``value_events``
+    # and ``evaluation_baselines`` travel on: without these rows a departing
+    # tenant holds every quote and every diagnosis and cannot reproduce a
+    # single reading of one, because the declaration that turned
+    # ``UD_Field_07 = "TENDER"`` into an intent is the missing half. It is also
+    # theirs in the plainest sense — it is their own vocabulary, typed by them,
+    # about a system they own.
+    #
+    # Superseded rows included, for the ``inbound_line_dispositions`` reason:
+    # an export holding only the current reading could not explain a diagnosis
+    # the tenant ran before a correction.
+    ("source_attribute_mappings", models.SourceAttributeMapping),
 )
 
 #: Never exported, and each one has a reason a customer can read. Keyed by
@@ -543,6 +558,15 @@ SURVIVES_PLAINTEXT: tuple[dict[str, str], ...] = (
             "encrypted — the corpus an RFQ parser is measured against has to "
             "be the bytes the customer sent. So destroying the key does not "
             "unread them; only row deletion removes this text"},
+    {"table": "customers, products, vendors, invoices, bills, sales_orders, "
+              "purchase_orders, erp_quotes",
+     "column": "source_attributes",
+     "why": "the custom fields your own ERP carries on each record, held "
+            "verbatim under the keys and with the values that system wrote. "
+            "Plaintext, and listed here because the contents are yours rather "
+            "than ours: a field an administrator added can hold anything, "
+            "including a person's name or a telephone number, and destroying "
+            "the key does not unread it. Only row deletion removes this text"},
     {"table": "audit_chain_heads", "column": "every column",
      "why": "where the audit chain is meant to end, kept for the same reason "
             "as the chain itself and useless apart from it — without the "

@@ -38,6 +38,31 @@ function ownerView(over: Partial<OwnerDiagnosisView> = {}): OwnerDiagnosisView {
     opportunity: "Roughly \u20b96,065 on this line at the top of the band.",
     evidence: "11 usable, 0 excluded.",
     codes: ["ABOVE_HISTORICAL_RANGE"],
+    // Owner-only by construction — `DiagnosisCard.AttributionView`. A refusal
+    // here rather than a split: this file is about the panel choosing a card,
+    // and `DiagnosisCard.attribution.test.tsx` is where the block itself is
+    // pinned.
+    attribution: {
+      renders: false,
+      headline: "",
+      drivers: [],
+      note: "No cost is on record for this item, so the movement could not be "
+            + "split between price and cost.",
+    },
+    // Owner-only for the same reason, and a refusal for the same reason: the
+    // block itself is pinned in `DiagnosisCard.workingcapital.test.tsx`, and
+    // this is the state a book that has not set a cost of capital is in.
+    working_capital: {
+      assessed: false,
+      interrupts: false,
+      renders: true,
+      headline: "",
+      figures: [],
+      severity: "",
+      strength_word: "",
+      note: "NO_RATE: No annual cost of capital is set, so there is no rate at "
+            + "which to charge the money this line ties up.",
+    },
     qualification: "Historical prices may include exceptional deals.",
     actions: ["REVIEW_PRICE"],
     ...over,
@@ -67,7 +92,13 @@ function view(over: Partial<OperationsDiagnosisView> = {}): OperationsDiagnosisV
 }
 
 function state(over: Partial<QuoteDiagnosisState> = {}): QuoteDiagnosisState {
-  return { byLineId: {}, loading: false, error: null, ...over };
+  // `coverage` and `rollup` default to null — the state of a panel nobody has
+  // asked a question of. They are required on the interface rather than
+  // optional so that a caller who forgets one is a compile error: "the server
+  // said nothing" and "the server was never asked" are different answers, and
+  // the whole reason they are carried is that a panel must not confuse them.
+  return { byLineId: {}, coverage: null, rollup: null,
+           loading: false, error: null, ...over };
 }
 
 describe("a diagnosis the server surfaced", () => {

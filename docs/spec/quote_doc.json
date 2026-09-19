@@ -1,0 +1,338 @@
+{
+  "$defs": {
+    "QuoteDocOutcome": {
+      "description": "How a quote raised in an ERP ended, according to that ERP's own record.\n\nThree values, and the third is the one this exists for. ``UNRECORDED`` is a\nreal member rather than a sentinel kept outside the enum \u2014 deliberately the\nopposite choice from ``LOSS_REASON_NOT_RECORDED`` above. Nothing may ever\n*write* \"not recorded\" as a loss reason, because that would be a person's\nanswer invented on their behalf; ``UNRECORDED`` is the correct and honest\nthing to write for the roughly 215 of this book's ~290 estimates whose\nstatus says only that nobody ever closed them.\n\nThat silence spans three different facts \u2014 nobody worked it, the customer\nnever answered, and we lost it to a competitor \u2014 and only the third is a\nloss. Reading an ``expired`` estimate as LOST would manufacture two hundred\nlabels out of it, every one of them defensible-looking and most of them\nwrong, and anything learned from those labels would be confidently wrong\nabout why this business loses work. So the unknown is named, stored and\ncounted, and never folded into either decided value.\n\nNot the same thing as ``QuoteOutcomeStatus``, and not interchangeable with\nit: that one is the platform's own lifecycle (DRAFT \u2192 SENT \u2192 WON/LOST),\ndriven by a person through transitions that refuse to reopen a decided\nquote. This one is a *reading* of somebody else's record, rewritten from\nthe payload on every sync, with no lifecycle and no transitions at all.",
+      "enum": [
+        "WON",
+        "LOST",
+        "UNRECORDED"
+      ],
+      "title": "QuoteDocOutcome",
+      "type": "string"
+    },
+    "QuoteLineIn": {
+      "description": "One line of a quote the ERP raised \u2014 what was actually offered.\n\nThe line's own words are carried whether or not the item resolves.\n``item_code`` and ``description`` are what the quote said; matching them to\na product this platform holds happens downstream and is allowed to fail. A\nquote line naming something that never became a catalogue item is real\nquoting activity, and dropping it would shrink the document to the part that\nhappens to be tidy.\n\n``qty``, ``rate`` and ``amount`` are ``None`` where the ERP gave none, never\nzero: a line with no price is a line somebody has not priced, which is a\ndifferent fact from a line priced at nothing.\n\nNo cost and no margin. These are the figures that went to the customer.",
+      "properties": {
+        "amount": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Amount"
+        },
+        "description": {
+          "default": "",
+          "title": "Description",
+          "type": "string"
+        },
+        "discount_percent": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Discount Percent"
+        },
+        "external_ref": {
+          "minLength": 1,
+          "title": "External Ref",
+          "type": "string"
+        },
+        "item_code": {
+          "default": "",
+          "title": "Item Code",
+          "type": "string"
+        },
+        "item_external_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Item External Id"
+        },
+        "line_number": {
+          "default": 0,
+          "title": "Line Number",
+          "type": "integer"
+        },
+        "qty": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Qty"
+        },
+        "rate": {
+          "anyOf": [
+            {
+              "type": "number"
+            },
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Rate"
+        },
+        "unit": {
+          "default": "",
+          "title": "Unit",
+          "type": "string"
+        }
+      },
+      "required": [
+        "external_ref"
+      ],
+      "title": "QuoteLineIn",
+      "type": "object"
+    },
+    "SourceRef": {
+      "description": "A pointer back to the originating ERP record (provenance).\n\n``system`` is required, and that is the point. It used to default to\n``\"zoho\"``, which meant no normalizer ever had to say where a record came\nfrom \u2014 and every row in the database claimed Zoho whether or not it was\ntrue. A second connector would have had to *remember* to override it, and\nforgetting would have been silent: the evidence a decision cites would name\nthe wrong system, and nothing anywhere would disagree.\n\nProvenance that defaults is not provenance. This is the layer that must not\nknow which ERP exists, so the value comes from the adapter that read the\nrecord.",
+      "properties": {
+        "line_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Line Id"
+        },
+        "record_id": {
+          "title": "Record Id",
+          "type": "string"
+        },
+        "record_type": {
+          "title": "Record Type",
+          "type": "string"
+        },
+        "recorded_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Recorded At"
+        },
+        "system": {
+          "minLength": 1,
+          "title": "System",
+          "type": "string"
+        }
+      },
+      "required": [
+        "system",
+        "record_type",
+        "record_id"
+      ],
+      "title": "SourceRef",
+      "type": "object",
+      "x-pie-expected": {
+        "recorded_at": "When the source system recorded the document. A row without it is not usable as point-in-time evidence: it is counted, never imputed, and every quote line that needed it answers INSUFFICIENT_EVIDENCE. A connector whose source exposes a creation timestamp and omits this is defective; one whose source has none must say so, because silence here is what the incident behind this module looked like."
+      }
+    }
+  },
+  "description": "One quote as an ERP raised it. What was offered, and how the ERP says it\nended.\n\nThe demand-side document the platform has never read. Sales orders are what\na customer committed to; this is everything that was *offered* \u2014 the ~290\nestimates behind them, including the ones nobody ordered. Without it a win\nrate has no denominator and a lost quote leaves no trace anywhere.\n\nTwo status fields, on purpose. ``source_status`` is the ERP's own word,\ncarried verbatim and never mapped on the way in; ``outcome`` is this\nplatform's classification of it. Keeping only the first would put the\nWON/LOST mapping in every reader that ever asks, and the third copy of that\nmapping is the one that reads ``expired`` as a loss. Keeping only the\nsecond would make the classification unauditable \u2014 nothing left to group by\nwhen somebody asks which statuses fell through.\n\n**Nothing here carries a judgement.** No loss reason, no \"lost to\", no\nnote, no platform status: an ERP list row cannot know why a customer said\nno, and a field for it would be a field somebody eventually fills in from a\npayload that never held the answer. Why a quote was lost is a human fact\nand lives on ``quote_outcomes``, which no sync writes. This type is the\nsecond layer of that guarantee \u2014 the first being that the table it feeds\nhas no such column either.\n\n``lines`` carries the breakdown where the pull bought the detail call, and is\nempty where it did not \u2014 a resumed sync refreshes every header and re-reads\nno lines, so empty means \"not read on this pass\" rather than \"this quote had\nnone\". The reader has to keep those apart; the caller that writes them does\ntoo, which is why the sync only replaces stored lines when it has some.\n\nNo cost, no margin, no unit economics. ``total`` is the quote's own selling\ntotal, which is what was put in front of the customer.",
+  "properties": {
+    "client_viewed_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Client Viewed At"
+    },
+    "customer_external_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Customer External Id"
+    },
+    "customer_ref": {
+      "default": "",
+      "title": "Customer Ref",
+      "type": "string"
+    },
+    "date": {
+      "format": "date",
+      "title": "Date",
+      "type": "string"
+    },
+    "decided_on": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Decided On"
+    },
+    "expires_on": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expires On"
+    },
+    "external_ref": {
+      "minLength": 1,
+      "title": "External Ref",
+      "type": "string"
+    },
+    "lines": {
+      "items": {
+        "$ref": "#/$defs/QuoteLineIn"
+      },
+      "title": "Lines",
+      "type": "array"
+    },
+    "number": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Number"
+    },
+    "outcome": {
+      "$ref": "#/$defs/QuoteDocOutcome",
+      "default": "UNRECORDED"
+    },
+    "salesperson_external_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Salesperson External Id"
+    },
+    "source_attributes": {
+      "anyOf": [
+        {
+          "additionalProperties": true,
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Attributes"
+    },
+    "source_ref": {
+      "$ref": "#/$defs/SourceRef"
+    },
+    "source_reference": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Reference"
+    },
+    "source_status": {
+      "default": "",
+      "title": "Source Status",
+      "type": "string"
+    },
+    "total": {
+      "anyOf": [
+        {
+          "type": "number"
+        },
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Total"
+    }
+  },
+  "required": [
+    "external_ref",
+    "date",
+    "source_ref"
+  ],
+  "title": "QuoteDocIn",
+  "type": "object"
+}

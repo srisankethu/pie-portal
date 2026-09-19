@@ -154,6 +154,11 @@ def test_the_refusal_asks_what_a_connector_can_write_not_what_it_is_called(
         credential_fields=(), connection_fields=(), external_id_field="company_id",
         setup_note="A test connector that declares it can create a quote.",
         build_source=lambda *a, **k: None,
+        # Not optional on a spec, including a fixture one: a connector that
+        # never answers whether its system records its own write time is the
+        # state ``ConnectorSpec`` refuses to be constructed in.
+        records_source_time=False,
+        source_time_note="A test connector; it reads nothing and records nothing.",
         permissions=(erp_base.Permission("quotes.create", "Creating quotes",
                                          writes=("sales_quotes",)),))
     monkeypatch.setitem(erp_base._REGISTRY, "writeable", spec)

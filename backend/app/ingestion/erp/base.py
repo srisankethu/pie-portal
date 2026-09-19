@@ -176,6 +176,27 @@ class ConnectorSpec:
     setup_note: str
     #: ``(material, since=None) -> source`` — a live source for one company.
     build_source: Callable[..., Any]
+    #: Does this system's API expose, per document, when the SYSTEM recorded it
+    #: — distinct from the document's own date? This is the field the diagnosis
+    #: engine cuts evidence off at; a document date is not a substitute and must
+    #: never be used as one. A bill dated before a quote but entered three weeks
+    #: after it is not evidence the quoter had.
+    #:
+    #: Declared rather than defaulted, and placed among the fields that have no
+    #: default, so a connector cannot be registered without answering. There is
+    #: no third state: ``True`` obliges this connector to carry the value into
+    #: its canonical payloads as ``created_time``; ``False`` is a claim about
+    #: the ERP that a person can check against the vendor's own documentation.
+    #: Absence of the declaration is not a permitted answer — a connector that
+    #: omits the field must fail rather than ship quietly, which is the whole
+    #: reason it is here.
+    records_source_time: bool
+    #: Always non-empty. Where it comes from (the native field name(s)) when
+    #: True, or why this system genuinely has no such concept when False. Read
+    #: by a person deciding whether a gap is the ERP's or ours — which is a
+    #: different question from whether the platform is using it, and the only
+    #: one a spec can answer.
+    source_time_note: str
     #: What the sign-in must be granted in that system before it can read
     #: anything, and what each grant buys. Declared per connector because the
     #: answer *is* per connector: a screen that shows one system's list while
@@ -200,6 +221,16 @@ class ConnectorSpec:
     #: asking somebody to find a GUID. None for systems whose sign-in is
     #: already scoped to one company.
     discover: Optional[Callable[..., list[dict[str, Any]]]] = None
+
+    def __post_init__(self) -> None:
+        # The type system can insist the declaration exists; only this can
+        # insist it says something. An empty note passes every check a reader
+        # is not running and tells the person holding the gap nothing at all.
+        if not self.source_time_note.strip():
+            raise ValueError(
+                f"{self.key}: source_time_note cannot be empty — name the "
+                f"field this system records its own write time in, or say why "
+                f"it has none")
 
     @property
     def writes(self) -> tuple[str, ...]:

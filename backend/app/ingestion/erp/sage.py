@@ -153,6 +153,14 @@ def x3_translate_document(record: dict[str, Any], *, kind: str) -> dict[str, Any
         "currency_code": (str(field_of(doc, "CUR")).upper()
                           if field_of(doc, "CUR") else None),
         "last_modified_time": str(iso_date(field_of(doc, "UPDDAT")) or ""),
+        # ``CREDAT`` is X3's creation-date technical column, the pair of the
+        # ``UPDDAT`` above; both sit on every X3 table by construction. Carried
+        # raw rather than through ``iso_date`` on purpose — a representation
+        # that states a full timestamp keeps it, and truncating to a date here
+        # would throw away the only part that can be placed on the UTC line.
+        # Never defaulted from ``ACCDAT``: a document's own date is a different
+        # fact and must not stand in for this one.
+        "created_time": field_of(doc, "CREDAT") or None,
         "line_items": [],
     }
     for i, ln in enumerate(x3_lines(record)):
@@ -374,6 +382,18 @@ register(ConnectorSpec(
                    required=False, reads=("purchase_orders",)),
     ),
     build_source=_x3_build_source,
+    records_source_time=True,
+    source_time_note=(
+        "``CREDAT`` (with ``CRETIM`` beside it) — X3's creation-date technical "
+        "column, present on every table it creates along with ``UPDDAT`` / "
+        "``UPDTIM``, which this connector already reads. Carried raw from the "
+        "``$details`` payload through the same ``field_of`` reader, so a "
+        "representation that omits it yields ``None`` rather than a guess. Two "
+        "caveats for whoever uses it: X3 splits the stamp into a date and a "
+        "time column and only the date is read here, and neither carries a "
+        "zone — so ``clock.utc_stamp`` refuses it and "
+        "``normalize._recorded_at`` drops it. The ERP exposes the fact; "
+        "placing it on the UTC line is a decision this spec cannot make."),
 ))
 
 
@@ -492,6 +512,11 @@ def sage100_translate_invoice(header: dict[str, str],
         "balance": header.get("Balance") or None,
         "last_modified_time": str(
             iso_date(first(header, "DateUpdated", "TransactionDate")) or ""),
+        # ``DateCreated`` (with ``TimeCreated``) is the internal-control audit
+        # pair Sage 100 carries on its history tables alongside ``DateUpdated``.
+        # Raw, so a build that states a full timestamp keeps it, and never
+        # defaulted from ``InvoiceDate``.
+        "created_time": header.get("DateCreated") or None,
         "line_items": [
             {
                 "line_item_id": ln.get("DetailSeqNo") or str(i),
@@ -697,4 +722,15 @@ register(ConnectorSpec(
                    required=False, reads=("purchase_orders",)),
     ),
     build_source=_sage100_build_source,
+    records_source_time=True,
+    source_time_note=(
+        "``DateCreated`` (with ``TimeCreated``) on "
+        "``AR_InvoiceHistoryHeader`` — the internal-control audit columns Sage "
+        "100 carries on its history tables beside the ``DateUpdated`` this "
+        "connector already reads. The SData feed is parsed column by column "
+        "with no field selection, so the value arrives whenever the provider "
+        "serves it. Same two caveats as X3: the date and the time are separate "
+        "columns and only the date is read, and neither carries a zone, so "
+        "``normalize._recorded_at`` drops it until somebody decides which zone "
+        "a Sage 100 book states its stamps in."),
 ))

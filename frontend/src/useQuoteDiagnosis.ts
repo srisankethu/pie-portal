@@ -24,11 +24,19 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { post } from "./intelligence";
 import { productRef } from "./rel";
 import type { DiagnosisView } from "./components/DiagnosisCard";
+import type { CoverageView, RollupView } from "./components/QuoteDiagnosisPanel";
 import type { Quote } from "./types";
 
 interface AssessResponse {
   quote_id: string;
   lines: DiagnosisView[];
+  /** What was checked on this quote and what could not be. Served to both
+   *  roles — the type behind it declares no money field at all. */
+  coverage?: CoverageView;
+  /** What the quote comes to, and the lines its total does not show.
+   *  **Absent from a salesperson's response**, not empty: the server puts this
+   *  key on one branch and there is no key on the other. */
+  rollup?: RollupView;
 }
 
 /** One line as `/assess` wants it. It takes a product *code* or an id and a
@@ -67,6 +75,16 @@ function diagnosableLines(quote: Quote | null): DiagnosisLineIn[] {
 
 export interface QuoteDiagnosisState {
   byLineId: Record<string, DiagnosisView>;
+  /** What the server said it checked on this quote, or `null` where it was
+   *  never asked. **The two are different answers** — a panel that cannot tell
+   *  them apart reads "nothing was checked" as "nothing was wrong", which is the
+   *  failure `CLAUDE.md` §1 names three times — so this is carried explicitly
+   *  rather than left to `byLineId` being empty. */
+  coverage: CoverageView | null;
+  /** The quote's own totals, and the lines those totals do not show. `null` for
+   *  a salesperson, whose response carries no such key, and for a request that
+   *  was never made. */
+  rollup: RollupView | null;
   loading: boolean;
   /** Set when the request failed. The screen says nothing rather than pretending
    *  every line came back clean — a diagnosis panel that is silent because it
@@ -93,13 +111,14 @@ function useDiagnosis(path: string | null, body: unknown,
   const key = useMemo(() => JSON.stringify([path, body]), [path, body]);
 
   const [state, setState] = useState<QuoteDiagnosisState>({
-    byLineId: {}, loading: false, error: null,
+    byLineId: {}, coverage: null, rollup: null, loading: false, error: null,
   });
   const latest = useRef(0);
 
   useEffect(() => {
     if (!path) {
-      setState({ byLineId: {}, loading: false, error: null });
+      setState({ byLineId: {}, coverage: null, rollup: null,
+                 loading: false, error: null });
       return;
     }
     const mine = ++latest.current;
@@ -113,11 +132,16 @@ function useDiagnosis(path: string | null, body: unknown,
         if (mine !== latest.current) return;
         const byLineId: Record<string, DiagnosisView> = {};
         for (const row of r.lines) byLineId[row.line_id] = row;
-        setState({ byLineId, loading: false, error: null });
+        // Carried rather than derived from the lines. Both are quote-level
+        // answers the server computed against a versioned policy, and a browser
+        // that re-counted them would be the second answer that drifts.
+        setState({ byLineId, coverage: r.coverage ?? null,
+                   rollup: r.rollup ?? null, loading: false, error: null });
       })
       .catch((e) => {
         if (mine !== latest.current) return;
-        setState({ byLineId: {}, loading: false, error: (e as Error).message });
+        setState({ byLineId: {}, coverage: null, rollup: null,
+                   loading: false, error: (e as Error).message });
       });
     // `key` is the content hash; `path` and `body` are read through it.
     // eslint-disable-next-line react-hooks/exhaustive-deps

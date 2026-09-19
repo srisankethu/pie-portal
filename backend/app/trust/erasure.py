@@ -331,6 +331,21 @@ EXPORTED: tuple[tuple[str, Any], ...] = (
     # a time from its endpoint. An export that carried them would be hundreds of
     # megabytes of base64 in a file this module expects to travel by email.
     ("rfq_documents", models.RfqDocument),
+    # ── how they told us to read their own ERP ──────────────────────────────
+    #
+    # What each of this organization's custom fields means, and what each of
+    # its values means. Exported, and the reason is the one ``value_events``
+    # and ``evaluation_baselines`` travel on: without these rows a departing
+    # tenant holds every quote and every diagnosis and cannot reproduce a
+    # single reading of one, because the declaration that turned
+    # ``UD_Field_07 = "TENDER"`` into an intent is the missing half. It is also
+    # theirs in the plainest sense — it is their own vocabulary, typed by them,
+    # about a system they own.
+    #
+    # Superseded rows included, for the ``inbound_line_dispositions`` reason:
+    # an export holding only the current reading could not explain a diagnosis
+    # the tenant ran before a correction.
+    ("source_attribute_mappings", models.SourceAttributeMapping),
 )
 
 #: Never exported, and each one has a reason a customer can read. Keyed by

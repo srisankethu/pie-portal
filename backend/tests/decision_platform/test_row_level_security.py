@@ -462,6 +462,14 @@ EXPECTED_POLICIED = {
     # the person who read the card and what they said was wrong with it. Policied
     # by the revision that creates the tables, per the rule `l1grp` states.
     "quote_diagnoses", "quote_diagnosis_dismissals",
+    # t7concept — how this organization declared its own ERP fields: which
+    # custom field carries commercial intent, and what each of its values
+    # means. Small rows, and a map of a competitor's ERP configuration — which
+    # of their fields they treat as meaningful, and the vocabulary their
+    # business actually uses in them. Policied by the revision that creates the
+    # table, per the rule `l1grp` states: a table created today has no window
+    # in which it is uncovered.
+    "source_attribute_mappings",
     # q4qline — what was on each quote the ERP raised. Strictly worse to leak
     # than the header next door: a cross-tenant read is a competitor's
     # customers, the parts they buy and the prices they were offered, at line

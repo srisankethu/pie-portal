@@ -62,6 +62,7 @@
       }
     }
   },
+  "description": "One party this business sells to, as the source system holds it.\n\n``external_id`` is that system's own id for the record, and it is the\nidentity: every ``customer_external_id`` elsewhere in this contract joins on\nit, while a name is not a key \u2014 two connected companies can each hold an\n\"ABC Industries\" and they are two different customers.\n\nA source that keeps one contact list for both sides of the trade has to\nsplit it. A supplier is ``VendorIn``, even where the ERP separates the two\nby nothing more than a type flag on one record.",
   "properties": {
     "assigned_user_id": {
       "anyOf": [

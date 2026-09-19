@@ -62,6 +62,7 @@
       }
     }
   },
+  "description": "One party this business buys from, as the source system holds it. The\nbuy-side counterpart of ``CustomerIn``, and a separate record rather than a\nflag on one \u2014 a source that keeps a single contact list has to send each\nside under its own entity.\n\nA vendor is who was paid, which is not who made the goods:\n``ProductIn.manufacturer`` is the maker, and for an authorised distributor\nthe two usually coincide without being the same fact.\n\n``payment_terms_days`` of 0 is a real term, \"due on receipt\". Only absence\nmeans the terms are unknown, so leave the field out rather than sending zero\nfor a vendor nobody has recorded terms for.",
   "properties": {
     "external_id": {
       "minLength": 1,

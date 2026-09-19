@@ -54,6 +54,7 @@
       }
     }
   },
+  "description": "What one item held across the whole organization, on one day. One row per\nitem per day; the same item at one location is ``StockLocationSnapshotIn``.\n\nA position at an instant, not a movement. Nothing here is a receipt, an\nissue or an adjustment, and no history can be reconstructed from it \u2014 a\nsource that reports only a current number leaves a series exactly as dense\nas the days on which something wrote one down.\n\nAn absent quantity is unknown and never zero. That matters most on\n``reorder_level``, where \"no reorder point set\" is not \"reorder at zero\",\nand on ``tracked``: a service or other non-inventory item sets it false\nrather than reporting a holding of nothing.",
   "properties": {
     "actual_available": {
       "anyOf": [

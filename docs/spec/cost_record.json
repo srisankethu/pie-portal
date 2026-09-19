@@ -54,6 +54,7 @@
       }
     }
   },
+  "description": "One line of one bill: what was bought, from whom, and what it cost.\nBill-line grain \u2014 ``external_ref`` is ``{bill_id}:{line_id}``, and the\nbill's own payable terms are ``BillIn``.\n\nA purchase event, not a valuation. It states what was paid on a date for a\nquantity and says nothing about what stock is worth now; the holding, and\nthe last purchase price the source keeps beside it, are ``StockSnapshotIn``.\n\n``unit_cost`` is effective \u2014 net of the line discount \u2014 and is the figure\nevery cost consumer in this platform reads. ``rate`` is the same line's\npre-discount list rate, carried for audit only; sending it as ``unit_cost``\noverstates cost on every margin computed from it.",
   "properties": {
     "date": {
       "format": "date",

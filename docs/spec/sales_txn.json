@@ -54,6 +54,7 @@
       }
     }
   },
+  "description": "One invoice line: what one customer bought, of one product, on one day.\nInvoice-line grain \u2014 ``external_ref`` is ``{invoice_id}:{line_id}``, and the\ninvoice's own header, balance and due date are ``InvoiceIn``.\n\nA line, never a document: an invoice of six lines is six of these beside one\n``InvoiceIn``, and rolling them into one record discards the per-product\ngrain every number in this platform is computed at.\n\n``unit_price`` and ``line_revenue`` are both net of the line discount and\nbefore tax \u2014 what the customer actually paid for the goods. ``rate`` is the\nsame line's pre-discount list price, carried for audit only; sending it as\n``unit_price`` overstates revenue, and so does a tax-inclusive\n``line_revenue``.",
   "properties": {
     "customer_external_id": {
       "minLength": 1,

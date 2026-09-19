@@ -1,6 +1,6 @@
 # The PIE canonical ingestion spec
 
-`spec_a2dd5e2e56` · 19 entities · 300 field contracts (142 REQUIRED, 20 EXPECTED, 138 OPTIONAL)
+`spec_d906bc550e` · 19 entities · 300 field contracts (142 REQUIRED, 20 EXPECTED, 138 OPTIONAL)
 
 > **Generated — do not edit any file in this directory by hand.**
 > `scripts/spec_export.py` writes it from `backend/app/domain/schemas.py`,
@@ -92,7 +92,7 @@ element that is present; it never means the list must be non-empty.
 ## Versioning and compatibility
 
 **The stamp is a content hash, not a semantic version.**
-`spec_a2dd5e2e56` is sha256 over all 19 documents, truncated. It
+`spec_d906bc550e` is sha256 over all 19 documents, truncated. It
 moves on *any* change to any of them,
 including a reworded description — deliberately, because a contract whose
 stated meaning can be rewritten under a stable stamp is not a contract. It
@@ -145,7 +145,7 @@ print("spec_" + hashlib.sha256(pre.encode()).hexdigest()[:10])
 EOF
 ```
 
-That prints `spec_a2dd5e2e56`. A hash does not invert, so publishing the
+That prints `spec_d906bc550e`. A hash does not invert, so publishing the
 pre-image is what makes the stamp explainable rather than merely
 distinguishable — the same reason this platform publishes the serialised
 form behind its other policy stamps.
@@ -209,10 +209,18 @@ A bill's payable terms, header grain. The companion to the
 
 [`cost_record.json`](cost_record.json)
 
-*The DTO carries no docstring, so this entity is published with no
-description at all. That is a gap in the contract rather than a
-record whose meaning is obvious — an integrator reading only this
-artifact has nothing here to go on.*
+One line of one bill: what was bought, from whom, and what it cost.
+Bill-line grain — ``external_ref`` is ``{bill_id}:{line_id}``, and the
+bill's own payable terms are ``BillIn``.
+
+A purchase event, not a valuation. It states what was paid on a date for a
+quantity and says nothing about what stock is worth now; the holding, and
+the last purchase price the source keeps beside it, are ``StockSnapshotIn``.
+
+``unit_cost`` is effective — net of the line discount — and is the figure
+every cost consumer in this platform reads. ``rate`` is the same line's
+pre-discount list rate, carried for audit only; sending it as ``unit_cost``
+overstates cost on every margin computed from it.
 
 | Field | Status | Why absence is a defect |
 |---|---|---|
@@ -302,10 +310,16 @@ would silently drop exactly the oldest positions.
 
 [`customer.json`](customer.json)
 
-*The DTO carries no docstring, so this entity is published with no
-description at all. That is a gap in the contract rather than a
-record whose meaning is obvious — an integrator reading only this
-artifact has nothing here to go on.*
+One party this business sells to, as the source system holds it.
+
+``external_id`` is that system's own id for the record, and it is the
+identity: every ``customer_external_id`` elsewhere in this contract joins on
+it, while a name is not a key — two connected companies can each hold an
+"ABC Industries" and they are two different customers.
+
+A source that keeps one contact list for both sides of the trade has to
+split it. A supplier is ``VendorIn``, even where the ERP separates the two
+by nothing more than a type flag on one record.
 
 | Field | Status | Why absence is a defect |
 |---|---|---|
@@ -392,10 +406,17 @@ question rather than a reporting preference.
 
 [`payment_receipt.json`](payment_receipt.json)
 
-*The DTO carries no docstring, so this entity is published with no
-description at all. That is a gap in the contract rather than a
-record whose meaning is obvious — an integrator reading only this
-artifact has nothing here to go on.*
+One payment in, at receipt grain — the money that arrived, and which
+documents it was set against.
+
+One receipt settling four invoices is one record carrying four
+``applications``: ``amount`` is the cash and the applications are how it was
+distributed, so a connector emitting a receipt per invoice counts the same
+money four times.
+
+``applications`` may legitimately be empty — money received against no
+invoice yet. Say that with ``is_advance`` and ``unapplied_amount`` rather
+than leaving an empty list to carry the meaning.
 
 | Field | Status | Why absence is a defect |
 |---|---|---|
@@ -424,10 +445,18 @@ artifact has nothing here to go on.*
 
 [`product.json`](product.json)
 
-*The DTO carries no docstring, so this entity is published with no
-description at all. That is a gap in the contract rather than a
-record whose meaning is obvious — an integrator reading only this
-artifact has nothing here to go on.*
+One item as the catalogue holds it — the master record, not a price, a
+cost or a position. What is on the shelf is ``StockSnapshotIn``; what it
+cost is ``CostRecordIn``.
+
+``category``, ``manufacturer``, ``source_item_type`` and
+``source_item_category`` are carried in the source's own words and mapped
+only at read time, so send them verbatim rather than translated — and leave
+them out where the source keeps no such taxonomy rather than inferring one
+from the item's name.
+
+``manufacturer`` is who makes the item and never who it was bought from;
+the supplier on a purchase is ``CostRecordIn.vendor_external_id``.
 
 | Field | Status | Why absence is a defect |
 |---|---|---|
@@ -452,10 +481,16 @@ artifact has nothing here to go on.*
 
 [`purchase_order.json`](purchase_order.json)
 
-*The DTO carries no docstring, so this entity is published with no
-description at all. That is a gap in the contract rather than a
-record whose meaning is obvious — an integrator reading only this
-artifact has nothing here to go on.*
+One order placed on a supplier, and how much of it has arrived. Header
+grain, and the supply-side mirror of ``SalesOrderIn``.
+
+``ordered_qty`` and ``pending_qty`` are the document's own totals across
+every line — the source's sum, in whatever units those lines carried — and
+not a quantity for any one item: this record holds no lines at all.
+
+``received_on`` is absent both when an order is still open and when a
+receipt was never logged. The record cannot tell those apart, so do not
+derive it from ``status`` to make the field look complete.
 
 | Field | Status | Why absence is a defect |
 |---|---|---|
@@ -580,10 +615,19 @@ One customer order, header grain. The demand-side mirror of
 
 [`sales_txn.json`](sales_txn.json)
 
-*The DTO carries no docstring, so this entity is published with no
-description at all. That is a gap in the contract rather than a
-record whose meaning is obvious — an integrator reading only this
-artifact has nothing here to go on.*
+One invoice line: what one customer bought, of one product, on one day.
+Invoice-line grain — ``external_ref`` is ``{invoice_id}:{line_id}``, and the
+invoice's own header, balance and due date are ``InvoiceIn``.
+
+A line, never a document: an invoice of six lines is six of these beside one
+``InvoiceIn``, and rolling them into one record discards the per-product
+grain every number in this platform is computed at.
+
+``unit_price`` and ``line_revenue`` are both net of the line discount and
+before tax — what the customer actually paid for the goods. ``rate`` is the
+same line's pre-discount list price, carried for audit only; sending it as
+``unit_price`` overstates revenue, and so does a tax-inclusive
+``line_revenue``.
 
 | Field | Status | Why absence is a defect |
 |---|---|---|
@@ -634,10 +678,18 @@ records, the same reason ``InvoiceDoc`` sits beside ``SalesTxn``.
 
 [`stock_snapshot.json`](stock_snapshot.json)
 
-*The DTO carries no docstring, so this entity is published with no
-description at all. That is a gap in the contract rather than a
-record whose meaning is obvious — an integrator reading only this
-artifact has nothing here to go on.*
+What one item held across the whole organization, on one day. One row per
+item per day; the same item at one location is ``StockLocationSnapshotIn``.
+
+A position at an instant, not a movement. Nothing here is a receipt, an
+issue or an adjustment, and no history can be reconstructed from it — a
+source that reports only a current number leaves a series exactly as dense
+as the days on which something wrote one down.
+
+An absent quantity is unknown and never zero. That matters most on
+``reorder_level``, where "no reorder point set" is not "reorder at zero",
+and on ``tracked``: a service or other non-inventory item sets it false
+rather than reporting a holding of nothing.
 
 | Field | Status | Why absence is a defect |
 |---|---|---|
@@ -660,10 +712,18 @@ artifact has nothing here to go on.*
 
 [`vendor.json`](vendor.json)
 
-*The DTO carries no docstring, so this entity is published with no
-description at all. That is a gap in the contract rather than a
-record whose meaning is obvious — an integrator reading only this
-artifact has nothing here to go on.*
+One party this business buys from, as the source system holds it. The
+buy-side counterpart of ``CustomerIn``, and a separate record rather than a
+flag on one — a source that keeps a single contact list has to send each
+side under its own entity.
+
+A vendor is who was paid, which is not who made the goods:
+``ProductIn.manufacturer`` is the maker, and for an authorised distributor
+the two usually coincide without being the same fact.
+
+``payment_terms_days`` of 0 is a real term, "due on receipt". Only absence
+means the terms are unknown, so leave the field out rather than sending zero
+for a vendor nobody has recorded terms for.
 
 | Field | Status | Why absence is a defect |
 |---|---|---|

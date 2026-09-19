@@ -190,7 +190,13 @@ class ReadModelRepository:
         if c.assigned_user_id is not None:
             row.assigned_user_id = c.assigned_user_id
         row.source_attributes = _carried_attributes(c.source_attributes)
-        row.source_ref = c.source_ref.model_dump()
+        # ``mode="json"`` at every one of these sites, not only at the three
+        # that promote ``source_recorded_at`` into a column. ``SourceRef``
+        # carries a ``datetime`` now that every normalizer passes the source's
+        # creation stamp through, and these columns are ``JSON``: a python-mode
+        # dump puts a ``datetime`` in one, which fails at flush rather than at
+        # the line that built it.
+        row.source_ref = c.source_ref.model_dump(mode="json")
         return row
 
     def get_customer_by_external(self, external_id: str) -> Optional[models.Customer]:
@@ -258,7 +264,7 @@ class ReadModelRepository:
         row.source_item_category = p.source_item_category
         row.active = p.active
         row.source_attributes = _carried_attributes(p.source_attributes)
-        row.source_ref = p.source_ref.model_dump()
+        row.source_ref = p.source_ref.model_dump(mode="json")
         return row
 
     def placeholder_product(self, external_id: str, *,
@@ -829,7 +835,7 @@ class ReadModelRepository:
         row.payment_terms_days = v.payment_terms_days
         row.status = v.status.value
         row.source_attributes = _carried_attributes(v.source_attributes)
-        row.source_ref = v.source_ref.model_dump()
+        row.source_ref = v.source_ref.model_dump(mode="json")
         return row
 
     def get_vendor_by_external(self, external_id: str) -> Optional[models.Vendor]:
@@ -887,7 +893,7 @@ class ReadModelRepository:
         row.reorder_level = snap.reorder_level
         row.purchase_rate = snap.purchase_rate
         row.tracked = snap.tracked
-        row.source_ref = snap.source_ref.model_dump()
+        row.source_ref = snap.source_ref.model_dump(mode="json")
         return row
 
     def upsert_payment(self, customer_id: str,
@@ -906,7 +912,7 @@ class ReadModelRepository:
         row.mode = p.mode
         row.is_advance = p.is_advance
         row.unapplied_amount = p.unapplied_amount
-        row.source_ref = p.source_ref.model_dump()
+        row.source_ref = p.source_ref.model_dump(mode="json")
         self.s.flush()
 
         def assign(app_row: models.PaymentApplication,
@@ -921,7 +927,7 @@ class ReadModelRepository:
             models.PaymentApplication,
             models.PaymentApplication.payment_receipt_id, row.payment_receipt_id,
             p.applications, paid_on=p.date,
-            source_ref=p.source_ref.model_dump(), assign=assign)
+            source_ref=p.source_ref.model_dump(mode="json"), assign=assign)
         return row
 
     def _replace_applications(self, model: Any, parent_column: Any,
@@ -994,7 +1000,7 @@ class ReadModelRepository:
         row.total = so.total
         row.salesperson_external_id = so.salesperson_external_id
         row.source_attributes = _carried_attributes(so.source_attributes)
-        row.source_ref = so.source_ref.model_dump()
+        row.source_ref = so.source_ref.model_dump(mode="json")
         return row
 
     def upsert_quote_document(self, customer_id: Optional[str],
@@ -1129,7 +1135,7 @@ class ReadModelRepository:
         row.total = b.total
         row.balance = b.balance
         row.source_attributes = _carried_attributes(b.source_attributes)
-        row.source_ref = b.source_ref.model_dump()
+        row.source_ref = b.source_ref.model_dump(mode="json")
         return row
 
     def upsert_invoice(self, customer_id: Optional[str],
@@ -1155,7 +1161,7 @@ class ReadModelRepository:
         row.total = inv.total
         row.balance = inv.balance
         row.source_attributes = _carried_attributes(inv.source_attributes)
-        row.source_ref = inv.source_ref.model_dump()
+        row.source_ref = inv.source_ref.model_dump(mode="json")
         self._replace_invoice_sales_orders(inv)
         return row
 
@@ -1183,7 +1189,7 @@ class ReadModelRepository:
                     models.InvoiceSalesOrderLink.invoice_external_ref
                     == inv.external_ref)).all()
         }
-        source_ref = inv.source_ref.model_dump()
+        source_ref = inv.source_ref.model_dump(mode="json")
         seen: set[str] = set()
         for ref in inv.sales_orders:
             seen.add(ref.external_ref)
@@ -1221,7 +1227,7 @@ class ReadModelRepository:
         row.is_active = loc.is_active
         row.is_primary = loc.is_primary
         row.tax_reg_no = loc.tax_reg_no
-        row.source_ref = loc.source_ref.model_dump()
+        row.source_ref = loc.source_ref.model_dump(mode="json")
         return row
 
     def upsert_stock_location_snapshot(
@@ -1248,7 +1254,7 @@ class ReadModelRepository:
         row.on_hand = snap.on_hand
         row.available = snap.available
         row.asset_value = snap.asset_value
-        row.source_ref = snap.source_ref.model_dump()
+        row.source_ref = snap.source_ref.model_dump(mode="json")
         return row
 
     def upsert_credit_note(self, customer_id: Optional[str],
@@ -1271,7 +1277,7 @@ class ReadModelRepository:
         row.status = note.status
         row.total = note.total
         row.balance = note.balance
-        row.source_ref = note.source_ref.model_dump()
+        row.source_ref = note.source_ref.model_dump(mode="json")
         return row
 
     def upsert_credit_note_application(
@@ -1294,7 +1300,7 @@ class ReadModelRepository:
         row.invoice_date = app.invoice_date
         row.applied_on = app.applied_on
         row.amount_applied = app.amount_applied
-        row.source_ref = app.source_ref.model_dump()
+        row.source_ref = app.source_ref.model_dump(mode="json")
         return row
 
     def upsert_vendor_credit(self, vendor_id: Optional[str],
@@ -1317,7 +1323,7 @@ class ReadModelRepository:
         row.status = vc.status
         row.total = vc.total
         row.balance = vc.balance
-        row.source_ref = vc.source_ref.model_dump()
+        row.source_ref = vc.source_ref.model_dump(mode="json")
         return row
 
     def upsert_vendor_credit_application(
@@ -1337,7 +1343,7 @@ class ReadModelRepository:
         row.bill_external_ref = app.bill_external_ref
         row.bill_number = app.bill_number
         row.amount_applied = app.amount_applied
-        row.source_ref = app.source_ref.model_dump()
+        row.source_ref = app.source_ref.model_dump(mode="json")
         return row
 
     def upsert_vendor_payment(self, vendor_id: Optional[str],
@@ -1355,7 +1361,7 @@ class ReadModelRepository:
         row.amount = vp.amount
         row.mode = vp.mode
         row.reference = vp.reference
-        row.source_ref = vp.source_ref.model_dump()
+        row.source_ref = vp.source_ref.model_dump(mode="json")
         self.s.flush()
 
         def assign(app_row: models.BillPaymentApplication,
@@ -1372,7 +1378,7 @@ class ReadModelRepository:
             models.BillPaymentApplication,
             models.BillPaymentApplication.vendor_payment_id, row.vendor_payment_id,
             vp.applications, paid_on=vp.date,
-            source_ref=vp.source_ref.model_dump(), assign=assign)
+            source_ref=vp.source_ref.model_dump(mode="json"), assign=assign)
         return row
 
     def upsert_purchase_order(self, vendor_id: Optional[str],
@@ -1396,7 +1402,7 @@ class ReadModelRepository:
         row.total = po.total
         row.received_on = po.received_on
         row.source_attributes = _carried_attributes(po.source_attributes)
-        row.source_ref = po.source_ref.model_dump()
+        row.source_ref = po.source_ref.model_dump(mode="json")
         return row
 
 

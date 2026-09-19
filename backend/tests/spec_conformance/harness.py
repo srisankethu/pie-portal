@@ -52,32 +52,52 @@ from app.ingestion import sync as sync_module
 #: reports clean, and that is the failure mode this constant would have.
 SOURCE_TIME_PATH = "source_ref.recorded_at"
 
-#: Where the source time is *asserted*, and why it is these three.
+#: Where the platform *reads* a source time back, and why it is these three.
 #:
-#: The contract publishes the expectation on all nineteen entities, because it
-#: is keyed on ``SourceRef`` and every entity carries one. The platform reads it
-#: back from exactly three rows: ``SalesTxn``, ``CostRecord`` and
-#: ``QuoteDocument`` each promote it out of ``source_ref`` into a
-#: ``source_recorded_at`` column, and ``commercial/quote_diagnosis`` filters
-#: evidence on that column. Those three are where an absence causes the thing
-#: the expectation's own reason describes — "every quote line that needed it
-#: answers INSUFFICIENT_EVIDENCE".
+#: ``SalesTxn``, ``CostRecord`` and ``QuoteDocument`` each promote it out of
+#: ``source_ref`` into a ``source_recorded_at`` column, and
+#: ``commercial/quote_diagnosis`` filters evidence on that column. Those three
+#: are where an absence causes the thing the expectation's own reason describes
+#: — "every quote line that needed it answers INSUFFICIENT_EVIDENCE".
 #:
 #: Written out rather than derived, and then held against the read model by
 #: ``test_the_evidence_entities_are_the_rows_that_promote_a_source_time``: a
 #: fourth table gaining the column fails that pin, which is the moment somebody
 #: decides rather than a silent widening. The same discipline ``SPEC_ENTITIES``
 #: uses on itself.
-#:
-#: **What this deliberately does not assert, stated because it is a real gap
-#: and not a comfortable one.** Sixteen entities carry the marker in the
-#: published document and no normalizer sets ``recorded_at`` on any of them —
-#: ``normalize_customer``, ``normalize_bill_terms`` and fourteen others build
-#: ``SourceRef`` without it, so no connector can satisfy it and a check for it
-#: could only ever be red. That is a finding about the contract's scope and the
-#: normalizer, reported as one, rather than a permanently failing assertion
-#: nobody would read.
 EVIDENCE_ENTITIES: frozenset[str] = frozenset({"cost_record", "quote_doc", "sales_txn"})
+
+#: Where the source time is *asserted*, which is a wider question than where it
+#: is read.
+#:
+#: The contract publishes the expectation on all nineteen entities, because it
+#: is keyed on ``SourceRef`` and every entity carries one. What a screen may
+#: usefully ask for is narrower, and the bound is the connector rather than the
+#: reader: **an entity belongs here when some registered connector actually
+#: supplies ``created_time`` on the payload behind it.** Asking anywhere else
+#: is the permanently-red check nobody can act on, which is a check people
+#: learn to scroll past (CLAUDE.md §9).
+#:
+#: This used to be ``EVIDENCE_ENTITIES`` alone, for a reason that has since
+#: been fixed rather than argued away: sixteen entities carried the marker and
+#: no normalizer set ``recorded_at`` on any of them, so no connector *could*
+#: satisfy it whatever its ERP held. ``normalize`` now calls ``_recorded_at``
+#: from every normalizer that builds a ``SourceRef``, so the question is once
+#: again about the connector, and three more entities answer it: ``invoice``
+#: and ``bill`` ride the same two document payloads as ``sales_txn`` and
+#: ``cost_record``, and ``payment_receipt`` rides a third that no other entity
+#: screens at all — Acumatica and NetSuite both carry a creation stamp on it.
+#:
+#: The remaining thirteen stay out because no connector in the registry sends
+#: one for them, which is a connector gap and is reported as one rather than as
+#: an assertion that could only fail.
+#:
+#: Written out rather than derived, and the derivation pinned by
+#: ``test_the_screened_entities_are_the_ones_a_connector_can_satisfy`` — which
+#: fails both ways: at an entry nothing carries, and at a connector that starts
+#: carrying one for an entity this set leaves out.
+SOURCE_TIME_ENTITIES: frozenset[str] = EVIDENCE_ENTITIES | {
+    "bill", "invoice", "payment_receipt"}
 
 #: Placeholder for a connector that has declared nothing. Distinct from
 #: ``False``, which is a claim about the ERP somebody can check; absence is not
@@ -262,7 +282,7 @@ def missing_expected(emissions: list[Emission], declaration: Declaration) -> lis
     only one with a declared escape: a connector whose ERP exposes no
     system-record timestamp says so on its spec. There is no third state — a
     connector that has declared nothing fails here, because silence is exactly
-    what the incident looked like. It is read on ``EVIDENCE_ENTITIES``; see
+    what the incident looked like. It is read on ``SOURCE_TIME_ENTITIES``; see
     that constant for the scope and for what is deliberately left out of it.
 
     One line per (entity, field) rather than per record. A connector emitting
@@ -278,7 +298,7 @@ def missing_expected(emissions: list[Emission], declaration: Declaration) -> lis
             if contract.status != spec.EXPECTED:
                 continue
             if contract.path == SOURCE_TIME_PATH:
-                if emission.entity not in EVIDENCE_ENTITIES:
+                if emission.entity not in SOURCE_TIME_ENTITIES:
                     continue
                 if declaration.records_source_time is UNDECLARED:
                     key = (emission.entity, "undeclared")

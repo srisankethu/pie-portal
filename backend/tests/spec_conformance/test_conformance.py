@@ -20,7 +20,8 @@ from app.ingestion import erp
 from . import broken
 from .conftest import ORG, make_org, open_session, pull
 from .connectors import UNDER_TEST
-from .harness import (CHECKS, EVIDENCE_ENTITIES, SOURCE_TIME_PATH, UNDECLARED,
+from .harness import (CHECKS, EVIDENCE_ENTITIES, SOURCE_TIME_ENTITIES,
+                      SOURCE_TIME_PATH, UNDECLARED, _SOURCE_TIME_KEY,
                       _decimal_paths, declaration_of, values_at)
 
 #: The connectors this suite runs over, taken from the registry rather than
@@ -142,6 +143,36 @@ def test_the_evidence_entities_are_the_rows_that_promote_a_source_time():
                 if hasattr(model, "source_recorded_at")}
     assert promoted == {"SalesTxn", "CostRecord", "QuoteDoc"}, sorted(promoted)
     assert EVIDENCE_ENTITIES == {"sales_txn", "cost_record", "quote_doc"}
+
+
+def test_the_screened_entities_are_the_ones_a_connector_can_satisfy(pulled):
+    """``harness.SOURCE_TIME_ENTITIES`` is where the source-time expectation is
+    asserted, and this is where that scope is held against the connectors.
+
+    The contract marks the field EXPECTED on all nineteen entities. What a
+    screen may ask for is bounded by what a connector can send, and that bound
+    is measured here rather than argued: the set must be exactly the entities
+    the platform reads a source time back off, plus every entity some fixture
+    actually carried a ``created_time`` on.
+
+    It fails in both directions on purpose. An entry nothing carries is the
+    permanently-red check this suite refuses to grow; an entity a connector has
+    *started* carrying one for and that the set leaves out is a screen quietly
+    narrower than the evidence available to it — the same silent-omission shape
+    as the incident. Either way somebody decides, rather than a scope drifting.
+
+    ``quote_doc`` is in through ``EVIDENCE_ENTITIES`` and not through a
+    fixture: no registered connector produces one, which
+    ``test_the_entities_no_fixture_reaches_are_named_not_assumed`` says out
+    loud.
+    """
+    carried = {e.entity for pull_ in pulled.values() for e in pull_.emissions
+               if e.payload.get(_SOURCE_TIME_KEY)}
+    assert carried, "no fixture carried a source time, so this screens nothing"
+    assert SOURCE_TIME_ENTITIES == EVIDENCE_ENTITIES | carried, (
+        f"screened: {sorted(SOURCE_TIME_ENTITIES)}\n"
+        f"read back: {sorted(EVIDENCE_ENTITIES)}\n"
+        f"carried by a connector: {sorted(carried)}")
 
 
 # ── the contract, connector by connector ────────────────────────────────────

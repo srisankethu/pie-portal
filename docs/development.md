@@ -97,10 +97,15 @@ python -m pytest -q                      # the default suite (138)
 python -m pytest -q tests/decision_platform/test_signals_detectors.py
 python -m pytest -q -k "margin"
 python -m pytest -m live                 # opt-in: real AI provider, costs money
+python -m pytest -m matrix               # opt-in: the connector matrix (~80s)
 ```
 
-`pytest.ini` sets `addopts = -m "not live"`, so the live suite never runs by
-accident.
+`pytest.ini` sets `addopts = -m "not live and not matrix"`, so neither runs by
+accident. The two are excluded for different reasons, and only one of them is
+excluded everywhere: `live` costs money and needs credentials, so it runs weekly
+from `live.yml`. `matrix` costs eighty seconds serially and about twenty-five
+under xdist, which is too much for the edit loop and affordable in the gate —
+`make verify` runs it, and `make test-matrix` runs it alone.
 
 **Test layout:**
 

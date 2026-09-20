@@ -16,6 +16,7 @@ from app.ingestion.zoho_client import (
     ZohoCredentials,
     ZohoError,
     ZohoThrottleError,
+    ZohoWriteUncertain,
     configured_since,
 )
 
@@ -32,18 +33,40 @@ class FakeResponse:
 
 
 class FakeHttp:
-    """Records calls and replays canned bodies keyed by path fragment."""
+    """Records calls and replays canned bodies keyed by path fragment.
 
-    def __init__(self, routes, token_body=None):
+    ``writes`` is the same idea on the POST side: a fragment maps to a
+    ``FakeResponse``, or to a callable taking the posted body — which may raise,
+    to stand in for a socket that died mid-write. It lives on this base rather
+    than on one adapter's fake because the verb is the transport's concern:
+    ``_request`` decides what may be re-sent, and both the sync's GETs and the
+    Quote Builder's POSTs go through it.
+    """
+
+    def __init__(self, routes, token_body=None, writes=None):
         self.routes = routes
+        self.writes = writes or {}
         self.token_body = token_body if token_body is not None else {
             "access_token": "tok-1", "expires_in": 3600}
         self.gets: list[tuple[str, dict]] = []
+        self.posts: list[tuple[str, dict]] = []
         self.token_calls = 0
 
-    def post(self, url, params=None, **kw):
-        self.token_calls += 1
-        return FakeResponse(self.token_body)
+    def post(self, url, params=None, json=None, **kw):
+        # The token exchange and a write are both POSTs; the URL is what tells
+        # them apart, and counting one as the other would hide a replayed write
+        # behind a refresh.
+        if "/oauth/" in url:
+            self.token_calls += 1
+            return FakeResponse(self.token_body)
+        # Recorded before the answer is produced, so a write whose connection
+        # dies still counts as a call that was made — which is the whole
+        # question a duplicate-write pin is asking.
+        self.posts.append((url, dict(json or {})))
+        for fragment, body in self.writes.items():
+            if url.rstrip("/").endswith(fragment):
+                return body(json) if callable(body) else body
+        return FakeResponse({"code": 0})
 
     def get(self, url, params=None, headers=None, **kw):
         self.gets.append((url, dict(params or {})))
@@ -720,6 +743,321 @@ def test_calls_are_paced_to_stay_under_the_limit(monkeypatch):
     assert len([w for w in waited if w > 0.5]) == 2, waited
 
 
+# ── a write is sent once, or it is not sent ─────────────────────────────────
+#
+# One retry loop serves both: the sync's thousands of GETs and the Quote
+# Builder's handful of POSTs. It used to decide what could be re-sent from two
+# readings that sound safe and are not — that a 401 and a 429 each prove the
+# call never reached the books. Neither does. A gateway can mint either one
+# *after* the backend accepted the call, and from here that is indistinguishable
+# from a refusal, so re-sending on that reading is how one estimate becomes two
+# documents in a customer's books.
+#
+# ``erp/transport.py`` was written later against the same question and refuses
+# both readings. These pin this transport to that policy, so there is one rule
+# and not two for a reader to compare.
+#
+# A refused write is not a dead end: ``ZohoWriteUncertain`` is what both write
+# paths in ``zoho_books_service`` already catch, and they settle the question by
+# reading the record back rather than by sending it again.
+def _send_estimate(http):
+    """The Quote Builder's write, through the transport that carries it."""
+    return _src(http=http)._request(
+        "POST", "estimates",
+        json={"customer_id": "9", "reference_number": "QB-9-zz"})
+
+
+def test_a_write_refused_with_a_401_is_not_sent_again():
+    """The reading this replaces said a rejected token never reached the books.
+
+    Usually true, and the exception is the expensive one: a gateway can answer
+    401 after the backend has already accepted the call. Dropping the token is
+    still right — it may really be dead — but re-sending the estimate on the
+    fresh one bets that nothing was written, and the losing side of that bet is
+    a second document in a customer's books.
+    """
+    http = FakeHttp({}, writes={"/estimates": FakeResponse(
+        {"code": 14, "message": "Invalid oauth token"}, status=401)})
+    src = _src(http=http)
+
+    with pytest.raises(ZohoWriteUncertain):
+        src._request("POST", "estimates",
+                     json={"customer_id": "9", "reference_number": "QB-9-zz"})
+    assert len(http.posts) == 1, "the estimate must not be sent a second time"
+
+    # The branch has two effects and only one of them was pinned. Dropping the
+    # token is the half a single call cannot see — delete the
+    # ``_forget_access_token`` and this file stayed green, while in production
+    # a genuinely revoked token would sit in the process-wide cache for the
+    # rest of its hour and refuse every call on that credential, from every
+    # source built on it. It takes a second call to observe, so this makes one.
+    list(src.list_items())
+    assert http.token_calls == 2, \
+        "the refused token must not be served to the next call"
+
+
+def test_a_rate_limited_write_is_not_waited_out_and_sent_again(waits):
+    """A 429 is the limiter refusing the call — except when it is not.
+
+    A front end can throttle a call its own backend has already accepted, and
+    the two answers are identical from here. Waiting out the backoff and
+    re-sending is the same bet as the 401, made more patiently.
+    """
+    http = FakeHttp({}, writes={"/estimates": FakeResponse(
+        {"message": "too many requests"}, status=429)})
+
+    with pytest.raises(ZohoWriteUncertain):
+        _send_estimate(http)
+    assert len(http.posts) == 1, "the estimate must not be sent a second time"
+    assert not [w for w in waits if w > 0], \
+        f"a write must not be held for a retry it is never allowed to make: {waits}"
+
+
+def test_a_write_whose_connection_died_is_unknown_rather_than_failed():
+    """A fault this side of the answer is the same unknown as a 5xx.
+
+    The request may well have been received; what was lost is the reply. Left
+    raw it reaches the caller as a bare connection error, which reads as
+    "nothing happened" — and the caller that believes that sends the estimate
+    again.
+    """
+    def die(_body):
+        raise ConnectionError("connection reset by peer")
+
+    http = FakeHttp({}, writes={"/estimates": die})
+
+    with pytest.raises(ZohoWriteUncertain) as caught:
+        _send_estimate(http)
+    assert len(http.posts) == 1, "the estimate must not be sent a second time"
+    # The fault itself has to survive the re-raise, or the one piece of evidence
+    # about what went wrong is gone by the time anyone reads the log.
+    assert isinstance(caught.value.__cause__ or caught.value.__context__,
+                      ConnectionError)
+
+
+def test_a_write_outside_the_grant_is_a_definite_no_and_still_only_sent_once():
+    """The case the fix could most easily break, in both directions.
+
+    Code 57 is Zoho's own application saying the call is outside the grant, so
+    nothing was written and "outcome unknown" would be a worse answer than the
+    truth — an owner who is told to go and check the books cannot act on it,
+    where one who is told which scope is missing can. It is also the answer that
+    must not cost a second send to reach: the body says so on the first refusal.
+    """
+    from app.ingestion.zoho_client import ZohoScopeError
+
+    http = FakeHttp({}, writes={"/estimates": FakeResponse(
+        {"code": 57, "message": "You are not authorized to perform this "
+                                "operation"}, status=401)})
+
+    with pytest.raises(ZohoScopeError) as caught:
+        _send_estimate(http)
+    assert caught.value.scope == "ZohoBooks.estimates.CREATE"
+    assert len(http.posts) == 1, "a refusal that names itself needs no second try"
+
+
+def test_a_write_that_ends_in_a_server_error_is_still_never_replayed():
+    """The one branch that already read this correctly, pinned before the rewrite.
+
+    ``zoho_books_service`` has a test for the same 5xx, but it asserts what the
+    *service* answers once settle-by-read has run — which would still look right
+    if this loop started raising some other exception the service maps the same
+    way. This asks the transport directly.
+    """
+    http = FakeHttp({}, writes={"/estimates": FakeResponse(None, status=503)})
+
+    with pytest.raises(ZohoWriteUncertain):
+        _send_estimate(http)
+    assert len(http.posts) == 1, "the estimate must not be sent a second time"
+
+
+def test_a_write_refused_with_a_403_is_treated_exactly_like_a_401():
+    """The status Books is not documented to send, which is why it is covered.
+
+    ``erp/transport.py`` pairs 401 and 403 and this transport had a 401 branch
+    only, so a 403 fell through to the generic refusal and reached the desk as
+    "Zoho refused the estimate — nothing was written", with no read behind the
+    claim. Nothing in this repo has seen Books answer 403; an edge, a WAF or a
+    proxy in front of it can, and that is the same hop the 401 argument is
+    about. A rule that holds only for the statuses the vendor documents is a
+    rule about the vendor, not about the write.
+    """
+    http = FakeHttp({}, writes={"/estimates": FakeResponse(
+        {"message": "Forbidden"}, status=403)})
+
+    with pytest.raises(ZohoWriteUncertain):
+        _send_estimate(http)
+    assert len(http.posts) == 1, "the estimate must not be sent a second time"
+
+
+def test_a_created_record_whose_answer_is_unreadable_is_uncertain_not_refused():
+    """HTTP 201 and a body that will not parse: the estimate exists.
+
+    A truncating proxy, an intercepting gateway, half a response — the status
+    has already said Zoho took the call, and only the reading failed. This was
+    the last outcome in the taxonomy still reported as a definite refusal, and
+    it is the worst one to get wrong in that direction: every other member says
+    "maybe", this one said "no" about a record that is there.
+    """
+    http = FakeHttp({}, writes={"/estimates": FakeResponse(None, status=201)})
+
+    with pytest.raises(ZohoWriteUncertain) as caught:
+        _send_estimate(http)
+    assert len(http.posts) == 1, "the estimate must not be sent a second time"
+    assert "201" in str(caught.value)
+
+
+def test_an_accepted_write_zoho_does_not_confirm_is_uncertain_too():
+    """A 202 parses fine and still is not a created record.
+
+    The same hole as the unreadable body, reached through the status check
+    rather than the parse: this adapter reads ``estimate`` out of a 200 or a
+    201 and has no answer for anything else in the band. "Accepted" is not
+    "created", but it is a great deal closer to it than "refused".
+    """
+    http = FakeHttp({}, writes={"/estimates": FakeResponse(
+        {"code": 0, "message": "accepted"}, status=202)})
+
+    with pytest.raises(ZohoWriteUncertain):
+        _send_estimate(http)
+    assert len(http.posts) == 1, "the estimate must not be sent a second time"
+
+
+def test_zohos_own_refusal_in_the_body_of_a_write_stays_a_definite_no():
+    """The other side of the two pins above, and the one they could break.
+
+    Zoho answers an application refusal as a 2xx carrying a non-zero ``code``.
+    That is its own ledger saying no before acting, so it must stay a plain
+    ``ZohoError`` — widening "2xx we cannot read" to "2xx" would turn every
+    duplicate-name refusal into a lookup for a record that was never created.
+    """
+    http = FakeHttp({}, writes={"/estimates": FakeResponse(
+        {"code": 1002, "message": "Estimate number already exists"}, status=200)})
+
+    with pytest.raises(ZohoError) as caught:
+        _send_estimate(http)
+    assert not isinstance(caught.value, ZohoWriteUncertain)
+    assert "already exists" in str(caught.value)
+
+
+# The other half, and the half that carries the sync: a read is replayable and
+# has to stay that way. Thousands of GETs per pull go through this loop, and a
+# token that expires mid-run is ordinary. The 429 side of it is already pinned
+# above: ``test_a_429_is_waited_out_in_tens_of_seconds_not_one`` proves a read
+# still backs off and recovers, and the throttled-out test beside it proves a
+# read that never recovers still ends as a throttle. Neither is written again
+# here — a second copy of a pin is a pin that drifts. The 5xx is below, and it
+# had nothing anywhere: every 5xx in these suites was served to a write, so the
+# ``if not replayable`` fork in that branch had one side held and one side
+# free.
+def test_a_read_refused_with_a_401_is_still_retried_on_a_fresh_token():
+    """Nothing a read can do creates a record, so the caution above is all cost.
+
+    A revoked or expired token mid-pull is the case the retry exists for: drop
+    it, mint another, ask again. Asserted as counts rather than as the exception
+    alone, because a read wrongly treated as unreplayable would raise the same
+    class from the first refusal.
+    """
+    http = FakeHttp({})
+    seen = {"n": 0}
+
+    def get(url, params=None, headers=None, **kw):
+        seen["n"] += 1
+        return FakeResponse({"code": 14, "message": "Invalid oauth token"},
+                            status=401)
+
+    http.get = get                                    # type: ignore[assignment]
+
+    with pytest.raises(ZohoAuthError) as caught:
+        list(_src(http=http).list_items())
+    assert seen["n"] == 2, "a read must be asked again on a fresh token"
+    assert http.token_calls == 2, "and the rejected token must not be re-served"
+    # A second refusal on a token the endpoint has just issued is the endpoint,
+    # not the token — but this body says nothing about scope, so it stays the
+    # credentials answer rather than being guessed into a missing permission.
+    from app.ingestion.zoho_client import ZohoScopeError
+    assert not isinstance(caught.value, ZohoScopeError)
+
+
+def test_a_read_refused_with_a_403_is_retried_like_a_401_not_left_uncertain():
+    """The read half of pairing 403 with 401, which is where that pairing bites.
+
+    Covering 403 was argued for the write: the hop that mints one — an edge, a
+    WAF, a proxy — can mint it after the backend has accepted the call. But the
+    branch is shared, so this changed a path every sync runs on. A GET answered
+    403 used to fall past the auth branch to the generic refusal and raise a
+    bare ``ZohoError``; it now drops its token and asks again, and ends as
+    ``ZohoAuthError``. Pinned rather than left to be rediscovered, because the
+    write case is the one everybody was looking at: the retry is free for a
+    read, and ``ZohoAuthError`` subclasses ``ZohoError``, so nothing that
+    caught the old class stops catching it.
+
+    The half that must never happen is the write treatment. A read dressed as
+    an uncertain write sends its caller to settle-by-read, hunting a ledger for
+    a record that cannot exist — the only thing sent was a question.
+    """
+    http = FakeHttp({})
+    seen = {"n": 0}
+
+    def get(url, params=None, headers=None, **kw):
+        seen["n"] += 1
+        return FakeResponse({"message": "Forbidden"}, status=403)
+
+    http.get = get                                    # type: ignore[assignment]
+
+    with pytest.raises(ZohoAuthError) as caught:
+        list(_src(http=http).list_items())
+    assert seen["n"] == 2, "a read must be asked again on a fresh token"
+    assert http.token_calls == 2, "and the rejected token must not be re-served"
+    assert not isinstance(caught.value, ZohoWriteUncertain), (
+        "a read has written nothing, so it never becomes an uncertain write")
+
+
+def test_a_read_whose_connection_died_is_not_dressed_up_as_an_uncertain_write():
+    """A dropped GET is a dropped GET.
+
+    Wrapping it the way a write is wrapped would tell the sync a record may have
+    been written when the only thing sent was a question, and every one of those
+    lands on the settle-by-read path to look for something that cannot exist.
+    """
+    http = FakeHttp({})
+
+    def die(url, params=None, headers=None, **kw):
+        raise ConnectionError("connection reset by peer")
+
+    http.get = die                                    # type: ignore[assignment]
+
+    with pytest.raises(ConnectionError):
+        list(_src(http=http).list_items())
+
+
+def test_a_read_that_hits_a_server_error_backs_off_and_finishes_the_pull(waits):
+    """The unpinned side of the 5xx fork, and the expensive one to lose.
+
+    Every 5xx in these suites was served to a write, so "never replay a 5xx"
+    could have been simplified to hold for all methods and the whole file would
+    still have passed — while in production a single transient 502 mid-pull
+    aborted the sync instead of waiting a moment and resuming. A read creates
+    nothing, so there is nothing for the caution to protect.
+    """
+    rows = {"code": 0, "items": [{"item_id": "1", "name": "CNMG", "sku": "C1"}],
+            "page_context": {"has_more_page": False}}
+    http = FakeHttp({})
+    served = {"n": 0}
+
+    def get(url, params=None, headers=None, **kw):
+        served["n"] += 1
+        if served["n"] == 1:
+            return FakeResponse(None, status=503)
+        return FakeResponse(rows)
+
+    http.get = get                                    # type: ignore[assignment]
+
+    assert [r["sku"] for r in _src(http=http).list_items()] == ["C1"]
+    assert served["n"] == 2, "a read must be asked again after a server error"
+    assert waits, "and it must wait before doing so, not hammer the endpoint"
+
+
 # ── resuming an interrupted pull ────────────────────────────────────────────
 def test_documents_already_held_are_not_fetched_again():
     """The detail call is the entire cost of a pull. A resumed run must pay for
@@ -905,6 +1243,52 @@ def test_every_scope_the_pull_uses_is_declared():
     assert used == declared, (
         f"used but never requested: {sorted(used - declared)}; "
         f"requested but never used: {sorted(declared - used)}")
+
+
+def test_every_path_the_adapter_writes_to_has_a_write_scope():
+    """The table is keyed by path, and a path it is missing fails *quietly*.
+
+    ``scope_for_path`` returns ``None`` for an unlisted write path, which makes
+    ``_scope_refusal`` short-circuit — so Zoho's own code-57 refusal, the one
+    answer that is definite about having refused *before* acting, would fall
+    into the ambiguous 401 branch and come back as ``ZohoWriteUncertain``. The
+    operator is then sent to check the books for a record that certainly is not
+    on them, instead of being told which permission to grant.
+
+    The two tables are already pinned against ``REQUIRED_SCOPES`` and the stage
+    list is pinned against the method names; neither can see a write path with
+    no key, because a path is not a scope and not a stage. Read out of the
+    adapter's source rather than listed here, so adding a third write without a
+    grant fails this rather than passing it.
+    """
+    import ast
+    import pathlib
+
+    from app.ingestion.zoho_client import WRITE_SCOPE_FOR_PATH
+
+    src = pathlib.Path(__file__).resolve().parents[2] / "app" / "ingestion" / \
+        "zoho_books_service.py"
+    tree = ast.parse(src.read_text())
+    posted = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or len(node.args) < 2:
+            continue
+        if getattr(node.func, "attr", None) != "_request":
+            continue
+        verb, path = node.args[0], node.args[1]
+        if not (isinstance(verb, ast.Constant) and isinstance(path, ast.Constant)):
+            # A computed verb or path would defeat the read, so it fails here
+            # rather than being skipped into a false clean.
+            raise AssertionError(
+                f"{src.name}:{node.lineno}: _request called with a non-literal "
+                "verb or path — this pin cannot see what it writes to")
+        if verb.value.upper() != "GET":
+            posted.add(path.value.lstrip("/").split("/", 1)[0])
+
+    assert posted, "the read found no write at all, which means it is broken"
+    assert posted <= set(WRITE_SCOPE_FOR_PATH), (
+        "written to with no entry in WRITE_SCOPE_FOR_PATH: "
+        f"{sorted(posted - set(WRITE_SCOPE_FOR_PATH))}")
 
 
 def test_zohos_declared_writes_match_what_the_adapter_can_actually_create():

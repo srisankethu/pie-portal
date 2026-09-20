@@ -238,7 +238,19 @@ class RestTransport:
                 return resp
             try:
                 return resp.json()
-            except ValueError:
+            except ValueError as e:
+                # Past the 4xx branch above, the status says the system took
+                # the call. An answer that cannot be parsed is not an answer
+                # that says no, and for a write those are opposite outcomes: a
+                # truncating proxy on a 201 that created the quote would
+                # otherwise be reported as a refusal, with no read behind it.
+                if not may_replay:
+                    raise SourceWriteUncertain(
+                        f"{self.system} answered HTTP {resp.status_code} to "
+                        f"{verb} {url} and the body could not be read. The "
+                        f"status says the call reached the system, so whether "
+                        f"the record was written cannot be told from here — "
+                        f"check {self.system} before sending it again.") from e
                 raise IngestionError(
                     f"{self.system} returned non-JSON for {url} "
                     f"(HTTP {resp.status_code}).")

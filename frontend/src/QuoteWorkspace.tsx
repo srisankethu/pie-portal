@@ -252,6 +252,9 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
         variant: r.ok ? "success" : "default",
         autoHideDuration: r.ok ? 8000 : 5000,
       });
+      // The document was created and the outcome could not follow it: a second
+      // sentence beside the success, in the same words the builder shows.
+      if (r.warning) enqueueSnackbar(r.warning, { autoHideDuration: 8000 });
       await load();
     });
 

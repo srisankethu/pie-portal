@@ -1083,16 +1083,25 @@ failed to create still has to name it.
 5. **Idempotency** — a fingerprint of (supply : qty : rate) per line is
    compared against the last persisted document row (survives restarts):
    unchanged content answers "already covers this quote", creating nothing.
+   The write below also carries the quote's reference, minted once per quote,
+   so a source can recognise a repeat whose reply was lost.
 6. **The write** — exactly three possible answers: created ·
    `SourceWriteRefused` (the named lines + the source's sentence) ·
    `SourceWriteUnknown` (a reference to search for). Never a claimed-created
-   estimate that may not exist.
+   estimate that may not exist. **Changed content does not yet produce a new
+   document on a live book**: every live adapter keys on the reference and
+   answers with the document it already holds (`alreadyExisted`), Business
+   Central and Acumatica refuse as "unknown" when the line count differs, and
+   NetSuite updates in place. Only the mock writer mints a second document.
+   Per-revision references are Phase 2 of `docs/quote-lifecycle-plan.md`.
 7. **Bookkeeping** — the document row is persisted and the outcome moves
-   DRAFT→SENT with the ERP's own estimate id as the durable join; bookkeeping
-   failure never undoes a real send.
+   DRAFT→SENT with the ERP's own document id as the durable join. Bookkeeping
+   failure never undoes a real send: a lifecycle refusal (a decided quote, an
+   outcome already recorded about another document) arrives as `warning` on a
+   successful answer, shown as a second snackbar.
 The summary bar then shows a durable "Sent · ⟨system⟩ · ⟨number⟩" chip that
 turns "amended since" once the priced content moves, and the button becomes
-"Send the amended quote".
+"Send amendment to ⟨system⟩".
 **Branches.** Approval policy off → no approval gating (blockers and pricing
 checks still apply) · client-side gate pre-check saves a certain refusal but
 the server is the authority (an approval granted in another tab lets the send

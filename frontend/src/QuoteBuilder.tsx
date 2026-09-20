@@ -719,6 +719,10 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       // carries; the send endpoint answers with the estimate, not the quote.
       setQuote(await api.getQuote(t, quote!.id));
       flash(r.message, "success");
+      // The document exists; the outcome did not follow it. Said in its own
+      // words, after the success — a warning that replaced the success would
+      // read as a failed send, and this is not one.
+      if (r.warning) flash(r.warning);
     });
 
   const selectedCount = selection.length;

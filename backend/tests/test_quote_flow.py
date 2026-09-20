@@ -556,6 +556,62 @@ def test_amending_a_sent_quote_produces_a_new_estimate(client, mgmt_hdr):
 
 
 @pytest.mark.requires_pie
+def test_a_send_moves_the_outcome_to_sent_and_links_the_document(client, mgmt_hdr):
+    """Presses the endpoint and reads the row — the two halves no other test joins.
+
+    ``test_quote_workspace`` asserts readiness from the document row, and the
+    outcome-scope tests call ``set_outcome`` directly. Between them the send's
+    own call went unexercised, and it had been raising ``AttributeError`` into
+    a swallow-all ``except`` since the written-document record was renamed:
+    every send answered "created", no quote reached SENT, and the join to the
+    ERP document was never written.
+    """
+    from app.commercial import quote_service
+
+    qid = _clean_quote(client, mgmt_hdr)
+    r = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert r["ok"] is True, r
+    assert r["warning"] is None, r
+    with client.Maker() as s:
+        row = quote_service.get_outcome(s, "org_pie", qid)
+        doc = quote_service.latest_document(s, "org_pie", quote_id=qid)
+    assert row is not None, "the send must open the outcome row"
+    assert row.status == "SENT"
+    assert row.sent_at is not None
+    assert doc is not None
+    assert row.quote_document_ref == doc.external_document_id, \
+        "the outcome names the ERP document the send created"
+
+
+@pytest.mark.requires_pie
+def test_a_bookkeeping_refusal_is_in_the_response_not_the_log(client, mgmt_hdr):
+    """The estimate exists whatever the outcome table says.
+
+    So a lifecycle refusal is a ``warning`` on a successful answer — never a
+    failed send, and never only a log line behind a green snackbar, which is
+    how the missing link went unnoticed for two weeks.
+    """
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteOutcomeStatus
+
+    qid = _clean_quote(client, mgmt_hdr)
+    # Somebody already recorded this quote's outcome against another document.
+    with client.Maker() as s:
+        quote_service.set_outcome(
+            s, "org_pie", quote_id=qid, quote_document_ref="est-from-elsewhere",
+            status=QuoteOutcomeStatus.SENT, user_id="u1")
+        s.commit()
+
+    r = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert r["ok"] is True and r["documentNumber"], r
+    assert r["warning"] and "est-from-elsewhere" in r["warning"], r
+    with client.Maker() as s:
+        row = quote_service.get_outcome(s, "org_pie", qid)
+    assert row.quote_document_ref == "est-from-elsewhere", \
+        "a fact a person recorded is never repointed by a send"
+
+
+@pytest.mark.requires_pie
 def test_a_resolved_line_with_no_rate_is_refused_rather_than_sent_blank(client, mgmt_hdr):
     q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=mgmt_hdr).json()
     qid = q["id"]
@@ -823,9 +879,16 @@ def test_the_send_response_carries_no_economics(client, mgmt_hdr):
     # like the three beside it — it varies with the connector and with nothing
     # else, so there is no price to walk and no boundary to place. That is the
     # argument this assertion exists to make somebody write down.
+    #
+    # ``warning`` joined when the send started reporting, rather than logging,
+    # that the outcome row could not follow the document. It carries one of
+    # ``set_outcome``'s own refusals — a lifecycle word, a document reference —
+    # or an exception's type name. Nothing in it is derived from a price, it is
+    # null on every ordinary send, and a sentence about which row a quote's
+    # status lives on has no boundary a caller could walk.
     assert set(sent) == {"ok", "documentNumber", "lineCount", "blockers",
                          "message", "system", "systemLabel", "systemShort",
-                         "documentTerm", "alreadyExisted"}, (
+                         "documentTerm", "alreadyExisted", "warning"}, (
         "a field was added to the send response — if it answers a margin "
         "question, in any form, it does not belong here")
     body = json.dumps(sent).lower()

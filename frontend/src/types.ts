@@ -182,6 +182,10 @@ export interface EstimateResult {
   /** True where the document was already there under this quote's reference.
    *  "Sent" and "was already sent" are different facts. */
   alreadyExisted: boolean;
+  /** The document was created but the quote's outcome could not follow it —
+   *  a sentence to show beside the success, never a reason to call the send
+   *  failed. Null when the bookkeeping went through. */
+  warning: string | null;
 }
 
 export interface QuoteEstimate {

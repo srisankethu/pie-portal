@@ -1109,12 +1109,22 @@ def create_estimate(quote_id: str,
     # Three presses used to create three estimates in Zoho, because nothing on
     # the quote remembered that it had been sent and the button never changed.
     # Re-sending an *amended* quote is ordinary work, so this is not a lock: the
-    # same content returns the estimate it already produced, and changed content
-    # produces a new one.
+    # same content returns the estimate it already produced.
     #
     # This is the local half. The write below also carries ``q.reference``, so
-    # Zoho can recognise a repeat whose reply we never heard. Both are needed:
-    # this one saves the round trip, that one survives a lost answer.
+    # a source can recognise a repeat whose reply we never heard. Both are
+    # needed: this one saves the round trip, that one survives a lost answer.
+    #
+    # Changed content does NOT yet produce a new document on a live book. The
+    # reference is minted once per quote, and every live adapter keys its
+    # idempotency on it: Zoho answers with the estimate it already holds,
+    # Business Central and Acumatica do the same or refuse as "unknown" when the
+    # line count differs, NetSuite updates in place — and all of them report
+    # ``already_existed``. Only the mock writer mints a new document. The
+    # per-revision reference that fixes this is Phase 2 of
+    # ``docs/quote-lifecycle-plan.md``; until it lands, an amended send records
+    # the document the source *has*, and the chip reads "amended since" again
+    # as soon as the content moves.
     fingerprint = store.priced_fingerprint(q)
     # Answered from the persisted row rather than from the in-memory quote. The
     # in-memory copy is erased by a restart, and the send it was remembering is
@@ -1178,31 +1188,54 @@ def create_estimate(quote_id: str,
     except Exception:  # noqa: BLE001 — the estimate exists; bookkeeping must not undo it
         log.exception("could not record the document for quote %s", quote_id)
         session.rollback()
+    words = _system_words(books.system)
+    # ``quote_document_ref`` is the platform recording, at the one moment it
+    # learns it, which ERP document its own quote became — and it is the only
+    # durable half of that link: the quote pull lands the same document in
+    # ``erp_quotes`` under this id, and without it the two tables describe one
+    # estimate twice with nothing joining them.
+    #
+    # ``est.document_id``, not ``est.estimate_id``. Every writer returns
+    # ``WrittenDocument`` (``ZohoEstimate`` is an alias of it), and the field was
+    # renamed when the write seam stopped being Zoho-shaped. This call kept the
+    # old name; the ``AttributeError`` it raised was caught by a blanket
+    # ``except`` and logged, and for two weeks every send answered "created"
+    # while no quote reached SENT and no link was ever written. So a refusal
+    # here now travels in the response — a log line behind a green snackbar is
+    # a log line nobody reads.
+    #
+    # The estimate exists whatever happens below, which is why nothing here
+    # turns into a failed send: the person is told the document was created and,
+    # separately, why the outcome did not follow it.
+    warning: Optional[str] = None
     try:
-        # ``quote_document_ref`` is the platform recording, at the one moment
-        # it learns it, which ERP document its own quote became — and it is the
-        # only durable half of that link. ``QuoteStore`` is an in-process dict
-        # whose ids are ``q{run}-N`` and whose reference never reaches the
-        # database, so without this line the quote pull and the quote builder
-        # would describe the same estimate twice with nothing joining them, and
-        # every win rate would double-count it.
         quote_service.set_outcome(
             session, org, quote_id=quote_id, status=QuoteOutcomeStatus.SENT,
-            quote_document_ref=est.estimate_id,
-            customer_ref=q.customer_ref, user_id=principal.user_id)
-    except Exception:  # noqa: BLE001 — the estimate exists; bookkeeping must not undo it
+            quote_document_ref=est.document_id,
+            # The id as well as the name, so the account's holder — not only the
+            # person who pressed the button — sees this quote in Won & lost.
+            customer_ref=q.customer_ref, customer_id=q.customerId,
+            user_id=principal.user_id)
+    except (quote_service.InvalidTransition,
+            quote_service.QuoteOutcomeRepointed) as e:
+        # The lifecycle refused: a quote already decided, or an outcome already
+        # recorded about a different document. Both are facts a person put
+        # there, and neither is overwritten by a send.
+        warning = f"The outcome could not be updated: {e}"
+    except Exception as e:  # noqa: BLE001 — the estimate exists; bookkeeping must not undo it
         log.exception("could not mark quote %s as sent", quote_id)
+        warning = (f"The outcome could not be recorded ({type(e).__name__}); the "
+                   f"{words['documentTerm']} exists. Report this.")
 
-    words = _system_words(books.system)
     named = f"{words['systemLabel']} {words['documentTerm']}"
     if est.already_existed:
         return EstimateResponse(
             ok=True, documentNumber=est.number, lineCount=est.line_count,
-            alreadyExisted=True, **words,
+            alreadyExisted=True, warning=warning, **words,
             message=(f"This quote was already sent — {named} {est.number} exists "
                      f"under reference {q.reference}. Nothing was created twice."))
     return EstimateResponse(ok=True, documentNumber=est.number,
-                            lineCount=est.line_count, **words,
+                            lineCount=est.line_count, warning=warning, **words,
                             message=f"{named} {est.number} created — "
                                     f"{est.line_count} lines.")
 

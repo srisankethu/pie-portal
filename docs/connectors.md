@@ -79,8 +79,10 @@ company using it (`POST /api/v1/connections/{id}/rotate-erp`).
 Reading a system and writing to it are different grants, different code and
 different days, so they are declared separately: `READ_STAGES` names what a
 connector pulls, `WRITE_STAGES` names what the platform can create there. Today
-`WRITE_STAGES` is `("sales_quotes",)` and two connectors declare it — `zoho`
-and `dynamics365`. The rest read only, and their access copy says so.
+`WRITE_STAGES` is `("sales_quotes",)` and four connectors declare it — `zoho`,
+`dynamics365`, `acumatica` and `netsuite`, which is also the set
+`connections._QUOTE_ADAPTERS` names as having a writer wired. Prophet 21, Sage 100
+and Sage X3 read only, and their access copy says so.
 
 Both lists are pinned against the implementation **in both directions**. A
 declared capability with no `create_<stage>` method sends an owner to grant a
@@ -199,9 +201,10 @@ sync report, exactly as the Zoho pull refuses them.
 ## What each connector cannot be written to, and why
 
 Desk research against each vendor's own documentation, so the next person does
-not repeat it. None of these three changes anything today — all five ERPs still
-declare `writes=()` — but the answers differ enough that "add a writer" is a
-different size of job for each.
+not repeat it. Business Central, Acumatica and NetSuite have writers now (the
+section above); Prophet 21, Sage 100 and Sage X3 still declare `writes=()`, and
+the answers below differ enough that "add a writer" is a different size of job
+for each of those three.
 
 The question in each case is the one the settle protocol forces: **is there a
 write surface reachable from the transport this connector already speaks, and

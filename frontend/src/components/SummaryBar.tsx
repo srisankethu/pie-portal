@@ -176,6 +176,19 @@ export function SummaryBar({
             : `Sent · ${quote.estimate!.systemLabel} · ${quote.estimate!.number} · amended since`}
         />
       )}
+      {/* What the ERP itself says about that document, once a sync has read it
+          back. "Sent" above is this platform's claim — a document was written
+          into the books; the word here is the ERP's own, verbatim, and it is
+          the one that says whether anybody has put it in front of the customer.
+          Absent until the sync has seen the document, not a guess. */}
+      {sent && quote.estimate!.erp && (
+        <Chip
+          size="small"
+          variant="outlined"
+          label={`${quote.systemShort}: ${quote.estimate!.erp.sourceStatus.replace(/_/g, " ") || "—"}`}
+          title={`What ${quote.systemLabel} itself says about this document, as of the last sync.`}
+        />
+      )}
 
       <Button
         variant={sent && quote.estimate!.current ? "outlined" : "contained"}

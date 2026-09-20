@@ -299,6 +299,156 @@ def test_removing_a_draft(client, owner):
     assert client.delete(f"/api/v1/quotes/{q['id']}", headers=owner).status_code == 404
 
 
+# ── one quote, two records, one join ────────────────────────────────────────
+# A sent draft and the ERP's own row for the same document, joined on system,
+# company and the ERP's id — never on a surrogate — and only where that names
+# exactly one row.
+
+def _erp_row(s, ref: str, *, connection_id: str, status: str = "sent") -> None:
+    from datetime import date
+    s.add(models.QuoteDoc(
+        organization_id=ORG, connector="zoho", connection_id=connection_id,
+        external_ref=ref, number=f"EST-{ref}", customer_ref="Pitti",
+        date=date(2026, 9, 1), source_status=status, outcome="UNRECORDED"))
+
+
+def _sent(client, owner, *, doc_id: str, connection_id: str | None) -> str:
+    from app.commercial import quote_service
+    from app.store import store
+
+    # Named, because the second test connects a second company and an
+    # organization reading two books is asked which one a quote is from.
+    r = client.post("/api/v1/quotes", json={"customer": "Pitti", "connection_id": COMPANY},
+                    headers=owner)
+    assert r.status_code == 200, r.text
+    q = r.json()
+    _seed_lines(client, q["id"], _line("L1"))
+    with client.Maker() as s:
+        draft = quote_workspace.load(s, ORG, q["id"])
+        quote_service.record_document(
+            s, ORG, quote_id=q["id"], external_system="zoho",
+            connection_id=connection_id, number=f"EST-{doc_id}", document_id=doc_id,
+            line_count=1, fingerprint=store.priced_fingerprint(draft))
+        s.commit()
+    return q["id"]
+
+
+def test_a_sent_quote_shows_what_the_erp_says_once_the_sync_has_read_it(client, owner):
+    qid = _sent(client, owner, doc_id="est-1", connection_id=COMPANY)
+    rows = client.get("/api/v1/quotes", headers=owner).json()["quotes"]
+    row = next(r for r in rows if r["id"] == qid)
+    assert row["sent"]["number"] == "EST-est-1"
+    assert row["sent"]["erp"] is None, "nothing to say until a sync has read it"
+    assert row["company"] == "SLS Engineers" and row["connectionId"] == COMPANY
+    assert row["origin"]["connection_id"] == COMPANY
+
+    with client.Maker() as s:
+        _erp_row(s, "est-1", connection_id=COMPANY, status="sent")
+        s.commit()
+    rows = client.get("/api/v1/quotes", headers=owner).json()["quotes"]
+    erp = next(r for r in rows if r["id"] == qid)["sent"]["erp"]
+    assert erp["sourceStatus"] == "sent" and erp["outcome"] == "UNRECORDED"
+    assert erp["number"] == "EST-est-1"
+    # The builder reads the same join.
+    q = client.get(f"/api/v1/quotes/{qid}", headers=owner).json()
+    assert q["estimate"]["erp"]["sourceStatus"] == "sent"
+    assert q["company"] == "SLS Engineers"
+
+
+def test_the_same_id_in_another_companys_book_does_not_join(client, owner):
+    """Two books can issue one id. A document that says which book it went
+    into joins only to that book's row; one that does not (written before the
+    company was recorded) joins to nothing rather than to either."""
+    with client.Maker() as s:
+        s.add(models.ZohoConnection(connection_id="cx_other", organization_id=ORG,
+                                    label="4U Precision", zoho_organization_id="z2"))
+        _erp_row(s, "est-2", connection_id="cx_other", status="accepted")
+        _erp_row(s, "est-2", connection_id=COMPANY, status="sent")
+        s.commit()
+    qualified = _sent(client, owner, doc_id="est-2", connection_id=COMPANY)
+    legacy = _sent(client, owner, doc_id="est-2", connection_id=None)
+    rows = {r["id"]: r for r in client.get("/api/v1/quotes", headers=owner).json()["quotes"]}
+    assert rows[qualified]["sent"]["erp"]["sourceStatus"] == "sent"
+    assert rows[legacy]["sent"]["erp"] is None
+
+
+def test_a_legacy_document_joins_while_the_bare_id_is_unique(client, owner):
+    with client.Maker() as s:
+        _erp_row(s, "est-3", connection_id=COMPANY, status="viewed")
+        s.commit()
+    qid = _sent(client, owner, doc_id="est-3", connection_id=None)
+    rows = client.get("/api/v1/quotes", headers=owner).json()["quotes"]
+    assert next(r for r in rows if r["id"] == qid)["sent"]["erp"]["sourceStatus"] == "viewed"
+
+
+# ── a quote belongs to the company whose catalogue priced it ────────────────
+
+def _two_companies(client) -> tuple[str, str]:
+    """A second connected company and one customer in each. Returns the two
+    customer ids: (this company's, the other company's)."""
+    with client.Maker() as s:
+        s.add(models.ZohoConnection(connection_id="cx_other", organization_id=ORG,
+                                    label="4U Precision", zoho_organization_id="z2"))
+        s.add(models.Customer(customer_id="c_sls", organization_id=ORG,
+                              connector="zoho", connection_id=COMPANY,
+                              external_id="3300000001", name="Alpha Tools"))
+        s.add(models.Customer(customer_id="c_4u", organization_id=ORG,
+                              connector="zoho", connection_id="cx_other",
+                              external_id="3300000002", name="Beta Works"))
+        s.commit()
+    return "c_sls", "c_4u"
+
+
+def test_a_customer_from_another_company_is_refused_by_name_at_creation(client, owner):
+    _, theirs = _two_companies(client)
+    r = client.post("/api/v1/quotes",
+                    json={"customer": "Beta Works", "customer_id": theirs,
+                          "connection_id": COMPANY}, headers=owner)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "4U Precision" in detail and "SLS Engineers" in detail
+    assert "Beta Works" in detail
+
+
+def test_the_customers_own_company_answers_when_none_was_named(client, owner):
+    """Starting a quote from an account page in a two-company organization
+    used to be asked "which book?" about a customer whose row already says."""
+    _, theirs = _two_companies(client)
+    r = client.post("/api/v1/quotes",
+                    json={"customer": "Beta Works", "customer_id": theirs}, headers=owner)
+    assert r.status_code == 200, r.text
+    assert r.json()["connectionId"] == "cx_other"
+    assert r.json()["company"] == "4U Precision"
+    # And with no customer either, the organization is still asked.
+    r = client.post("/api/v1/quotes", json={}, headers=owner)
+    assert r.status_code == 422
+
+
+def test_changing_to_a_customer_from_another_company_is_refused(client, owner):
+    mine, theirs = _two_companies(client)
+    q = client.post("/api/v1/quotes", json={"connection_id": COMPANY}, headers=owner).json()
+    r = client.put(f"/api/v1/quotes/{q['id']}/customer",
+                   json={"customer": "Beta Works", "customer_id": theirs}, headers=owner)
+    assert r.status_code == 422, r.text
+    assert "4U Precision" in r.json()["detail"]
+    ok = client.put(f"/api/v1/quotes/{q['id']}/customer",
+                    json={"customer": "Alpha Tools", "customer_id": mine}, headers=owner)
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["customerId"] == mine
+
+
+def test_a_customer_with_no_recorded_company_is_not_refused_here(client, owner):
+    """Provenance not recorded is ``book_for_customer``'s question, at the send."""
+    with client.Maker() as s:
+        s.add(models.Customer(customer_id="c_old", organization_id=ORG,
+                              external_id="3300000003", name="Old Imports"))
+        s.commit()
+    r = client.post("/api/v1/quotes",
+                    json={"customer": "Old Imports", "customer_id": "c_old",
+                          "connection_id": COMPANY}, headers=owner)
+    assert r.status_code == 200, r.text
+
+
 def test_a_sent_quote_cannot_be_removed(client, owner):
     from app.commercial import quote_service
 

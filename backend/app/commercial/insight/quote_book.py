@@ -50,6 +50,7 @@ from sqlalchemy.orm import Session
 
 from ...domain import models
 from ...domain.origin import Companies
+from ...ingestion.normalize import ZOHO
 
 _ZERO = Decimal("0")
 
@@ -97,6 +98,16 @@ class BookQuote:
     #: answer the same question for a grouped query and for a record, so two
     #: screens cannot name the same company differently.
     company: str
+    #: The same fact in the shape every other list stamps on its rows
+    #: (``Companies.of``), so the workspace can filter this tab the way it
+    #: filters the directory. ``None`` where the caller passed no companies.
+    origin: Optional[dict[str, Any]]
+    #: The PIE quote this document was written from, where the platform wrote
+    #: it: ``{"quote_id", "number"}`` — joined read-side on the qualified
+    #: document identity (``quote_service.erp_documents_for`` in the other
+    #: direction), never stored on this table, which the sync rewrites whole.
+    #: ``None`` for a quote raised in the ERP by hand, which is most of them.
+    platform_quote: Optional[dict[str, str]]
     #: The source's own fields on the quote, as the ERP holds them — quote
     #: type, pricing type, procurement type, branch, and whatever else this
     #: business configured. Only the keys the source actually set: an absent
@@ -130,6 +141,8 @@ class BookQuote:
             "value": float(self.value) if self.value is not None else None,
             "opened_at": self.opened_at.isoformat() if self.opened_at else None,
             "company": self.company,
+            "origin": self.origin,
+            "platform_quote": self.platform_quote,
             # The wire key, not the field name, and deliberately unchanged by
             # the rename behind it: this is a published response field that
             # ``ErpQuoteScreen`` reads, and nothing in the gate binds the two,
@@ -175,6 +188,8 @@ def build(session: Session, org: str, *, customer_names: dict[str, str],
     # would make the same book paginate differently on two engines.
     stmt = stmt.order_by(models.QuoteDoc.date.desc())
 
+    docs = session.scalars(stmt).all()
+    written = _platform_quotes(session, org, docs)
     rows = [
         BookQuote(
             quote_document_ref=row.external_ref,
@@ -190,14 +205,63 @@ def build(session: Session, org: str, *, customer_names: dict[str, str],
             value=Decimal(row.total) if row.total is not None else None,
             company=(companies.label_for(row.connection_id) if companies
                      else "Source not recorded"),
+            origin=companies.of(row).to_dict() if companies else None,
+            platform_quote=written.get(row.quote_document_id),
             source_attributes=dict(row.source_attributes or {}),
             opened_at=row.client_viewed_at,
         )
-        for row in session.scalars(stmt).all()
+        for row in docs
     ]
     rows.sort(key=lambda q: (q.raised_on, q.number or "",
                              q.quote_document_ref), reverse=True)
     return rows
+
+
+def _platform_quotes(session: Session, org: str,
+                     docs: list[models.QuoteDoc]) -> dict[str, dict[str, str]]:
+    """Which of these ERP quotes this platform wrote, keyed by the ERP row's id.
+
+    The reverse of ``quote_service.erp_documents_for`` and the same join: a
+    ``quote_documents`` row matches an ERP quote on (system, company, the id
+    the system gave it). A document written before the company was recorded
+    matches on (system, id) alone while that names one ERP row; two companies
+    answering to one id match nothing, rather than either. Newest document per
+    quote wins, so a quote re-sent as a new document names the new one.
+
+    Two queries for the whole book, whatever its size: the documents whose ids
+    appear in it, then the numbers of the drafts they came from.
+    """
+    if not docs:
+        return {}
+    by_id = {d.external_ref for d in docs}
+    written = session.scalars(
+        select(models.QuoteDocument)
+        .where(models.QuoteDocument.organization_id == org,
+               models.QuoteDocument.external_document_id.in_(by_id))
+        .order_by(models.QuoteDocument.written_at.desc(),
+                  models.QuoteDocument.quote_document_id.desc())).all()
+    if not written:
+        return {}
+    numbers = {d.quote_id: d.number for d in session.scalars(
+        select(models.QuoteDraft).where(
+            models.QuoteDraft.organization_id == org,
+            models.QuoteDraft.quote_id.in_({w.quote_id for w in written})))}
+    # How many ERP rows answer to each (system, id): a company-less document
+    # may only join where that is exactly one.
+    per_system_id: dict[tuple[str, str], list[models.QuoteDoc]] = {}
+    for d in docs:
+        per_system_id.setdefault((d.connector or ZOHO, d.external_ref), []).append(d)
+    out: dict[str, dict[str, str]] = {}
+    for w in written:                       # newest first; first claim wins
+        candidates = per_system_id.get((w.external_system or ZOHO,
+                                        w.external_document_id or ""), [])
+        if w.connection_id:
+            candidates = [d for d in candidates if d.connection_id == w.connection_id]
+        if len(candidates) != 1 or candidates[0].quote_document_id in out:
+            continue
+        out[candidates[0].quote_document_id] = {
+            "quote_id": w.quote_id, "number": numbers.get(w.quote_id, "")}
+    return out
 
 
 @dataclass(frozen=True)

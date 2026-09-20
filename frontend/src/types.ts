@@ -1,3 +1,5 @@
+import type { EntityOrigin } from "./platform/types";
+
 /* There is no `Session` type here any more, and no `"sales" | "mgmt"` role
  * beside it. Both belonged to the Quote Builder's own login, which was a second
  * identity with a second role vocabulary — so "is this person management?" had
@@ -188,6 +190,20 @@ export interface EstimateResult {
   warning: string | null;
 }
 
+/** What the ERP itself says about a document this platform wrote, once a sync
+ *  has read it back. The ERP's own status word, the sync's classification of
+ *  it, and the two dates the ERP recorded — never this platform's guess, and
+ *  null until the sync has seen the document. */
+export interface ErpSide {
+  number: string | null;
+  /** The ERP's own word, verbatim — `draft`, `sent`, `accepted`. */
+  sourceStatus: string;
+  /** WON / LOST / UNRECORDED as the sync classified that word. */
+  outcome: string;
+  decidedOn: string | null;
+  clientViewedAt: string | null;
+}
+
 export interface QuoteEstimate {
   number: string;
   lineCount: number | null;
@@ -198,6 +214,9 @@ export interface QuoteEstimate {
   system: string;
   systemLabel: string;
   documentTerm: string;
+  /** The same document as the ERP holds it, joined on system, company and
+   *  the ERP's own id. Null until a sync has read it. */
+  erp: ErpSide | null;
 }
 
 /** How the lines in this response were produced. Sent only by `/intake`, so it
@@ -260,11 +279,22 @@ export interface QuoteDraftSummary {
   /** Empty until somebody chooses — see `Quote.customer`. */
   customer: string;
   customerId: string | null;
+  /** Which connected company's catalogue priced this quote, and its name.
+   *  `company` is empty where nothing is connected. `origin` is the same fact
+   *  in the shape every directory row carries, so the workspace filters by
+   *  company the way the directory does; null where there is no company. */
+  connectionId: string | null;
+  company: string;
+  origin?: EntityOrigin | null;
   lineCount: number;
   unpriced: number;
   total: number;
   readiness: QuoteReadiness;
-  sent: { number: string; systemLabel: string; current: boolean } | null;
+  sent: {
+    number: string; systemLabel: string; current: boolean;
+    /** What the ERP says about the same document, once synced. */
+    erp: ErpSide | null;
+  } | null;
   /** Whose it is, and whether *this* reader may change it — the server's
    *  answer, in the same rule the mutations enforce. */
   ownerId: string | null;
@@ -309,6 +339,14 @@ export interface ErpQuote {
   /** Which connected company's books raised it. `"Source not recorded"` where
    *  the connection is unknown — an absence named, not a blank. */
   company: string;
+  /** The same fact as `company`, in the shape every directory row carries,
+   *  so the ERP tab filters by company the way the directory does. Optional
+   *  only so a test fixture need not build one. */
+  origin?: EntityOrigin | null;
+  /** The PIE quote this document was written from, where the platform wrote
+   *  it — joined server-side on system, company and the ERP's own id. Null
+   *  for a quote raised in the ERP by hand, which is most of them. */
+  platform_quote?: { quote_id: string; number: string } | null;
   /** The organization's own fields on the quote, as the ERP holds them. Only
    *  the keys the source set: an absent custom field is not a category. */
   attributes: Record<string, string>;
@@ -372,6 +410,10 @@ export interface Quote {
    *  organization has no company connected — then nothing resolves, which the
    *  lines say for themselves. */
   connectionId: string | null;
+  /** That company's name, for the identity strip — beside the customer, so a
+   *  three-company desk can see the two agree. Empty where nothing is
+   *  connected. */
+  company: string;
   number: string;
   /** Whether a quote exists for this yet.
    *

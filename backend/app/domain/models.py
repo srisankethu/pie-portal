@@ -3167,6 +3167,17 @@ class QuoteOutcome(Base):
     #: counted data-quality figure and never auto-cleaned: deleting a human's
     #: recorded loss reason because a document went missing is the larger loss.
     quote_document_ref: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    #: Which connected company's book that reference is unique in. The
+    #: qualifier ``sole_erp_quote``'s docstring deferred: written by the send
+    #: (which knows the book it wrote into) and by the ERP-only path (which
+    #: has the document in hand), read by every lookup that would otherwise
+    #: answer a reference two books both issued. NULL on rows written before it
+    #: existed, which readers treat as "unqualified" — resolvable while the bare
+    #: reference is unique, refused by name otherwise. The unique constraint
+    #: above still keys on the bare reference; widening it to include this
+    #: column is the day the first per-company ``list_quotes`` lands.
+    quote_document_connection_id: Mapped[Optional[str]] = mapped_column(
+        String(64), index=True)
     customer_ref: Mapped[str] = mapped_column(String(255), default="")
     customer_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
 
@@ -3234,6 +3245,16 @@ class QuoteDocument(Base):
     #: The connector this was written into — ``connections.ZOHO_CONNECTOR`` and,
     #: in time, whatever else declares ``sales_quotes`` in its writes.
     external_system: Mapped[str] = mapped_column(String(32), default="")
+    #: Which connected company's book holds it. The half of the document's
+    #: identity this row went without: an ERP id is unique only inside the
+    #: company that issued it, so ``(external_system, external_document_id)``
+    #: named a document in a one-company organization and a guess in a
+    #: three-company one — and the join to the same document once the sync has
+    #: read it back (``erp_quotes`` keys on connector, company and id) had one
+    #: leg missing. Nullable because a row written before the column existed
+    #: cannot be attributed after the fact; readers join those on (system, id)
+    #: only while that is unique, the rule ``sole_erp_quote`` applies.
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     #: That system's own id for the document, where it returns one.
     external_document_id: Mapped[Optional[str]] = mapped_column(String(64))
     #: The number a person sees and can search for in that system.

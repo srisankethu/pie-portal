@@ -885,6 +885,19 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
               </Button>
             ),
           },
+          // Which company's catalogue priced this quote — and whose book it is
+          // written into. The ERP page names its Book in the same place, and
+          // a three-company desk needs the word here for the same reason:
+          // "SLS Engineers" beside the customer is what says the two agree.
+          // Absent, not blank, where nothing is connected.
+          ...(quote.company ? [{
+            label: "Book",
+            value: (
+              <Typography sx={{ fontFamily: "var(--font-heading)", fontWeight: 600 }}>
+                {quote.company}
+              </Typography>
+            ),
+          }] : []),
           {
             label: "Owner",
             // Whose quote this is. Every quote has one — whoever started it —
@@ -1336,6 +1349,9 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         open={pickerOpen}
         session={session}
         busy={busy}
+        // Only this company's customers: the quote prices from its catalogue
+        // and is written into its book, and the server refuses any other.
+        connectionId={quote.connectionId}
         title={hasCustomer ? "Change customer" : "Who is this quote for?"}
         note={quote.lines.length
           ? `This quote has ${quote.lines.length} line(s)`

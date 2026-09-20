@@ -34,6 +34,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from sqlalchemy import func, select
@@ -44,6 +45,7 @@ from . import approvals, clock, memberships, quote_fields
 from .commercial import quote_service
 from .domain import models
 from .domain.enums import ApprovalKind, ApprovalStatus, Role
+from .domain.origin import Companies
 from .ingestion import connections as conn
 from .store import Line, Quote, store
 
@@ -524,6 +526,95 @@ READINESS = ("EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER", "SENT
              "AWAITING_APPROVAL", "NEEDS_APPROVAL", "READY")
 
 
+class CompanyMismatch(ValueError):
+    """A customer from one connected company on a quote priced from another's
+    catalogue. Its own type so a router can answer 422 with the sentence, the
+    way ``resolution.CompanyNotNamed`` is answered."""
+
+
+def company_of_customer(session: Session, org: str,
+                        customer_id: Optional[str]) -> Optional[str]:
+    """The connected company a customer was imported from, or ``None``.
+
+    ``None`` for no customer, a customer this organization does not hold, and
+    a customer imported before provenance was recorded — three different
+    facts, and one answer, because every caller treats them the same way: no
+    company can be inferred, so the caller falls back to asking.
+    """
+    if not customer_id:
+        return None
+    row = session.get(models.Customer, customer_id)
+    if row is None or row.organization_id != org:
+        return None
+    return row.connection_id or None
+
+
+def require_same_company(session: Session, org: str, *,
+                         connection_id: Optional[str],
+                         customer_id: Optional[str]) -> None:
+    """Refuse a customer whose book is not the company this quote prices from.
+
+    A quote belongs to the company whose catalogue priced its lines, and that
+    is the company that invoices — so its customer has to be that company's.
+    The two used to be decided independently: the company once, at creation,
+    from the picker; the book at every read and at the send, from the
+    customer alone (``routers.quote.books_for_quote``). Nothing compared them,
+    and a draft resolved against SLS Engineers' catalogue could be priced from
+    and written into 4U Precision's book with the audit stamp naming SLS.
+
+    Silent where nothing can be compared: no customer yet, a customer with no
+    recorded company (``book_for_customer``'s own rule decides those at the
+    send), or a quote with no company (nothing connected). The sentence names
+    both companies, because "wrong company" sends the reader to check the
+    wrong one.
+    """
+    if not connection_id or not customer_id:
+        return
+    theirs = company_of_customer(session, org, customer_id)
+    if theirs is None or theirs == connection_id:
+        return
+    companies = Companies(session, org)
+    customer = session.get(models.Customer, customer_id)
+    name = customer.name if customer is not None else "This customer"
+    raise CompanyMismatch(
+        f"{name} belongs to {companies.label_for(theirs)}; this quote prices "
+        f"from {companies.label_for(connection_id)}'s catalogue. Start the "
+        f"quote from {companies.label_for(theirs)}, or choose one of "
+        f"{companies.label_for(connection_id)}'s customers.")
+
+
+def erp_side(doc: Optional[models.QuoteDoc]) -> Optional[dict[str, Any]]:
+    """What the ERP itself says about a document this platform wrote — the
+    same document, read back by the sync. ``None`` until a sync has read it.
+
+    Four facts and a number, all the ERP's own: its status word verbatim, the
+    sync's classification of it, when it decided, and when the customer opened
+    it. No cost, no margin, nothing derived. The workspace row and the
+    builder's estimate block both carry this, so they cannot describe one
+    document two ways.
+    """
+    if doc is None:
+        return None
+    return {
+        "number": doc.number,
+        "sourceStatus": doc.source_status or "",
+        "outcome": doc.outcome,
+        "decidedOn": doc.decided_on.isoformat() if doc.decided_on else None,
+        "clientViewedAt": clock.iso(doc.client_viewed_at) if doc.client_viewed_at else None,
+    }
+
+
+def _origin(companies: Companies, connection_id: Optional[str]) -> Optional[dict[str, Any]]:
+    """A draft's company, in the shape every other list stamps on its rows
+    (``origin.Companies.of``), so the workspace filters and labels the way the
+    directory does. ``None`` for a draft raised with nothing connected: that is
+    not an unrecorded source, it is no source."""
+    if not connection_id:
+        return None
+    return companies.of(SimpleNamespace(
+        connector=None, connection_id=connection_id, external_id="")).to_dict()
+
+
 def list_drafts(session: Session, org: str, *, user_id: str = "",
                 role: Optional[Role] = None) -> list[dict[str, Any]]:
     """Every draft in the organization, newest change first, with what each
@@ -547,14 +638,27 @@ def list_drafts(session: Session, org: str, *, user_id: str = "",
                         | {r.updated_by_user_id for r in rows})
     policy = approvals.get_policy(session, org)
     defs = quote_fields.definitions_for(session, org)
+    companies = Companies(session, org)
+    quotes = [_to_quote(row) for row in rows]
+    sent_by_quote = {q.id: quote_service.latest_document(session, org, quote_id=q.id)
+                     for q in quotes}
+    # What the ERP says about each sent document, one query for the list — the
+    # join ``quote_service.erp_documents_for`` performs, read-side.
+    erp_by_quote = quote_service.erp_documents_for(
+        session, org, list(sent_by_quote.values()))
     out = []
-    for row in rows:
-        quote = _to_quote(row)
+    for row, quote in zip(rows, quotes):
         summary = quote.to_dict(False)["summary"]
-        sent = quote_service.latest_document(session, org, quote_id=quote.id)
+        sent = sent_by_quote[quote.id]
         out.append({
             "id": quote.id, "number": quote.number,
             "customer": quote.customer, "customerId": quote.customerId,
+            # Which company's catalogue priced it — and, in a multi-company
+            # organization, the column that tells two desks' quotes apart.
+            "connectionId": quote.connectionId,
+            "company": (companies.label_for(quote.connectionId)
+                        if quote.connectionId else ""),
+            "origin": _origin(companies, quote.connectionId),
             "lineCount": len(quote.lines),
             "unpriced": summary["unpriced"],
             "total": summary["grand"],
@@ -567,6 +671,7 @@ def list_drafts(session: Session, org: str, *, user_id: str = "",
                 "number": sent.external_document_number,
                 "systemLabel": conn.system_label_for(sent.external_system),
                 "current": sent.fingerprint == store.priced_fingerprint(quote),
+                "erp": erp_side(erp_by_quote.get(quote.id)),
             },
             "createdBy": names.get(row.salesperson_id or "", ""),
             "updatedBy": names.get(row.updated_by_user_id or "", ""),

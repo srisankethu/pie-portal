@@ -1,6 +1,8 @@
 # Quotes across PIE and the ERP — implementation plan
 
-**Status: plan only. No engine, service or UI code written. Awaiting approval before Phase 0.**
+**Status: approved 2026-09-20, all six decisions in §4 taken on the
+recommendation. Phase 0 landed (`71f2a6b`). Phase 1 landed (this commit).
+Phases 2 and 3 next; 4–6 after review.**
 
 The question this answers: *how do we handle quotes the ERP raised, quotes across
 several connected companies and ERPs, a PIE quote not yet sent to the ERP, and a
@@ -687,7 +689,9 @@ the principal may not see (404 like the lines endpoint). `test_demo_purge.py`.
 
 ## 4. Open decisions for the owner
 
-Each has a recommendation; the plan is written to it.
+Each has a recommendation; the plan is written to it. **All six were decided on
+2026-09-20, each on the recommendation** — kept here with the alternatives so
+the reasoning stays readable beside the code that implements it.
 
 **D1 — What does SENT mean?** *Recommended: "left this desk"* — written into the
 ERP under the customer's account, or marked sent by a person — with the ERP's own

@@ -42,6 +42,7 @@ import { CompanyRequired, api, forgetLegacyDraft } from "./api";
 import type { QuoteCompany } from "./api";
 import { CompanyPicker } from "./components/CompanyPicker";
 import { ErpQuoteList } from "./components/ErpQuoteList";
+import { CompanyFilter, useCompanyFilter } from "./platform/CompanyFilter";
 import { money } from "./money";
 import { DataGrid, numeric, text } from "./platform/DataGrid";
 import type { ColDef } from "./platform/DataGrid";
@@ -120,11 +121,46 @@ const FILTERS: [string, string, readonly QuoteReadiness[]][] = [
   ["SENT", "Sent", ["SENT"]],
 ];
 
+/** The ERP tab's piles: the sync's own classification of the ERP's word, and
+ *  nothing this screen decided. "No outcome" is the common case and not a
+ *  fault — silence is never read as a loss. */
+const ERP_FILTERS: [string, string][] = [
+  ["ALL", "All"], ["UNRECORDED", "No outcome"], ["WON", "Won"], ["LOST", "Lost"],
+];
+
 /** What the customer cell prints for a draft nobody has assigned yet. Words
  *  rather than a blank, because a blank in a column of names reads as a
  *  loading failure. Exported for the test. */
 export function customerLabel(q: Pick<QuoteDraftSummary, "customer">): string {
   return q.customer.trim() || "No customer yet";
+}
+
+/** The ERP's word for a document this platform wrote, as a chip: the tone is
+ *  the sync's classification (won / lost / neither), the label is the ERP's
+ *  own status verbatim. Exported for the test. */
+export function erpWord(erp: NonNullable<QuoteDraftSummary["sent"]>["erp"]):
+    { label: string; tone: Tone } | null {
+  if (!erp) return null;
+  const tone: Tone = erp.outcome === "WON" ? "good" : erp.outcome === "LOST" ? "bad" : "neutral";
+  return { label: erp.sourceStatus.replace(/_/g, " ") || "—", tone };
+}
+
+/** The document a sent draft became, and what the ERP says about it. */
+function SentCell({ sent }: { sent: NonNullable<QuoteDraftSummary["sent"]> }) {
+  const word = erpWord(sent.erp);
+  return (
+    <Stack direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
+      <Typography variant="body2" sx={{ fontFamily: "var(--font-heading)", fontWeight: 600 }}>
+        {sent.number}
+      </Typography>
+      {word && (
+        <StatusChip
+          label={`${sent.systemLabel}: ${word.label}`} tone={word.tone}
+          tip={`What ${sent.systemLabel} itself says about this document, as of the last sync.`}
+        />
+      )}
+    </Stack>
+  );
 }
 
 export default function QuoteWorkspace({ session }: { session: PlatformSession }) {
@@ -155,6 +191,17 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
   const [tab, setTab] = useState<"drafts" | "erp">("drafts");
   const [book, setBook] = useState<ErpQuoteBook | null>(null);
   const [bookError, setBookError] = useState<string | null>(null);
+  /** Which outcome the ERP tab shows. The ERP's own classification — silence
+   *  is "No outcome", never a loss — so the piles are the sync's, not this
+   *  screen's. */
+  const [erpFilter, setErpFilter] = useState("ALL");
+  /* One company or all, on each tab — the directory's own control, over the
+     rows already loaded, and rendering nothing below two companies. The
+     drafts carry the company their lines were priced from; the ERP rows carry
+     the book that raised them. Two instances because the two lists are
+     fetched and narrowed independently. */
+  const draftCompany = useCompanyFilter(rows ?? []);
+  const erpCompany = useCompanyFilter(book?.quotes_listed ?? []);
 
   const load = useCallback(() => {
     setError(null);
@@ -285,11 +332,30 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
   const visible = useMemo(() => {
     if (!rows) return [];
     const q = search.trim().toLowerCase();
+    const company = draftCompany.company;
     return rows.filter((r) =>
       inFilter(r, filter)
-      && (!q || [r.number, r.customer, r.owner, r.updatedBy, r.sent?.number]
+      && (!company || r.origin?.connection_id === company)
+      && (!q || [r.number, r.customer, r.company, r.owner, r.updatedBy, r.sent?.number]
         .filter(Boolean).join(" ").toLowerCase().includes(q)));
-  }, [rows, filter, search, inFilter]);
+  }, [rows, filter, search, inFilter, draftCompany.company]);
+
+  /* The ERP tab's piles and its narrowed list. Counted over the whole page the
+     server sent, so a chip says how big each pile is before it is pressed. */
+  const erpCounts = useMemo(() => {
+    const c: Record<string, number> = { ALL: 0, UNRECORDED: 0, WON: 0, LOST: 0 };
+    for (const q of book?.quotes_listed ?? []) {
+      c.ALL += 1;
+      c[q.outcome] = (c[q.outcome] ?? 0) + 1;
+    }
+    return c;
+  }, [book]);
+  const erpVisible = useMemo(() => {
+    const company = erpCompany.company;
+    return (book?.quotes_listed ?? []).filter((q) =>
+      (erpFilter === "ALL" || q.outcome === erpFilter)
+      && (!company || q.origin?.connection_id === company));
+  }, [book, erpFilter, erpCompany.company]);
 
   const open = useCallback(
     (q: QuoteDraftSummary) => navigate(pathFor("quotes", q.id)), [navigate]);
@@ -306,6 +372,11 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
             </Box>
           : customerLabel(p.data ?? { customer: "" }),
     }),
+    // Only where the drafts come from more than one company — the rule the
+    // source badges follow: one company is one word repeated down a column.
+    ...(draftCompany.show
+      ? [text<QuoteDraftSummary>("company", "Book", { minWidth: 150, flex: 0, width: 170 })]
+      : []),
     text("owner", "Owner", { minWidth: 140, flex: 0, width: 160 }),
     numeric("lineCount", "Lines", (v) => String(v), { width: 90, flex: 0 }),
     numeric("total", "Total", (v) => money(v), { width: 140, flex: 0 }),
@@ -316,6 +387,16 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
         const r = READINESS[p.data.readiness];
         return <StatusChip label={r.label} tone={r.tone} tip={r.tip} />;
       },
+    },
+    {
+      // The document a sent quote became, and — once a sync has read it back —
+      // the ERP's own word for it. "Sent" in the status column is this
+      // platform's claim that a document was written; the chip here is what
+      // the ERP says about that document, verbatim, and absent until synced.
+      field: "sent", headerName: "Document", width: 220, flex: 0,
+      valueGetter: (p) => p.data?.sent?.number ?? "",
+      cellRenderer: (p: { data?: QuoteDraftSummary }) =>
+        p.data?.sent ? <SentCell sent={p.data.sent} /> : null,
     },
     text("updatedAt", "Last change", {
       minWidth: 170,
@@ -337,7 +418,7 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
                    onDelete={setToDelete} />
         ) : null,
     },
-  ], [busy, open]); // eslint-disable-line react-hooks/exhaustive-deps
+  ], [busy, open, draftCompany.show]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Box>
@@ -399,8 +480,27 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
                   Showing the {book.listed} most recent of {book.count}.
                 </Meta>
               )}
-              <ErpQuoteList quotes={book.quotes_listed}
-                            emptyReason={book.empty_reason} />
+              {book.quotes_listed.length > 0 && (
+                <FilterPanel>
+                  {ERP_FILTERS.map(([key, label]) => (
+                    <FilterChip
+                      key={key}
+                      label={label}
+                      count={erpCounts[key] ?? 0}
+                      selected={erpFilter === key}
+                      onClick={() => setErpFilter(key)}
+                    />
+                  ))}
+                  <Box sx={{ flex: 1 }} />
+                  <CompanyFilter options={erpCompany.options} value={erpCompany.company}
+                                 onChange={erpCompany.setCompany} show={erpCompany.show} />
+                </FilterPanel>
+              )}
+              <ErpQuoteList quotes={erpVisible}
+                            showCompany={erpCompany.show}
+                            emptyReason={book.quotes_listed.length
+                              ? "Nothing matches this filter."
+                              : book.empty_reason} />
             </>
           )}
         </Box>
@@ -436,6 +536,8 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
               />
             ))}
             <Box sx={{ flex: 1 }} />
+            <CompanyFilter options={draftCompany.options} value={draftCompany.company}
+                           onChange={draftCompany.setCompany} show={draftCompany.show} />
             <TextField
               size="small"
               placeholder="Search number, customer, who"
@@ -467,7 +569,7 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
             }
             renderNarrow={(q) => (
               <DraftCard key={q.id} q={q} busy={busy} onOpen={open} onSend={send}
-                         onDelete={setToDelete} />
+                         onDelete={setToDelete} showCompany={draftCompany.show} />
             )}
           />
         </>
@@ -549,12 +651,14 @@ function Actions({ q, busy, onOpen, onSend, onDelete }: {
 }
 
 /** One draft as a card, for the phone rendering the grid hands off to. */
-function DraftCard({ q, busy, onOpen, onSend, onDelete }: {
+function DraftCard({ q, busy, onOpen, onSend, onDelete, showCompany = false }: {
   q: QuoteDraftSummary;
   busy: boolean;
   onOpen: (q: QuoteDraftSummary) => void;
   onSend: (q: QuoteDraftSummary) => void;
   onDelete: (q: QuoteDraftSummary) => void;
+  /** Name the book on the card — only where the list spans more than one. */
+  showCompany?: boolean;
 }) {
   const r = READINESS[q.readiness];
   return (
@@ -574,7 +678,13 @@ function DraftCard({ q, busy, onOpen, onSend, onDelete }: {
       <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
         {q.lineCount} line(s) · <CurrencyValue value={q.total} />
         {q.owner ? ` · ${q.owner}'s` : ""} · {changeLabel(q)}
+        {showCompany && q.company ? ` · ${q.company}` : ""}
       </Typography>
+      {q.sent && (
+        <Box sx={{ mt: 0.5 }}>
+          <SentCell sent={q.sent} />
+        </Box>
+      )}
       <Box sx={{ mt: 1 }}>
         <Actions q={q} busy={busy} onOpen={onOpen} onSend={onSend} onDelete={onDelete} />
       </Box>

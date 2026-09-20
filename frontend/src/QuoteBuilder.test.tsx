@@ -87,7 +87,7 @@ function session(role: Role = "OWNER"): PlatformSession {
  *  exactly what "New quote" opens on. */
 function quote(over: Partial<Quote> = {}): Quote {
   return {
-    id: "q1", customer: "", customerId: null, connectionId: null,
+    id: "q1", customer: "", customerId: null, connectionId: null, company: "",
     number: "QB-0001", saved: true, reference: "QB-0001",
     savedAt: "2026-09-02T08:00:00Z",
     system: "", systemLabel: "your books", systemShort: "books",

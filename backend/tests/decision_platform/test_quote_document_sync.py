@@ -642,6 +642,24 @@ def test_a_reference_naming_two_books_quotes_is_refused_not_guessed(session):
     assert session.query(models.QuoteOutcome).count() == 0
 
 
+def test_a_reference_qualified_by_its_book_is_not_ambiguous(session):
+    """The qualifier the refusal above deferred. Named with the book it is
+    unique in, the same reference resolves, and the row remembers the book."""
+    _sync(session, [_quote("1001", "sent")], connection_id="conn-a")
+    _sync(session, [_quote("1001", "sent")], connection_id="conn-b")
+
+    row = quote_service.set_outcome(
+        session, "org_a", quote_document_ref="1001",
+        quote_document_connection_id="conn-b",
+        status=QuoteOutcomeStatus.LOST, loss_reason=QuoteLossReason.PRICE,
+        lost_to="Sandvik")
+    assert (row.quote_document_ref, row.quote_document_connection_id) == ("1001", "conn-b")
+    assert row.status == "LOST"
+    assert quote_service.sole_erp_quote(session, "org_a", "1001", "conn-a").connection_id == "conn-a"
+    with pytest.raises(quote_service.AmbiguousQuoteDocument):
+        quote_service.sole_erp_quote(session, "org_a", "1001")
+
+
 def test_the_ambiguous_reference_refusal_survives_the_trip_through_http(
         session, api_client):
     """And it arrives as 409 with both books still named in a readable string.

@@ -29,6 +29,7 @@ from .. import approvals, enquiry, quote_fields, quote_workspace, resolution
 from ..authz import Principal, current_principal
 from ..commercial import policy as policy_service, quote_service
 from ..domain.enums import QuoteOutcomeStatus
+from ..domain.origin import Companies
 from ..ai import reading
 from ..ai.provider import select_provider
 from ..config import settings
@@ -168,6 +169,12 @@ class QuoteBooks:
     #: send produces, so a row says which system holds it rather than assuming
     #: the one connector that could write when the column was added.
     system: str = conn.ZOHO_CONNECTOR
+    #: The connected company whose book this is — the other half of the
+    #: document's identity, recorded beside the connector so the document the
+    #: send writes can be joined to the same document once the sync reads it
+    #: back, and compared with the company the quote's lines were priced from.
+    #: ``None`` in mock mode, where no book is resolved at all.
+    connection_id: Optional[str] = None
     #: The write half. The same object as ``zoho`` for Zoho, whose adapter is
     #: both; a different one for a connector that can be written to without
     #: being read live. Separate because #8 split the port for exactly this —
@@ -244,7 +251,8 @@ def _books_for(session: Session, book: conn.CustomerBook) -> QuoteBooks:
     if connector == conn.ZOHO_CONNECTOR:
         creds = conn.credentials_for(session, book.connection)
         return QuoteBooks(zoho=select_zoho_service(creds),
-                          contact_id=book.contact_id, system=connector)
+                          contact_id=book.contact_id, system=connector,
+                          connection_id=book.connection.connection_id)
 
     from ..ingestion import erp
 
@@ -255,7 +263,8 @@ def _books_for(session: Session, book: conn.CustomerBook) -> QuoteBooks:
             f"This customer's books are {connector}, which this platform syncs "
             f"on a schedule rather than reading live — so there is no live price "
             f"or stock to show here. The quote can still be sent.")),
-        contact_id=book.contact_id, system=connector, writer=writer)
+        contact_id=book.contact_id, system=connector, writer=writer,
+        connection_id=book.connection.connection_id)
 
 
 def zoho_for_quote(books: QuoteBooks = Depends(books_for_quote)) -> ZohoService:
@@ -321,17 +330,40 @@ def create_quote(body: CreateQuoteRequest,
     arrived, and who it is from is a question the desk answers when it has
     the answer — ``PUT /{quote_id}/customer`` below.
     """
-    try:
-        company = resolution.company_for(session, principal.organization_id,
-                                         body.connection_id)
-    except resolution.CompanyNotNamed as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            {"message": str(e), "companies": e.companies})
+    company = _company_for_new_quote(session, principal.organization_id, body)
     q = quote_workspace.create(session, principal.organization_id,
                                user_id=principal.user_id,
                                customer=body.customer, customer_id=body.customer_id,
                                connection_id=company)
     return _view(session, principal, q)
+
+
+def _company_for_new_quote(session: Session, org: str,
+                           body: CreateQuoteRequest) -> Optional[str]:
+    """Which company a new quote is raised from, and that its customer belongs
+    there.
+
+    The customer's own company answers when none was named: a quote started
+    from an account page in a three-company organization used to be asked
+    "which book?" about a customer whose row already says. Named or inferred,
+    the answer goes through ``resolution.company_for`` — the one place that
+    decides what an unnamed company means — and then through
+    ``require_same_company``, so a customer from another book is refused by
+    name rather than priced from the wrong catalogue.
+    """
+    try:
+        company = resolution.company_for(
+            session, org,
+            body.connection_id
+            or quote_workspace.company_of_customer(session, org, body.customer_id))
+        quote_workspace.require_same_company(
+            session, org, connection_id=company, customer_id=body.customer_id)
+    except resolution.CompanyNotNamed as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
+                            {"message": str(e), "companies": e.companies})
+    except quote_workspace.CompanyMismatch as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+    return company
 
 
 # ── the unsaved form ─────────────────────────────────────────────────────────
@@ -358,12 +390,7 @@ def create_quote_form(body: CreateQuoteRequest,
     Answers the same shape ``POST ""`` does, so the builder opens on it
     unchanged — with ``saved: false`` and an empty ``number``.
     """
-    try:
-        company = resolution.company_for(session, principal.organization_id,
-                                         body.connection_id)
-    except resolution.CompanyNotNamed as e:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY,
-                            {"message": str(e), "companies": e.companies})
+    company = _company_for_new_quote(session, principal.organization_id, body)
     q = quote_workspace.create_form(session, principal.organization_id,
                                     user_id=principal.user_id,
                                     customer=body.customer,
@@ -481,6 +508,15 @@ def set_customer(quote_id: str, body: SetCustomerRequest,
     if not body.customer.strip() and not body.customer_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST,
                             "Name the customer this quote is for.")
+    # The customer has to belong to the company this quote prices from —
+    # refused here, before anything is written, in the sentence that names
+    # both companies. See ``quote_workspace.require_same_company``.
+    try:
+        quote_workspace.require_same_company(
+            session, principal.organization_id,
+            connection_id=q.connectionId, customer_id=body.customer_id)
+    except quote_workspace.CompanyMismatch as e:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
     q.customer, q.customerId = body.customer.strip(), body.customer_id or None
     quote_workspace.save(session, q, principal.user_id)
     books = books_for_quote(quote_id, principal, session)
@@ -1058,6 +1094,22 @@ def create_estimate(quote_id: str,
             ok=False, **words,
             message=(f"{len(missing)} detail(s) this organization requires on every "
                      f"quote are missing: {', '.join(missing)}."))
+    if books.connection_id and q.connectionId and books.connection_id != q.connectionId:
+        # Belt and braces behind ``require_same_company``: the customer's book
+        # and the catalogue that priced the lines disagree — a draft made
+        # before the rule existed, or a customer re-attributed by a sync since.
+        # Refused rather than written into the book the lines were not priced
+        # from, and before any snapshot is recorded for a send that will not
+        # happen.
+        companies = Companies(session, principal.organization_id)
+        return EstimateResponse(
+            ok=False, **words,
+            message=(f"{q.customer} belongs to "
+                     f"{companies.label_for(books.connection_id)}, and this quote's "
+                     f"lines were priced from "
+                     f"{companies.label_for(q.connectionId)}'s catalogue. A quote is "
+                     f"written into the company that priced it — start it again "
+                     f"from {companies.label_for(books.connection_id)}."))
 
     org = principal.organization_id
 
@@ -1179,7 +1231,8 @@ def create_estimate(quote_id: str,
     try:
         quote_service.record_document(
             session, org, quote_id=quote_id,
-            external_system=books.system, number=est.number,
+            external_system=books.system, connection_id=books.connection_id,
+            number=est.number,
             document_id=est.document_id, line_count=est.line_count,
             fingerprint=fingerprint, reference=q.reference or "",
             already_existed=est.already_existed,
@@ -1212,6 +1265,7 @@ def create_estimate(quote_id: str,
         quote_service.set_outcome(
             session, org, quote_id=quote_id, status=QuoteOutcomeStatus.SENT,
             quote_document_ref=est.document_id,
+            quote_document_connection_id=books.connection_id,
             # The id as well as the name, so the account's holder — not only the
             # person who pressed the button — sees this quote in Won & lost.
             customer_ref=q.customer_ref, customer_id=q.customerId,
@@ -1282,6 +1336,11 @@ def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
     # sentence about nothing. §1 asks for the absence to be stated rather than
     # to read as a pass, and this is the field that states it.
     out["booksLive"] = settings.ZOHO_QUOTE_SERVICE == "live"
+    # Which company's catalogue priced this quote, by name. The id is on the
+    # quote already; the builder needs the word, beside Quote / Customer /
+    # Owner, for the same reason the ERP page names its Book.
+    out["company"] = (Companies(session, org).label_for(q.connectionId)
+                      if q.connectionId else "")
     sent = quote_service.latest_document(session, org, quote_id=q.id)
     out["estimate"] = None if sent is None else {
         "number": sent.external_document_number,
@@ -1290,6 +1349,10 @@ def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
         # Named, because "Sent · SQ-1001" does not say where it was sent and
         # two connected systems can both answer to that.
         **_system_words(sent.external_system),
+        # And what the ERP itself says about that document, once a sync has
+        # read it back — its own status word, never this platform's guess.
+        "erp": quote_workspace.erp_side(
+            quote_service.erp_documents_for(session, org, [sent]).get(q.id)),
     }
     return out
 

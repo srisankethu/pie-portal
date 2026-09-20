@@ -254,6 +254,20 @@ def test_a_new_quote_matches_the_quote_interface(client, mgmt_hdr, types):
 
 
 @pytest.mark.requires_pie
+def test_the_workspace_list_matches_the_draft_summary_interface(client, mgmt_hdr, types):
+    """The list every desk reads. It was never contract-checked, so a field
+    could be renamed on either side with nothing failing — and the row now
+    carries the company, the origin and what the ERP says about a sent
+    document, which is exactly the kind of addition that drifts."""
+    client.post("/api/v1/quotes", json={"customer": "Pitti Engineering"},
+                headers=mgmt_hdr)
+    rows = client.get("/api/v1/quotes", headers=mgmt_hdr).json()["quotes"]
+    assert rows, "no rows to check the contract against"
+    for row in rows:
+        assert_matches(row, "QuoteDraftSummary", types)
+
+
+@pytest.mark.requires_pie
 def test_a_fetched_quote_matches_the_quote_interface(client, mgmt_hdr, types):
     qid = client.post("/api/v1/quotes", json={"customer": "Pitti"},
                       headers=mgmt_hdr).json()["id"]

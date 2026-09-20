@@ -815,13 +815,24 @@ LOST; WON and LOST are terminal ("a margin analysis has already counted it").
 
 **Path.**
 1. `#/quotes` is the workspace: `GET /api/v1/quotes` lists every draft in
-   the organization — number, customer (or "No customer yet"), line count,
+   the organization — number, customer (or "No customer yet"), the company
+   whose catalogue priced it, line count,
    selling total, who started it and who last changed it — with a status
    chip computed on the server by the same functions the send runs
    (`quote_workspace.readiness`): Empty · Needs attention · Details missing ·
    Needs a customer ·
    Needs approval · Awaiting approval · Ready to send · Sent. Filters group
-   those into "Needs work", "Awaiting approval", "Ready to send", "Sent".
+   those into "Needs work", "Awaiting approval", "Ready to send", "Sent"; a
+   company filter and a Book column appear only where the drafts come from
+   more than one connected company. A sent row carries the document's number
+   and, once a sync has read that document back, the ERP's own status word as
+   a chip (`sent.erp` — the read-side join `quote_service.erp_documents_for`
+   makes on system, company and the ERP's id; null until synced).
+   The **From your ERP** tab lists the book with the same company filter,
+   outcome filters (No outcome · Won · Lost), and a "Built in PIE" chip on any
+   ERP quote this platform wrote (`platform_quote`, the same join in reverse),
+   which opens the draft. A PIE-written quote is still listed and counted as
+   an ERP quote — it is one — and the ERP page for it links back to the draft.
 2. "New quote" → `POST /api/v1/quotes/form` with **no customer** opens a blank
    form and **creates nothing** (the company is still decided here, once,
    because the first pasted RFQ line needs a catalogue to resolve against; an
@@ -851,12 +862,23 @@ LOST; WON and LOST are terminal ("a margin analysis has already counted it").
    ones named in an alert, and the send refuses by name until they are filled.
 3. The customer is chosen when the desk knows — before or after the RFQ is
    pasted — through the **customer picker** (server-side debounced search of
-   the directory, `GET /api/v1/accounts?q=…`) → `PUT /api/v1/quotes/{id}/customer`
+   the directory, `GET /api/v1/accounts?q=…&connection_id=…`, narrowed to the
+   quote's own company) → `PUT /api/v1/quotes/{id}/customer`
    carrying both name and customer id (identically-named customers in
    different books stay apart). Lines already on the quote are resolved again
    under that customer's identity scope; a price the desk typed is kept where
    the same product came back, and the response's `note` says how many.
    The same control changes the customer later, in place.
+   **A quote belongs to the company whose catalogue priced it, and that is the
+   company that invoices** — so its customer must be that company's. A customer
+   imported from another connected company is refused, at creation, at
+   `PUT /customer` and at the send, with a sentence naming both companies
+   (`quote_workspace.require_same_company`). Starting a quote from an account
+   page in a multi-company organization infers the company from the customer
+   rather than asking. A customer with no recorded company is placed by
+   `book_for_customer`'s existing rule at the send.
+   The header's identity strip names the **Book** beside the customer where a
+   company is connected, the way the ERP quote page does.
 
 **Branches.** A draft "Ready to send" can be sent from the list ("Send")
 without opening it — the same endpoint as the builder's button · "Remove"

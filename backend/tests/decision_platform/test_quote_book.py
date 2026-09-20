@@ -87,6 +87,57 @@ def _build(Maker, **kw):
 
 # ── the reason this module exists ────────────────────────────────────────────
 
+def _written(s, quote_id: str, number: str, doc_id: str,
+             connection_id: str | None) -> None:
+    from datetime import datetime, timezone
+    s.add(models.QuoteDraft(quote_id=quote_id, organization_id=ORG,
+                            customer_name="Acme Engineering", customer_id="c1",
+                            number=number, sequence=int(number.split("-")[1]),
+                            reference=f"{number}-deadbeef"))
+    s.add(models.QuoteDocument(
+        organization_id=ORG, quote_id=quote_id, external_system="zoho",
+        connection_id=connection_id, external_document_id=doc_id,
+        external_document_number=f"SLS/QTN-{doc_id}", reference=f"{number}-deadbeef",
+        line_count=1, fingerprint="f", written_at=datetime.now(timezone.utc)))
+
+
+def test_a_quote_this_platform_wrote_names_its_draft(maker):
+    """The reverse of the workspace's join: the ERP row says which PIE quote it
+    came from, so the same document is not two unrelated rows on two tabs."""
+    s = maker()
+    _doc(s, "est-9")
+    _doc(s, "est-8")
+    _written(s, "q9", "QB-0009", "est-9", connection_id="conn1")
+    s.commit()
+    s.close()
+
+    by_ref = {q.quote_document_ref: q for q in _build(maker)}
+    assert by_ref["est-9"].platform_quote == {"quote_id": "q9", "number": "QB-0009"}
+    assert by_ref["est-8"].platform_quote is None
+    assert by_ref["est-9"].to_dict()["platform_quote"]["number"] == "QB-0009"
+
+
+def test_a_document_that_does_not_say_its_book_joins_only_where_the_id_is_unique(maker):
+    s = maker()
+    _doc(s, "est-7")
+    s.add(models.QuoteDoc(
+        organization_id=ORG, connector="zoho", connection_id="conn2",
+        external_ref="est-7", number="4U/QTN-est-7", customer_id="c1",
+        customer_ref="Acme Engineering", date=date(2026, 5, 1),
+        source_status="sent", outcome=QuoteDocOutcome.UNRECORDED.value))
+    _written(s, "q7", "QB-0007", "est-7", connection_id=None)
+    _written(s, "q6", "QB-0006", "est-6", connection_id=None)
+    _doc(s, "est-6")
+    s.commit()
+    s.close()
+
+    rows = _build(maker)
+    assert all(q.platform_quote is None for q in rows if q.quote_document_ref == "est-7"), \
+        "two books answer to est-7; a company-less document names neither"
+    assert next(q for q in rows if q.quote_document_ref == "est-6").platform_quote == {
+        "quote_id": "q6", "number": "QB-0006"}
+
+
 def test_a_decided_quote_is_listed(maker):
     """The defect, pinned.
 

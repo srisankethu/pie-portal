@@ -261,6 +261,26 @@ describe("it always resolves", () => {
   });
 });
 
+describe("a quote this platform wrote", () => {
+  it("links back to the draft it came from, and nothing else changes", async () => {
+    // The same document used to be a "Sent" draft on one tab and an ERP quote
+    // on the other with nothing joining them. The page stays read-only: the
+    // one control it gains opens the draft, not the document.
+    listErpQuotes.mockResolvedValue({
+      quotes_listed: [quote({ platform_quote: { quote_id: "q42", number: "QB-0042" } })],
+    });
+    draw();
+
+    await waitFor(() => expect(screen.getByText("CNMG120408")).toBeTruthy());
+    expect(screen.getByText(/Built in PIE as QB-0042/)).toBeTruthy();
+    const pressable = screen.getAllByRole("button")
+      .map((b) => (b.textContent ?? "").trim())
+      .filter((label) => label !== "");
+    expect(pressable).toEqual(["All quotes", "Open in the Quote Builder"]);
+    expect(screen.getByText(/Nothing on this page can be edited/)).toBeTruthy();
+  });
+});
+
 describe("read-only, for anyone", () => {
   it("offers nothing to press but the way back", async () => {
     // Not "hides the edit button from a salesperson" — there is no edit button

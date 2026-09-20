@@ -40,11 +40,19 @@ ACTIVE = "ACTIVE"
 def list_accounts(
     q: Optional[str] = None,
     status: str = Query("active", pattern="^(active|inactive|all)$"),
+    connection_id: Optional[str] = None,
     group: Optional[groups.ResolvedGroup] = Depends(group_scope.customer_group),
     principal: Principal = Depends(current_principal),
     session: Session = Depends(get_session),
 ) -> list[dict]:
     """The account directory, with enough trade on each row to choose from it.
+
+    **``connection_id`` narrows to one connected company's customers.** The
+    Quote Builder asks with the company its quote prices from, because a quote
+    belongs to the company whose catalogue priced it and that is the company
+    that invoices — offering the whole directory there is how a quote priced
+    from SLS Engineers' catalogue was written into 4U Precision's book. Applied
+    after the ownership scope, like ``group``, so it can only ever remove rows.
 
     **``status`` defaults to active.** The pull now reads inactive contacts as
     well — it has to, or their history cannot be resolved — and a directory that
@@ -79,6 +87,9 @@ def list_accounts(
     if group is not None:
         allowed = set(groups.narrow([c.customer_id for c in rows], group))
         rows = [c for c in rows if c.customer_id in allowed]
+
+    if connection_id:
+        rows = [c for c in rows if c.connection_id == connection_id]
 
     if status != "all":
         want_active = status == "active"

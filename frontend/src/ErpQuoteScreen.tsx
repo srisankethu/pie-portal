@@ -255,6 +255,28 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
         }
       />
 
+      {/* Where this document came from, when it came from here. The platform
+          wrote it from a draft, the sync read it back, and the two halves are
+          joined on system, company and the ERP's own id — so the reader is not
+          left holding a QB number in one tab and an estimate number in the
+          other with nothing saying they are one quote. The one control on this
+          page besides "All quotes", and it opens the draft, not the document. */}
+      {quote.platform_quote && (
+        <Alert
+          severity="info"
+          sx={{ mb: 2 }}
+          action={
+            <Button size="small" sx={TOUCH}
+                    onClick={() => navigate(pathFor("quotes", quote.platform_quote!.quote_id))}>
+              Open in the Quote Builder
+            </Button>
+          }
+        >
+          Built in PIE as {quote.platform_quote.number || "a draft"} and written into
+          {" "}{quote.company} from there.
+        </Alert>
+      )}
+
       {/* What the Builder bands as QUOTE DETAILS. Not collapsible, which is the
           one place this deliberately departs from it: there the band holds a
           form somebody fills in and folding it away is how you get past it;

@@ -25,10 +25,10 @@ from typing import Any, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
-from .. import approvals, enquiry, quote_fields, quote_workspace, resolution
+from .. import approvals, clock, enquiry, quote_fields, quote_workspace, resolution
 from ..authz import Principal, current_principal
 from ..commercial import policy as policy_service, quote_service
-from ..domain.enums import QuoteOutcomeStatus
+from ..domain.enums import QuoteDocumentWriteState, QuoteOutcomeStatus
 from ..domain.origin import Companies
 from ..ai import reading
 from ..ai.provider import select_provider
@@ -54,7 +54,8 @@ from ..repositories import ReadModelRepository
 from ..enquiry import documents
 from ..sellable_catalog import sellable_pool_for
 from ..store import Line, Quote, store
-from ..ingestion.errors import SourceWriteRefused, SourceWriteUnknown
+from ..ingestion.errors import (IngestionError, SourceUnavailable,
+                                SourceWriteRefused, SourceWriteUnknown)
 from ..zoho import (
     QuoteWriter,
     ZohoService,
@@ -205,10 +206,15 @@ def books_for_quote(quote_id: str,
     why, which reads as BOOKS OFFLINE on a line and as a refusal on a write. It
     never falls back to a book.
     """
-    if settings.ZOHO_QUOTE_SERVICE != "live":
-        return QuoteBooks(zoho=select_zoho_service())
-
     org = principal.organization_id
+    if settings.ZOHO_QUOTE_SERVICE != "live":
+        # The stand-in adapter, but the quote's own system's name on what it
+        # writes: a mock-mode send on a Business Central organization used to
+        # be recorded and announced as a Zoho estimate.
+        quote = _get_quote(session, quote_id, org, user_id=principal.user_id)
+        return QuoteBooks(zoho=select_zoho_service(),
+                          system=_quote_connector(session, org, quote))
+
     # `user_id` for the same reason the reads above pass it: where this id is an
     # unsaved form, only its own author has one.
     quote = _get_quote(session, quote_id, org, user_id=principal.user_id)
@@ -478,11 +484,19 @@ def delete_quote(quote_id: str,
     if not q.saved:
         quote_workspace.discard_form(session, org, quote_id, principal.user_id)
         return {"ok": True}
-    if quote_service.latest_document(session, org, quote_id=quote_id) is not None:
+    # ``latest_document``, not ``latest_written_document``: an UNVERIFIED send
+    # may have landed, and a quote that may be in somebody's ledger stays.
+    newest = quote_service.latest_document(session, org, quote_id=quote_id)
+    if newest is not None:
+        unverified = newest.write_state == QuoteDocumentWriteState.UNVERIFIED.value
         raise HTTPException(
             status.HTTP_409_CONFLICT,
-            "This quote has been sent, so it stays on record. Only an unsent "
-            "draft can be removed.")
+            ("A send of this quote is unverified — look for reference "
+             f"{newest.reference} in {conn.system_label_for(newest.external_system)} "
+             "first. A quote that may be in the books stays on record."
+             if unverified else
+             "This quote has been sent, so it stays on record. Only an unsent "
+             "draft can be removed."))
     quote_workspace.delete(session, org, quote_id, principal.user_id)
     return {"ok": True}
 
@@ -517,6 +531,22 @@ def set_customer(quote_id: str, body: SetCustomerRequest,
             connection_id=q.connectionId, customer_id=body.customer_id)
     except quote_workspace.CompanyMismatch as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
+    # A document already written sits on one customer's account in the source,
+    # and nothing in PIE could say so if the quote moved to another. Refused,
+    # as removing a sent quote is (decision D4): a different customer is a new
+    # quote. Choosing the same customer again is not a change and still
+    # re-resolves the lines.
+    changing = (body.customer_id or None) != (q.customerId or None) or (
+        not body.customer_id and body.customer.strip() != q.customer)
+    written = quote_service.latest_written_document(
+        session, principal.organization_id, quote_id=quote_id)
+    if changing and written is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"This quote was sent to {q.customer} as "
+            f"{conn.system_label_for(written.external_system)} "
+            f"{written.external_document_number}, which sits on their account "
+            f"there. Start a new quote for another customer.")
     q.customer, q.customerId = body.customer.strip(), body.customer_id or None
     quote_workspace.save(session, q, principal.user_id)
     books = books_for_quote(quote_id, principal, session)
@@ -1113,6 +1143,47 @@ def create_estimate(quote_id: str,
 
     org = principal.organization_id
 
+    # ── sending twice, and sending again ─────────────────────────────────────
+    # Three presses used to create three estimates in Zoho, because nothing on
+    # the quote remembered that it had been sent and the button never changed.
+    # Re-sending an *amended* quote is ordinary work, so this is not a lock:
+    # unchanged content answers with the document it already produced, and
+    # changed content becomes a new **revision** — a new document under a
+    # reference of its own. Every live source keys its idempotency on the
+    # reference, so an amendment sent under the first one was answered with the
+    # document the source already held, and this platform then recorded the
+    # new content against the old number.
+    #
+    # Answered from the persisted row rather than from the in-memory quote — a
+    # restart erases the copy and not the send — and answered *before* the
+    # assessment is recorded: a press that creates nothing is not a send, and
+    # writing a snapshot set for it grew the audit trail by a duplicate
+    # decision per press.
+    fingerprint = store.priced_fingerprint(q)
+    newest = quote_service.latest_document(session, org, quote_id=quote_id)
+    # An UNVERIFIED newest row is a send whose reply was lost and whose settle
+    # read failed. This press retries *that* revision under *its* reference,
+    # and the source's own pre-flight settles which of the two it was.
+    retrying = (newest is not None and
+                newest.write_state == QuoteDocumentWriteState.UNVERIFIED.value)
+    if newest is not None and not retrying and newest.fingerprint == fingerprint:
+        # Named from the row rather than from ``books``: this answers about the
+        # document that was actually written, which may predate a customer
+        # being re-pointed at a different system.
+        held = newest.external_system or books.system
+        return EstimateResponse(
+            ok=True, documentNumber=newest.external_document_number,
+            lineCount=newest.line_count, alreadyExisted=True,
+            revision=newest.revision, **_system_words(held),
+            message=(f"{conn.system_label_for(held)} "
+                     f"{conn.quote_term_for(held)} "
+                     f"{newest.external_document_number} already covers this quote "
+                     "— nothing has changed since it was created."))
+    revision = (1 if newest is None
+                else newest.revision if retrying
+                else newest.revision + 1)
+    reference = quote_service.revision_reference(q.reference, revision)
+
     # ── the commercial gate ──────────────────────────────────────────────────
     # Record the quote's own assessment *first*, then judge it. The gate reads
     # the latest snapshot per line, and until this call the only thing writing
@@ -1157,59 +1228,26 @@ def create_estimate(quote_id: str,
                             for ln in q.lines if ln.economics().below_floor})
         if blocked:
             raise HTTPException(status.HTTP_403_FORBIDDEN, blocked)
-    # ── sending twice ────────────────────────────────────────────────────────
-    # Three presses used to create three estimates in Zoho, because nothing on
-    # the quote remembered that it had been sent and the button never changed.
-    # Re-sending an *amended* quote is ordinary work, so this is not a lock: the
-    # same content returns the estimate it already produced.
-    #
-    # This is the local half. The write below also carries ``q.reference``, so
-    # a source can recognise a repeat whose reply we never heard. Both are
-    # needed: this one saves the round trip, that one survives a lost answer.
-    #
-    # Changed content does NOT yet produce a new document on a live book. The
-    # reference is minted once per quote, and every live adapter keys its
-    # idempotency on it: Zoho answers with the estimate it already holds,
-    # Business Central and Acumatica do the same or refuse as "unknown" when the
-    # line count differs, NetSuite updates in place — and all of them report
-    # ``already_existed``. Only the mock writer mints a new document. The
-    # per-revision reference that fixes this is Phase 2 of
-    # ``docs/quote-lifecycle-plan.md``; until it lands, an amended send records
-    # the document the source *has*, and the chip reads "amended since" again
-    # as soon as the content moves.
-    fingerprint = store.priced_fingerprint(q)
-    # Answered from the persisted row rather than from the in-memory quote. The
-    # in-memory copy is erased by a restart, and the send it was remembering is
-    # not — so after one the check said "never sent", pressed the source again,
-    # and relied on the reference round trip to undo what it had just asked for.
-    sent = quote_service.latest_document(session, org, quote_id=quote_id)
-    if sent is not None and sent.fingerprint == fingerprint:
-        # Named from the row rather than from ``books``: this answers about the
-        # document that was actually written, which may predate a customer
-        # being re-pointed at a different system.
-        held = sent.external_system or books.system
-        return EstimateResponse(
-            ok=True, documentNumber=sent.external_document_number,
-            lineCount=sent.line_count, alreadyExisted=True,
-            **_system_words(held),
-            message=(f"{conn.system_label_for(held)} "
-                     f"{conn.quote_term_for(held)} "
-                     f"{sent.external_document_number} already covers this quote "
-                     "— nothing has changed since it was created."))
-
     lines = [{"code": ln.supplyCode, "itemId": ln.itemId,
               "qty": ln.reqQty, "rate": ln.quoted}
              for ln in q.lines if ln.supplyCode]
 
     # ── the write, and the three answers it is allowed to give ───────────────
     # Never a fourth. A refusal names the lines so the screen can point at them;
-    # an unresolvable outcome says so and carries the reference to look up. What
-    # this must not do is report a created estimate that may not exist, which is
+    # an unresolvable outcome says so, carries the reference to look up, and is
+    # now *recorded* as well as said; a source that could not be reached at all
+    # answers as a refusal rather than as a 500 with no words on it. What this
+    # must not do is report a created document that may not exist, which is
     # exactly what the mock could never get wrong and a real ledger can.
+    #
+    # ``reference`` is this revision's, not the quote's: the local half above
+    # decided which revision this is, and the source's pre-flight on the
+    # reference is the other half — a repeat whose reply was lost is recognised
+    # there, and an amendment is not mistaken for one.
     try:
         est = books.quote_writer.create_sales_quotes(q.customer, lines,
                                                  customer_ref=books.contact_id,
-                                                 reference=q.reference)
+                                                 reference=reference)
     except SourceWriteRefused as e:
         refused = {c for c in e.codes if c}
         return EstimateResponse(
@@ -1217,7 +1255,30 @@ def create_estimate(quote_id: str,
             blockers=[ln.id for ln in q.lines if ln.supplyCode in refused],
             message=str(e))
     except SourceWriteUnknown as e:
-        return EstimateResponse(ok=False, **words, message=str(e))
+        # The request went out and nobody can say what became of it. Written
+        # down — the reference it went out under, the revision, the content —
+        # so the quote itself says "look for X before sending again" to the
+        # next person who opens it, not only to the one who pressed the button
+        # and closed the tab. The next press retries this revision under this
+        # reference, and the pre-flight settles it.
+        quote_service.record_document(
+            session, org, quote_id=quote_id,
+            external_system=books.system, connection_id=books.connection_id,
+            number="", document_id=None, line_count=len(lines),
+            fingerprint=fingerprint, reference=reference, revision=revision,
+            write_state=QuoteDocumentWriteState.UNVERIFIED,
+            thresholds_version=policy_service.load_for_org(session, org).version)
+        session.commit()
+        return EstimateResponse(ok=False, **words, revision=revision, message=str(e))
+    except (SourceUnavailable, IngestionError) as e:
+        # A failed pre-flight read, a revoked grant, a throttle: the source was
+        # not written to, and the honest answer is that sentence with the
+        # system's name on it — not a bare 500 the screen cannot name.
+        return EstimateResponse(
+            ok=False, **words, revision=revision,
+            message=(f"{words['systemLabel']} could not be reached to send this "
+                     f"quote: {e} Nothing is recorded as sent — try again once it "
+                     f"answers."))
 
     # Past here the estimate exists — including when Zoho recognised the
     # reference as one it had already landed. Recorded either way, so the local
@@ -1228,14 +1289,25 @@ def create_estimate(quote_id: str,
     # safely. Written before the outcome transition because it is the record of
     # something that has already happened in somebody's ledger: if the status
     # bookkeeping below fails, the document must still be on file.
+    # What was actually sent under this reference. On a retry the source may
+    # answer with the document the *lost* press landed — the content this
+    # quote held then, not now — so the row records that content, and the
+    # chip reads "amended since" if the lines have moved on. Otherwise the
+    # write ran now, with these lines.
+    sent_fingerprint = (newest.fingerprint if retrying and est.already_existed
+                        else fingerprint)
+    # The document this revision replaces, for the person who has to void it
+    # in the source (decision D2: named, never voided from here).
+    previous = (quote_service.latest_written_document(session, org, quote_id=quote_id)
+                if revision > 1 else None)
     try:
         quote_service.record_document(
             session, org, quote_id=quote_id,
             external_system=books.system, connection_id=books.connection_id,
             number=est.number,
             document_id=est.document_id, line_count=est.line_count,
-            fingerprint=fingerprint, reference=q.reference or "",
-            already_existed=est.already_existed,
+            fingerprint=sent_fingerprint, reference=reference,
+            revision=revision, already_existed=est.already_existed,
             thresholds_version=policy_service.load_for_org(session, org).version)
         session.commit()
     except Exception:  # noqa: BLE001 — the estimate exists; bookkeeping must not undo it
@@ -1269,7 +1341,11 @@ def create_estimate(quote_id: str,
             # The id as well as the name, so the account's holder — not only the
             # person who pressed the button — sees this quote in Won & lost.
             customer_ref=q.customer_ref, customer_id=q.customerId,
-            user_id=principal.user_id)
+            user_id=principal.user_id,
+            # The outcome follows the newest document. Allowed only from the
+            # document this quote itself wrote last; a record about anything
+            # else is refused there and reported below.
+            repoint_from=(previous.external_document_id if previous else None))
     except (quote_service.InvalidTransition,
             quote_service.QuoteOutcomeRepointed) as e:
         # The lifecycle refused: a quote already decided, or an outcome already
@@ -1282,14 +1358,24 @@ def create_estimate(quote_id: str,
                    f"{words['documentTerm']} exists. Report this.")
 
     named = f"{words['systemLabel']} {words['documentTerm']}"
+    superseded = previous.external_document_number if previous else None
     if est.already_existed:
         return EstimateResponse(
             ok=True, documentNumber=est.number, lineCount=est.line_count,
-            alreadyExisted=True, warning=warning, **words,
+            alreadyExisted=True, warning=warning, revision=revision,
+            superseded=superseded, **words,
             message=(f"This quote was already sent — {named} {est.number} exists "
-                     f"under reference {q.reference}. Nothing was created twice."))
+                     f"under reference {reference}. Nothing was created twice."))
+    if superseded:
+        return EstimateResponse(
+            ok=True, documentNumber=est.number, lineCount=est.line_count,
+            warning=warning, revision=revision, superseded=superseded, **words,
+            message=(f"{named} {est.number} created — revision {revision}, "
+                     f"{est.line_count} lines. {superseded} is still in "
+                     f"{words['systemLabel']}; void it there."))
     return EstimateResponse(ok=True, documentNumber=est.number,
-                            lineCount=est.line_count, warning=warning, **words,
+                            lineCount=est.line_count, warning=warning,
+                            revision=revision, **words,
                             message=f"{named} {est.number} created — "
                                     f"{est.line_count} lines.")
 
@@ -1341,10 +1427,15 @@ def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
     # Owner, for the same reason the ERP page names its Book.
     out["company"] = (Companies(session, org).label_for(q.connectionId)
                       if q.connectionId else "")
-    sent = quote_service.latest_document(session, org, quote_id=q.id)
+    newest = quote_service.latest_document(session, org, quote_id=q.id)
+    unverified = (newest is not None and
+                  newest.write_state == QuoteDocumentWriteState.UNVERIFIED.value)
+    sent = (quote_service.latest_written_document(session, org, quote_id=q.id)
+            if unverified else newest)
     out["estimate"] = None if sent is None else {
         "number": sent.external_document_number,
         "lineCount": sent.line_count,
+        "revision": sent.revision,
         "current": sent.fingerprint == store.priced_fingerprint(q),
         # Named, because "Sent · SQ-1001" does not say where it was sent and
         # two connected systems can both answer to that.
@@ -1353,6 +1444,15 @@ def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
         # read it back — its own status word, never this platform's guess.
         "erp": quote_workspace.erp_side(
             quote_service.erp_documents_for(session, org, [sent]).get(q.id)),
+    }
+    # A send whose fate the source could not confirm, on the quote where the
+    # next person finds it. The reference is the whole of what they need: the
+    # source either holds a document under it or it does not.
+    out["unverifiedSend"] = None if not unverified else {
+        "reference": newest.reference,
+        "revision": newest.revision,
+        "writtenAt": clock.iso(newest.written_at),
+        **_system_words(newest.external_system),
     }
     return out
 

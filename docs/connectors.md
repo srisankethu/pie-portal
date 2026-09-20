@@ -98,6 +98,16 @@ back under a caller-supplied reference — see `ingestion/write_settle.py`. A
 connector whose target system cannot carry a re-checkable reference cannot
 support a write at all, and should declare none.
 
+The reference is also what makes an amended quote a *new* document. Every
+writer's pre-flight answers with the document already under the reference it
+was given, so the send mints a fresh reference per revision (`QB-0042-…` for
+the first send, `-r2`, `-r3` after — `quote_service.revision_reference`) and
+the adapter's job is unchanged: exact match on the reference, create only when
+nothing is there. An adapter that matched loosely — a prefix, a case-folded
+`-r2` against the bare reference — would report the old document as already
+sent and the amendment would never reach the book; the connector tests pin the
+exact re-check for Zoho, Business Central and Acumatica.
+
 ## What each sign-in must already be granted
 
 A half-granted sign-in is the most common way a connection authenticates and

@@ -516,6 +516,40 @@ def test_readiness_follows_the_send_gates_own_order(client, owner):
     assert _readiness(client, owner, q["id"]) == "READY"
 
 
+def test_an_unverified_send_is_what_the_desk_is_waiting_on(client, owner):
+    """A send whose reply was lost outranks SENT and is not NEEDS_ATTENTION.
+
+    NEEDS_ATTENTION means a line is unresolved; this means the books may hold
+    a document nobody has confirmed. Mixing them would put the one that needs
+    a person to look in the books into the pile it would be lost in. The
+    list's ``sent`` block keeps showing the last document the source *did*
+    confirm, because that is the only one with a number.
+    """
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteDocumentWriteState
+    from app.store import store
+
+    qid = _sent(client, owner, doc_id="est-1", connection_id=COMPANY)
+    assert _readiness(client, owner, qid) == "SENT"
+
+    # Re-priced, sent again, and the reply to that second send was lost.
+    client.post(f"/api/v1/quotes/{qid}/lines/L1/price", json={"price": 480},
+                headers=owner)
+    with client.Maker() as s:
+        draft = quote_workspace.load(s, ORG, qid)
+        quote_service.record_document(
+            s, ORG, quote_id=qid, external_system="zoho", connection_id=COMPANY,
+            number="", document_id=None, line_count=1, revision=2,
+            reference="QB-x-r2", fingerprint=store.priced_fingerprint(draft),
+            write_state=QuoteDocumentWriteState.UNVERIFIED)
+        s.commit()
+    rows = client.get("/api/v1/quotes", headers=owner).json()["quotes"]
+    row = next(r for r in rows if r["id"] == qid)
+    assert row["readiness"] == "UNVERIFIED_SEND"
+    assert row["sent"]["number"] == "EST-est-1", "the confirmed document, not the lost one"
+    assert row["sent"]["current"] is False
+
+
 def test_readiness_reports_the_approval_the_gate_is_waiting_on(client, owner):
     """A line the screen shows below the floor needs approval, and the list
     says so — then says it is waiting once a request has been raised."""

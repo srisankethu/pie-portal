@@ -171,10 +171,36 @@ export function SummaryBar({
           size="small"
           color={quote.estimate!.current ? "success" : "default"}
           variant="outlined"
-          label={quote.estimate!.current
-            ? `Sent · ${quote.estimate!.systemLabel} · ${quote.estimate!.number}`
-            : `Sent · ${quote.estimate!.systemLabel} · ${quote.estimate!.number} · amended since`}
+          label={[
+            // "r2" only from the second revision on: a first send is not a
+            // revision to the person who made it, and the suffix is what
+            // tells two documents for one quote apart in the books.
+            quote.estimate!.revision > 1 ? `Sent r${quote.estimate!.revision}` : "Sent",
+            quote.estimate!.systemLabel,
+            quote.estimate!.number,
+            ...(quote.estimate!.current ? [] : ["amended since"]),
+          ].join(" · ")}
         />
+      )}
+      {/* A send the books never confirmed. The reply was lost and the re-read
+          failed too, so nobody — not this platform, not the person who pressed
+          it — knows whether a document exists. The reference is the whole of
+          what the next person needs: look for it there first. Pressing Send
+          again retries under the same reference, and the books' own check
+          reports the document if it is there rather than creating a second. */}
+      {quote.unverifiedSend && (
+        <Alert severity="warning" sx={{ py: 0, maxWidth: 460 }}>
+          <b>Unverified send</b>
+          {" — "}
+          {`${quote.unverifiedSend.systemLabel} did not confirm the `
+            + `${quote.unverifiedSend.documentTerm} sent`}
+          {quote.unverifiedSend.writtenAt
+            ? ` on ${new Date(quote.unverifiedSend.writtenAt).toLocaleString()}`
+            : ""}
+          {`. Look for reference ${quote.unverifiedSend.reference} there before `
+            + "sending again; Send retries under that reference and reports the "
+            + `${quote.unverifiedSend.documentTerm} if it is already there.`}
+        </Alert>
       )}
       {/* What the ERP itself says about that document, once a sync has read it
           back. "Sent" above is this platform's claim — a document was written
@@ -200,6 +226,10 @@ export function SummaryBar({
               ? `${blockers.map((b) => b.text).join(" · ")} — each is marked on its own line above.`
               : (!hasLines
             ? "Add lines before creating the estimate"
+            : quote.unverifiedSend
+              ? `Retries the send under reference ${quote.unverifiedSend.reference}. `
+                + `${quote.systemLabel} reports the ${quote.documentTerm} if it is `
+                + "already there and creates it only if it is not."
             : sent && quote.estimate!.current
               ? `This quote is already ${document} ${quote.estimate!.number}. `
                 + "Nothing has changed since, so sending again returns the same one."
@@ -209,7 +239,7 @@ export function SummaryBar({
         }
         onClick={onCreateEstimate}
         disabled={busy || readOnly || !hasLines || blockers.length > 0
-                  || (sent && quote.estimate!.current)}
+                  || (sent && quote.estimate!.current && !quote.unverifiedSend)}
       >
         {/* "Send", not "Create".
           *
@@ -230,11 +260,13 @@ export function SummaryBar({
           ? "Sending…"
           : blockers.length
             ? `${blockers.length} to settle first`
-            : sent && quote.estimate!.current
-              ? "Already sent"
-              : sent
-                ? `Send amendment to ${quote.systemLabel}`
-                : `Send to ${quote.systemLabel}`}
+            : quote.unverifiedSend
+              ? `Retry send to ${quote.systemLabel}`
+              : sent && quote.estimate!.current
+                ? "Already sent"
+                : sent
+                  ? `Send amendment to ${quote.systemLabel}`
+                  : `Send to ${quote.systemLabel}`}
       </Button>
     </Paper>
   );

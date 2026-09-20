@@ -44,7 +44,7 @@ from sqlalchemy.orm import Session
 from . import approvals, clock, memberships, quote_fields
 from .commercial import quote_service
 from .domain import models
-from .domain.enums import ApprovalKind, ApprovalStatus, Role
+from .domain.enums import ApprovalKind, ApprovalStatus, QuoteDocumentWriteState, Role
 from .domain.origin import Companies
 from .ingestion import connections as conn
 from .store import Line, Quote, store
@@ -522,8 +522,9 @@ def assignees(session: Session, org: str) -> list[dict[str, str]]:
 # ── the list ─────────────────────────────────────────────────────────────────
 #: What a draft is waiting on. The client maps these to words; the order here
 #: is the order they are decided in, and the first that applies wins.
-READINESS = ("EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER", "SENT",
-             "AWAITING_APPROVAL", "NEEDS_APPROVAL", "READY")
+READINESS = ("EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER",
+             "UNVERIFIED_SEND", "SENT", "AWAITING_APPROVAL", "NEEDS_APPROVAL",
+             "READY")
 
 
 class CompanyMismatch(ValueError):
@@ -640,8 +641,16 @@ def list_drafts(session: Session, org: str, *, user_id: str = "",
     defs = quote_fields.definitions_for(session, org)
     companies = Companies(session, org)
     quotes = [_to_quote(row) for row in rows]
-    sent_by_quote = {q.id: quote_service.latest_document(session, org, quote_id=q.id)
-                     for q in quotes}
+    # Two documents per quote, usually the same row. ``newest`` is what the
+    # last press left behind and is what readiness reads — it may be an
+    # UNVERIFIED row with a reference and no number. ``sent`` is the newest
+    # the source confirmed, and is the only one with a number to show.
+    newest_by_quote = {q.id: quote_service.latest_document(session, org, quote_id=q.id)
+                       for q in quotes}
+    sent_by_quote = {
+        qid: (quote_service.latest_written_document(session, org, quote_id=qid)
+              if _unverified(doc) else doc)
+        for qid, doc in newest_by_quote.items()}
     # What the ERP says about each sent document, one query for the list — the
     # join ``quote_service.erp_documents_for`` performs, read-side.
     erp_by_quote = quote_service.erp_documents_for(
@@ -662,7 +671,8 @@ def list_drafts(session: Session, org: str, *, user_id: str = "",
             "lineCount": len(quote.lines),
             "unpriced": summary["unpriced"],
             "total": summary["grand"],
-            "readiness": readiness(session, org, quote, policy, sent, defs),
+            "readiness": readiness(session, org, quote, policy,
+                                   newest_by_quote[quote.id], defs),
             "ownerId": quote.ownerId,
             "owner": names.get(quote.ownerId or "", ""),
             "canEdit": (may_edit(quote, user_id=user_id, role=role, policy=policy)
@@ -681,9 +691,14 @@ def list_drafts(session: Session, org: str, *, user_id: str = "",
     return out
 
 
+def _unverified(doc: Optional[models.QuoteDocument]) -> bool:
+    return (doc is not None and
+            doc.write_state == QuoteDocumentWriteState.UNVERIFIED.value)
+
+
 def readiness(session: Session, org: str, quote: Quote,
               policy: models.OrgPolicy,
-              sent: Optional[models.QuoteDocument],
+              newest: Optional[models.QuoteDocument],
               defs: Optional[list[models.QuoteFieldDefinition]] = None) -> str:
     """What this draft is waiting on — one of ``READINESS``.
 
@@ -697,6 +712,14 @@ def readiness(session: Session, org: str, quote: Quote,
     state of its own here because it is not one for the send either: an
     approved quote is a READY one, and an approval the price has since moved
     past is NEEDS_APPROVAL again.
+
+    ``newest`` is the quote's most recent document row of *any* write state —
+    ``quote_service.latest_document``, not ``latest_written_document``. A
+    send whose reply was lost leaves an UNVERIFIED row, and that row is what
+    the desk is waiting on: the source either holds a document under its
+    reference or it does not, and nobody should press send again before
+    looking. It outranks SENT for that reason and sits after NO_CUSTOMER
+    because the send itself checks blockers and the customer first.
     """
     if not quote.lines:
         return "EMPTY"
@@ -709,7 +732,9 @@ def readiness(session: Session, org: str, quote: Quote,
         return "MISSING_DETAILS"
     if not quote.has_customer:
         return "NO_CUSTOMER"
-    if sent is not None and sent.fingerprint == store.priced_fingerprint(quote):
+    if _unverified(newest):
+        return "UNVERIFIED_SEND"
+    if newest is not None and newest.fingerprint == store.priced_fingerprint(quote):
         return "SENT"
     if not policy.require_approval_for_quotes:
         return "READY"

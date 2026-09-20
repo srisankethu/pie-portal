@@ -185,6 +185,12 @@ class MockZoho:
         self._not_in_books: set[str] = set()
         self._estimate_seq = 4200
         self._available = True
+        #: The documents this stand-in has "written", by the reference they
+        #: went out under — so it answers a repeat the way every live adapter
+        #: does. It used to mint a fresh number on every call, which meant the
+        #: one test of amend-and-resend passed against behaviour no live book
+        #: has, and the real answer ("already exists") was never exercised.
+        self._by_reference: Dict[str, ZohoEstimate] = {}
 
     # ── deterministic derivation ─────────────────────────────────────────────
     @staticmethod
@@ -255,14 +261,29 @@ class MockZoho:
     def create_sales_quotes(self, customer: str, lines: List[dict], *,
                         customer_ref: Optional[str] = None,
                         reference: Optional[str] = None) -> ZohoEstimate:
-        """Invent an estimate number. ``customer_ref`` and ``reference`` are
-        accepted and ignored: there is no ledger here for a contact id to point
-        into and no second estimate for a reference to deduplicate against."""
+        """Invent an estimate number — once per reference.
+
+        ``customer_ref`` is accepted and ignored: there is no ledger here for a
+        contact id to point into. ``reference`` is honoured the way every live
+        adapter honours it: a reference this stand-in has already written
+        answers with that document and ``already_existed=True``, whatever the
+        lines now say, because that is exactly what Zoho, Business Central and
+        Acumatica do — and the send has to earn a new document with a new
+        reference rather than be handed one by a mock.
+        """
         with self._lock:
+            if reference and reference in self._by_reference:
+                held = self._by_reference[reference]
+                return ZohoEstimate(document_id=held.document_id, number=held.number,
+                                    customer=held.customer, line_count=held.line_count,
+                                    already_existed=True)
             self._estimate_seq += 1
             num = f"EST-{self._estimate_seq:05d}"
-            return ZohoEstimate(document_id=f"zoho-{int(time.time())}-{self._estimate_seq}",
-                                number=num, customer=customer, line_count=len(lines))
+            est = ZohoEstimate(document_id=f"zoho-{int(time.time())}-{self._estimate_seq}",
+                               number=num, customer=customer, line_count=len(lines))
+            if reference:
+                self._by_reference[reference] = est
+            return est
 
     @property
     def available(self) -> bool:

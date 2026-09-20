@@ -188,6 +188,12 @@ export interface EstimateResult {
    *  a sentence to show beside the success, never a reason to call the send
    *  failed. Null when the bookkeeping went through. */
   warning: string | null;
+  /** Which revision this send was, or would have been. Present on refusals
+   *  too, so a screen can say which press went missing. */
+  revision: number | null;
+  /** On a revision, the number of the document it replaces. The source still
+   *  holds it and a person voids it there; the platform never does (D2). */
+  superseded: string | null;
 }
 
 /** What the ERP itself says about a document this platform wrote, once a sync
@@ -204,9 +210,25 @@ export interface ErpSide {
   clientViewedAt: string | null;
 }
 
+/** The send the source could not confirm — see `Quote.unverifiedSend`. */
+export interface UnverifiedSend {
+  /** The reference the write went out under; what to search the source for. */
+  reference: string;
+  revision: number;
+  writtenAt: string | null;
+  system: string;
+  systemLabel: string;
+  systemShort: string;
+  documentTerm: string;
+}
+
 export interface QuoteEstimate {
   number: string;
   lineCount: number | null;
+  /** Which revision of the quote this document is. 1 for the first send; an
+   *  amended quote sent again is a new document under a new reference, and
+   *  the number after it. A counter, not a figure. */
+  revision: number;
   current: boolean;
   /** The system holding it, and its own names for itself and the document.
    *  "Sent · SQ-1001" does not say where, and two connected systems can both
@@ -247,8 +269,8 @@ export interface MarginFloor {
  *  `quote_workspace.READINESS`. Decided by the same functions the send runs,
  *  so a row reading READY is one the send would accept. */
 export type QuoteReadiness =
-  | "EMPTY" | "NEEDS_ATTENTION" | "MISSING_DETAILS" | "NO_CUSTOMER" | "SENT"
-  | "AWAITING_APPROVAL" | "NEEDS_APPROVAL" | "READY";
+  | "EMPTY" | "NEEDS_ATTENTION" | "MISSING_DETAILS" | "NO_CUSTOMER"
+  | "UNVERIFIED_SEND" | "SENT" | "AWAITING_APPROVAL" | "NEEDS_APPROVAL" | "READY";
 
 /** What a quote-level field can hold — the server's `quote_fields.KINDS`. */
 export type QuoteFieldKind = "TEXT" | "MULTILINE" | "NUMBER" | "DATE" | "CHOICE";
@@ -472,8 +494,14 @@ export interface Quote {
   /** Manager and owner only, and *absent* rather than null for a salesperson —
    *  as is `filterCounts.MFLOOR`, for the reason `store._filter_counts` gives. */
   marginFloor?: MarginFloor | null;
-  /** The Zoho estimate already created from this quote, if any. */
+  /** The document the source most recently *confirmed* for this quote, if
+   *  any — never an unverified send, which is `unverifiedSend` below. */
   estimate: QuoteEstimate | null;
+  /** A send whose reply was lost and whose settle read failed too. The source
+   *  either holds a document under this reference or it does not, and the
+   *  person opening the quote is told to look before pressing send again.
+   *  Null when the last send was confirmed either way. */
+  unverifiedSend: UnverifiedSend | null;
   /** Present when the last action taught the system something durable — today
    *  that is a confirmed "this customer's code means that product". Server-
    *  written prose, shown as-is; the client does not compose it. */

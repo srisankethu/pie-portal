@@ -623,6 +623,24 @@ def test_a_quote_already_in_bc_under_this_reference_is_never_sent_twice():
     assert not _sent(src, "POST"), "the quote was already there and was sent anyway"
 
 
+def test_a_bc_revision_reference_does_not_match_the_first_documents_row():
+    """``<reference>-r2`` is a new document, not the one under ``<reference>``.
+
+    The server-side filter is exact, but the local re-check is what this
+    connector's protocol actually rests on — so a fake that answers every
+    filter with the revision-1 row must still see the amended quote created,
+    under its own reference. Matching here would report the old document as
+    "already sent" and the amendment would never reach the book.
+    """
+    src = _bc({**_CLEAN,
+               ("GET", "salesQuotes"): _Resp(200, {"value": [_bc_row()]})})
+    doc = src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                                  reference="QB-1-abcd-r2")
+    assert doc.already_existed is False
+    header, _ = _sent(src, "POST")
+    assert header["json"]["externalDocumentNumber"] == "QB-1-abcd-r2"
+
+
 def test_the_preflight_match_is_not_defeated_by_the_case_bc_stores():
     """externalDocumentNumber is an AL Code[35], which upper-cases what it
     stores; the references generated here carry lowercase hex. An exact
@@ -928,6 +946,18 @@ def test_a_quote_already_in_acumatica_is_never_sent_twice():
                                   reference="QB-1-abcd")
     assert doc.already_existed is True and doc.number == "QT000123"
     assert not _acu_sent(src, "PUT"), "it was already there and was sent anyway"
+
+
+def test_an_acumatica_revision_reference_does_not_match_the_first_documents_row():
+    """The same property as Business Central's: a revision goes out under a
+    reference of its own, and the revision-1 row under the bare reference is
+    not it, whatever the server's filter answered."""
+    src = _acu({**_ACU_CLEAN, ("GET", "SalesOrder"): _Resp(200, [_acu_row()])})
+    doc = src.create_sales_quotes("Pitti", _ACU_LINES, customer_ref="C1",
+                                  reference="QB-1-abcd-r2")
+    assert doc.already_existed is False
+    (put,) = _acu_sent(src, "PUT")
+    assert put["json"]["CustomerOrderNbr"] == {"value": "QB-1-abcd-r2"}
 
 
 def test_an_acumatica_quote_with_no_stock_code_is_refused_and_names_the_line():

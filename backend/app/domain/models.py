@@ -3225,7 +3225,11 @@ class QuoteDocument(Base):
 
     Append-only, and history in the §1 sense — it records what was written,
     when, under which policy — so it is never updated. A re-send of amended
-    content writes another row; the newest is the current one. That is also why
+    content writes another row, as a new ``revision`` under a reference of its
+    own; the newest row the source confirmed (``write_state`` WRITTEN) is the
+    current document, and a newer UNVERIFIED row is a send still to be settled
+    (``quote_service.latest_document`` and ``latest_written_document`` are the
+    two questions). That is also why
     there is no unique key on ``fingerprint``: a crash between the source write
     and this insert must be recoverable by writing the row late, not by turning
     a recorded send into an integrity error.
@@ -3273,6 +3277,23 @@ class QuoteDocument(Base):
     #: already held, rather than creating one. Recorded because "sent" and "was
     #: already there" are different facts and the screen says so.
     already_existed: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Which revision of this quote the row is. The quote's reference is minted
+    #: once and stays the key of revision 1; every send of changed content is a
+    #: new revision under a reference of its own (``quote_service.revision_reference``),
+    #: because every live source keys its idempotency on the reference — sent
+    #: again under the first one, an amendment was answered with the document
+    #: the source already held, and this platform then recorded the new content
+    #: against the old number.
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    #: ``QuoteDocumentChannel``: written into a source by this platform, or
+    #: recorded by a person as sent another way.
+    channel: Mapped[str] = mapped_column(String(8), default="ERP")
+    #: ``QuoteDocumentWriteState``: whether the source confirmed the document
+    #: exists. An UNVERIFIED row has a reference and no id — the write was
+    #: sent, the reply was lost, and reading it back failed too — and it is
+    #: what makes "look for reference X before sending again" survive the
+    #: response it was first said in.
+    write_state: Mapped[str] = mapped_column(String(16), default="WRITTEN")
     #: The commercial policy in force when this went out. A signed, append-only
     #: row keeps the version that judged it — the same rule approvals and
     #: snapshots follow, and the reason a past send stays explainable after the

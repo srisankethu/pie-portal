@@ -728,6 +728,58 @@ def test_a_platform_quote_that_became_an_erp_quote_is_one_row_not_two(session):
                                   status=QuoteOutcomeStatus.WON)
 
 
+def test_an_outcome_follows_a_revision_of_its_own_quote_and_nothing_else(session):
+    """The one exception to "never repointed", and it is narrow.
+
+    A quote re-sent as a new revision is one quote whose newest document has
+    changed, and its outcome follows the newest document. Allowed only when
+    the caller names the document it is moving *from*, that is the one the row
+    holds, and this quote itself wrote it. A row pointing at a document the
+    quote never wrote — an ERP-raised one, or another quote's — is a human
+    fact about that document and stays where it was recorded.
+    """
+    quote_service.record_document(
+        session, "org_a", quote_id="q1-1", external_system="zoho",
+        number="EST-1", document_id="est-1", line_count=1, fingerprint="f1")
+    quote_service.set_outcome(
+        session, "org_a", quote_id="q1-1", quote_document_ref="est-1",
+        status=QuoteOutcomeStatus.SENT, user_id="u1")
+    session.commit()
+
+    # Revision 2 of the same quote: written, then the outcome moves onto it.
+    quote_service.record_document(
+        session, "org_a", quote_id="q1-1", external_system="zoho",
+        number="EST-2", document_id="est-2", line_count=1, fingerprint="f2",
+        revision=2, reference="QB-1-r2")
+    row = quote_service.set_outcome(
+        session, "org_a", quote_id="q1-1", quote_document_ref="est-2",
+        status=QuoteOutcomeStatus.SENT, user_id="u1", repoint_from="est-1")
+    assert row.quote_document_ref == "est-2"
+    assert session.query(models.QuoteOutcome).count() == 1
+
+    # Naming a document the row does not hold moves nothing.
+    with pytest.raises(quote_service.QuoteOutcomeRepointed):
+        quote_service.set_outcome(
+            session, "org_a", quote_id="q1-1", quote_document_ref="est-3",
+            status=QuoteOutcomeStatus.SENT, repoint_from="est-1")
+    # Nor does naming the held one when this quote never wrote it: q2's row
+    # points at an ERP-raised document a person recorded it against.
+    quote_service.set_outcome(
+        session, "org_a", quote_id="q2-1", quote_document_ref="erp-77",
+        status=QuoteOutcomeStatus.SENT, user_id="u1")
+    quote_service.record_document(
+        session, "org_a", quote_id="q2-1", external_system="zoho",
+        number="EST-9", document_id="est-9", line_count=1, fingerprint="f9",
+        revision=2, reference="QB-2-r2")
+    with pytest.raises(quote_service.QuoteOutcomeRepointed):
+        quote_service.set_outcome(
+            session, "org_a", quote_id="q2-1", quote_document_ref="est-9",
+            status=QuoteOutcomeStatus.SENT, repoint_from="erp-77")
+    held = {r.quote_id: r.quote_document_ref
+            for r in session.query(models.QuoteOutcome)}
+    assert held == {"q1-1": "est-2", "q2-1": "erp-77"}
+
+
 def test_quotes_are_scoped_to_their_organization(session):
     """Two organizations quoting the same ERP id keep separate rows."""
     _sync(session, [_quote("est-1", "expired")], org="org_a")

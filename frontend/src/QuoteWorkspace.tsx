@@ -99,6 +99,11 @@ const READINESS: Record<QuoteReadiness, { label: string; tone: Tone; tip: string
     tip: "Every line is settled and the approval policy is satisfied. Sending "
       + "creates the document in the customer's books.",
   },
+  UNVERIFIED_SEND: {
+    label: "Send unverified", tone: "warn",
+    tip: "A send went out and the books never confirmed it. Open the quote: "
+      + "it names the reference to look for there before anybody sends again.",
+  },
   SENT: {
     label: "Sent", tone: "good",
     tip: "A document exists in the books for exactly what is on this quote. "
@@ -111,11 +116,15 @@ const READINESS: Record<QuoteReadiness, { label: string; tone: Tone; tip: string
  *  "what can go out", not for seven piles. */
 const FILTERS: [string, string, readonly QuoteReadiness[]][] = [
   ["ALL", "All", ["EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER",
-                  "NEEDS_APPROVAL", "AWAITING_APPROVAL", "READY", "SENT"]],
+                  "UNVERIFIED_SEND", "NEEDS_APPROVAL", "AWAITING_APPROVAL", "READY",
+                  "SENT"]],
   ["MINE", "Mine", ["EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER",
-                    "NEEDS_APPROVAL", "AWAITING_APPROVAL", "READY", "SENT"]],
+                    "UNVERIFIED_SEND", "NEEDS_APPROVAL", "AWAITING_APPROVAL", "READY",
+                    "SENT"]],
+  // An unverified send is work: somebody has to look in the books before the
+  // next press, and a pile that hid it would be the pile it was lost in.
   ["WORK", "Needs work", ["EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER",
-                          "NEEDS_APPROVAL"]],
+                          "UNVERIFIED_SEND", "NEEDS_APPROVAL"]],
   ["WAIT", "Awaiting approval", ["AWAITING_APPROVAL"]],
   ["READY", "Ready to send", ["READY"]],
   ["SENT", "Sent", ["SENT"]],

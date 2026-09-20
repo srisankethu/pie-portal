@@ -28,6 +28,8 @@ from ..domain.enums import (
     QUOTE_OUTCOME_TRANSITIONS,
     SELECTABLE_LOSS_REASONS,
     EvidenceSufficiency,
+    QuoteDocumentChannel,
+    QuoteDocumentWriteState,
     QuoteLossReason,
     QuoteOutcomeStatus,
     Role,
@@ -877,12 +879,34 @@ def _opening_status(document: Optional[models.QuoteDoc]) -> QuoteOutcomeStatus:
     return QuoteOutcomeStatus.DRAFT
 
 
+#: Business Central's ``externalDocumentNumber`` is a ``Code[35]`` and the
+#: smallest field any of these systems stores a reference in; a revision
+#: suffix has to fit inside it beside the reference the quote already carries
+#: (``QB-0042-<8 hex>``, 16 characters). ``-r99`` leaves nineteen to spare.
+_REVISION_SUFFIX = "-r{n}"
+
+
+def revision_reference(reference: str, revision: int) -> str:
+    """The reference a revision goes out under.
+
+    Revision 1 keeps the quote's own reference, unchanged, so every document
+    already written stays findable by the key it was written with. Every later
+    revision appends ``-rN``: a reference no source has seen, which is what
+    makes the source *create* the amended document instead of answering with
+    the one it already holds. Pure, so the send and the tests agree on it.
+    """
+    return reference if revision <= 1 else reference + _REVISION_SUFFIX.format(n=revision)
+
+
 def record_document(session: Session, org: str, *, quote_id: str,
                     external_system: str, number: str, line_count: int,
                     fingerprint: str, reference: str = "",
                     document_id: Optional[str] = None,
                     connection_id: Optional[str] = None,
                     already_existed: bool = False,
+                    revision: int = 1,
+                    channel: QuoteDocumentChannel = QuoteDocumentChannel.ERP,
+                    write_state: QuoteDocumentWriteState = QuoteDocumentWriteState.WRITTEN,
                     thresholds_version: str = "") -> models.QuoteDocument:
     """Record that this quote was written into a source system.
 
@@ -902,6 +926,7 @@ def record_document(session: Session, org: str, *, quote_id: str,
         external_document_number=number,
         reference=reference, line_count=line_count,
         fingerprint=fingerprint, already_existed=already_existed,
+        revision=revision, channel=channel.value, write_state=write_state.value,
         thresholds_version=thresholds_version)
     session.add(row)
     session.flush()
@@ -924,6 +949,38 @@ def latest_document(session: Session, org: str, *,
         .order_by(models.QuoteDocument.written_at.desc(),
                   models.QuoteDocument.quote_document_id.desc())
         .limit(1)).first()
+
+
+def latest_written_document(session: Session, org: str, *,
+                            quote_id: str) -> Optional[models.QuoteDocument]:
+    """The newest document the source *confirmed* — what "sent" means on
+    screen and what the fingerprint check compares against.
+
+    ``latest_document`` answers "what did the last press leave behind", which
+    may be an UNVERIFIED row with a reference and no number; this answers
+    "which document does the customer's book actually hold". Two questions,
+    two functions, and every reader has to know which it is asking.
+    """
+    return session.scalars(
+        select(models.QuoteDocument)
+        .where(models.QuoteDocument.organization_id == org,
+               models.QuoteDocument.quote_id == quote_id,
+               models.QuoteDocument.write_state
+               == QuoteDocumentWriteState.WRITTEN.value)
+        .order_by(models.QuoteDocument.written_at.desc(),
+                  models.QuoteDocument.quote_document_id.desc())
+        .limit(1)).first()
+
+
+def _own_document(session: Session, org: str, quote_id: str,
+                  document_ref: str) -> bool:
+    """Whether this quote itself wrote the document a reference names."""
+    return session.scalar(
+        select(models.QuoteDocument.quote_document_id).where(
+            models.QuoteDocument.organization_id == org,
+            models.QuoteDocument.quote_id == quote_id,
+            models.QuoteDocument.external_document_id == document_ref)
+        .limit(1)) is not None
 
 
 def erp_documents_for(session: Session, org: str,
@@ -991,7 +1048,8 @@ def set_outcome(session: Session, org: str, *, quote_id: Optional[str] = None,
                 customer_id: Optional[str] = None, note: Optional[str] = None,
                 loss_reason: Optional[QuoteLossReason] = None,
                 lost_to: Optional[str] = None,
-                user_id: Optional[str] = None) -> models.QuoteOutcome:
+                user_id: Optional[str] = None,
+                repoint_from: Optional[str] = None) -> models.QuoteOutcome:
     """Move a quote along DRAFT → SENT → WON/LOST.
 
     **Two kinds of quote can be named.** ``quote_id`` is a quote this platform
@@ -1098,11 +1156,23 @@ def set_outcome(session: Session, org: str, *, quote_id: Optional[str] = None,
     # indistinguishable from a real one.
     if (quote_document_ref is not None
             and row.quote_document_ref not in (None, quote_document_ref)):
-        raise QuoteOutcomeRepointed(
-            f"This outcome already describes ERP quote "
-            f"{row.quote_document_ref}; it cannot be moved onto "
-            f"{quote_document_ref}. Record the second quote's outcome "
-            "against its own reference.")
+        # One exception, and it is narrow: a quote re-sent as a new revision
+        # is one quote whose newest document has changed, and its outcome
+        # follows the newest document. Allowed only when the caller names the
+        # document it is moving *from*, that is the one the row holds, and
+        # this quote itself wrote it — so a human record about a different
+        # quote's document, or about an ERP-raised one, is never moved.
+        if (repoint_from is not None and quote_id is not None
+                and row.quote_document_ref == repoint_from
+                and _own_document(session, org, quote_id, repoint_from)):
+            row.quote_document_ref = None
+            row.quote_document_connection_id = None
+        else:
+            raise QuoteOutcomeRepointed(
+                f"This outcome already describes ERP quote "
+                f"{row.quote_document_ref}; it cannot be moved onto "
+                f"{quote_document_ref}. Record the second quote's outcome "
+                "against its own reference.")
 
     current = QuoteOutcomeStatus(row.status)
     if status is not current and status not in QUOTE_OUTCOME_TRANSITIONS[current]:

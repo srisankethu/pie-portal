@@ -35,12 +35,13 @@ function quote(over: Partial<Quote> = {}): Quote {
   } as unknown as Quote;
 }
 
-function show(blockers: Blocker[], covers: string | null = null) {
+function show(blockers: Blocker[], covers: string | null = null,
+              over: Partial<Quote> = {}) {
   const onCreateEstimate = vi.fn();
   render(
     <ThemeProvider theme={createTheme()}>
       <SummaryBar
-        quote={quote()}
+        quote={quote(over)}
         selectedCount={0}
         onDiscount={vi.fn()}
         onCreateEstimate={onCreateEstimate}
@@ -75,6 +76,37 @@ describe("the send button", () => {
     show([]);
     const send = screen.getByRole("button", { name: /Send to Zoho Books/ });
     expect(send).toBeEnabled();
+  });
+
+  it("names the document it sent, and from the second revision on, which one", () => {
+    const sent = {
+      number: "EST-0002", lineCount: 1, revision: 2, current: true,
+      system: "zoho", systemLabel: "Zoho Books", documentTerm: "estimate",
+      erp: null,
+    };
+    show([], null, { estimate: sent });
+    expect(screen.getByText("Sent r2 · Zoho Books · EST-0002")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Already sent/ })).toBeDisabled();
+  });
+
+  it("tells the next person to look for an unverified send before sending again", () => {
+    /* The reply was lost and the re-read failed. The sentence used to live
+       only in the reply to the press, so the person who closed the tab was
+       the only one ever told. Now the quote carries the reference, the bar
+       says so, and the button is a retry under that reference — never a
+       fresh send that could put a second document beside the first. */
+    show([], null, {
+      estimate: null,
+      unverifiedSend: {
+        reference: "QB-0042-ab12cd34", revision: 1, writtenAt: "2026-09-20T10:00:00Z",
+        system: "zoho", systemLabel: "Zoho Books", systemShort: "Zoho",
+        documentTerm: "estimate",
+      },
+    });
+    expect(screen.getByText(/Unverified send/)).toBeInTheDocument();
+    expect(screen.getByText(/QB-0042-ab12cd34/)).toBeInTheDocument();
+    const retry = screen.getByRole("button", { name: /Retry send to Zoho Books/ });
+    expect(retry).toBeEnabled();
   });
 
   it("says what the total covers rather than letting the figure imply it", () => {

@@ -1102,34 +1102,59 @@ failed to create still has to name it.
    uncovered re-price). The gate also folds in the screen's own below-floor
    lines (screen margin uses catalogue cost; the assessment uses bill cost —
    the parameter closes the gap).
-5. **Idempotency** — a fingerprint of (supply : qty : rate) per line is
-   compared against the last persisted document row (survives restarts):
-   unchanged content answers "already covers this quote", creating nothing.
-   The write below also carries the quote's reference, minted once per quote,
-   so a source can recognise a repeat whose reply was lost.
+5. **Idempotency and revisions** — a fingerprint of (supply : qty : rate) per
+   line is compared against the newest persisted document row (survives
+   restarts): unchanged content answers "already covers this quote", creating
+   nothing and recording nothing. Changed content is a **new revision**: the
+   first send goes out under the quote's own reference (minted once, so every
+   document already written stays findable), every later one under
+   `⟨reference⟩-r⟨n⟩` — a reference no source has seen, which is what makes a
+   live book *create* the amended document instead of answering with the one
+   it already holds. Every live adapter keys its idempotency on the reference,
+   so before this an amendment came back as the old document and the new
+   content was recorded against the old number.
 6. **The write** — exactly three possible answers: created ·
    `SourceWriteRefused` (the named lines + the source's sentence) ·
    `SourceWriteUnknown` (a reference to search for). Never a claimed-created
-   estimate that may not exist. **Changed content does not yet produce a new
-   document on a live book**: every live adapter keys on the reference and
-   answers with the document it already holds (`alreadyExisted`), Business
-   Central and Acumatica refuse as "unknown" when the line count differs, and
-   NetSuite updates in place. Only the mock writer mints a second document.
-   Per-revision references are Phase 2 of `docs/quote-lifecycle-plan.md`.
-7. **Bookkeeping** — the document row is persisted and the outcome moves
-   DRAFT→SENT with the ERP's own document id as the durable join. Bookkeeping
-   failure never undoes a real send: a lifecycle refusal (a decided quote, an
-   outcome already recorded about another document) arrives as `warning` on a
-   successful answer, shown as a second snackbar.
-The summary bar then shows a durable "Sent · ⟨system⟩ · ⟨number⟩" chip that
-turns "amended since" once the priced content moves, and the button becomes
-"Send amendment to ⟨system⟩".
+   estimate that may not exist. A source that cannot be reached at all (a
+   failed pre-flight read, a revoked grant, a throttle) answers `ok: false`
+   with the system's name and its sentence, and records nothing — never a bare
+   500. An *unknown* outcome is written down: a `quote_documents` row in
+   `write_state = UNVERIFIED` with the reference and no number, so the quote
+   itself tells the next person to look for that reference before sending
+   again. Readiness reads **UNVERIFIED_SEND** (in the workspace's "Needs work"
+   pile), the summary bar shows the reference, and the button reads "Retry
+   send": the next press retries *that* revision under *its* reference, and
+   the source's own pre-flight settles it — the document it already landed is
+   recorded as written (with the content it was sent with, so the chip reads
+   "amended since" if the lines have moved on), or nothing is there and the
+   write runs now.
+7. **Bookkeeping** — the document row is persisted (system, company, revision,
+   reference, content fingerprint) and the outcome moves DRAFT→SENT with the
+   ERP's own document id as the durable join. On a revision the outcome
+   follows the newest document (`repoint_from` the previous one — allowed only
+   for a document this quote itself wrote; a human record about another
+   document is never moved). Bookkeeping failure never undoes a real send: a
+   lifecycle refusal (a decided quote, an outcome already recorded about
+   another document) arrives as `warning` on a successful answer, shown as a
+   second snackbar. **The previous document is left in the source and named**
+   (`superseded` in the response, "EST-1001 is still in Zoho Books; void it
+   there") — the platform never voids a document it did not decide about
+   (decision D2 in `docs/quote-lifecycle-plan.md`).
+The summary bar then shows a durable "Sent · ⟨system⟩ · ⟨number⟩" chip —
+"Sent r2 · …" from the second revision on — that turns "amended since" once
+the priced content moves, and the button becomes "Send amendment to
+⟨system⟩". **The customer cannot be changed once a document has been
+written** (409, naming the document and the account it sits on): a different
+customer is a new quote (decision D4).
 **Branches.** Approval policy off → no approval gating (blockers and pricing
 checks still apply) · client-side gate pre-check saves a certain refusal but
 the server is the authority (an approval granted in another tab lets the send
 proceed) · refusing adapter → the binding failure held in the alert.
-**Ends.** Sent (chip + number) · already-existed · refused: unresolved /
-unpriced / 403 awaiting approval / source-refused · client-side block.
+**Ends.** Sent (chip + number, revision) · already-existed · unverified
+(reference recorded; retry) · unreachable (nothing recorded) · refused:
+unresolved / unpriced / 403 awaiting approval / source-refused · client-side
+block.
 
 ### 7.9 Record the outcome (WON / LOST)
 

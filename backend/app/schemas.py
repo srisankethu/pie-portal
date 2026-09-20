@@ -129,3 +129,11 @@ class EstimateResponse(BaseModel):
     #: table says, and a refusal that lived only in a log was how the link
     #: stayed unwritten for two weeks.
     warning: Optional[str] = None
+    #: Which revision of the quote this document is. 1 for a first send; an
+    #: amended quote sent again is a new document and a new revision. A
+    #: counter, not a figure — nothing about a price is in it.
+    revision: Optional[int] = None
+    #: On a revision, the number of the document it replaces — which the source
+    #: still holds, and which a person voids there. Named so the desk knows
+    #: which one; the platform does not void documents (decision D2).
+    superseded: Optional[str] = None

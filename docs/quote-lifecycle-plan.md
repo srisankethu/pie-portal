@@ -1,8 +1,9 @@
 # Quotes across PIE and the ERP — implementation plan
 
 **Status: approved 2026-09-20, all six decisions in §4 taken on the
-recommendation. Phase 0 landed (`71f2a6b`). Phase 1 landed (this commit).
-Phases 2 and 3 next; 4–6 after review.**
+recommendation. Phase 0 landed (`71f2a6b`). Phase 1 landed (`9d520f5`).
+Phase 2 landed (this commit) — with two departures from the text below, both
+noted in place. Phase 3 next; 4–6 after review.**
 
 The question this answers: *how do we handle quotes the ERP raised, quotes across
 several connected companies and ERPs, a PIE quote not yet sent to the ERP, and a
@@ -448,13 +449,15 @@ code before the data is safe.
 
 **Changes — backend**
 
-- `models.QuoteDocument` gains `revision` (Integer, default 1), `header_fingerprint`
-  (String(128), nullable), `channel` (String(8), default `ERP`), `write_state`
-  (String(16), default `WRITTEN`).
-- `store.header_fingerprint(quote)` = customer ref + the values of the
-  organization's required fields, beside the existing line fingerprint (a second
-  column rather than a changed formula, so no existing sent quote flips to
-  "amended since" on deploy; NULL reads as matching).
+- `models.QuoteDocument` gains `revision` (Integer, default 1), `channel`
+  (String(8), default `ERP`), `write_state` (String(16), default `WRITTEN`).
+- ~~`header_fingerprint`~~ — **dropped at implementation.** No writer payload
+  carries a quote-level field: the four adapters send the customer, the
+  reference and the lines, and nothing else. A fingerprint over values that
+  never reach the document would turn "amended since" on for a change the
+  customer cannot see, and the one header value that *does* reach the source —
+  the customer — is covered by D4 (refused after a send) rather than by a
+  stamp. The three columns above are what landed.
 - `create_estimate`, in this order: gates → **local short-circuit first** (both
   fingerprints match the newest WRITTEN row → "already covers", nothing recorded,
   G27) → `assess_and_record` → approval gate → `revision = newest.revision + 1` when
@@ -471,9 +474,13 @@ code before the data is safe.
   sentence (G15). "Exactly three answers" becomes true.
 - `SourceWriteUnknown` → record a `quote_documents` row with `write_state =
   UNVERIFIED`, the reference, `line_count`, no id or number (G16). Readiness reads
-  NEEDS_ATTENTION; the builder shows the sentence and the reference to look for; the
-  next press's settle-by-read either finds the document (recorded WRITTEN, same
-  revision) or nothing (refused; the UNVERIFIED row is superseded by the next row).
+  **`UNVERIFIED_SEND`** — a state of its own rather than the NEEDS_ATTENTION written
+  here, because NEEDS_ATTENTION means "a line is unresolved" and a pile that mixed
+  the two would hide the one that needs a person to look in the books. It sits in
+  the workspace's "Needs work" filter. The builder shows the sentence and the
+  reference to look for; the next press retries that revision under its reference,
+  and the source's pre-flight settles it: found (recorded WRITTEN, same revision,
+  with the content it was sent with) or nothing (the write runs now).
 - `set_customer` refuses with 409 once a WRITTEN document exists ("Sent to Pitti as
   EST-1001 — start a new quote for another customer"), the rule `delete_quote`
   already applies (G14, D4).

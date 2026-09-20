@@ -977,6 +977,40 @@ def test_a_read_refused_with_a_401_is_still_retried_on_a_fresh_token():
     assert not isinstance(caught.value, ZohoScopeError)
 
 
+def test_a_read_refused_with_a_403_is_retried_like_a_401_not_left_uncertain():
+    """The read half of pairing 403 with 401, which is where that pairing bites.
+
+    Covering 403 was argued for the write: the hop that mints one — an edge, a
+    WAF, a proxy — can mint it after the backend has accepted the call. But the
+    branch is shared, so this changed a path every sync runs on. A GET answered
+    403 used to fall past the auth branch to the generic refusal and raise a
+    bare ``ZohoError``; it now drops its token and asks again, and ends as
+    ``ZohoAuthError``. Pinned rather than left to be rediscovered, because the
+    write case is the one everybody was looking at: the retry is free for a
+    read, and ``ZohoAuthError`` subclasses ``ZohoError``, so nothing that
+    caught the old class stops catching it.
+
+    The half that must never happen is the write treatment. A read dressed as
+    an uncertain write sends its caller to settle-by-read, hunting a ledger for
+    a record that cannot exist — the only thing sent was a question.
+    """
+    http = FakeHttp({})
+    seen = {"n": 0}
+
+    def get(url, params=None, headers=None, **kw):
+        seen["n"] += 1
+        return FakeResponse({"message": "Forbidden"}, status=403)
+
+    http.get = get                                    # type: ignore[assignment]
+
+    with pytest.raises(ZohoAuthError) as caught:
+        list(_src(http=http).list_items())
+    assert seen["n"] == 2, "a read must be asked again on a fresh token"
+    assert http.token_calls == 2, "and the rejected token must not be re-served"
+    assert not isinstance(caught.value, ZohoWriteUncertain), (
+        "a read has written nothing, so it never becomes an uncertain write")
+
+
 def test_a_read_whose_connection_died_is_not_dressed_up_as_an_uncertain_write():
     """A dropped GET is a dropped GET.
 

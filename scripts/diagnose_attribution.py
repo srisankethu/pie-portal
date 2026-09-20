@@ -4,9 +4,23 @@
 Why does a row say "Zoho" instead of naming the connected company? Because the
 company is looked up by the row's ``connection_id``, and a row that has none
 cannot be attributed to a book. Rows written before per-connection provenance
-existed have none, and a later sync does not adopt them: the upsert matches on
-(connector, connection_id), so a connection with a real id never finds a row
-whose id is NULL — it creates a fresh one beside it.
+existed have none.
+
+**A later sync does adopt them, and this paragraph said it did not.** The claim
+was true when it was written and stopped being true in two steps.
+``_for_upsert`` gained an adoption branch: on an organization with exactly one
+connection, a pull claims a row that carries no connection rather than
+inserting a twin beside it. ``upsert_vendor`` was then the one master upsert
+still doing its own lookup, so vendors alone kept twinning — fixed since, with
+the adoption path pinned. Both are why this script exists, and neither is a
+reason to keep describing the old behaviour as current.
+
+What that leaves is narrower and does not heal itself. A book that synced
+*between* those two fixes has vendor twins already on disk: a good row carrying
+the connection, and a NULL-connection orphan beside it. Adoption cannot reach
+the orphan now, because the exact-source lookup finds the good row first and
+returns before the claimable branch is consulted. ``--repair`` below is for
+exactly those, and for nothing else.
 
 That same miss is why a customer can appear twice, and why an item can show no
 name: the row carrying the name is the one the screen is not reading. So this
@@ -16,12 +30,15 @@ external id across two *connections* are two companies' records of possibly
 different customers, and must never be merged; two sharing one connection are
 one customer written twice.
 
-This script only reads. It prints what it finds and changes nothing.
+This script only reads, unless ``--repair`` is passed. Without it nothing is
+written, which is the mode to run first and the mode to run again afterwards.
 
 Run:  cd backend && python3 ../scripts/diagnose_attribution.py
+      cd backend && python3 ../scripts/diagnose_attribution.py --repair
 """
 from __future__ import annotations
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -29,8 +46,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "backend"))
 
 from sqlalchemy import func, select                      # noqa: E402
 
-from app.db import SessionLocal                          # noqa: E402
+from app.db import Base, SessionLocal                    # noqa: E402
 from app.domain import models                            # noqa: E402
+
+_args = argparse.ArgumentParser(
+    description="Diagnose connection attribution; optionally repair vendor twins.")
+_args.add_argument(
+    "--repair", action="store_true",
+    help="delete NULL-connection vendor rows that have a surviving twin and "
+         "nothing pointing at them. Everything else is reported and left alone.")
+ARGS = _args.parse_args()
 
 ENTITIES = [("customers", models.Customer), ("products", models.Product)]
 for name in ("SalesTxn", "CostRecord", "StockLevel"):
@@ -144,6 +169,7 @@ def _duplicates(model, label: str) -> None:
 
 _duplicates(models.Customer, "customers")
 _duplicates(models.Product, "products")
+_duplicates(models.Vendor, "vendors")
 
 
 # ── missing names ────────────────────────────────────────────────────────────
@@ -164,5 +190,118 @@ for label, model in (("customers", models.Customer), ("products", models.Product
               f"connection={r.connection_id or 'NULL'}")
     if len(blank) > _LIMIT:
         print(f"   … and {len(blank) - _LIMIT} more")
+
+# ── vendor twins, and the only repair this script will perform ───────────────
+#
+# Separate from the duplicate report above because this group has a cause, a
+# shape and a safe remedy that the general case does not.
+#
+# ``upsert_vendor`` was for a while the one master upsert that did not go
+# through ``_for_upsert``, so when a book first recorded a connection every
+# other master was re-stamped in place and the vendor master was re-inserted
+# beside itself: a good row carrying the connection, and a NULL-connection twin
+# holding nothing but a name. The orphan is inert — ``get_vendor_by_external``
+# finds the exact-source match first, so every bill written since hangs off the
+# good row — and it is permanent, because that same lookup returning first is
+# what stops adoption ever reaching it.
+#
+# Two conditions make deleting one safe, and BOTH are required per row:
+#
+#   a surviving twin   Same organization, connector and external id, with a
+#                      real connection. Without one this is not a twin at all,
+#                      it is the only copy of that vendor, and deleting it
+#                      would destroy the record rather than de-duplicate it.
+#                      This is the condition that makes the repair a repair.
+#   nothing points at it
+#                      Every foreign key into ``vendors.vendor_id``, counted.
+#                      Derived from the metadata rather than listed here: nine
+#                      tables reference a vendor today and a list written out
+#                      in this file would be wrong the first time a tenth is
+#                      added, silently, in the direction that deletes a row
+#                      something still needs.
+#
+# A row failing the second condition is printed and left alone. Re-pointing its
+# dependents onto the twin would be a guess about which vendor a historical
+# document meant, and this script does not guess.
+def _vendor_referrers() -> list[tuple[str, str]]:
+    """Every (table, column) holding a foreign key into ``vendors.vendor_id``."""
+    target = models.Vendor.__table__.c.vendor_id
+    found = []
+    for table in Base.metadata.tables.values():
+        for col in table.columns:
+            for fk in col.foreign_keys:
+                if fk.column is target:
+                    found.append((table.name, col.name))
+    return sorted(found)
+
+
+REFERRERS = _vendor_referrers()
+print()
+print(f"tables referencing a vendor: {len(REFERRERS)}")
+
+orphans = list(s.scalars(
+    select(models.Vendor).where(models.Vendor.connection_id.is_(None))))
+twinned, lonely = [], []
+for row in orphans:
+    survivors = s.scalar(
+        select(func.count()).select_from(models.Vendor).where(
+            models.Vendor.organization_id == row.organization_id,
+            models.Vendor.connector == row.connector,
+            models.Vendor.external_id == row.external_id,
+            models.Vendor.connection_id.is_not(None))) or 0
+    (twinned if survivors else lonely).append((row, survivors))
+
+print(f"vendors with no connection: {len(orphans)}  "
+      f"({len(twinned)} have a surviving twin, {len(lonely)} are the only copy)")
+if lonely:
+    print("   the only-copy rows are NOT twins and are never deleted — they are")
+    print("   unattributed legacy rows, and a sync on a single-connection book")
+    print("   will adopt them. Listed so the two kinds are not confused:")
+    for row, _ in lonely[:_LIMIT]:
+        print(f"      {row.external_id:<24} {(row.name or '')[:40]}")
+    if len(lonely) > _LIMIT:
+        print(f"      … and {len(lonely) - _LIMIT} more")
+
+deletable, blocked = [], []
+for row, survivors in twinned:
+    holds = []
+    for table_name, col_name in REFERRERS:
+        table = Base.metadata.tables[table_name]
+        n = s.scalar(select(func.count()).select_from(table)
+                     .where(table.c[col_name] == row.vendor_id)) or 0
+        if n:
+            holds.append(f"{table_name}.{col_name}={n}")
+    (blocked if holds else deletable).append((row, survivors, holds))
+
+print()
+print(f"twinned orphans: {len(deletable)} deletable, {len(blocked)} blocked by a reference")
+for row, survivors, _ in deletable[:_LIMIT]:
+    print(f"   DELETABLE {row.external_id:<24} {(row.name or '')[:32]:<32} "
+          f"twin(s)={survivors}")
+if len(deletable) > _LIMIT:
+    print(f"   … and {len(deletable) - _LIMIT} more")
+for row, survivors, holds in blocked:
+    print(f"   BLOCKED   {row.external_id:<24} {(row.name or '')[:32]:<32} "
+          f"held by {', '.join(holds)}")
+if blocked:
+    print("   Blocked rows are left alone. Something still points at them, and")
+    print("   moving those references onto the twin would be a guess about which")
+    print("   vendor a historical document meant. Decide those by hand.")
+
+if not ARGS.repair:
+    print()
+    print("Read-only run. Re-run with --repair to delete the DELETABLE rows above;")
+    print("nothing else is touched, on either pass.")
+elif not deletable:
+    print()
+    print("--repair: nothing to do.")
+else:
+    for row, _survivors, _ in deletable:
+        s.delete(row)
+    s.commit()
+    print()
+    print(f"--repair: deleted {len(deletable)} twinned vendor orphan(s).")
+    print("Re-run without --repair to confirm the count is now zero.")
+
 
 s.close()

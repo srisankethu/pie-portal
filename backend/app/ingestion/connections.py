@@ -436,8 +436,11 @@ def quote_writer_ready(connector: str) -> bool:
 #: Connectors this platform has a quote-write adapter wired for, as opposed to
 #: merely permitted to write. The two are different questions and both have to
 #: be Yes: ``writes_for`` says the *grant* covers creating a quote there, this
-#: says there is code that knows how. Today they coincide at one entry and this
-#: set is what the Business Central work replaces with real dispatch.
+#: says there is code that knows how. They coincide at all four entries today —
+#: they did not when this set was written, and the sentence here still said so
+#: long after the Business Central writer landed. Kept as a set rather than
+#: collapsed into ``writes_for`` precisely because the next connector to declare
+#: the write will arrive before its adapter does.
 #:
 #: It exists because capability alone is not enough to route on. A customer
 #: from a connector that declares the write but has no adapter must still be

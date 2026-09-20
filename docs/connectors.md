@@ -107,29 +107,69 @@ pinned separately (`test_zohos_declared_writes_match_what_the_adapter_can_actual
 because it is not in the `ingestion/erp` registry and the registry-wide pin
 cannot see it — which is exactly how its write scopes went years undeclared.
 
-**A registry connector's write is never replayed.** In `erp/transport.py` an
-unmarked non-GET is abandoned on all four of the answers that cannot be told
-apart from a success whose response was lost — a 5xx, a dropped connection, a
-429 and a 401. Each raises `SourceWriteUncertain`, and the adapter settles it by
-reading the record back under a caller-supplied reference — see
-`ingestion/write_settle.py`. A connector whose target system cannot carry a
-re-checkable reference cannot support a write at all, and should declare none.
+**A write is never replayed, and that is now one rule rather than two.** A
+non-GET that fails without a usable answer is abandoned on every one of the
+outcomes that cannot be told apart from a success whose response was lost — a
+5xx, a dropped connection, a 429, a 401 or 403, and an answer in the 2xx band
+whose body will not parse. `erp/transport.py` raises `SourceWriteUncertain`,
+`zoho_client.py` raises `ZohoWriteUncertain` which subclasses it, and either way
+the adapter settles by reading the record back under a caller-supplied
+reference — see `ingestion/write_settle.py`. A connector whose target system
+cannot carry a re-checkable reference cannot support a write at all, and should
+declare none.
 
-**Zoho is not quite that, and this sentence used to cover it anyway.**
-`zoho_client.py` is the older transport and still replays a write on two of
-those four: its 401 branch reasons that a rejected token never reached the books
-and its 429 branch that the limiter refuses a call outright rather than
-half-applying it. `erp/transport.py` was written afterwards and refuses both
-readings in as many words — a gateway can mint either *after* the backend has
-accepted the call, which is how one quote becomes two. Only the 5xx case agrees
-across the two. The fourth, a dropped connection, is not replayed on either
-side, but `zoho_client._request` wraps nothing around the call itself, so the
-fault escapes as a bare transport error instead of `ZohoWriteUncertain` — which
-reads to a write caller as "nothing happened", the reading `erp/transport.py`
-added its own handler to stop. So the guarantee is the registry's, and the
-incumbent — the connector carrying most of the quote writes today — has the
-weaker one on three of the four. Written down rather than smoothed over: a
-blanket claim is exactly how the narrower path stops being looked at.
+The last of those five was the one this paragraph had counted as four. A
+truncating proxy on a `POST` that Zoho answered `201` left `resp.json()` raising
+`ValueError`, and both transports turned that into a plain refusal: the desk was
+told the estimate does not exist, no settle read ran, and the quote stayed DRAFT
+beside a document sitting in the customer's books under its reference. The
+status had already said the call landed. It is written into the count here
+rather than only in the code because the count is what a reader checks the code
+against.
+
+Two exemptions, both deliberate. The first is the same on either side: a 401 or
+403 whose body says the endpoint was never in the grant is raised as a scope
+error instead, because it is the one refusal that is definite about having
+refused *before* acting, and it sends an owner to grant a permission rather than
+to hunt a ledger for a record that certainly is not on it. The second is
+NetSuite's alone — its estimate marks itself `replayable=True`, because
+`PUT …/estimate/eid:{externalId}` upserts and arriving twice is arriving once.
+Idempotence buys back the retry; nothing else does, which is why Zoho has no
+equivalent: `POST estimates` creates, every time it is called.
+
+403 is in that sentence because it was very nearly the third exemption. Books
+documents 401 for auth and nothing in this repo has seen it answer 403, so
+`zoho_client` had a 401 branch only and a 403 fell through to the generic
+refusal — asserted to a salesperson as "nothing was written", with no read
+behind it. But the argument for pairing them is about the hop that answers, not
+about Books: the gateway that can mint a 401 after the backend accepted the call
+can mint a 403 the same way. `erp/transport.py` paired them without waiting for
+the proof, which is the right way round, and `zoho_client` does now too.
+
+**The two transports disagreed about this, and the reason is worth keeping.**
+`zoho_client.py` is the older one, and it had written down as safe the two
+readings `erp/transport.py` later refused in as many words: that a rejected
+token never reached the books, and that a limiter refuses a call outright rather
+than half-applying it. Neither is provable from here — a gateway can mint a 401
+after the backend has accepted the call, and a front end can throttle one its
+own backend already took. The difference went unexamined for as long as it did
+because this section was a blanket claim covering both, and a guarantee stated
+once over two implementations is a guarantee checked on neither.
+
+The dropped connection is the case to be precise about, because this file was
+wrong about it. `zoho_client._request` wrapped nothing around the call itself,
+and this section read that as a write caller being told "nothing happened" —
+`erp/transport.py`'s own reasoning, applied to Zoho without looking at Zoho's
+callers. No caller ever read it that way: `create_item` and `create_sales_quotes`
+in `zoho_books_service.py` each end in an `except Exception` that settles by
+reading, with comments saying exactly why. The hazard was closed at the caller.
+What changed is that it is closed in the transport, so the guarantee belongs to
+the client rather than to each caller that remembered. Those two handlers stay,
+and the likeliest thing still reaching them is worth naming: `_access_token`
+exchanges the refresh token through a call with no wrapper of its own, so a
+socket that dies *there* died before the write went out at all. They settle it
+by reading regardless — a handler for what it cannot enumerate is the last place
+that should be deciding nothing was written.
 
 ## What each sign-in must already be granted
 
@@ -149,7 +189,7 @@ person granting it is reading:
 
 | Connector | Where it is granted | Shape |
 |---|---|---|
-| `zoho` | Zoho API console, scope field | Ten `ZohoBooks.*.READ` scopes plus `estimates.CREATE`, `estimates.READ` and `settings.CREATE` for the write, pasted as one string |
+| `zoho` | Zoho API console, scope field | Twelve `ZohoBooks.*.READ` scopes for the pull, plus `estimates.CREATE` and `settings.CREATE` for the write — and `estimates.READ`, declared on both lists because the send reads the estimate back. Pasted as one string |
 | `netsuite` | Setup → Users/Roles → Manage Roles, on the token's role | Setup and Reports permissions plus View on each list/transaction, and Create on Estimate for the send |
 | `dynamics365` | Entra ID app registration + permission sets on the app's user | `API.ReadWrite.All` with admin consent (BC publishes no read-only variant), then read on each entity plus create on sales quotes |
 | `acumatica` | User Security → Access Rights by Role | Endpoint access plus View Only per screen, and Insert on Sales Orders for the send |

@@ -411,7 +411,11 @@ def test_every_refusal_publishes_the_same_empty_shape():
         assert reading.terms_source is None
         assert reading.cited == ()
         assert all(getattr(reading, f) is None for f in MONEY_FIELDS)
-        assert reading.reason in reading.basis
+        # The code and the sentence are separately checkable, which is the
+        # point of keeping them apart: ``basis`` is what a person reads and
+        # carries no code of its own, ``reason`` is what a caller reads.
+        assert reading.basis
+        assert reading.reason not in reading.basis
         assert len(reading.unavailable) == 1
 
 

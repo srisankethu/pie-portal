@@ -55,8 +55,8 @@ const QUALIFICATION =
 /** The claim the owner's copy leads with. Written by the server; this file
  *  never builds one and the desk's payload never carries one. */
 const CLAIM =
-  "POSSIBLE_MARGIN_LEAKAGE: this line is below the range this customer's own "
-  + "history supports, and the field this organization records a pricing reason "
+  "This line is below the range this customer's own history supports, and the "
+  + "field this organization records a pricing reason "
   + "in is empty on this quote. Read that as a potential margin leakage and no "
   + "further — an unrecorded reason is not an absent one, and nothing on "
   + "the record says why this price was set.";
@@ -64,6 +64,7 @@ const CLAIM =
 function reading(over: Partial<IntentView> = {}): IntentView {
   return {
     read: true,
+    reason: "READ",
     renders: true,
     headline: "Recorded on this quote: the quote type is TENDER.",
     lines: FOUR,
@@ -77,25 +78,26 @@ function reading(over: Partial<IntentView> = {}): IntentView {
  *  the builder, and the case this block is written around. */
 const NO_SOURCE_RECORD: IntentView = {
   read: false,
+  reason: "NO_SOURCE_RECORD",
   renders: true,
   headline: "",
   lines: [],
   codes: [],
-  note: "NO_SOURCE_RECORD: no document from a source system was found for this "
-        + "quote, so there are no source fields to read. What a quote records "
-        + "about why it was priced is read from the record its own system "
-        + "holds, and a quote drafted here has none yet.",
+  note: "No document from a source system was found for this quote, so there "
+        + "are no source fields to read. What a quote records about why it was "
+        + "priced is read from the record its own system holds, and a quote "
+        + "drafted here has none yet.",
 };
 
 const ATTRIBUTION: AttributionView = {
-  renders: true, headline: "", drivers: [],
-  note: "NO_COST_BASELINE: no purchase was knowable.",
+  renders: true, reason: "NO_COST_BASELINE", headline: "", drivers: [],
+  note: "No purchase was knowable.",
 };
 
 const WORKING_CAPITAL: WorkingCapitalView = {
-  assessed: false, interrupts: false, renders: true, headline: "", figures: [],
-  severity: "", strength_word: "",
-  note: "NO_RATE: No annual cost of capital is set.",
+  assessed: false, reason: "NO_RATE", interrupts: false, renders: true,
+  headline: "", figures: [], severity: "", strength_word: "",
+  note: "No annual cost of capital is set.",
 };
 
 function deskView(over: Partial<OperationsDiagnosisView> = {}): OperationsDiagnosisView {
@@ -248,7 +250,7 @@ describe("what the record says about this quote", () => {
     // a statement about the quote and not about this card's input.
     const alerts = within(container).getAllByRole("alert");
     expect(alerts.some((a) => a.textContent?.includes(
-      "no document from a source system was found"))).toBe(true);
+      "No document from a source system was found"))).toBe(true);
     // And no sentence is invented to fill the gap.
     expect(container.textContent).not.toContain("No pricing reason has been");
   });

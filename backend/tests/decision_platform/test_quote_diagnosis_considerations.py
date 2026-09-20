@@ -204,6 +204,7 @@ def test_an_unremarkable_line_offers_nothing_and_says_what_was_weighed():
     assert got.items == ()
     assert got.surfacing == ()
     assert got.line_surfaces is False
+    assert got.reason == considerations.NOTHING_TO_WEIGH
     assert "no option is put in front of you" in got.basis
     assert "What was checked, and what could not be, is on the card." in got.basis
 
@@ -216,6 +217,10 @@ def test_a_surfacing_line_with_nothing_further_to_offer_says_so_differently():
 
     assert out.surfaces is True
     assert got.items == ()
+    # One code over both silences: ``basis`` words them apart because they are
+    # different facts about the line, and ``reason`` answers the one question a
+    # caller asks — is anything on offer here.
+    assert got.reason == considerations.NOTHING_TO_WEIGH
     assert "supports no option beyond reading the finding itself" in got.basis
 
 
@@ -548,6 +553,9 @@ def test_the_desks_basis_never_mentions_an_option_it_did_not_receive():
     assert considerations.REVIEW_THE_PURCHASE_SOURCE not in desk.basis
     assert "withheld" not in desk.basis.lower()
     assert str(len(desk.items)) in desk.basis
+    # And ``reason`` is rebuilt over the desk's own list for the same reason
+    # ``basis`` is — it says what this reader was handed, not what was dropped.
+    assert desk.reason == considerations.OFFERED
 
 
 def test_no_operations_consideration_carries_a_severity():

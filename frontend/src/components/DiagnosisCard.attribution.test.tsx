@@ -34,6 +34,7 @@ const REASONS = [{ code: "PRICE_IS_CORRECT", label: "The price is right" }];
 function attribution(over: Partial<AttributionView> = {}): AttributionView {
   return {
     renders: true,
+    reason: "PRICE_THEN_COST",
     headline: "Margin fell 6.4 points: the price decision owns 4.1 of it and "
               + "the cost level 2.3.",
     drivers: [
@@ -84,9 +85,9 @@ function ownerView(over: Partial<OwnerDiagnosisView> = {}): OwnerDiagnosisView {
     // the card draws its block and nothing here has to reason about it.
     // `DiagnosisCard.workingcapital.test.tsx` is where it is pinned.
     working_capital: {
-      assessed: false, interrupts: false, renders: true, headline: "",
-      figures: [], severity: "", strength_word: "",
-      note: "NO_RATE: No annual cost of capital is set.",
+      assessed: false, reason: "NO_RATE", interrupts: false, renders: true,
+      headline: "", figures: [], severity: "", strength_word: "",
+      note: "No annual cost of capital is set.",
     },
     ...over,
   };
@@ -187,7 +188,8 @@ describe("a refusal", () => {
     // The payload's own worst case, and the one that would otherwise read as
     // good news: nothing asserted, nothing explained, and a block that drew
     // nothing at all.
-    draw({ attribution: { renders: false, headline: "", drivers: [], note: "" } });
+    draw({ attribution: { renders: false, reason: "NO_COST_BASELINE",
+                          headline: "", drivers: [], note: "" } });
 
     expect(screen.getByText(/no reason was given/)).toBeTruthy();
   });

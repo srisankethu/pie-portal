@@ -666,6 +666,10 @@ def _attribution(view: render.AttributionView) -> dict[str, Any]:
     places is two answers to one question.
     """
     return {"renders": view.renders,
+            # The machine-readable half of ``note``. Published beside the
+            # sentence rather than inside it, so a caller reads a code and a
+            # reader reads English — neither recovered from the other.
+            "reason": view.reason,
             "headline": view.headline,
             "drivers": [{"code": d.code, "severity": d.severity,
                          "strength_word": d.strength_word,
@@ -684,6 +688,7 @@ def _working_capital(view: render.WorkingCapitalView) -> dict[str, Any]:
     precisely because there is nothing here for a browser to do but print them.
     """
     return {"assessed": view.assessed,
+            "reason": view.reason,
             "interrupts": view.interrupts,
             "renders": view.renders,
             "headline": view.headline,
@@ -709,6 +714,11 @@ def _intent(view: render.IntentView) -> dict[str, Any]:
     object it could have come from.
     """
     return {"read": view.read,
+            # ``IntentView.reason`` is ``intent.Reading``'s and can be nothing
+            # else, which is why this key is safe on the branch that serves a
+            # salesperson: ``POSSIBLE_MARGIN_LEAKAGE`` is a code on
+            # ``PricingIntent`` and never a reason on the reading.
+            "reason": view.reason,
             "renders": view.renders,
             "headline": view.headline,
             "lines": list(view.lines),
@@ -734,6 +744,7 @@ def _considerations(view: render.ConsiderationsView) -> dict[str, Any]:
     """
     return {"line_id": view.line_id,
             "renders": view.renders,
+            "reason": view.reason,
             "items": [{"code": c.code, "label": c.label, "detail": c.detail,
                        "line_id": c.line_id, "rests_on": list(c.rests_on),
                        "strength_word": c.strength_word,

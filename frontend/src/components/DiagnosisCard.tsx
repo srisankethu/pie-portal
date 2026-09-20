@@ -174,8 +174,13 @@ export type ConsiderationView = {
 export type ConsiderationsView = {
   line_id: string;
   renders: boolean;
+  /** `OFFERED` / `NOTHING_TO_WEIGH`, or `NOT_ON_STORED_RECORD` on a row read
+   *  back from the store. The machine-readable half of `note`, published as its
+   *  own key so nothing here has to recover a code from a sentence. */
+  reason: string;
   items: ConsiderationView[];
-  /** What was weighed, or why nothing is offered. **Never empty.** */
+  /** What was weighed, or why nothing is offered. **Never empty**, and never
+   *  prefixed with `reason` — it is prose, meant to be printed as it arrives. */
   note: string;
 };
 
@@ -194,6 +199,10 @@ export type IntentView = {
    *  to read and has none. The server knows which it is and says so; asking
    *  "are there sentences" would file the first under refusal. */
   read: boolean;
+  /** `READ`, or the refusal code. Always the *reading's* own — the possibility
+   *  a manager may be shown is a member of `codes`, never a reason, which is
+   *  what makes this key safe on a salesperson's payload. */
+  reason: string;
   renders: boolean;
   /** What was recorded, in one sentence — or **"No pricing reason has been
    *  recorded for this quote."** `""` on a refusal. */
@@ -209,7 +218,7 @@ export type IntentView = {
   codes: string[];
   /** The standing qualification — that this is read from recorded fields, and
    *  that absence of a recorded reason is not evidence there was no reason — or
-   *  the refusal and its reason. */
+   *  the refusal in words. Never prefixed with `reason`. */
   note: string;
 };
 
@@ -274,10 +283,15 @@ export type AttributionDriverView = {
  */
 export type AttributionView = {
   renders: boolean;
+  /** `PRICE_THEN_COST` where a split is asserted, or the refusal code. The
+   *  machine-readable half of `note`, published as its own key so nothing here
+   *  has to recover a code from a sentence. */
+  reason: string;
   /** The split in one sentence; `""` when nothing is asserted. */
   headline: string;
   drivers: AttributionDriverView[];
-  /** The qualification, or the refusal, in words; `""` when there is none. */
+  /** The qualification, or the refusal, in words; `""` when there is none.
+   *  Never prefixed with `reason`. */
   note: string;
 };
 
@@ -306,6 +320,8 @@ export type WorkingCapitalView = {
    *  would report that real answer as a refusal. The server knows which it is
    *  and says so. */
   assessed: boolean;
+  /** `ASSESSED`, or the refusal code. The machine-readable half of `note`. */
+  reason: string;
   /** Whether this reading should interrupt somebody — the line's own surfacing
    *  gate narrowed by the reading's. It decides the register the headline is
    *  printed in and nothing else: the figures are on the card either way,
@@ -324,7 +340,7 @@ export type WorkingCapitalView = {
   /** How much to believe it, or `""` on a refusal. */
   strength_word: string;
   /** The engine's own sentence — what the number answers, or the refusal and
-   *  the Settings field that would finish it. */
+   *  the Settings field that would finish it. Never prefixed with `reason`. */
   note: string;
 };
 

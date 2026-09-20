@@ -262,7 +262,9 @@ class WorkingCapital:
     #: Whether this interrupts anybody. Calculation happens regardless; see
     #: ``_surfaces``.
     surfaces: bool
-    #: What the number answers, in words, or the refusal and its reason.
+    #: What the number answers, in words, or the refusal in words. No code
+    #: prefix: the code is ``reason``, and one field carrying both would leave
+    #: a renderer splitting it back apart.
     basis: str
     #: ``insight/absence`` entries: the refusal, or the residuals every assessed
     #: reading carries.
@@ -793,7 +795,7 @@ def _refused(reason: str, kind: str, why: str, *,
         charge_per_unit=None, line_charge=None, effect_pp=None,
         severity=drivers.NEGLIGIBLE, strength=INSUFFICIENT,
         days_strength=INSUFFICIENT, cost_strength=INSUFFICIENT,
-        surfaces=False, basis=f"{reason}: {why}",
+        surfaces=False, basis=why,
         unavailable=({"series": "working_capital", "kind": kind,
                       "reason": why},),
         cited=(),

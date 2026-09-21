@@ -151,9 +151,11 @@ export const api = {
   /** What was on one ERP quote. Fetched when somebody opens it rather than
    *  carried on every row: a hundred quotes with their lines is a payload
    *  nobody reads most of. */
-  erpQuoteLines: (t: string, ref: string) =>
+  erpQuoteLines: (t: string, ref: string, connectionId?: string | null) =>
     req<ErpQuoteLines>(
-      `/api/v1/insight/quote-book/${encodeURIComponent(ref)}/lines`, {}, t),
+      `/api/v1/insight/quote-book/${encodeURIComponent(ref)}/lines`
+      + (connectionId ? `?connection=${encodeURIComponent(connectionId)}` : ""),
+      {}, t),
 
   getQuote: (t: string, id: string) => req<Quote>(`/api/v1/quotes/${id}`, {}, t),
 

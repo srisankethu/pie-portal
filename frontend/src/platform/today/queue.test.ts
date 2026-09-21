@@ -50,7 +50,8 @@ function decision(over: Partial<DecisionDetail> = {}): DecisionDetail {
 
 function quote(ref: string): UnrecordedQuote {
   return {
-    quote_document_ref: ref, number: ref, customer_id: "c9",
+    quote_document_ref: ref, connection_id: "cx_sls", number: ref,
+    customer_id: "c9",
     customer_label: "Pitti Engineering", source_status: "sent",
     raised_on: "2026-04-14", expires_on: "2026-05-14", group: "PAST_EXPIRY",
     days_past_expiry: 120, value: 418200, opened_at: null,

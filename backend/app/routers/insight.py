@@ -1855,6 +1855,8 @@ def quote_book_list(limit: int = Query(200, ge=1, le=1000),
 
 @router.get("/quote-book/{quote_ref:path}/lines")
 def quote_book_lines(quote_ref: str,
+                     connection: str = Query("", description=(
+                         "The connected company whose book raised this quote. An ERP reference is unique only inside one book; omitted, the reference is read as before, which is correct while it names one quote.")),
                      principal: Principal = Depends(current_principal),
                      session: Session = Depends(get_session)) -> dict:
     """What was on one quote the ERP raised.
@@ -1876,18 +1878,26 @@ def quote_book_lines(quote_ref: str,
     real state rather than a transient one.
     """
     org, snapshot, th = _labels_only(session, principal)
+    # Scoped *and* qualified through the book. A reference this reader may see
+    # in one connected company is not one they may see in another, so the pair
+    # is what the visibility set holds — and a caller that names a company it
+    # cannot see is answered by the same 404 as one that names nothing real.
     visible = {
-        q.quote_document_ref
+        (q.quote_document_ref, (q.origin or {}).get("connection_id"))
         for q in quote_book_view.build(
             session, org, customer_names={},
-            customer_ids=_assigned_customer_ids(session, principal))
+            customer_ids=_assigned_customer_ids(session, principal),
+            companies=Companies(session, org))
     }
-    if quote_ref not in visible:
+    if quote_ref not in {ref for ref, _ in visible} or (
+            connection and (quote_ref, connection) not in visible):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such quote")
 
-    rows = quote_book_view.lines_for(session, org, quote_ref=quote_ref)
+    rows = quote_book_view.lines_for(session, org, quote_ref=quote_ref,
+                                     connection_id=connection or None)
     return _envelope(
         {"quote_document_ref": quote_ref,
+         "connection_id": connection or None,
          "lines": [row.to_dict() for row in rows],
          "lines_held": bool(rows)},
         th=th,

@@ -180,11 +180,13 @@ export default function TodayScreen({
     // worklist: the server resolves it under this reader's scope and the
     // outcome lands on the account rather than unattributed. An empty name
     // here filed every morning's answers against nobody.
-    const label = (unanswered.data?.quotes ?? [])
-      .find((q) => q.quote_document_ref === ref)?.customer_label ?? "";
+    const row = (unanswered.data?.quotes ?? [])
+      .find((q) => q.quote_document_ref === ref);
     setBusy(true);
     try {
-      await intelligence.documentOutcome(session.token, ref, status, label, undefined, reason);
+      await intelligence.documentOutcome(
+        session.token, ref, status, row?.customer_label ?? "", undefined, reason,
+        undefined, row?.connection_id);
       unanswered.reload();
       settle(item, status === "WON" ? "won" : `lost · ${reason ?? ""}`.trim());
     } catch (e) {

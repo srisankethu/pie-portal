@@ -188,6 +188,15 @@ export const PATTERN = {
    *  Two paths because they are two different things, not one thing with a
    *  flag. */
   erpQuote: "/quotes/erp/:ref",
+  /** The same quote, qualified by the connected company that raised it.
+   *
+   *  An ERP reference is unique only inside one book: two connected Business
+   *  Central companies both issue `SQ-1001`, and a bare reference then names
+   *  two different quotes. The qualified form is what every link this app
+   *  makes uses; the bare one above stays for a link somebody already has,
+   *  and the server reads it as before — correct while it names one quote,
+   *  refused by name when it names two. */
+  erpQuoteInBook: "/quotes/erp/:connection/:ref",
 } as const;
 
 /** Screens whose content is a wide table rather than something to read.
@@ -222,7 +231,9 @@ const PARAMETERISED: readonly (readonly [string, Screen])[] = [
   [PATTERN.account, "customer"],
   [PATTERN.detail, "detail"],
   // Longest first, per this list's own rule: `/quotes/erp/:ref` must not be
-  // read as `/quotes/:id` with an id of "erp".
+  // read as `/quotes/:id` with an id of "erp", and the qualified form must
+  // not be read as the bare one with a reference of the company's id.
+  [PATTERN.erpQuoteInBook, "quotes"],
   [PATTERN.erpQuote, "quotes"],
   [PATTERN.quote, "quotes"],
 ] as const;
@@ -251,8 +262,11 @@ export function pathFor(screen: Screen, id?: string, itemId?: string): string {
  *  for it. Adding an "erpQuote" screen to satisfy the builder would put a
  *  thirteenth entry in a union whose whole purpose is the nav.
  */
-export function erpQuotePath(ref: string): string {
-  return `/quotes/erp/${encodeURIComponent(ref)}`;
+export function erpQuotePath(ref: string, connectionId?: string | null): string {
+  const enc = encodeURIComponent;
+  return connectionId
+    ? `/quotes/erp/${enc(connectionId)}/${enc(ref)}`
+    : `/quotes/erp/${enc(ref)}`;
 }
 
 /** Which screen a URL is showing — the nav highlight, and nothing else.

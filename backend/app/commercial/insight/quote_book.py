@@ -344,8 +344,15 @@ class BookQuoteLine:
         }
 
 
-def lines_for(session: Session, org: str, *, quote_ref: str) -> list[BookQuoteLine]:
+def lines_for(session: Session, org: str, *, quote_ref: str,
+              connection_id: Optional[str] = None) -> list[BookQuoteLine]:
     """What was on one quote, in the order the ERP wrote it.
+
+    ``connection_id`` is the company the reference is unique inside. Given, it
+    narrows to that book's lines; absent, the bare reference is read exactly as
+    before — which is correct while it names one quote and is why the caller
+    resolves the document first. Two books holding one reference would
+    otherwise return both quotes' lines interleaved under one document.
 
     Fetched per quote rather than carried on every row of the book: 114 quotes
     with their lines is a payload nobody reads most of, and the lines are wanted
@@ -365,7 +372,9 @@ def lines_for(session: Session, org: str, *, quote_ref: str) -> list[BookQuoteLi
         .outerjoin(models.Product,
                    models.ErpQuoteLine.product_id == models.Product.product_id)
         .where(models.ErpQuoteLine.organization_id == org,
-               models.ErpQuoteLine.quote_ref == quote_ref)
+               models.ErpQuoteLine.quote_ref == quote_ref,
+               *([models.ErpQuoteLine.connection_id == connection_id]
+                 if connection_id else []))
         .order_by(models.ErpQuoteLine.line_number,
                   models.ErpQuoteLine.external_ref)).all()
     return [

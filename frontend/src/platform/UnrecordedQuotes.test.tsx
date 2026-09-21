@@ -35,6 +35,7 @@ const SESSION: PlatformSession = {
 function quote(over: Partial<UnrecordedQuote>): UnrecordedQuote {
   return {
     quote_document_ref: "zoho-1",
+    connection_id: "cx_sls",
     number: "EST-0001",
     customer_id: "cst_1",
     customer_label: "Pitti Engineering",
@@ -225,8 +226,12 @@ describe("recording a loss", () => {
     // `quote_document_ref`, never `quote_documents.quote_document_id`: the
     // surrogate is re-minted by a full re-sync and an outcome written to it
     // would lose its quote on the next rebuild.
+    // The reference *and* the book it was raised in: an ERP reference is
+    // unique only inside one connected company, so a write that named the
+    // reference alone could land on another company's quote of that number.
     await waitFor(() => expect(write).toHaveBeenCalledWith(
-      "t", "zoho-1", "LOST", "Pitti Engineering", undefined, "PRICE", undefined));
+      "t", "zoho-1", "LOST", "Pitti Engineering", undefined, "PRICE", undefined,
+      "cx_sls"));
   });
 });
 

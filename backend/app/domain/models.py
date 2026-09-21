@@ -3145,7 +3145,20 @@ class QuoteOutcome(Base):
     __tablename__ = "quote_outcomes"
     __table_args__ = (
         UniqueConstraint("organization_id", "quote_id", name="uq_quote_outcome_org_quote"),
-        UniqueConstraint("organization_id", "quote_document_ref",
+        # Qualified by the connected company, because an ERP reference is
+        # unique only inside the book that issued it. Zoho's estimate ids are
+        # system-wide so three connected Zoho books never collided; the
+        # connectors in ``ingestion/erp`` read systems whose quote numbers are
+        # per-company sequences, and two connected books of one of those issue
+        # ``SQ-1001`` twice. Unqualified, the second book's outcome could not
+        # be recorded at all.
+        #
+        # A NULL company is distinct from every other NULL under SQL's unique
+        # semantics on both engines, so rows written before the qualifier
+        # existed are not refused — and are no longer refused *by each other*
+        # either, which ``set_outcome``'s own guard is what now catches.
+        UniqueConstraint("organization_id", "quote_document_connection_id",
+                         "quote_document_ref",
                          name="uq_quote_outcome_org_document"),
     )
 

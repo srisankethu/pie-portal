@@ -425,7 +425,8 @@ export function UnrecordedQuotesScreen({ session }: { session: PlatformSession }
           // carrying the server's own sentence, which the dialog shows verbatim.
           await intelligence.documentOutcome(
             session.token, recording.quote_document_ref, status,
-            recording.customer_label, note, lossReason, lostTo);
+            recording.customer_label, note, lossReason, lostTo,
+            recording.connection_id);
           enqueueSnackbar(
             `${recording.number ?? recording.quote_document_ref} recorded as `
             + status.toLowerCase(),

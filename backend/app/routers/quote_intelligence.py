@@ -164,7 +164,8 @@ _NO_SUCH_ERP_QUOTE = (
 
 
 def _may_record_erp_quote(session: Session, principal: Principal,
-                          quote_document_ref: str) -> bool:
+                          quote_document_ref: str,
+                          connection_id: Optional[str] = None) -> bool:
     """Whether this principal may write an outcome onto the ERP quote named.
 
     ``_visible_customer_ref`` scopes the customer *name the caller typed* and
@@ -223,7 +224,7 @@ def _may_record_erp_quote(session: Session, principal: Principal,
         return True
     try:
         document = sole_erp_quote(session, principal.organization_id,
-                                  quote_document_ref)
+                                  quote_document_ref, connection_id)
     except AmbiguousQuoteDocument:
         return False
     customer = (session.get(models.Customer, document.customer_id)
@@ -663,6 +664,15 @@ class OutcomeRequest(BaseModel):
     #: The id the source ERP gave a quote it raised itself, as carried in
     #: ``quote_documents.external_ref``.
     quote_document_ref: Optional[str] = None
+    #: Which connected company's book issued that reference — the other half
+    #: of its identity. An ERP reference is unique only inside one book, and
+    #: the screens that hand a reference out (the worklist, the ERP tab, the
+    #: ERP quote page) all know which book they read it from, so they say.
+    #:
+    #: Optional, and absent is not a guess: the reference is then resolved
+    #: exactly as before, which is correct while it names one quote in this
+    #: organization and refused by name when it names two.
+    quote_document_connection_id: Optional[str] = None
     status: QuoteOutcomeStatus
     customer: str = ""
     note: Optional[str] = None
@@ -693,8 +703,9 @@ def quote_outcome(
     customer = resolve_customer(session, org, customer_ref) if customer_ref else None
 
     document_ref = (body.quote_document_ref or "").strip() or None
+    document_conn = (body.quote_document_connection_id or "").strip() or None
     if document_ref is not None and not _may_record_erp_quote(
-            session, principal, document_ref):
+            session, principal, document_ref, document_conn):
         # 404 rather than 403, and the same 404 the reference naming nothing
         # gets: see ``_NO_SUCH_ERP_QUOTE``. Before the call and not inside it,
         # so a refused request writes nothing at all.
@@ -719,6 +730,7 @@ def quote_outcome(
             session, org,
             quote_id=quote_key,
             quote_document_ref=document_ref,
+            quote_document_connection_id=document_conn,
             status=body.status,
             customer_ref=customer_ref,
             customer_id=customer.customer_id if customer else None,

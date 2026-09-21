@@ -173,10 +173,15 @@ describe("the quote", () => {
     expect(screen.getByText("₹1,01,139")).toBeTruthy();
   });
 
-  it("asks for its own reference", async () => {
+  it("asks for its own reference, and for the book that issued it", async () => {
+    // An ERP reference is unique only inside one connected company, so the
+    // read carries both. This fixture is drawn at the bare route, which a
+    // reader may still have bookmarked: the company is null there and the
+    // server reads the reference as it always did.
     draw();
 
-    await waitFor(() => expect(erpQuoteLines).toHaveBeenCalledWith("tok", REF));
+    await waitFor(() => expect(erpQuoteLines)
+      .toHaveBeenCalledWith("tok", REF, null));
   });
 
   it("shows a dash for a date the ERP never set, not a guess", async () => {

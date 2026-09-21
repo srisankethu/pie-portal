@@ -44,9 +44,9 @@ def _doc(s, ref: str, *, status: str = "sent",
          customer: str | None = "c1", customer_ref: str = "Acme Engineering",
          raised: date = date(2026, 5, 1), expires: date | None = None,
          total: str | None = "10000", decided: date | None = None,
-         opened: datetime | None = None) -> None:
+         opened: datetime | None = None, connection_id: str = "conn1") -> None:
     s.add(models.QuoteDoc(
-        organization_id=ORG, connector="zoho", connection_id="conn1",
+        organization_id=ORG, connector="zoho", connection_id=connection_id,
         external_ref=ref, number=f"SLS/QTN-{ref}", customer_id=customer,
         customer_ref=customer_ref, date=raised, expires_on=expires,
         source_status=status, outcome=outcome, decided_on=decided,
@@ -517,9 +517,9 @@ def test_an_empty_book_says_what_would_have_filled_it(maker):
 def _line(s, quote_ref: str, ref: str, *, number: int = 0, code: str = "CNMG120408",
           desc: str = "Turning insert", product: str | None = None,
           qty: str | None = "10", rate: str | None = "450",
-          amount: str | None = "4500") -> None:
+          amount: str | None = "4500", connection_id: str = "conn1") -> None:
     s.add(models.ErpQuoteLine(
-        organization_id=ORG, connector="zoho", connection_id="conn1",
+        organization_id=ORG, connector="zoho", connection_id=connection_id,
         external_ref=ref, quote_ref=quote_ref, line_number=number,
         product_id=product, item_code=code, description=desc,
         qty=Decimal(qty) if qty is not None else None, unit="pcs",
@@ -598,6 +598,50 @@ def test_a_quote_this_reader_may_not_see_is_a_404_rather_than_an_empty_list(clie
                    headers=_hdr(client, SALES))
 
     assert r.status_code == 404
+
+
+def test_two_books_holding_one_reference_serve_their_own_lines(maker):
+    """An ERP reference is unique only inside the book that issued it.
+
+    Two connected Business Central companies both raise ``SQ-1001``. Read on
+    the bare reference the endpoint returned both quotes' lines interleaved
+    under one document — a breakdown that matches no quote anybody holds.
+    """
+    s = maker()
+    _doc(s, "SQ-1001", connection_id="conn1")
+    _doc(s, "SQ-1001", connection_id="conn2")
+    _line(s, "SQ-1001", "a:1", code="CNMG120408", connection_id="conn1")
+    _line(s, "SQ-1001", "b:1", code="DNMG150608", connection_id="conn2")
+    s.commit()
+    s.close()
+
+    s = maker()
+    try:
+        first = quote_book.lines_for(s, ORG, quote_ref="SQ-1001",
+                                     connection_id="conn1")
+        second = quote_book.lines_for(s, ORG, quote_ref="SQ-1001",
+                                      connection_id="conn2")
+        unqualified = quote_book.lines_for(s, ORG, quote_ref="SQ-1001")
+    finally:
+        s.close()
+    assert [ln.item_code for ln in first] == ["CNMG120408"]
+    assert [ln.item_code for ln in second] == ["DNMG150608"]
+    # Unqualified it still reads both, which is why the caller resolves the
+    # document first and the endpoint 404s a reference it cannot place.
+    assert len(unqualified) == 2
+
+
+def test_the_lines_endpoint_refuses_a_book_this_reader_cannot_see(client):
+    """The qualifier is scoped the way the reference is: naming a company
+    whose quotes this reader may not see is the same 404 as naming nothing."""
+    ok = client.get("/api/v1/insight/quote-book/won/lines?connection=conn1",
+                    headers=_hdr(client, MANAGER))
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["connection_id"] == "conn1"
+
+    wrong = client.get("/api/v1/insight/quote-book/won/lines?connection=conn9",
+                       headers=_hdr(client, MANAGER))
+    assert wrong.status_code == 404
 
 
 def test_a_quote_that_does_not_exist_is_also_a_404(client):

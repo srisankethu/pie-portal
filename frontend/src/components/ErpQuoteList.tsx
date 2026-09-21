@@ -102,7 +102,8 @@ export function ErpQuoteList({ quotes, emptyReason, showCompany = false, onRecor
   /* Opening a quote is a route change, not an overlay. It is the document, and
      a person opening one wants it the way they get a draft — full width, the
      lines in a grid — which a 520px drawer cannot be. */
-  const open = (q: ErpQuote) => navigate(erpQuotePath(q.quote_document_ref));
+  const open = (q: ErpQuote) =>
+    navigate(erpQuotePath(q.quote_document_ref, q.origin?.connection_id));
   /* A document this platform wrote is still an ERP quote — it is listed, it
      is counted, and it opens like the rest. What it gains is its draft, one
      click away, so the same quote is never two unrelated rows on two tabs. */

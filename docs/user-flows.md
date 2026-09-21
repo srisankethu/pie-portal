@@ -1276,7 +1276,27 @@ body could carry fixes it) · uniform 404 for a quote this principal does not
 hold · cancel keeps the typed state until the next successful record.
 **Ends.** Recorded (terminal) · cancelled · refusal held in the open dialog.
 
-### 8.0 The outcome of record
+### 8.0 An ERP reference is unique only inside one book
+
+Every pointer to a quote an ERP raised carries **two** values: the reference
+that ERP gave it and the connected company whose book issued it. Zoho's
+estimate ids are system-wide, so three connected Zoho books never collided; the
+connectors in `ingestion/erp/` read systems whose quote numbers are per-company
+sequences, and two connected Business Central companies both issue `SQ-1001`.
+
+So `quote_outcomes` is unique on `(organization, company, reference)`, the ERP
+quote page is reached at `/quotes/erp/:connection/:ref`, and the lines, the
+diagnosis and the outcome write all take the company. **An unqualified pointer
+is not a guess** — it resolves while the reference names one quote in the
+organization and is refused by name when it names two (`sole_erp_quote`), which
+is what keeps a link somebody already has working. The same rule governs a row
+recorded before the qualifier existed: it answers for its reference while that
+reference is unambiguous, and where two books share it the row is contested
+rather than adopted and neither quote leaves the Unanswered worklist. Being
+asked about a quote somebody already answered is recoverable; never being asked
+is not.
+
+### 8.0.1 The outcome of record
 
 One rule, `commercial/quote_service.decide`, answers "how did this quote end"
 for every reader — Won & lost, the attribution evaluator, the diagnosis replay,

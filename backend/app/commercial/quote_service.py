@@ -19,7 +19,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 
 from .. import clock
@@ -1391,12 +1391,69 @@ def set_outcome(session: Session, org: str, *, quote_id: Optional[str] = None,
 
     # Looked up by the platform quote when there is one, because that is the
     # identity the caller holds and the row it may already have written. The
-    # ERP ref is the key only for a quote this platform never priced.
-    key = (models.QuoteOutcome.quote_id == quote_id if quote_id is not None
-           else models.QuoteOutcome.quote_document_ref == quote_document_ref)
-    row = session.scalar(
-        select(models.QuoteOutcome).where(
-            models.QuoteOutcome.organization_id == org, key))
+    # ERP ref is the key only for a quote this platform never priced — and
+    # then it is the ref **and the book it is unique in**: two connected
+    # companies both issue ``SQ-1001``, and looking up on the bare reference
+    # found the first book's row and tried to move it, so the second book's
+    # loss arrived as "a quote that is LOST cannot become WON" about a quote
+    # nobody had asked about.
+    #
+    # Exact company first, then a row that names none — the graded rule
+    # ``repositories._for_upsert`` states for the master tables, and for the
+    # same reason: a row written before the qualifier existed is unclaimed and
+    # this call adopts it (filling the company below), while a row belonging to
+    # a *different* company is never adopted at any setting.
+    if quote_id is not None:
+        row = session.scalar(
+            select(models.QuoteOutcome).where(
+                models.QuoteOutcome.organization_id == org,
+                models.QuoteOutcome.quote_id == quote_id))
+    else:
+        candidates = list(session.scalars(
+            select(models.QuoteOutcome).where(
+                models.QuoteOutcome.organization_id == org,
+                models.QuoteOutcome.quote_document_ref == quote_document_ref)))
+        row = next(
+            (r for r in candidates
+             if qualifier is not None
+             and r.quote_document_connection_id == qualifier),
+            None)
+        if row is None:
+            # A company-less row is adopted only while the reference names one
+            # document in this organization. Where two books answer to it,
+            # filling that row with *this* book would assert that somebody's
+            # loss reason, winner and note were about this book's quote when
+            # nothing on the row says so — the benign default §1 forbids, in
+            # the one place it would overwrite a fact only a person held. It is
+            # contested instead, by the guard below, which says so in a
+            # sentence.
+            unclaimed = next(
+                (r for r in candidates
+                 if r.quote_document_connection_id is None), None)
+            if unclaimed is not None and (
+                    qualifier is None
+                    or quote_document_ref not in _ambiguous_refs(
+                        session, org, [quote_document_ref])):
+                row = unclaimed
+        # No qualifier at all: the reference is this organization's key, as it
+        # has always been, and ``sole_erp_quote`` has already refused it where
+        # two books answer to it.
+        if row is None and qualifier is None:
+            row = candidates[0] if candidates else None
+        if row is None and any(r.quote_document_connection_id is None
+                               for r in candidates):
+            # Nothing adoptable, and somebody else's row already holds this
+            # reference: a company-less record about a reference two books
+            # answer to. The constraint used to refuse this as an
+            # IntegrityError at commit — about a quote the caller never named —
+            # and widening the constraint to carry the company is what makes
+            # the refusal this function's to give, with a sentence.
+            raise QuoteOutcomeRepointed(
+                f"ERP quote {quote_document_ref} already has a recorded "
+                f"outcome that names no connected company, and two of this "
+                f"organization's books answer to that reference — so nothing "
+                f"says which quote it was about. Correct that row's company "
+                f"before recording this one.")
 
     if row is None:
         row = models.QuoteOutcome(
@@ -1463,10 +1520,18 @@ def set_outcome(session: Session, org: str, *, quote_id: Optional[str] = None,
         # IntegrityError at the outer commit, after the Zoho estimate had been
         # created, rolling the whole request back with a 500. Checked here, it
         # is the domain refusal the caller already handles.
+        # Qualified by the company, like the constraint behind it: with two
+        # connected books issuing ``SQ-1001``, an unqualified guard refused the
+        # second book's outcome as "already recorded" about the first book's
+        # quote. A row that names no company still contests every one of that
+        # reference, because nothing on it says which book it meant.
         held = session.scalars(
             select(models.QuoteOutcome).where(
                 models.QuoteOutcome.organization_id == org,
                 models.QuoteOutcome.quote_document_ref == quote_document_ref,
+                or_(models.QuoteOutcome.quote_document_connection_id.is_(None),
+                    qualifier is None,
+                    models.QuoteOutcome.quote_document_connection_id == qualifier),
                 models.QuoteOutcome.quote_outcome_id
                 != row.quote_outcome_id)).first()
         if held is not None:

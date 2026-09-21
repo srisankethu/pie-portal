@@ -3,7 +3,10 @@
 **Status: approved 2026-09-20, all six decisions in §4 taken on the
 recommendation. Phase 0 landed (`71f2a6b`). Phase 1 landed (`9d520f5`).
 Phase 2 landed (`d4767a6`), with two departures noted in place. Phase 3 landed
-(this commit), with three departures noted in place. Phases 4–6 after review.**
+(`a37d87d`, `104a5b0`, `ad6f803`), with three departures noted in place and an
+adversarial review answered. Phase 4 is landing now, in parts: the qualified
+pointer first, then the deletion sweep and counters, then the connectors that
+read quotes. Phases 5–6 after that.**
 
 The question this answers: *how do we handle quotes the ERP raised, quotes across
 several connected companies and ERPs, a PIE quote not yet sent to the ERP, and a
@@ -650,7 +653,14 @@ then Acumatica, whose quotes are `SalesOrder` rows of type `QT`; then NetSuite,
   quote_document_ref)`; `sole_erp_quote`, `unrecorded._load`, `quote_book.lines_for`,
   `assess_erp_quote`, `quote_diagnosis.service._source_record` and the route
   `/quotes/erp/:connection/:ref` all take the qualifier (G10). Legacy NULL rows
-  resolve while unique, refuse by name otherwise.
+  resolve while unique, refuse by name otherwise. **Landed** — and two things
+  the text above did not name, both found by writing the tests:
+  `set_outcome`'s own *row lookup* keyed on the bare reference, so the second
+  book's outcome found the first book's row and answered "a quote that is LOST
+  cannot become WON" about a quote nobody had asked about; and the nested
+  EXISTS in `unrecorded._load` needs an explicit `.correlate` — left to itself
+  it asks "does this organization hold any colliding reference at all", which
+  is true for every row the moment one collision exists anywhere.
 - Deletion sweep: `list_quotes` records `listed` / `listing_complete`; `_mirror`
   and `_RETIRE_FROM` gain `quote_document`; a quote absent from a complete listing
   is retired per connection, its human outcome left dangling and counted (G19).

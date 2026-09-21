@@ -167,7 +167,13 @@ function sourceWord(status: string): string {
 }
 
 export default function ErpQuoteScreen({ session }: { session: PlatformSession }) {
-  const { ref = "" } = useParams();
+  // Two routes reach this screen: `/quotes/erp/:connection/:ref`, which every
+  // link this app makes uses, and the bare `/quotes/erp/:ref` a reader may
+  // already have bookmarked. An ERP reference is unique only inside one
+  // connected company's book, so the qualified form is what tells two
+  // companies' `SQ-1001` apart; without it the server reads the reference as
+  // it always did, which is correct while it names one quote.
+  const { ref = "", connection = "" } = useParams();
   const navigate = useNavigate();
   const [quote, setQuote] = useState<ErpQuote | null | undefined>(undefined);
   const [lines, setLines] = useState<ErpQuoteLines | undefined>(undefined);
@@ -189,12 +195,17 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
 
     Promise.all([
       api.listErpQuotes(session.token, 1000),
-      api.erpQuoteLines(session.token, ref),
+      api.erpQuoteLines(session.token, ref, connection || null),
     ])
       .then(([book, got]) => {
         if (!live) return;
-        setQuote(book.quotes_listed.find((q) => q.quote_document_ref === ref)
-                 ?? null);
+        const holds = book.quotes_listed.filter(
+          (q) => q.quote_document_ref === ref
+            && (!connection || q.origin?.connection_id === connection));
+        // Exactly one, or none. Two books answering to one bare reference is
+        // not a quote to show: picking either would put another company's
+        // document in front of the reader under the number they asked for.
+        setQuote(holds.length === 1 ? holds[0] : null);
         setLines(got);
       })
       .catch((e) => {
@@ -207,7 +218,7 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
         setLines(undefined);
       });
     return () => { live = false; };
-  }, [ref, session.token, nonce]);
+  }, [ref, connection, session.token, nonce]);
 
   const back = (
     <Button size="small" startIcon={<ArrowBackOutlined />} sx={TOUCH}
@@ -297,7 +308,8 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
         onRecord={async (status, lossReason, note, lostTo) => {
           await intelligence.documentOutcome(
             session.token, quote.quote_document_ref, status,
-            quote.customer_label, note, lossReason, lostTo);
+            quote.customer_label, note, lossReason, lostTo,
+            quote.origin?.connection_id);
           setRecording(false);
           setNonce((n) => n + 1);
         }}

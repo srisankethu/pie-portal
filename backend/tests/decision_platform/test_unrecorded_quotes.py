@@ -51,7 +51,7 @@ def _doc(s, ref: str, *, status: str = "sent",
          customer: str | None = "c1", customer_ref: str = "Acme Engineering",
          raised: date = date(2026, 5, 1), expires: date | None = None,
          total: str | None = "10000", opened: datetime | None = None,
-         decided: date | None = None) -> None:
+         decided: date | None = None, connection_id: str = "conn1") -> None:
     """One row of ``quote_documents``, as a sync would have written it.
 
     Written directly rather than through a sync because this file is about the
@@ -60,7 +60,7 @@ def _doc(s, ref: str, *, status: str = "sent",
     twice and the ordering once.
     """
     s.add(models.QuoteDoc(
-        organization_id=ORG, connector="zoho", connection_id="conn1",
+        organization_id=ORG, connector="zoho", connection_id=connection_id,
         external_ref=ref, number=f"SLS/QTN-{ref}", customer_id=customer,
         customer_ref=customer_ref, date=raised, expires_on=expires,
         source_status=status, outcome=outcome, decided_on=decided,
@@ -103,6 +103,68 @@ def _build(Maker, **kw):
 
 
 # ── the ranking ─────────────────────────────────────────────────────────────
+def test_recording_one_books_quote_leaves_the_other_books_on_the_pile(maker):
+    """An ERP reference is unique only inside the book that issued it.
+
+    Two connected Business Central companies both raise ``SQ-1001``. The join
+    that took a quote off this list matched on the bare reference, so
+    recording one company's loss cleared *both* — and the second quote was
+    never asked about again. Qualified, each book's quote answers for itself.
+    """
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteLossReason, QuoteOutcomeStatus as Status
+
+    s = maker()
+    _doc(s, "SQ-1001", connection_id="conn-a", expires=date(2026, 6, 1))
+    _doc(s, "SQ-1001", connection_id="conn-b", expires=date(2026, 6, 1))
+    s.flush()
+    quote_service.set_outcome(
+        s, ORG, quote_document_ref="SQ-1001",
+        quote_document_connection_id="conn-a", status=Status.LOST,
+        loss_reason=QuoteLossReason.PRICE, customer_ref="Acme Engineering",
+        customer_id="c1")
+    s.commit()
+    s.close()
+
+    rows = [q for q in _build(maker) if q.quote_document_ref == "SQ-1001"]
+    assert len(rows) == 1, "the answered book's quote leaves, the other stays"
+    assert rows[0].connection_id == "conn-b"
+
+
+def test_a_company_less_answer_clears_nothing_where_two_books_share_the_ref(maker):
+    """The other half, and it fails safe. A row recorded before the qualifier
+    existed names no book, so where two answer to its reference nothing on it
+    says which quote it was about. Both stay on the list: being asked about a
+    quote somebody already answered is recoverable, never being asked is not."""
+    from app.domain.enums import QuoteOutcomeStatus as Status
+
+    s = maker()
+    _doc(s, "SQ-2002", connection_id="conn-a", expires=date(2026, 6, 1))
+    _doc(s, "SQ-2002", connection_id="conn-b", expires=date(2026, 6, 1))
+    s.add(models.QuoteOutcome(
+        organization_id=ORG, quote_document_ref="SQ-2002",
+        status=Status.LOST.value, loss_reason="PRICE",
+        customer_id="c1", customer_ref="Acme Engineering"))
+    s.commit()
+    s.close()
+
+    refs = [q for q in _build(maker) if q.quote_document_ref == "SQ-2002"]
+    assert len(refs) == 2, "neither quote may be taken off on ambiguous evidence"
+
+    # And where the reference names one quote, the same company-less row
+    # still clears it — the behaviour every row written before the qualifier
+    # existed relies on.
+    s = maker()
+    _doc(s, "SQ-3003", connection_id="conn-a", expires=date(2026, 6, 1))
+    s.add(models.QuoteOutcome(
+        organization_id=ORG, quote_document_ref="SQ-3003",
+        status=Status.LOST.value, loss_reason="PRICE",
+        customer_id="c1", customer_ref="Acme Engineering"))
+    s.commit()
+    s.close()
+    assert not [q for q in _build(maker) if q.quote_document_ref == "SQ-3003"]
+
+
 def test_a_platform_quote_the_erp_accepted_is_not_on_the_pile(maker):
     """A PIE quote sent into the ERP, still SENT on the human table, that the
     customer accepted there: the ERP's word is the outcome of record, so the

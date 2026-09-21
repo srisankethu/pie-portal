@@ -559,7 +559,8 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
                   if (!recording) return;
                   await intelligence.documentOutcome(
                     t, recording.quote_document_ref, status,
-                    recording.customer_label, note, lossReason, lostTo);
+                    recording.customer_label, note, lossReason, lostTo,
+                    recording.origin?.connection_id);
                   enqueueSnackbar(
                     `${recording.number ?? recording.quote_document_ref} recorded as `
                     + status.toLowerCase(), { variant: "success" });

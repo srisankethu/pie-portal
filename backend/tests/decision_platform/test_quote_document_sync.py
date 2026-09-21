@@ -660,6 +660,69 @@ def test_a_reference_qualified_by_its_book_is_not_ambiguous(session):
         quote_service.sole_erp_quote(session, "org_a", "1001")
 
 
+def test_two_books_holding_one_reference_each_get_their_own_outcome(session):
+    """The constraint that used to refuse the second book's quote outright.
+
+    ``uq_quote_outcome_org_document`` was ``(organization, reference)``, which
+    is unique only by accident: Zoho's estimate ids are system-wide. Business
+    Central and Acumatica number quotes per company, so two connected books
+    both issue ``SQ-1001`` — and the second recorded outcome hit an
+    IntegrityError at commit, about a quote it has nothing to do with. The
+    constraint carries the company now, and each book's quote has its own
+    answer, its own reason and its own winner.
+    """
+    _sync(session, [_quote("SQ-1001", "sent")], connection_id="conn-a")
+    _sync(session, [_quote("SQ-1001", "sent")], connection_id="conn-b")
+
+    quote_service.set_outcome(
+        session, "org_a", quote_document_ref="SQ-1001",
+        quote_document_connection_id="conn-a",
+        status=QuoteOutcomeStatus.LOST, loss_reason=QuoteLossReason.PRICE,
+        lost_to="Sandvik")
+    quote_service.set_outcome(
+        session, "org_a", quote_document_ref="SQ-1001",
+        quote_document_connection_id="conn-b",
+        status=QuoteOutcomeStatus.WON)
+    session.commit()
+
+    rows = {r.quote_document_connection_id: r
+            for r in session.query(models.QuoteOutcome)}
+    assert set(rows) == {"conn-a", "conn-b"}
+    assert rows["conn-a"].status == "LOST" and rows["conn-a"].lost_to == "Sandvik"
+    assert rows["conn-b"].status == "WON" and rows["conn-b"].lost_to is None
+
+    # And each book's document reads its own book's answer back — the join in
+    # the other direction, which would have shown one loss on both quotes.
+    docs = session.query(models.QuoteDoc).all()
+    records = quote_service.erp_outcomes_of_record(session, "org_a", docs)
+    by_book = {d.connection_id: records[d.quote_document_id] for d in docs}
+    assert by_book["conn-a"].status.value == "LOST"
+    assert by_book["conn-b"].status.value == "WON"
+
+
+def test_a_company_less_outcome_still_contests_every_book_of_its_reference(session):
+    """The other side of widening the constraint, and it must not be silent.
+
+    A row written before the qualifier existed names no book, so nothing on it
+    says which of two it meant. It keeps contesting the reference — the
+    domain refusal, with a sentence, where the constraint used to raise an
+    IntegrityError at commit.
+    """
+    _sync(session, [_quote("SQ-1001", "sent")], connection_id="conn-a")
+    _sync(session, [_quote("SQ-1001", "sent")], connection_id="conn-b")
+    session.add(models.QuoteOutcome(
+        organization_id="org_a", quote_document_ref="SQ-1001",
+        status="LOST", loss_reason="PRICE", customer_ref="Pitti"))
+    session.flush()
+
+    with pytest.raises(quote_service.QuoteOutcomeRepointed) as caught:
+        quote_service.set_outcome(
+            session, "org_a", quote_document_ref="SQ-1001",
+            quote_document_connection_id="conn-b",
+            status=QuoteOutcomeStatus.WON)
+    assert "SQ-1001" in str(caught.value)
+
+
 def test_the_ambiguous_reference_refusal_survives_the_trip_through_http(
         session, api_client):
     """And it arrives as 409 with both books still named in a readable string.

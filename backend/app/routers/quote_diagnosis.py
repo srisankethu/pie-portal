@@ -39,7 +39,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
@@ -48,6 +48,7 @@ from ..clock import aware
 from ..commercial.policy import load_for_org
 from ..commercial.quote_service import _resolve_products, resolve_customer
 from ..commercial.insight import quote_book
+from ..domain.origin import Companies
 from ..commercial.quote_diagnosis import (considerations, render, replay,
                                           rollup, rules, service)
 from ..db import get_session
@@ -140,6 +141,11 @@ def assess(body: AssessRequest,
 
 @router.post("/erp-quote/{quote_ref:path}")
 def assess_erp_quote(quote_ref: str,
+                     connection: str = Query("", description=(
+                         "The connected company whose book raised this quote. "
+                         "An ERP reference is unique only inside one book; "
+                         "omitted, the reference is read as before, which is "
+                         "correct while it names one quote.")),
                      principal: Principal = Depends(current_principal),
                      session: Session = Depends(get_session)) -> dict[str, Any]:
     """Diagnose a quote the ERP already issued, as of the day it went out.
@@ -175,17 +181,28 @@ def assess_erp_quote(quote_ref: str,
     written. A diagnosis worth storing is stored when a quote is *sent*.
     """
     org = principal.organization_id
-    visible = {
-        q.quote_document_ref: q
+    # Keyed on the reference *and* the book it was raised in, for the reason
+    # ``insight.quote_book_lines`` states: an ERP reference is unique only
+    # inside one company, and a reader who may see one company's quote may not
+    # see another's under the same number. Two books answering to one bare
+    # reference is answered by the same 404 as a reference naming nothing —
+    # picking either would diagnose a document the reader is not holding.
+    visible = [
+        (q, (q.origin or {}).get("connection_id"))
         for q in quote_book.build(session, org, customer_names={},
                                   customer_ids=_assigned_customer_ids(
-                                      session, principal))
-    }
-    quote = visible.get(quote_ref)
+                                      session, principal),
+                                  companies=Companies(session, org))
+    ]
+    candidates = [q for q, conn in visible
+                  if q.quote_document_ref == quote_ref
+                  and (not connection or conn == connection)]
+    quote = candidates[0] if len(candidates) == 1 else None
     if quote is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such quote")
 
-    rows = quote_book.lines_for(session, org, quote_ref=quote_ref)
+    rows = quote_book.lines_for(session, org, quote_ref=quote_ref,
+                                connection_id=connection or None)
     # The same filter the draft side applies, for the same reason: a line naming
     # no product cannot be compared against anything, and a line the ERP never
     # priced is not a claim about what this customer should pay.

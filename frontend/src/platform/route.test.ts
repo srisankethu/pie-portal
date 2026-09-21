@@ -18,7 +18,7 @@ import { describe, expect, it } from "vitest";
 import dailySource from "../../../backend/app/commercial/insight/daily.py?raw";
 
 import type { Screen } from "./route";
-import { LEGACY_ACCOUNTS, PATH, PATTERN, pathFor, routeFor, screenAt, vizPath } from "./route";
+import { LEGACY_ACCOUNTS, PATH, PATTERN, erpQuotePath, pathFor, routeFor, screenAt, vizPath } from "./route";
 
 describe("pathFor", () => {
   it("returns the plain path for a screen that carries no id", () => {
@@ -52,6 +52,28 @@ describe("pathFor", () => {
     expect(pathFor("customer")).toBe(PATH.customer);
     // customerItem needs both, and one is not enough.
     expect(pathFor("customerItem", "cst_1")).toBe(PATH.customerItem);
+  });
+});
+
+describe("an ERP quote's URL", () => {
+  it("carries the book that raised it, because the reference alone is not unique", () => {
+    // Two connected Business Central companies both issue SQ-1001. A link
+    // that named the reference alone would open whichever one came back
+    // first, under the number the reader asked for.
+    expect(erpQuotePath("SQ-1001", "cx_sls"))
+      .toBe("/quotes/erp/cx_sls/SQ-1001");
+    expect(screenAt("/quotes/erp/cx_sls/SQ-1001")).toBe("quotes");
+  });
+
+  it("still makes the bare form for a link somebody already has", () => {
+    expect(erpQuotePath("2263307000011272461"))
+      .toBe("/quotes/erp/2263307000011272461");
+    expect(screenAt("/quotes/erp/2263307000011272461")).toBe("quotes");
+  });
+
+  it("encodes both halves, so a reference with a slash is still one segment", () => {
+    expect(erpQuotePath("QT/26-18", "cx/1"))
+      .toBe("/quotes/erp/cx%2F1/QT%2F26-18");
   });
 });
 

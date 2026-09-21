@@ -318,16 +318,25 @@ discount becomes last price paid, the system defaults to it next time (§5).
 
 ### One criterion where we are weaker than the ICP implies
 
-**C6 asks for "pricing history". We read realised prices, never quoted ones.**
-Our connectors read `contacts`, `vendors`, `items`, `invoices`, `bills`,
-`sales_orders`, `purchase_orders` and — on some systems — `customer_payments`.
-`READ_STAGES` includes `quotes` and **no connector declares it** (§6, fact 2).
+**C6 asks for "pricing history". We read quoted prices on four connectors of
+seven, and how a quote *ended* on one.** Our connectors read `contacts`,
+`vendors`, `items`, `invoices`, `bills`, `sales_orders`, `purchase_orders` and
+— on some systems — `customer_payments`. `quotes` is now declared by Zoho,
+Business Central, Acumatica and NetSuite, and not by Prophet 21 or either Sage
+(§6, fact 2).
 
-So on a fresh connection we can see every price that was *charged* and no price
-that was *quoted and lost*. Everything about won/lost behaviour, quote-to-order
-conversion and discount-at-the-point-of-quote is invisible until the customer
-starts quoting inside PIE. A C6 score of 3 above should be read as "full
-purchase and sales history, realised pricing only".
+So the gap has moved rather than closed, and the remaining half is the sharper
+one. On those four we see what was quoted, to whom, for how much and on which
+lines, which is the denominator a win rate needs. What we do **not** read is
+the customer's decision: `normalize._QUOTE_VOCABULARY` has an entry for Zoho
+alone, so on a Business Central, Acumatica or NetSuite book every quote reads
+as undecided until a person records the outcome. Those status enums are cited
+and not verified against vendor documentation, and reading an unverified word
+as WON would invent a customer decision — so won/lost behaviour on those three
+still depends on somebody recording it, while quote-to-order conversion and
+discount-at-the-point-of-quote are visible. A C6 score of 3 should be read as
+"full purchase and sales history; quoted pricing on four connectors; decided
+outcomes only where a person recorded them or the book is Zoho".
 
 ### What the ICP scoring changes
 
@@ -435,9 +444,16 @@ than item lines — so it has no cost, therefore no margin, no floor and no drif
 that page. **CODE**, re-verified this pass: the `reads=("bills",)` permission in
 `sage.py` belongs to the Sage X3 spec, not the Sage 100 one.
 
-**2. No ERP quote history, on any connector.** `READ_STAGES` in
-`ingestion/erp/base.py` includes `"quotes"` and **no connector declares it**. A
-win rate has no denominator until the customer quotes inside PIE. **CODE.**
+**2. ERP quote history on four connectors of seven; the customer's decision on
+one.** `READ_STAGES` in `ingestion/erp/base.py` includes `"quotes"`, and Zoho,
+Business Central, Acumatica and NetSuite now declare it — each reading a quote
+back under the same id its writer returns. Prophet 21 and both Sage connectors
+do not: which header field separates a quote from an order on those books is
+unconfirmed, and a guessed field either matches nothing (a book that reads as
+never having quoted anybody) or matches orders (which would go into a win
+rate). Separately, `normalize._QUOTE_VOCABULARY` has one entry, Zoho's, so on
+the other three a quote reads UNRECORDED whatever word its ERP wrote — the
+denominator arrives, the decision still needs a person. **CODE.**
 
 **3. There is no rebate, SPA, price-book or contract-price concept anywhere in
 the backend.** A recursive case-insensitive grep across `backend/app` for

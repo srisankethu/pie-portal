@@ -339,38 +339,74 @@ def test_the_same_payload_synced_twice_is_one_row(key):
 
 # ── what these fixtures could not reach, said out loud ──────────────────────
 def test_the_stages_no_connector_reads_are_named_not_assumed():
-    """``quotes``, ``vendor_payments`` and ``users`` are declared read stages
-    that no registered connector implements.
+    """``vendor_payments`` and ``users`` are declared read stages that no
+    registered connector implements.
 
     Asserted rather than left as a gap in the coverage table: a stage arriving
     on a source without a fixture behind it would otherwise be a silent hole in
-    this suite, and the entities behind these three — ``quote_doc``,
-    ``vendor_payment`` — are therefore exercised here for no connector at all.
+    this suite, and the entity behind ``vendor_payments`` is therefore
+    exercised here for no connector at all.
+
+    ``quotes`` used to be the third, and how it stopped being one is the reason
+    this assertion is worth keeping. Business Central, Acumatica and NetSuite
+    gained ``list_quotes``, and because ``_supply_phase`` records a stage that
+    raises as ``SUPPLY_STAGE_FAILED`` rather than propagating it, each of those
+    three fixtures answered the new call with ``AssertionError: no rows for``
+    and the whole suite stayed green apart from this one line. The quote rows
+    in those three fixtures were added with this change; without this
+    assertion nothing would have said they were missing.
     """
     unread = {stage for stage in erp.READ_STAGES
               if not any(hasattr(_fixture(key).build_source(), f"list_{stage}")
                          for key in KEYS)}
-    assert unread == {"quotes", "vendor_payments", "users"}, sorted(unread)
+    assert unread == {"vendor_payments", "users"}, sorted(unread)
+
+
+def test_no_stage_a_connector_declares_ends_as_a_recorded_failure(pulled):
+    """Every stage each source implements runs to its end against its fixture.
+
+    The companion to the assertion above, and the one that would have caught
+    the same thing without anybody having to notice a set literal. A stage
+    whose source raises is *recorded* rather than propagated — deliberately, so
+    a supplier list that 500s cannot discard a twenty-minute invoice pull —
+    which means a fixture that cannot answer a newly added stage degrades this
+    suite in silence. Here that silence is the failure, and the message names
+    the connector and what its fixture said.
+
+    This reads the pull's *report* rather than its emissions, which is why
+    ``Pull`` carries one: a failed stage emits nothing, so there is no emission
+    that could say it happened.
+    """
+    for key, pull_ in pulled.items():
+        assert pull_.report is not None, f"{key}: {pull_.error}"
+        failed = [row for row in pull_.report.skipped
+                  if row.get("code") == "SUPPLY_STAGE_FAILED"]
+        assert not failed, f"{key}: {failed}"
 
 
 def test_the_entities_no_fixture_reaches_are_named_not_assumed(pulled):
     """Which of the nineteen contract entities this suite actually examines.
 
-    Pinned so the answer is a decision rather than a side effect. Eight are
-    reached; the other eleven are records the registry's connectors do not
+    Pinned so the answer is a decision rather than a side effect. Twelve are
+    reached; the other seven are records the registry's connectors do not
     produce at all — Zoho-only concepts (locations, credit notes, per-location
     stock) or stages no US connector implements. A conformance report that did
     not say which is which would read as coverage it does not have.
+
+    ``quote_doc`` moved into the reached set with the three connectors that
+    gained ``list_quotes``, which is the point of stating the two sets: the
+    entity was listed as unreachable for as long as no connector read a quote,
+    and that sentence had to stop being true in the same commit.
     """
     reached = {e.entity for pull_ in pulled.values() for e in pull_.emissions}
     all_entities = {spec.entity_name(m) for m in spec.SPEC_ENTITIES}
     assert reached == {
         "bill", "cost_record", "customer", "invoice", "payment_receipt",
-        "product", "purchase_order", "sales_order", "sales_txn",
+        "product", "purchase_order", "quote_doc", "sales_order", "sales_txn",
         "stock_snapshot", "vendor",
     }, sorted(reached)
     assert all_entities - reached == {
-        "credit_note", "credit_note_application", "location", "quote_doc",
+        "credit_note", "credit_note_application", "location",
         "stock_location_snapshot", "vendor_credit", "vendor_credit_application",
         "vendor_payment",
     }, sorted(all_entities - reached)

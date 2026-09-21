@@ -68,10 +68,34 @@ PAYMENTS = [{
                               AmountPaid="2250.00")],
 }]
 
-SALES_ORDERS = [_row(OrderNbr="SO005510", CustomerID="VAYA",
-                     Date="2026-05-02T00:00:00+00:00",
-                     RequestedOn="2026-05-30T00:00:00+00:00", Status="Open",
-                     OrderTotal="2250.00", CurrencyID="USD")]
+#: Quotes and orders are one entity here, split on ``OrderType`` — so this list
+#: holds both and the source's own filter decides which pull sees which. Both
+#: rows state the field rather than leaving it absent: a fixture that relied on
+#: absence would pass against a reader that had stopped looking at it.
+#:
+#: ``id`` is bare rather than wrapped, which is how the contract API really
+#: sends it, and it is the value ``create_sales_quotes`` returns — so the quote
+#: row is read back under the same id its writer would have given it.
+SALES_ORDERS = [
+    {**_row(OrderType="SO", OrderNbr="SO005510", CustomerID="VAYA",
+            CustomerName="Vaya Precision LLC",
+            Date="2026-05-02T00:00:00+00:00",
+            RequestedOn="2026-05-30T00:00:00+00:00", Status="Open",
+            OrderTotal="2250.00", CurrencyID="USD"),
+     "id": "a1b2c3d4-0000-4000-8000-000000000001"},
+    {**_row(OrderType="QT", OrderNbr="QT000771", CustomerID="VAYA",
+            CustomerName="Vaya Precision LLC",
+            CustomerOrderNbr="QB-0042-3f9a1c2e",
+            Date="2026-06-01T00:00:00+00:00", Status="Open",
+            OrderTotal="2250.00", CurrencyID="USD",
+            LastModifiedDateTime="2026-06-02T09:15:00+00:00",
+            CreatedDateTime="2026-06-01T08:40:00+00:00"),
+     "id": "a1b2c3d4-0000-4000-8000-000000000002",
+     "Details": [_row(LineNbr="1", InventoryID="CNMG120408-MP", OrderQty="10",
+                      UnitPrice="250.00", Amount="2250.00",
+                      DiscountAmount="250.00",
+                      TransactionDescription="CNMG 120408 MP")]},
+]
 
 PURCHASE_ORDERS = [_row(OrderNbr="PO003310", VendorID="KMT",
                         Date="2026-04-28T00:00:00+00:00",

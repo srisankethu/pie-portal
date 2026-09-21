@@ -368,6 +368,14 @@ def translate_sales_quote(row: dict[str, Any]) -> dict[str, Any]:
         "total": row.get("OrderTotal"),
         "currency_code": (str(row.get("CurrencyID")).upper()
                           if row.get("CurrencyID") else None),
+        "last_modified_time": str(row.get("LastModifiedDateTime") or ""),
+        # Carried for the reason the invoice and bill translators carry it, and
+        # it was missing here until the conformance suite said so: this spec
+        # declares ``records_source_time=True`` naming ``CreatedDateTime``, so a
+        # document of this connector's that omits it is not an absence, it is a
+        # defect. Every quote line needing point-in-time evidence would have
+        # answered INSUFFICIENT_EVIDENCE with nothing saying why.
+        "created_time": row.get("CreatedDateTime") or None,
         "line_items": _document_lines(row, qty_key="OrderQty",
                                       price_key="UnitPrice"),
     }

@@ -55,6 +55,24 @@ PURCHASE_INVOICES = [{
         "discountAmount": "186.00", "description": "CNMG 120408 MP"}],
 }]
 
+#: A sales quote — the same entity the writer creates in, which is why its
+#: ``id`` is the GUID and not the human ``number``: that is the value
+#: ``create_sales_quotes`` returns, and reading it back under anything else
+#: would break the join that recognises a quote this platform sent.
+#: ``externalDocumentNumber`` is where that send puts its own reference.
+SALES_QUOTES = [{
+    "id": "sq-0001", "number": "SQ-3310",
+    "externalDocumentNumber": "QB-0042-3f9a1c2e",
+    "customerId": "c-0001", "customerName": "Vaya Precision LLC",
+    "documentDate": "2026-06-01", "validUntilDate": "2026-06-30",
+    "status": "Open", "totalAmountExcludingTax": "2250.00",
+    "currencyCode": "USD", "lastModifiedDateTime": "2026-06-01T09:15:00Z",
+    "salesQuoteLines": [{
+        "id": "sql-1", "sequence": 10000, "lineType": "Item", "itemId": "i-0001",
+        "quantity": "10", "unitPrice": "250.00", "amountExcludingTax": "2250.00",
+        "discountAmount": "250.00", "description": "CNMG 120408 MP"}],
+}]
+
 SALES_ORDERS = [{"id": "so-0001", "number": "SO-2201", "customerId": "c-0001",
                  "orderDate": "2026-05-02", "requestedDeliveryDate": "2026-05-30",
                  "status": "Open", "fullyShipped": False,
@@ -67,6 +85,7 @@ PURCHASE_ORDERS = [{"id": "po-0001", "number": "PO-9931", "vendorId": "v-0001",
 
 _PAGES = {"customers": CUSTOMERS, "vendors": VENDORS, "items": ITEMS,
           "salesInvoices": SALES_INVOICES, "purchaseInvoices": PURCHASE_INVOICES,
+          "salesQuotes": SALES_QUOTES,
           "salesOrders": SALES_ORDERS, "purchaseOrders": PURCHASE_ORDERS}
 
 

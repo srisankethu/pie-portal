@@ -10,7 +10,7 @@ from __future__ import annotations
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import pytest
 from sqlalchemy.orm import Session, sessionmaker
@@ -59,6 +59,13 @@ class Pull:
 
     emissions: list[Emission]
     error: Optional[BaseException] = None
+    #: What the sync itself reported, when it got far enough to report. Carried
+    #: because a pull says things in its report that no emission can: a stage
+    #: the source could not answer is *recorded* as ``SUPPLY_STAGE_FAILED`` and
+    #: the run continues, so a check reading emissions alone sees one fewer kind
+    #: of record and nothing saying a stage died. ``None`` only where the pull
+    #: raised before returning one.
+    report: Optional[Any] = None
 
 
 def pull(session: Session, under_test, organization_id: str = ORG,
@@ -72,12 +79,13 @@ def pull(session: Session, under_test, organization_id: str = ORG,
     emissions: list[Emission] = []
     try:
         with capturing(under_test.key, emissions):
-            SyncService(session, under_test.build_source(), organization_id,
-                        connector=under_test.key, connection_id=connection_id).run()
+            report = SyncService(
+                session, under_test.build_source(), organization_id,
+                connector=under_test.key, connection_id=connection_id).run()
     except Exception as error:  # noqa: BLE001 — reported by name, never swallowed
         session.rollback()
         return Pull(emissions, error)
-    return Pull(emissions)
+    return Pull(emissions, report=report)
 
 
 @pytest.fixture(scope="session")

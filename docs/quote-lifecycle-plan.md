@@ -698,6 +698,34 @@ pin in `test_quote_document_sync.py` named its two sources by hand; it now
 derives them, because the protocol it guards binds any source that offers the
 method.
 
+**Three more the gate found after all of that, and the order matters.** Local
+suites were green and the gate was not, which is the case this repo's §6 is
+written for:
+
+- `frontend/src/landing/erp.test.ts` holds each marketing page's read-stage
+  list against the `reads=(…)` its connector declares, in both directions. Three
+  pages were short a `quotes` row. Two prose claims went with it — the
+  plumbing/PVF industry page and `docs/vertical-strategy.md` both said "no
+  connector imports quotes", one of them citing `READ_STAGES` as its source —
+  and both now state which four import them and that only Zoho's status words
+  are read as a decision.
+- `tests/spec_conformance` pinned `quotes` as a stage **no** connector reads,
+  and that pin was the only thing that failed. It was also the only thing that
+  *could* have: `_supply_phase` records a stage that raises as
+  `SUPPLY_STAGE_FAILED` and carries on, so each of the three fixtures answered
+  the new call with "no rows for salesQuotes" and the suite stayed otherwise
+  green while covering one entity less. The three fixtures now carry quote
+  rows, `quote_doc` moved into the reached set, and a new check reads the
+  pull's own report rather than its emissions — a failed stage emits nothing,
+  so no emission could ever have said it happened.
+- That conformance run then found a real omission in the code: Acumatica's
+  quote translator carried neither `last_modified_time` nor `created_time`,
+  though that spec declares `records_source_time=True` naming
+  `CreatedDateTime` and every other document of its carries both. Every quote
+  line needing point-in-time evidence would have answered
+  INSUFFICIENT_EVIDENCE with nothing saying why. Fixed, with the fixture
+  stating both stamps.
+
 **Changes — generic**
 
 - `uq_quote_outcome_org_document` → `(org, quote_document_connection_id,

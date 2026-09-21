@@ -1125,7 +1125,11 @@ def decide(human: Optional[models.QuoteOutcome],
             source=QuoteOutcomeSource.ERP,
             decided_on=erp.decided_on, loss_reason=None, lost_to=None,
             human=human, erp=erp, document=document)
-    if human is not None:
+    # Open. SENT when a person, a document or the ERP's own row says the
+    # quote went out — a human row still reading DRAFT beside a confirmed
+    # document is the send's bookkeeping having failed after the write, and
+    # the document is the fact.
+    if human is not None and human.status != QuoteOutcomeStatus.DRAFT.value:
         status = QuoteOutcomeStatus(human.status)
     elif document is not None or erp is not None:
         status = QuoteOutcomeStatus.SENT

@@ -467,8 +467,6 @@ def test_the_three_readers_agree_on_one_fixture(client_with_erp_decisions):
     compute three answers from the human table alone. They read
     ``quote_service.decide`` now, and this is the test that ends "three win
     rates"."""
-    from datetime import date as _date
-
     from app.attribution import evaluator
     from app.commercial.quote_diagnosis import replay
 
@@ -483,7 +481,48 @@ def test_the_three_readers_agree_on_one_fixture(client_with_erp_decisions):
     assert window["quotes_decided"] == 13
     # e1 and e2 were both sent — the ERP's row is proof of that on its own.
     assert window["decided_quotes_ever_sent"] == 13
-    assert isinstance(_date.today(), _date)
+
+
+def test_an_erp_declined_quote_is_a_loss_with_no_reason_and_no_winner(client):
+    """The other ERP decision. A decline the ERP recorded counts as a loss,
+    source ERP, and its reason is NOT_RECORDED — named in the loss mix as an
+    absence, never filed under a reason nobody gave, and with no winner."""
+    from app.domain.enums import LOSS_REASON_NOT_RECORDED
+
+    with client.Maker() as s:
+        _sent_and_read_back(s, "e4", customer="c1", erp_outcome="LOST")
+        s.commit()
+    body = client.get("/api/v1/insight/quote-outcomes",
+                      headers=_hdr(client, OWNER)).json()
+    assert (body["decided"], body["won"], body["lost"]) == (12, 6, 6)
+    assert body["erp_decided_quotes"] == 1
+    reasons = {r["reason"]: r for r in body["reasons"]}
+    assert reasons[LOSS_REASON_NOT_RECORDED]["count"] == 1
+    assert reasons["PRICE"]["count"] == 4
+    assert all(row["reason"] != "" for row in body["reasons"])
+
+
+def test_a_draft_row_beside_a_confirmed_document_reads_sent(client):
+    """Rule 3: SENT when a person, a document or the ERP's row says it went
+    out. A human row still reading DRAFT beside a written document is the
+    send's bookkeeping having failed after the write; the document is the
+    fact, and the outcome of record says so."""
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteOutcomeStatus as Status
+
+    with client.Maker() as s:
+        row = models.QuoteOutcome(organization_id=ORG, quote_id="d1",
+                                  customer_id="c1", customer_ref="c1",
+                                  status=Status.DRAFT.value)
+        s.add(row)
+        assert quote_service.decide(row, None).status is Status.DRAFT
+        quote_service.record_document(
+            s, ORG, quote_id="d1", external_system="zoho", number="EST-d1",
+            document_id="est-d1", line_count=1, fingerprint="f-d1")
+        s.flush()
+        rec = quote_service.outcomes_of_record(s, ORG, [row])["d1"]
+    assert rec.status is Status.SENT and rec.ever_sent is True
+    assert rec.decided is False and rec.source is None
 
 
 def test_an_erp_raised_quote_a_person_marked_sent_follows_the_erp_too(client):

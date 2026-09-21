@@ -588,22 +588,42 @@ existing outcome endpoint. Nothing new carries cost.
 - `test_quote_outcomes.py` — an ERP-decided quote with no snapshot counts in the
   rate with `source = ERP` and reason NOT_RECORDED; a human row overrides the ERP;
   the attribution and replay readers agree with Won & lost on one fixture (the test
-  that ends "three win rates").
+  that ends "three win rates"). **Landed**, plus: an ERP-declined quote is a loss
+  with reason NOT_RECORDED and no winner; an ERP-raised quote a person marked
+  sent follows the ERP; an undated ERP decision is not one; a DRAFT row beside a
+  confirmed document reads SENT.
 - `test_unrecorded_quotes.py` — a PIE-sent quote whose ERP row says accepted leaves
-  the pile; the Drafts row reads WON.
+  the pile (**landed**, in that file); the Drafts row reads WON (**landed**, in
+  `test_quote_workspace.py`, beside the mark-sent, delete-guard and send-capability
+  tests).
 - `test_quote_workspace.py` — `mark-sent` records a MANUAL row, readiness SENT, Send
   refused as "already covers", delete refused; a P21 quote's view carries
   `canSendToErp false` and the book sentence.
-- `test_erp_quote_outcome_capture.py` — `lost_to` accepted from the shared form.
+- `test_erp_quote_outcome_capture.py` — `lost_to` accepted from the shared form
+  (**already pinned** there before this phase; the endpoint never lacked it).
 - `test_platform_quote_outcome_scope.py` — the account holder sees the PIE half
-  (customer_id now set).
-- `QuoteOutcomeBar.test.tsx` (new), `RecordOutcomeDialog.test.tsx`,
-  `ErpQuoteScreen.test.tsx:264-291` (the page now has one control — update the
-  "only control" assertion).
+  (customer_id now set) — **not added**: the send has stamped `customer_id` since
+  Phase 0 and `test_a_send_moves_the_outcome_to_sent_and_links_the_document`
+  presses the real endpoint; the scope file's own fixtures already build rows
+  with `customer_id`.
+- `QuoteOutcomeBar.test.tsx` (new — **landed**), `RecordOutcomeDialog.test.tsx`
+  (**not a file of its own**: the dialog's new field and four-argument callback
+  are pinned through its callers, `QuoteOutcomeBar.test.tsx` and
+  `UnrecordedQuotes.test.tsx`, which is where a regression would be seen),
+  `ErpQuoteScreen.test.tsx` (the "only control" assertion **kept**, its premise
+  now stated: the fixture is a quote the ERP has won, the one state with nothing
+  to record; the open-quote case has its own tests).
 
 **Docs** `docs/user-flows.md` §7.9 and §8.3; `docs/ui-followups.md` P1 closed;
 `ui-standards §10` row if the outcome row becomes a kit component.
 **Rollback** revert; no schema.
+
+**Known asymmetry, left for Phase 4.** Won & lost values a decided quote with no
+snapshot from the ERP's priced lines, whoever decided it; the wallet's lost asks
+still value from snapshots alone, so a loss a salesperson records on an ERP-raised
+quote counts in the rate and not in the wallet's competitor share. One valuation
+for both is a Phase 4 item; papering over it here would have put a header total
+beside pre-tax revenue.
 
 ### Phase 4 — Registry connectors read quotes (one week per connector)
 

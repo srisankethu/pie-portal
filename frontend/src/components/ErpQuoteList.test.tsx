@@ -10,7 +10,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import { ErpQuoteList } from "./ErpQuoteList";
+import { ErpQuoteList, recordColumn } from "./ErpQuoteList";
 import type { ErpQuote } from "../types";
 import { pretendViewportIs } from "../test/viewport";
 
@@ -50,6 +50,23 @@ function q(over: Partial<ErpQuote> = {}): ErpQuote {
     ...over,
   };
 }
+
+describe("the grid's Record column", () => {
+  it("opts out of the row click and renders only where an answer is wanted", () => {
+    /* The wide grid does not render in this harness, so the column is
+       pinned as a definition: without `noRowClick` a press on Record… also
+       opened the quote's page, which a React stopPropagation cannot stop. */
+    const onRecord = vi.fn();
+    const col = recordColumn(onRecord) as { context?: { noRowClick?: boolean };
+      cellRenderer: (p: { data?: ErpQuote }) => unknown };
+    expect(col.context?.noRowClick).toBe(true);
+    expect(col.cellRenderer({ data: q({ outcome_of_record: "WON", outcome_source: "ERP" }) }))
+      .toBeNull();
+    expect(col.cellRenderer({ data: q({ recorded: { status: "LOST", loss_reason: "PRICE",
+      lost_to: null, note: null, decided_at: null } }) })).toBeNull();
+    expect(col.cellRenderer({ data: q() })).not.toBeNull();
+  });
+});
 
 describe("recording from the list", () => {
   it("offers Record… on the rows that want an answer, and only those", () => {

@@ -1422,10 +1422,13 @@ def _decided_quotes(outcomes: list[models.QuoteOutcome],
     That is a quote somebody marked won or lost without ever recording what it
     was priced at — real, and it belongs in a data-quality note rather than in a
     denominator where it would drag every value figure down. The one exception
-    is a quote the ERP decided and holds priced lines for: Σ of those line
-    amounts (``_erp_line_values`` — pre-tax, the grain ``line_revenue`` is)
-    is what was put in front of the customer, so it counts at that value,
-    with no margin — a number nobody here priced cannot carry one.
+    is a quote the ERP holds priced lines for — whoever decided it, the ERP
+    or a person recording an ERP-raised quote from the worklist: Σ of those
+    line amounts (``_erp_line_values`` — pre-tax, the grain ``line_revenue``
+    is) is what was put in front of the customer, so it counts at that value,
+    with no margin — a number nobody here priced cannot carry one. (The
+    wallet's lost asks still value from snapshots alone; that asymmetry is
+    recorded in the plan rather than papered over here.)
 
     Which way a quote went, when, and why come off the outcome of record
     (``records``), never off the row alone: a row still reading SENT whose

@@ -64,6 +64,25 @@ export function wantsOutcome(q: ErpQuote): boolean {
   return !q.recorded && erpOutcome(q) !== "WON";
 }
 
+/** The grid's Record column: a control on the rows that want an answer.
+ *
+ *  Exported so the one thing that cannot be seen from a rendered test can be
+ *  pinned: the grid opens the row on a cell click, a React stopPropagation
+ *  does not reach it, and `context.noRowClick` is how a column opts out (see
+ *  `DataGrid.tsx`). A test at phone width renders the cards, never this. */
+export function recordColumn(onRecord: (q: ErpQuote) => void): ColDef<ErpQuote> {
+  return {
+    field: "recorded", headerName: "", width: 110, flex: 0, sortable: false,
+    context: { noRowClick: true },
+    cellRenderer: (p: { data?: ErpQuote }) =>
+      p.data && wantsOutcome(p.data) ? (
+        <Button size="small" sx={TOUCH} onClick={() => onRecord(p.data!)}>
+          Record…
+        </Button>
+      ) : null,
+  } as ColDef<ErpQuote>;
+}
+
 export function ErpQuoteList({ quotes, emptyReason, showCompany = false, onRecord }: {
   quotes: ErpQuote[];
   /** Offer "Record…" on rows that want an answer, opening the caller's
@@ -128,20 +147,7 @@ export function ErpQuoteList({ quotes, emptyReason, showCompany = false, onRecor
         return <StatusChip label={o.label} tone={o.tone} tip={o.tip} />;
       },
     },
-    ...(onRecord ? [{
-      field: "recorded", headerName: "", width: 110, flex: 0, sortable: false,
-      // The grid opens the row on a cell click, and a React stopPropagation
-      // does not reach it; `noRowClick` is how a column opts out — see
-      // `DataGrid.tsx`.
-      context: { noRowClick: true },
-      cellRenderer: (p: { data?: ErpQuote }) =>
-        p.data && wantsOutcome(p.data) ? (
-          <Button size="small" sx={TOUCH}
-                  onClick={(e) => { e.stopPropagation(); onRecord(p.data!); }}>
-            Record…
-          </Button>
-        ) : null,
-    } as ColDef<ErpQuote>] : []),
+    ...(onRecord ? [recordColumn(onRecord)] : []),
     text("source_status", "ERP status", {
       width: 140, flex: 0,
       valueGetter: (p) => sourceWord(p.data?.source_status ?? ""),

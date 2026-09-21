@@ -315,10 +315,13 @@ describe("recording what happened", () => {
 });
 
 describe("read-only, for anyone", () => {
-  it("offers nothing to press but the way back", async () => {
+  it("offers nothing to press but the way back, on a quote the books have won", async () => {
     // Not "hides the edit button from a salesperson" — there is no edit button
     // for any role. A change typed here would be overwritten by the next sync,
-    // so the page must not invite one.
+    // so the page must not invite one. The fixture is a quote the ERP has
+    // recorded as accepted, on purpose: that is the one state with nothing
+    // left to record either, so the way back is the only control. An open
+    // quote gains "Record outcome" — see "recording what happened" above.
     draw();
 
     await waitFor(() => expect(screen.getByText("CNMG120408")).toBeTruthy());

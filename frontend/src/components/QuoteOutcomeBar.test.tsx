@@ -49,6 +49,13 @@ describe("what the books say", () => {
     expect(screen.getByRole("button", { name: "Record as won" })).toBeEnabled();
   });
 
+  it("does not offer an undated ERP decision as one — the server's rule", () => {
+    show(outcome(), { number: "EST-1001", sourceStatus: "accepted", outcome: "WON",
+                      decidedOn: null, clientViewedAt: null });
+    expect(screen.queryByText(/Zoho Books say/)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mark won" })).toBeEnabled();
+  });
+
   it("says nothing about the books where nothing has been read back", () => {
     show(outcome());
     expect(screen.queryByText(/Zoho Books say/)).not.toBeInTheDocument();

@@ -1161,7 +1161,11 @@ that row like any other. The button sits beside Send for an ordinary quote and
 *replaces* it where the server says Send can do nothing (`canSendToErp` false,
 `sendBlock` naming why — decided on the draft, not at the button); the chip
 then reads "Marked as sent". Unchanged content answers that it is already
-marked and records nothing.
+marked and records nothing — but a manual mark covers only a manual press:
+the books hold nothing for it, so Send still writes the document, as the next
+revision under a reference of its own. Refused while an ERP send is
+unverified (§7.8 step 6): a confirmed row over that open question would erase
+the reference to look for and the retry the next press performs with it.
 **Ends.** Sent (chip + number, revision) · already-existed · unverified
 (reference recorded; retry) · unreachable (nothing recorded) · refused:
 unresolved / unpriced / 403 awaiting approval / source-refused · client-side

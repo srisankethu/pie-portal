@@ -486,6 +486,48 @@ def test_the_three_readers_agree_on_one_fixture(client_with_erp_decisions):
     assert isinstance(_date.today(), _date)
 
 
+def test_an_erp_raised_quote_a_person_marked_sent_follows_the_erp_too(client):
+    """The other kind of row: no ``quote_id``, only the ERP's reference. It
+    is joined to the ERP through that reference, valued from the ERP's own
+    priced lines (pre-tax, the grain a snapshot's revenue is), and counted
+    here as it is on the ERP tab — one answer, not one per reader."""
+    from datetime import date as _date
+
+    from app.attribution import evaluator
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteOutcomeStatus as Status
+
+    with client.Maker() as s:
+        s.add(models.QuoteDoc(
+            organization_id=ORG, connector="zoho", connection_id="cx1",
+            external_ref="erp-9", number="EST-9", customer_id="c1",
+            customer_ref="Acme Engineering", date=_date(2026, 6, 1),
+            source_status="accepted", outcome="WON",
+            decided_on=(datetime.now(timezone.utc) - timedelta(days=2)).date(),
+            total=Decimal("1180")))
+        s.add(models.ErpQuoteLine(
+            organization_id=ORG, connector="zoho", connection_id="cx1",
+            external_ref="erp-9:1", quote_ref="erp-9", line_number=0,
+            product_id="p1", item_code="ITEM-p1", qty=Decimal("10"),
+            rate=Decimal("100"), amount=Decimal("1000")))
+        s.flush()
+        quote_service.set_outcome(s, ORG, quote_document_ref="erp-9",
+                                  status=Status.SENT, customer_ref="Acme Engineering",
+                                  customer_id="c1")
+        s.commit()
+
+    body = client.get("/api/v1/insight/quote-outcomes",
+                      headers=_hdr(client, OWNER)).json()
+    assert (body["decided"], body["won"]) == (12, 7)
+    assert body["erp_decided_quotes"] == 1
+    assert body["unpriced_quotes"] == 0, "valued from the ERP's priced lines"
+    with client.Maker() as s:
+        window = evaluator._quote_outcomes(
+            s, ORG, datetime.now(timezone.utc) - timedelta(days=30),
+            datetime.now(timezone.utc) + timedelta(days=1))
+    assert window["quotes_won"] == 7 and window["decided_quotes_ever_sent"] == 12
+
+
 def test_an_erp_decision_without_a_date_is_not_a_decision(client):
     """The line ``classify_outcome`` already draws, held here too: a decided
     quote with no date is not usable as evidence, so the quote stays open."""

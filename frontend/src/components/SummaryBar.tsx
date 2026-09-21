@@ -70,6 +70,11 @@ export function SummaryBar({
   // server's own sentence.
   const canSend = quote.canSendToErp !== false;
   const current = sent && quote.estimate!.current;
+  // A document the books hold for exactly this content: nothing to send. A
+  // manual mark of the same content is not that — the books hold nothing,
+  // and Send may still write it, as the next revision.
+  const alreadySent = current && quote.estimate!.channel === "ERP";
+  const alreadyMarked = current && quote.estimate!.channel === "MANUAL";
   // What the send actually creates, in the words of the system it creates it
   // in — "Zoho Books estimate", "Dynamics 365 Business Central sales quote".
   // This button said "Create Zoho estimate" to every customer, which names a
@@ -233,7 +238,7 @@ export function SummaryBar({
       {/* The manual way out. Primary where Send cannot write into the books
           at all; otherwise beside it, for the quote that went out as a PDF.
           Hidden once the current content is already sent either way. */}
-      {onMarkSent && !current && (
+      {onMarkSent && !current && !quote.unverifiedSend && (
         <Button
           variant={canSend ? "outlined" : "contained"}
           sx={TOUCH}
@@ -249,11 +254,11 @@ export function SummaryBar({
           onClick={onMarkSent}
           disabled={busy || readOnly || !hasLines || blockers.length > 0}
         >
-          {busy ? "Marking…" : "Mark as sent"}
+          Mark as sent
         </Button>
       )}
       {canSend && <Button
-        variant={current ? "outlined" : "contained"}
+        variant={alreadySent ? "outlined" : "contained"}
         sx={TOUCH}
         title={
           readOnly
@@ -266,16 +271,19 @@ export function SummaryBar({
               ? `Retries the send under reference ${quote.unverifiedSend.reference}. `
                 + `${quote.systemLabel} reports the ${quote.documentTerm} if it is `
                 + "already there and creates it only if it is not."
-            : sent && quote.estimate!.current
+            : alreadySent
               ? `This quote is already ${document} ${quote.estimate!.number}. `
                 + "Nothing has changed since, so sending again returns the same one."
+              : alreadyMarked
+                ? `Marked as sent by hand; ${quote.systemLabel} holds nothing for it. `
+                  + `This writes it there as the next revision.`
               : sent
                 ? `The quote has changed since it was sent — this creates a new ${quote.documentTerm}`
                 : `Send this quote into ${quote.systemLabel}`)
         }
         onClick={onCreateEstimate}
         disabled={busy || readOnly || !hasLines || blockers.length > 0
-                  || (sent && quote.estimate!.current && !quote.unverifiedSend)}
+                  || (alreadySent && !quote.unverifiedSend)}
       >
         {/* "Send", not "Create".
           *
@@ -298,15 +306,16 @@ export function SummaryBar({
             ? `${blockers.length} to settle first`
             : quote.unverifiedSend
               ? `Retry send to ${quote.systemLabel}`
-              : sent && quote.estimate!.current
+              : alreadySent
                 ? "Already sent"
-                : sent
+                : sent && !alreadyMarked
                   ? `Send amendment to ${quote.systemLabel}`
                   : `Send to ${quote.systemLabel}`}
       </Button>}
       {/* Where nothing can be sent from here, the server's sentence says why,
-          on the draft — not after fourteen lines of work at the button. */}
-      {!canSend && quote.sendBlock && (
+          on the draft — not after fourteen lines of work at the button. Not
+          once the quote is marked: the sentence's advice has been taken. */}
+      {!canSend && quote.sendBlock && !current && (
         <Typography variant="body2" color="text.secondary" sx={{ maxWidth: "44ch" }}>
           {quote.sendBlock}
         </Typography>

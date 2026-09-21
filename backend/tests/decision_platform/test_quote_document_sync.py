@@ -780,6 +780,40 @@ def test_an_outcome_follows_a_revision_of_its_own_quote_and_nothing_else(session
     assert held == {"q1-1": "est-2", "q2-1": "erp-77"}
 
 
+def test_an_unqualified_outcome_joins_no_document_where_two_books_share_the_id(session):
+    """The read side of ``sole_erp_quote``'s refusal. Two connected books
+    issued the same id; a person's row that names no book names neither
+    document, and neither ERP row shows that person's decision. A row that
+    names its book joins that book's document and nothing else."""
+    from datetime import date
+
+    def doc(conn: str) -> models.QuoteDoc:
+        return models.QuoteDoc(
+            organization_id="org_a", connector="dynamics365", connection_id=conn,
+            external_ref="SQ-1001", number="SQ-1001", customer_ref="Pitti",
+            date=date(2026, 9, 1), source_status="open", outcome="UNRECORDED")
+
+    a, b = doc("conn-a"), doc("conn-b")
+    session.add_all([a, b])
+    row = models.QuoteOutcome(
+        organization_id="org_a", quote_document_ref="SQ-1001",
+        status="LOST", loss_reason="PRICE", customer_ref="Pitti")
+    session.add(row)
+    session.flush()
+    records = quote_service.erp_outcomes_of_record(session, "org_a", [a, b])
+    assert records[a.quote_document_id].source is None
+    assert records[b.quote_document_id].source is None
+
+    # The reference is unique per organization on the human table, so the
+    # qualified case is the same row saying which book it meant.
+    row.quote_document_connection_id = "conn-b"
+    session.flush()
+    records = quote_service.erp_outcomes_of_record(session, "org_a", [a, b])
+    assert records[a.quote_document_id].source is None
+    assert records[b.quote_document_id].status.value == "LOST"
+    assert records[b.quote_document_id].source.value == "HUMAN"
+
+
 def test_quotes_are_scoped_to_their_organization(session):
     """Two organizations quoting the same ERP id keep separate rows."""
     _sync(session, [_quote("est-1", "expired")], org="org_a")

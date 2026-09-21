@@ -130,6 +130,10 @@ export function ErpQuoteList({ quotes, emptyReason, showCompany = false, onRecor
     },
     ...(onRecord ? [{
       field: "recorded", headerName: "", width: 110, flex: 0, sortable: false,
+      // The grid opens the row on a cell click, and a React stopPropagation
+      // does not reach it; `noRowClick` is how a column opts out — see
+      // `DataGrid.tsx`.
+      context: { noRowClick: true },
       cellRenderer: (p: { data?: ErpQuote }) =>
         p.data && wantsOutcome(p.data) ? (
           <Button size="small" sx={TOUCH}

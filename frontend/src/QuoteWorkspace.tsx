@@ -176,6 +176,11 @@ export function erpWord(erp: NonNullable<QuoteDraftSummary["sent"]>["erp"]):
 /** The document a sent draft became, and what the ERP says about it. */
 function SentCell({ sent }: { sent: NonNullable<QuoteDraftSummary["sent"]> }) {
   const word = erpWord(sent.erp);
+  // A manual send has no number: a person said it went out, and the books
+  // hold nothing for it — said in words rather than left as a blank cell.
+  if (sent.channel === "MANUAL") {
+    return <Meta>Marked as sent</Meta>;
+  }
   return (
     <Stack direction="row" spacing={0.75} sx={{ alignItems: "center" }}>
       <Typography variant="body2" sx={{ fontFamily: "var(--font-heading)", fontWeight: 600 }}>

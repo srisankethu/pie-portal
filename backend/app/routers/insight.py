@@ -1414,6 +1414,7 @@ def _decided_quotes(outcomes: list[models.QuoteOutcome],
                     principal_of: dict[str, str],
                     line_of: dict[str, str],
                     records: dict[str, quote_service.OutcomeOfRecord],
+                    erp_values: Optional[dict[str, Decimal]] = None,
                     ) -> list[outcomes_view.DecidedQuote]:
     """Outcome rows and their priced lines, as the grain the view computes on.
 
@@ -1421,9 +1422,10 @@ def _decided_quotes(outcomes: list[models.QuoteOutcome],
     That is a quote somebody marked won or lost without ever recording what it
     was priced at — real, and it belongs in a data-quality note rather than in a
     denominator where it would drag every value figure down. The one exception
-    is a quote the ERP decided and holds a total for: its selling total is the
-    ERP's own figure, so it counts at that value, with no margin — a number
-    nobody here priced cannot carry one.
+    is a quote the ERP decided and holds priced lines for: Σ of those line
+    amounts (``_erp_line_values`` — pre-tax, the grain ``line_revenue`` is)
+    is what was put in front of the customer, so it counts at that value,
+    with no margin — a number nobody here priced cannot carry one.
 
     Which way a quote went, when, and why come off the outcome of record
     (``records``), never off the row alone: a row still reading SENT whose
@@ -1441,8 +1443,8 @@ def _decided_quotes(outcomes: list[models.QuoteOutcome],
             profits = [ln.gross_profit for ln in lines]
             gross_profit = (sum((Decimal(p) for p in profits), Decimal("0"))
                             if all(p is not None for p in profits) else None)
-        elif rec.erp is not None and rec.erp.total is not None:
-            value, gross_profit = Decimal(rec.erp.total), None
+        elif rec.erp is not None and (erp_values or {}).get(rec.erp.quote_document_id) is not None:
+            value, gross_profit = erp_values[rec.erp.quote_document_id], None
         else:
             continue
         won = rec.status is QuoteOutcomeStatus.WON
@@ -1553,16 +1555,42 @@ class _QuoteEvidence:
 def _records_of(session: Session, org: str,
                 rows: list[models.QuoteOutcome],
                 ) -> dict[str, quote_service.OutcomeOfRecord]:
-    """The outcome of record for each human row, keyed by the row's own id.
+    """The outcome of record for each human row, keyed by the row's own id —
+    ``quote_service.records_for_rows``, which joins a platform quote's row
+    through its newest confirmed document and an ERP-raised quote's row
+    through the reference it names. One name here so both readers in this
+    file ask the same function."""
+    return quote_service.records_for_rows(session, org, rows)
 
-    A platform quote's row is joined to the ERP's word through its newest
-    confirmed document; a row about an ERP-raised quote (no ``quote_id``) is
-    a person's answer with nothing to join, and is decided on its own.
+
+def _erp_line_values(session: Session, org: str,
+                     docs: list[models.QuoteDoc]) -> dict[str, Decimal]:
+    """Σ of each ERP document's *priced* line amounts, keyed by its id.
+
+    The value a decided quote counts at when this platform holds no snapshot
+    for it. Pre-tax line amounts, summed — the same grain as ``line_revenue``
+    on a snapshot — never the header's ``total``, which is the ERP's
+    tax-inclusive figure for the whole document and would sit beside pre-tax
+    revenue in one sum. A line the ERP never priced is left out, never added
+    as zero; a document with no priced line at all has no value here and
+    stays out of every sum, counted as unpriced.
     """
-    by_quote = quote_service.outcomes_of_record(session, org, rows)
-    return {r.quote_outcome_id: (by_quote[r.quote_id] if r.quote_id
-                                 else quote_service.decide(r, None))
-            for r in rows}
+    refs = {d.external_ref for d in docs}
+    if not refs:
+        return {}
+    out: dict[str, Decimal] = {}
+    for ref, connection_id, amount in session.execute(
+            select(models.ErpQuoteLine.quote_ref, models.ErpQuoteLine.connection_id,
+                   func.sum(models.ErpQuoteLine.amount))
+            .where(models.ErpQuoteLine.organization_id == org,
+                   models.ErpQuoteLine.quote_ref.in_(refs),
+                   models.ErpQuoteLine.amount.is_not(None))
+            .group_by(models.ErpQuoteLine.quote_ref,
+                      models.ErpQuoteLine.connection_id)):
+        for d in docs:
+            if d.external_ref == ref and d.connection_id == connection_id:
+                out[d.quote_document_id] = Decimal(str(amount))
+    return out
 
 
 def _quote_evidence(session: Session, principal: Principal,
@@ -1579,12 +1607,18 @@ def _quote_evidence(session: Session, principal: Principal,
     lines_by_quote = _latest_lines(
         session, org, [o.quote_id for o in decided + awaiting])
     principal_names, principal_of, line_of = _quote_facets(session, org, th)
+    # The ERP's priced lines, for the decided quotes this platform never
+    # snapshotted — one query, only for the rows that need it.
+    erp_values = _erp_line_values(session, org, [
+        records[r.quote_outcome_id].erp for r in decided
+        if records[r.quote_outcome_id].erp is not None
+        and not lines_by_quote.get(r.quote_id or "")])
     return _QuoteEvidence(
         org=org, snapshot=snapshot, th=th, as_of=clock.today(th.timezone),
         decided=decided, awaiting=awaiting, lines_by_quote=lines_by_quote,
         principal_names=principal_names,
         quotes=_decided_quotes(decided, lines_by_quote, snapshot.customer_names,
-                               principal_of, line_of, records),
+                               principal_of, line_of, records, erp_values),
         records=records)
 
 

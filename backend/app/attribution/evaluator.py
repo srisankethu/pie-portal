@@ -521,12 +521,11 @@ def _quote_outcomes(session: Session, org: str,
     rows = list(session.scalars(
         select(models.QuoteOutcome).where(
             models.QuoteOutcome.organization_id == org)))
-    by_quote = quote_service.outcomes_of_record(session, org, rows)
+    records = quote_service.records_for_rows(session, org, rows)
     counts: dict[str, int] = {}
     sent_counts: dict[str, int] = {}
     for row in rows:
-        rec = (by_quote[row.quote_id] if row.quote_id
-               else quote_service.decide(row, None))
+        rec = records[row.quote_outcome_id]
         if not rec.decided or not _decided_within(rec, start, end):
             continue
         counts[rec.status.value] = counts.get(rec.status.value, 0) + 1

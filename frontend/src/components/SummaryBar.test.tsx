@@ -130,6 +130,33 @@ describe("the send button", () => {
     expect(screen.getByText(block)).toBeInTheDocument();
   });
 
+  it("does not offer Mark as sent while an ERP send is unverified", () => {
+    /* A confirmed row over an open question would erase the reference to
+       look for and the retry the next press performs with it; the server
+       refuses it, and the bar does not offer it. */
+    show([], null, {
+      unverifiedSend: {
+        reference: "QB-0042-ab12cd34", revision: 1, writtenAt: "2026-09-20T10:00:00Z",
+        system: "zoho", systemLabel: "Zoho Books", systemShort: "Zoho",
+        documentTerm: "estimate",
+      },
+    });
+    expect(screen.queryByRole("button", { name: "Mark as sent" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Retry send/ })).toBeEnabled();
+  });
+
+  it("still lets Send write a quote that was only marked by hand", () => {
+    /* The books hold nothing for a manual mark, so Send is not "already sent"
+       — it writes the document as the next revision. */
+    show([], null, {
+      estimate: {
+        number: "", lineCount: 1, revision: 1, channel: "MANUAL", current: true,
+        system: "zoho", systemLabel: "Zoho Books", documentTerm: "estimate", erp: null,
+      },
+    });
+    expect(screen.getByRole("button", { name: /Send to Zoho Books/ })).toBeEnabled();
+  });
+
   it("names a manual send for what it is, with no number", () => {
     show([], null, {
       estimate: {

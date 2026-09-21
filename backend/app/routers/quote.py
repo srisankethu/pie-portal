@@ -1168,7 +1168,8 @@ class _RevisionPlan:
     covers: Optional[EstimateResponse] = None
 
 
-def _revision_plan(session: Session, org: str, q: Quote, system: str) -> _RevisionPlan:
+def _revision_plan(session: Session, org: str, q: Quote, system: str, *,
+                   manual: bool = False) -> _RevisionPlan:
     """Sending twice, and sending again — decided the same way for both ways out.
 
     Three presses used to create three estimates in Zoho, because nothing on
@@ -1178,6 +1179,12 @@ def _revision_plan(session: Session, org: str, q: Quote, system: str) -> _Revisi
     changed content is the next revision. Answered *before* the assessment is
     recorded: a press that creates nothing is not a send, and writing a
     snapshot set for it grew the audit trail by a duplicate decision per press.
+
+    What "already covers" means depends on which way out is asking. A MANUAL
+    row covers a second *manual* press of the same content — marked once is
+    marked. It does not cover the ERP send: the books hold nothing for it,
+    and a person who marked a PDF as sent and now presses Send wants the
+    document written, as the next revision under a reference of its own.
     """
     fingerprint = store.priced_fingerprint(q)
     newest = quote_service.latest_document(session, org, quote_id=q.id)
@@ -1187,7 +1194,10 @@ def _revision_plan(session: Session, org: str, q: Quote, system: str) -> _Revisi
     retrying = (newest is not None and
                 newest.write_state == QuoteDocumentWriteState.UNVERIFIED.value)
     covers = None
-    if newest is not None and not retrying and newest.fingerprint == fingerprint:
+    covering = (newest is not None and not retrying
+                and newest.fingerprint == fingerprint
+                and (manual or newest.channel != QuoteDocumentChannel.MANUAL.value))
+    if covering:
         # Named from the row rather than from the caller's book: this answers
         # about the document that was actually written, which may predate a
         # customer being re-pointed at a different system.
@@ -1290,9 +1300,22 @@ def mark_sent(quote_id: str,
     refused = _send_gates(session, principal, q, words)
     if refused is not None:
         return refused
-    plan = _revision_plan(session, org, q, connector)
+    plan = _revision_plan(session, org, q, connector, manual=True)
     if plan.covers is not None:
         return plan.covers
+    if plan.retrying:
+        # An ERP send of this revision went out and nobody knows whether it
+        # landed. Marking it as sent by hand would write a confirmed row over
+        # that question — the reference to look for would vanish from the
+        # quote, and the retry the next press performs with it. Settle it
+        # first: look in the books, then press Send, which retries under the
+        # same reference and reports the document if it is there.
+        return EstimateResponse(
+            ok=False, **words, revision=plan.revision,
+            message=(f"A send of this quote is unverified — look for reference "
+                     f"{plan.newest.reference} in {words['systemLabel']} first, "
+                     f"then press Send to settle it. It cannot be marked as sent "
+                     f"while that question is open."))
     _assess_and_gate(session, principal, q)
     lines = [ln for ln in q.lines if ln.supplyCode]
     quote_service.record_document(
@@ -1448,8 +1471,12 @@ def create_estimate(quote_id: str,
     sent_fingerprint = (newest.fingerprint if retrying and est.already_existed
                         else fingerprint)
     # The document this revision replaces, for the person who has to void it
-    # in the source (decision D2: named, never voided from here).
-    previous = (quote_service.latest_written_document(session, org, quote_id=quote_id)
+    # in the source (decision D2: named, never voided from here). The newest
+    # *ERP* document: a MANUAL row in between has no id to move the outcome
+    # from and no number to void, and naming it would refuse the move and
+    # leave the outcome on a document two revisions old.
+    previous = (quote_service.latest_written_document(
+                    session, org, quote_id=quote_id, channel=QuoteDocumentChannel.ERP)
                 if revision > 1 else None)
     try:
         quote_service.record_document(
@@ -1635,11 +1662,17 @@ def _send_capability(session: Session, org: str, q: Quote) -> tuple[bool, Option
             "Send the quote another way and mark it as sent.")
     if q.has_customer:
         customer = quote_service.resolve_customer(session, org, q.customer_ref)
-        if customer is not None:
-            try:
-                conn.book_for_customer(session, org, customer)
-            except conn.ConnectionNotFound as e:
-                return False, str(e)
+        if customer is None:
+            # The same sentence ``books_for_quote`` answers the send with —
+            # said on the draft instead of after fourteen lines of work.
+            return False, (
+                f"{q.customer!r} does not match any customer in this "
+                f"organization, so no set of books can be identified. Choose "
+                f"the customer from the list, or mark the quote as sent.")
+        try:
+            conn.book_for_customer(session, org, customer)
+        except conn.ConnectionNotFound as e:
+            return False, str(e)
     return True, None
 
 

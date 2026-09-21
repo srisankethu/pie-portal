@@ -19,7 +19,7 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from typing import Any, Iterable, Optional
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import clock
@@ -954,7 +954,9 @@ def latest_document(session: Session, org: str, *,
 
 
 def latest_written_document(session: Session, org: str, *,
-                            quote_id: str) -> Optional[models.QuoteDocument]:
+                            quote_id: str,
+                            channel: Optional[QuoteDocumentChannel] = None,
+                            ) -> Optional[models.QuoteDocument]:
     """The newest document the source *confirmed* — what "sent" means on
     screen and what the fingerprint check compares against.
 
@@ -962,15 +964,23 @@ def latest_written_document(session: Session, org: str, *,
     may be an UNVERIFIED row with a reference and no number; this answers
     "which document does the customer's book actually hold". Two questions,
     two functions, and every reader has to know which it is asking.
+
+    ``channel`` narrows to one way out: the send asks for the newest *ERP*
+    document when it names what a revision supersedes and moves the outcome
+    off it — a MANUAL row in between has no document id to move from, and
+    naming it would refuse the move and leave the outcome on a document two
+    revisions old.
     """
+    stmt = (select(models.QuoteDocument)
+            .where(models.QuoteDocument.organization_id == org,
+                   models.QuoteDocument.quote_id == quote_id,
+                   models.QuoteDocument.write_state
+                   == QuoteDocumentWriteState.WRITTEN.value))
+    if channel is not None:
+        stmt = stmt.where(models.QuoteDocument.channel == channel.value)
     return session.scalars(
-        select(models.QuoteDocument)
-        .where(models.QuoteDocument.organization_id == org,
-               models.QuoteDocument.quote_id == quote_id,
-               models.QuoteDocument.write_state
-               == QuoteDocumentWriteState.WRITTEN.value)
-        .order_by(models.QuoteDocument.written_at.desc(),
-                  models.QuoteDocument.quote_document_id.desc())
+        stmt.order_by(models.QuoteDocument.written_at.desc(),
+                      models.QuoteDocument.quote_document_id.desc())
         .limit(1)).first()
 
 
@@ -1174,6 +1184,80 @@ def outcomes_of_record(session: Session, org: str,
             for r in rows}
 
 
+def _ambiguous_refs(session: Session, org: str, refs: Iterable[str]) -> set[str]:
+    """The references that name more than one ERP document in this
+    organization — two connected books issuing the same id. An unqualified
+    pointer to one of these names no document, the rule ``sole_erp_quote``
+    applies on the write side."""
+    wanted = {r for r in refs if r}
+    if not wanted:
+        return set()
+    return {ref for ref, n in session.execute(
+        select(models.QuoteDoc.external_ref, func.count())
+        .where(models.QuoteDoc.organization_id == org,
+               models.QuoteDoc.external_ref.in_(wanted))
+        .group_by(models.QuoteDoc.external_ref)) if n > 1}
+
+
+def erp_documents_by_ref(session: Session, org: str,
+                         rows: Iterable[models.QuoteOutcome],
+                         ) -> dict[str, Optional[models.QuoteDoc]]:
+    """The ERP row each human row about an ERP-raised quote points at, keyed
+    by the human row's id — the join for rows that carry no ``quote_id``.
+
+    A row that names the company joins only that company's document; one
+    written before the qualifier existed joins on the id alone *while that
+    names one document*, and nothing where two books answer to it. The same
+    rule as ``erp_documents_for`` on the platform side, applied to the other
+    pointer.
+    """
+    rows = [r for r in rows if r.quote_document_ref]
+    if not rows:
+        return {}
+    refs = {r.quote_document_ref for r in rows}
+    by_ref: dict[str, list[models.QuoteDoc]] = defaultdict(list)
+    for d in session.scalars(
+            select(models.QuoteDoc).where(
+                models.QuoteDoc.organization_id == org,
+                models.QuoteDoc.external_ref.in_(refs))):
+        by_ref[d.external_ref].append(d)
+    out: dict[str, Optional[models.QuoteDoc]] = {}
+    for r in rows:
+        candidates = by_ref.get(r.quote_document_ref, [])
+        if r.quote_document_connection_id:
+            candidates = [d for d in candidates
+                          if d.connection_id == r.quote_document_connection_id]
+        out[r.quote_outcome_id] = candidates[0] if len(candidates) == 1 else None
+    return out
+
+
+def records_for_rows(session: Session, org: str,
+                     rows: Iterable[models.QuoteOutcome],
+                     ) -> dict[str, OutcomeOfRecord]:
+    """The outcome of record for every human row, keyed by the row's own id.
+
+    Both kinds of row, one answer each: a platform quote's row is joined to
+    the ERP through the quote's newest confirmed document
+    (``outcomes_of_record``); a row about an ERP-raised quote — no
+    ``quote_id``, only the ERP's reference — is joined to that document by
+    the reference (``erp_documents_by_ref``). Readers that hold rows of both
+    kinds (Won & lost, the attribution evaluator) call this and nothing else,
+    so an ERP-raised quote a person marked SENT and the ERP then accepted is
+    a win here exactly as it is on the ERP tab.
+    """
+    rows = list(rows)
+    platform = [r for r in rows if r.quote_id]
+    by_quote = outcomes_of_record(session, org, platform)
+    erp_only = [r for r in rows if not r.quote_id]
+    erp_by_row = erp_documents_by_ref(session, org, erp_only)
+    out: dict[str, OutcomeOfRecord] = {}
+    for r in platform:
+        out[r.quote_outcome_id] = by_quote[r.quote_id]
+    for r in erp_only:
+        out[r.quote_outcome_id] = decide(r, erp_by_row.get(r.quote_outcome_id))
+    return out
+
+
 def erp_outcomes_of_record(session: Session, org: str,
                            docs: Iterable[models.QuoteDoc],
                            ) -> dict[str, OutcomeOfRecord]:
@@ -1183,7 +1267,10 @@ def erp_outcomes_of_record(session: Session, org: str,
     document by the ERP's own id (``quote_document_ref``), qualified by the
     connected company where the row knows it. A row that names the company
     joins only that company's document; one written before the qualifier
-    existed joins on the id alone.
+    existed joins on the id alone — and only while that id names one document
+    in the organization. Two books answering to it is the collision
+    ``sole_erp_quote`` refuses on the write side, and a read that picked
+    either would show one person's loss reason on the other book's quote.
     """
     docs = list(docs)
     if not docs:
@@ -1195,11 +1282,16 @@ def erp_outcomes_of_record(session: Session, org: str,
                 models.QuoteOutcome.organization_id == org,
                 models.QuoteOutcome.quote_document_ref.in_(refs))):
         by_ref[row.quote_document_ref].append(row)
+    unqualified = {ref for ref, rows in by_ref.items()
+                   if any(r.quote_document_connection_id is None for r in rows)}
+    ambiguous = _ambiguous_refs(session, org, unqualified)
     out: dict[str, OutcomeOfRecord] = {}
     for d in docs:
         human = next(
             (r for r in by_ref.get(d.external_ref, [])
-             if r.quote_document_connection_id in (None, d.connection_id)),
+             if r.quote_document_connection_id == d.connection_id
+             or (r.quote_document_connection_id is None
+                 and d.external_ref not in ambiguous)),
             None)
         out[d.quote_document_id] = decide(human, d)
     return out

@@ -121,7 +121,10 @@ export function QuoteOutcomeBar({ outcome, erp = null, systemLabel = "", onRecor
   }));
   // The ERP has decided and nobody here has: the word everything else already
   // counts, said here with the date, and one press to record it with a reason.
-  const erpDecided = !decided && erp !== null && (erp.outcome === "WON" || erp.outcome === "LOST");
+  // With a date, as the server's rule requires: an undated decision is not
+  // evidence there, so it is not offered as one here.
+  const erpDecided = !decided && erp !== null && erp.decidedOn !== null
+    && (erp.outcome === "WON" || erp.outcome === "LOST");
 
   async function record(
     to: QuoteOutcomeStatus, why?: QuoteLossReason, who?: string, note?: string,

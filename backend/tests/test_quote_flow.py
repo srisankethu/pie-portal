@@ -588,6 +588,39 @@ def test_amending_a_sent_quote_produces_a_new_estimate(client, mgmt_hdr):
 
 
 @pytest.mark.requires_pie
+def test_a_manual_mark_between_two_erp_sends_does_not_strand_the_outcome(client, mgmt_hdr):
+    """The document a revision supersedes is the newest *ERP* document.
+
+    A MANUAL row in between has no id to move the outcome from and no number
+    to void; naming it refused the move and left the outcome on a document
+    two revisions old, with an empty number in the sentence about voiding.
+    """
+    from app.commercial import quote_service
+
+    qid = _clean_quote(client, mgmt_hdr)
+    first = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert first["ok"] is True, first
+    lid = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()["lines"][0]["id"]
+
+    client.post(f"/api/v1/quotes/{qid}/lines/{lid}/price", json={"price": 7000},
+                headers=mgmt_hdr)
+    marked = client.post(f"/api/v1/quotes/{qid}/mark-sent", headers=mgmt_hdr).json()
+    assert marked["ok"] is True and marked["revision"] == 2, marked
+
+    client.post(f"/api/v1/quotes/{qid}/lines/{lid}/price", json={"price": 6500},
+                headers=mgmt_hdr)
+    third = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert third["ok"] is True and third["revision"] == 3, third
+    assert third["warning"] is None, third
+    assert third["superseded"] == first["documentNumber"]
+    with client.Maker() as s:
+        doc = quote_service.latest_document(s, "org_pie", quote_id=qid)
+        row = quote_service.get_outcome(s, "org_pie", qid)
+    assert doc.revision == 3 and doc.channel == "ERP"
+    assert row.quote_document_ref == doc.external_document_id
+
+
+@pytest.mark.requires_pie
 def test_an_unchanged_press_records_no_second_decision_set(client, mgmt_hdr):
     """"Already covers" is answered before the assessment is recorded.
 

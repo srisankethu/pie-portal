@@ -692,6 +692,10 @@ def list_drafts(session: Session, org: str, *, user_id: str = "",
                 "number": sent.external_document_number,
                 "systemLabel": conn.system_label_for(sent.external_system),
                 "current": sent.fingerprint == store.priced_fingerprint(quote),
+                # ERP: the books hold the number. MANUAL: a person said it
+                # went out another way, and there is no number to show.
+                "channel": sent.channel,
+                "revision": sent.revision,
                 "erp": erp_side(erp_by_quote.get(quote.id)),
             },
             "createdBy": names.get(row.salesperson_id or "", ""),

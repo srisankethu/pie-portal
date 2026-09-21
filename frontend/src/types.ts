@@ -323,6 +323,10 @@ export interface QuoteDraftSummary {
   readiness: QuoteReadiness;
   sent: {
     number: string; systemLabel: string; current: boolean;
+    /** `ERP`: the books hold `number`. `MANUAL`: a person said it went out
+     *  another way, and `number` is empty. Optional only so older fixtures
+     *  need not build it; the server always sends it. */
+    channel?: "ERP" | "MANUAL";
     /** What the ERP says about the same document, once synced. */
     erp: ErpSide | null;
   } | null;

@@ -514,15 +514,49 @@ def test_marking_a_quote_as_sent_records_it_like_a_send_without_a_writer(client,
     again = client.post(f"/api/v1/quotes/{q['id']}/mark-sent", headers=owner).json()
     assert again["alreadyExisted"] is True
     assert "marked as sent" in again["message"].lower()
-    # And the ERP send says the same, in its own words.
-    sent = client.post(f"/api/v1/quotes/{q['id']}/estimate", headers=owner).json()
-    assert sent["alreadyExisted"] is True
     view = client.get(f"/api/v1/quotes/{q['id']}", headers=owner).json()
     assert view["estimate"]["channel"] == "MANUAL"
     assert view["estimate"]["number"] == "" and view["estimate"]["current"] is True
+    row = next(r for r in client.get("/api/v1/quotes", headers=owner).json()["quotes"]
+               if r["id"] == q["id"])
+    assert row["sent"]["channel"] == "MANUAL" and row["sent"]["number"] == ""
 
     # Sent is sent: it stays on record.
     assert client.delete(f"/api/v1/quotes/{q['id']}", headers=owner).status_code == 409
+
+    # A manual mark covers a manual press, not the ERP send: the books hold
+    # nothing for it, so Send writes the document — as the next revision.
+    sent = client.post(f"/api/v1/quotes/{q['id']}/estimate", headers=owner).json()
+    assert sent["ok"] is True and sent["alreadyExisted"] is False, sent
+    assert sent["revision"] == 2 and sent["documentNumber"]
+    assert sent["superseded"] is None, "a manual row has no number to void"
+    view = client.get(f"/api/v1/quotes/{q['id']}", headers=owner).json()
+    assert view["estimate"]["channel"] == "ERP" and view["estimate"]["revision"] == 2
+
+
+def test_a_quote_cannot_be_marked_as_sent_over_an_unverified_send(client, owner):
+    """A confirmed row written over an open question would erase the
+    reference to look for, and the retry the next press performs with it."""
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteDocumentWriteState
+    from app.store import store
+
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=owner).json()
+    _seed_lines(client, q["id"], _line("L1"))
+    with client.Maker() as s:
+        draft = quote_workspace.load(s, ORG, q["id"])
+        quote_service.record_document(
+            s, ORG, quote_id=q["id"], external_system="zoho", number="",
+            document_id=None, line_count=1, reference=q["reference"],
+            fingerprint=store.priced_fingerprint(draft),
+            write_state=QuoteDocumentWriteState.UNVERIFIED)
+        s.commit()
+    r = client.post(f"/api/v1/quotes/{q['id']}/mark-sent", headers=owner).json()
+    assert r["ok"] is False
+    assert q["reference"] in r["message"] and "unverified" in r["message"].lower()
+    assert _readiness(client, owner, q["id"]) == "UNVERIFIED_SEND"
+    with client.Maker() as s:
+        assert s.query(models.QuoteDocument).filter_by(quote_id=q["id"]).count() == 1
 
 
 def test_marking_as_sent_runs_the_same_gates_as_the_send(client, owner):
@@ -578,6 +612,15 @@ def test_the_view_says_whether_send_can_do_anything(client, owner, monkeypatch):
     view = client.get(f"/api/v1/quotes/{p21['id']}", headers=owner).json()
     assert view["canSendToErp"] is False
     assert view["sendBlock"] and "mark it as sent" in view["sendBlock"]
+
+    # And a customer that matches no row: unplaceable, said on the draft in
+    # the sentence the send would otherwise answer with at the button.
+    nobody = client.post("/api/v1/quotes", json={"customer": "Nobody At All Ltd",
+                                                 "connection_id": COMPANY},
+                         headers=owner).json()
+    view = client.get(f"/api/v1/quotes/{nobody['id']}", headers=owner).json()
+    assert view["canSendToErp"] is False
+    assert "does not match any customer" in view["sendBlock"]
 
 
 def test_a_sent_quote_cannot_be_removed(client, owner):

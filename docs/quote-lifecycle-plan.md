@@ -533,8 +533,12 @@ stay findable by their own reference.
   (`erp_documents_for`), so the rule lives beside the join: `decide(human, erp,
   document)` is pure, and `outcomes_of_record` (platform quotes, keyed by quote
   id) and `erp_outcomes_of_record` (ERP rows, keyed by `quote_document_id`) are
-  the two loaders over one rule. `DecidedQuote` gains `source`; an ERP-decided
-  quote with no snapshot takes `value` from `erp_quotes.total` and no margin.
+  the two loaders over one rule (`records_for_rows` joins rows of both kinds —
+  a platform quote through its document, an ERP-raised quote through the
+  reference it names). `DecidedQuote` gains `source`; an ERP-decided quote
+  with no snapshot takes `value` from Σ `erp_quote_lines.amount` — pre-tax,
+  the grain a snapshot's revenue is — never the header's tax-inclusive
+  `total`, and no margin.
   `routers/insight._quote_evidence`, `attribution.evaluator._quote_outcomes`,
   `quote_diagnosis.replay._outcomes`, the wallet's lost-asks and
   `quote_book.totals` all read it. Won & lost gains `erp_decided_quotes` beside

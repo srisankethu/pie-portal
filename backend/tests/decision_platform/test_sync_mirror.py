@@ -28,8 +28,9 @@ class _Source:
     """A source that reports whichever invoices it is told to, and tracks what
     its listing saw — the same contract `ZohoApiSource` fulfils."""
 
-    def __init__(self, invoices, *, complete=True, since=None):
+    def __init__(self, invoices, *, complete=True, since=None, quotes=None):
         self._invoices = invoices
+        self._quotes = quotes
         self._complete = complete
         self.listed: dict[str, set[str]] = {}
         self.listing_complete: set[str] = set()
@@ -66,6 +67,21 @@ class _Source:
         if self._complete:
             self.listing_complete.add("invoice")
 
+    def list_quotes(self, skip=None):
+        """The same contract for quotes — declared only when this source was
+        given some, so the sync's ``hasattr`` probe still finds nothing on the
+        invoice-only fixtures above."""
+        seen = self.listed.setdefault("quote", set())
+        for q in self._quotes or []:
+            seen.add(q["estimate_id"])
+            if skip is not None and skip(q["estimate_id"],
+                                         str(q.get("last_modified_time") or "")):
+                yield {**q, "line_items": []}
+                continue
+            yield q
+        if self._complete:
+            self.listing_complete.add("quote")
+
 
 def _invoice(ref: str, days_ago: int, total="5000"):
     return {"invoice_id": ref, "invoice_number": f"INV-{ref}", "customer_id": "c1",
@@ -74,6 +90,16 @@ def _invoice(ref: str, days_ago: int, total="5000"):
             "last_modified_time": f"stamp-{ref}",
             "line_items": [{"line_item_id": "l1", "item_id": "i1",
                             "quantity": 10, "rate": "500", "item_total": total}]}
+
+
+def _quote(ref: str, days_ago: int, total="9000", lines=True):
+    return {"estimate_id": ref, "estimate_number": f"EST-{ref}",
+            "customer_id": "c1", "customer_name": "Acme",
+            "date": _day(days_ago), "status": "sent", "total": total,
+            "last_modified_time": f"stamp-{ref}",
+            "line_items": ([{"line_item_id": "l1", "item_id": "i1",
+                             "quantity": 10, "rate": "900",
+                             "item_total": total}] if lines else [])}
 
 
 def _sync(session, source) -> SyncService:
@@ -98,6 +124,65 @@ def _refs(session, model) -> set[str]:
 
 
 # ── the feature ─────────────────────────────────────────────────────────────
+def test_a_quote_deleted_in_the_source_is_removed_and_its_lines_with_it(session):
+    """A quote voided or deleted in the ERP used to stay on this book for
+    ever: counting in every win rate, and sitting on the Unanswered worklist
+    as a question nobody could answer, because the sweep only ever covered
+    invoices and bills."""
+    _sync(session, _Source([], quotes=[_quote("A", 10), _quote("B", 12)]))
+    assert _refs(session, models.QuoteDoc) == {"A", "B"}
+    assert {r.quote_ref for r in session.query(models.ErpQuoteLine)} == {"A", "B"}
+
+    svc = _sync(session, _Source([], quotes=[_quote("A", 10)]))
+    assert _refs(session, models.QuoteDoc) == {"A"}
+    assert {r.quote_ref for r in session.query(models.ErpQuoteLine)} == {"A"}
+    assert {r["ref"] for r in svc.report.retired} == {"B"}
+
+
+def test_a_retired_quote_keeps_the_outcome_a_person_recorded_about_it(session):
+    """The one thing a sync may never delete.
+
+    ``quote_outcomes`` holds why a quote was lost and who took it — a fact a
+    person entered, not something derived from the source — so the pointer is
+    left dangling and the retirement is counted instead. Deleting it would be
+    a re-sync destroying what somebody typed, which is the property
+    ``_sync_quote_documents`` keeps by never opening that table at all.
+    """
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteLossReason, QuoteOutcomeStatus
+
+    _sync(session, _Source([], quotes=[_quote("A", 10)]))
+    quote_service.set_outcome(
+        session, ORG, quote_document_ref="A", status=QuoteOutcomeStatus.LOST,
+        loss_reason=QuoteLossReason.PRICE, lost_to="Sandvik",
+        customer_ref="Acme")
+    session.commit()
+
+    _sync(session, _Source([], quotes=[]))
+    assert _refs(session, models.QuoteDoc) == set()
+    row = session.query(models.QuoteOutcome).one()
+    assert (row.quote_document_ref, row.status, row.lost_to) == ("A", "LOST", "Sandvik")
+
+
+def test_a_quote_the_source_holds_no_lines_for_is_not_re_fetched_for_ever(session):
+    """The cursor used to be written only for a quote that came back *with*
+    lines, so a header somebody raised and never filled in was never marked
+    as held and paid its detail call again on every run."""
+    _sync(session, _Source([], quotes=[_quote("A", 10, lines=False)]))
+    held = {r.doc_id for r in session.query(models.IngestedDocument).filter_by(
+        organization_id=ORG, doc_type="quote")}
+    assert held == {"A"}, "a lineless quote is still a quote this book holds"
+
+
+def test_a_quotes_only_pull_counts_as_having_written_something(session):
+    """``wrote_anything`` decides whether a run reads PARTIAL or FAILED. It
+    listed ten kinds and not quotes, so a pull that read several hundred
+    quotes and nothing else was reported as having written nothing."""
+    svc = _sync(session, _Source([], quotes=[_quote("A", 10)]))
+    assert svc.report.quote_documents == 1
+    assert svc.report.wrote_anything is True
+
+
 def test_an_invoice_deleted_in_zoho_is_removed_from_pie(session):
     _sync(session, _Source([_invoice("A", 10), _invoice("B", 20)]))
     assert _refs(session, models.InvoiceDoc) == {"A", "B"}

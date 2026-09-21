@@ -944,10 +944,21 @@ def execute_sync(session: Session, run: models.SyncRun, *,
         # rule that discards evidence has to say how often it fires. Expected to
         # be zero; a number that climbs is a question for Zoho, not a reason to
         # relax the gate.
-        if report.quote_documents or report.quote_documents_undated:
-            notes["quotes"] = {"read": report.quote_documents,
-                               "lines": report.quote_document_lines,
-                               "undated_decisions": report.quote_documents_undated}
+        if (report.quote_documents or report.quote_documents_undated
+                or report.quote_documents_unreadable_view):
+            notes["quotes"] = {
+                "read": report.quote_documents,
+                "lines": report.quote_document_lines,
+                "undated_decisions": report.quote_documents_undated,
+                # How often a read receipt could not be placed on the UTC
+                # line. The document is kept and the stamp dropped — the
+                # quote is worth more than the field — and a rule that
+                # discards evidence has to say how often it fires, which is
+                # the same argument ``undated_decisions`` above is here for.
+                # It was counted on the report and never persisted, so
+                # nobody could see it climb.
+                "unreadable_view_stamps": report.quote_documents_unreadable_view,
+            }
         run.notes = notes
         # Everything logged since the last phase boundary, the traceback of a
         # failed run included. The caller commits; `run_job` writes anything

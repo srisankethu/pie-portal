@@ -664,9 +664,16 @@ then Acumatica, whose quotes are `SalesOrder` rows of type `QT`; then NetSuite,
 - Deletion sweep: `list_quotes` records `listed` / `listing_complete`; `_mirror`
   and `_RETIRE_FROM` gain `quote_document`; a quote absent from a complete listing
   is retired per connection, its human outcome left dangling and counted (G19).
+  **Landed**, under the kind name `quote` rather than `quote_document`: that is
+  what `_skipper` and `mark_ingested` already key the cursor on, and the sweep
+  reconciles against that cursor — two names for one kind would have made
+  `ingested_in_window` return nothing and the sweep silently never run.
 - `execute_sync` persists `quote_documents_unreadable_view`; `wrote_anything`
   counts quotes (G32); `mark_ingested("quote", …)` runs for a lineless detail too
-  (G33).
+  (G33). **Landed.** The lineless case cannot be read off the payload — a
+  resumed row carries no lines either — so the sync wraps its own resume
+  predicate and records which references it answered "skip" to, rather than
+  re-deriving the producer's answer downstream.
 
 **Migration** `w10qptr_qualified_outcome_pointer.py` (revision `w10qptr`, down
 `v9qrev`): drop and recreate the unique constraint. **RISK** in the runbook

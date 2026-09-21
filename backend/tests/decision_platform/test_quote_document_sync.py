@@ -938,8 +938,13 @@ def test_the_job_reads_quotes_and_commits_at_the_phase_boundary(session, monkeyp
     # ``lines: 0`` because these fixtures are list rows without a breakdown —
     # the shape a resumed pull yields. Counted separately from the quotes so a
     # run that refreshed every header and read no lines is visibly that.
+    # ``unreadable_view_stamps`` was counted on the report and never
+    # persisted, so nobody could see it climb — the same argument
+    # ``undated_decisions`` beside it is here for: a rule that discards
+    # evidence has to say how often it fires.
     assert (run.notes or {}).get("quotes") == {
-        "read": 4, "lines": 0, "undated_decisions": 1}
+        "read": 4, "lines": 0, "undated_decisions": 1,
+        "unreadable_view_stamps": 0}
 
 
 def test_an_unreadable_view_stamp_costs_the_field_and_not_the_quote():

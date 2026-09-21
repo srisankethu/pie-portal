@@ -1276,6 +1276,22 @@ body could carry fixes it) · uniform 404 for a quote this principal does not
 hold · cancel keeps the typed state until the next successful record.
 **Ends.** Recorded (terminal) · cancelled · refusal held in the open dialog.
 
+### 7.12 A quote deleted in the ERP leaves this book too
+
+The sync is a mirror, and until now it only ever added quotes: one voided or
+deleted in the source stayed here for ever, counting in every win rate and
+sitting on the Unanswered worklist as a question nobody could answer. The
+deletion sweep covers quotes now, under the three guards it has always
+applied — only a listing that ran to its end, only inside the window the pull
+actually covered, and only this connected company's documents. The header goes
+and its lines with it.
+
+**What a sync may never delete is the outcome a person recorded.** Why a quote
+was lost and who took it is a fact somebody entered, not something derived
+from the source, so the pointer is left dangling and the retirement counted
+(`report.retired`). That is the same property `_sync_quote_documents` keeps by
+never opening `quote_outcomes` at all.
+
 ### 8.0 An ERP reference is unique only inside one book
 
 Every pointer to a quote an ERP raised carries **two** values: the reference

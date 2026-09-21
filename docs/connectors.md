@@ -108,6 +108,64 @@ nothing is there. An adapter that matched loosely — a prefix, a case-folded
 sent and the amendment would never reach the book; the connector tests pin the
 exact re-check for Zoho, Business Central and Acumatica.
 
+## Which connectors read quotes, and which deliberately do not
+
+A quote read back is what gives a win rate a denominator: `READ_STAGES`
+includes `quotes`, and the sync runs that stage for any source offering
+`list_quotes`, with no branch naming a connector. Four do — `zoho`,
+`dynamics365`, `acumatica` and `netsuite` — which is the same four that can
+write one, and not by accident: each reads the quote back under **the same id
+its writer returned**, so a quote this platform sent is recognisable as the
+same document on the next pull rather than arriving as a stranger.
+
+| Connector | Where a quote lives | Read back under |
+|---|---|---|
+| `zoho` | `estimates` | the estimate id |
+| `dynamics365` | `salesQuotes` (lines via `$expand`) | the row's GUID, which the create returns |
+| `acumatica` | `SalesOrder` rows of `OrderType` `QT` | the record's `id` GUID |
+| `netsuite` | `transaction` rows of type `Estim` | the internal `t.id` |
+
+Acumatica's is the one split: quotes and orders are one entity there, so
+`list_quotes` and `list_sales_orders` each filter it and a `QT` row reaches
+exactly one of them. The filter is **client-side**, against this module's own
+warning that the contract API's filter grammar varies by build — a server-side
+filter that silently matched nothing would not read as a slow pull but as a
+finished listing of an empty book, and a finished empty listing is what the
+deletion sweep acts on.
+
+**Prophet 21 and Sage read no quotes yet, and that is a decision rather than a
+backlog item.** P21 keeps quotes in `oe_hdr` beside orders and Sage in its own
+sales documents, and which header field separates the two has not been
+confirmed against vendor documentation. A guessed field name has two failure
+modes here and both are silent: it matches nothing, which reads as a company
+that has never quoted anybody, or it matches the wrong rows, which puts orders
+in a win rate. They keep reading orders exactly as before. (P21's `oe_hdr`
+read may therefore already include quotes as orders — the same unconfirmed
+field would be needed to exclude them, so it is named here rather than fixed
+on a guess.)
+
+**A quote is read whatever status it wears, cancelled included.** The
+`_is_trade` helper each connector shares asks an invoice's question — is this a
+financial fact — and a quote's is *was this offered*. A draft or on-hold quote
+plainly was; a cancelled one is the honest hard case, and it is read anyway.
+Excluded, it would vanish from the denominator **and** the deletion sweep would
+retire the row, dangling whatever loss reason a person had recorded against it,
+which is the one thing in that table a re-sync cannot rebuild. Included, it sits
+on a worklist wearing its ERP's own word until somebody looks. This is the same
+divergence `ZohoApiSource.list_quotes` already states under "no status
+exclusion".
+
+**No registry connector classifies a quote's status.**
+`normalize._QUOTE_VOCABULARY` and `_QUOTE_SENT_STATUSES` have an entry for Zoho
+and for nobody else, so every quote from Business Central, Acumatica or
+NetSuite reads `UNRECORDED` and not-known-to-be-sent whatever word its ERP
+wrote on it. That under-claims on purpose: an unanswered quote sits on a
+worklist somebody works, where a status read as WON invents a customer
+decision and puts it in a win rate.
+`test_no_registry_connectors_status_word_is_read_as_a_customer_decision` pins
+it, and a row leaves that test only together with the vendor's own status list
+cited beside it.
+
 ## What each sign-in must already be granted
 
 A half-granted sign-in is the most common way a connection authenticates and
@@ -127,9 +185,9 @@ person granting it is reading:
 | Connector | Where it is granted | Shape |
 |---|---|---|
 | `zoho` | Zoho API console, scope field | Ten `ZohoBooks.*.READ` scopes plus `estimates.CREATE`, `estimates.READ` and `settings.CREATE` for the write, pasted as one string |
-| `netsuite` | Setup → Users/Roles → Manage Roles, on the token's role | Setup and Reports permissions plus View on each list/transaction |
+| `netsuite` | Setup → Users/Roles → Manage Roles, on the token's role | Setup and Reports permissions plus View on each list/transaction, and Create on Estimate — the one grant above View, which also carries the estimate read |
 | `dynamics365` | Entra ID app registration + permission sets on the app's user | `API.ReadWrite.All` with admin consent (BC publishes no read-only variant), then read on each entity plus create on sales quotes |
-| `acumatica` | User Security → Access Rights by Role | Endpoint access plus View Only per screen |
+| `acumatica` | User Security → Access Rights by Role | Endpoint access plus View Only per screen; Sales Orders (SO301000) carries both the order read and the quote read, and Insert for the send |
 | `prophet21` | P21 user API flag + the middleware's exposed views | Per OData view |
 | `sagex3` | Syracuse role | SData access plus read per X3 table |
 | `sage100` | Library Master → Role Maintenance | SData access plus inquiry per module |
@@ -157,6 +215,7 @@ names each skipped row. Nothing estimates around a gap.
   import as payables without cost lines, named per bill in the sync report.
 - **Sage 100**: purchase costs — its AP history carries GL distributions, not
   item lines, so margin stays UNKNOWN for a Sage 100 book.
+- **Prophet 21 and Sage (all three)**: quotes — see the section above for why a guessed header field is worse than the gap.
 - **All six**: credit notes and per-location stock (Zoho-only today).
 - **`created_time`** — *when the source system recorded the document*, which is
   a different fact from its date and from when this platform synced it. Every

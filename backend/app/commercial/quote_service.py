@@ -777,38 +777,36 @@ def sole_erp_quote(session: Session, org: str,
     sequences, and two connected books of one of those will issue the same id
     twice.
 
-    ``quote_outcomes`` carries the bare reference and no qualifier beside it, so
-    when two documents answer to one reference there is nothing on the human row
-    that could say which. Picking either — which is what a ``session.scalar``
-    over (org, external_ref) does, silently, by row order — writes one person's
-    loss reason, winner and note onto the other person's quote and then hands
-    the next recorder a row that overwrites it in place. So this refuses, and
-    names the books it is torn between.
+    ``quote_outcomes`` carries ``quote_document_connection_id`` beside the
+    reference now, so a row written since then says which book it meant and
+    resolves without ever reaching the refusal below. A row written *before*
+    that column existed does not, and for those there is nothing on the human
+    row that could say which document was meant. Picking either — which is
+    what a ``session.scalar`` over (org, external_ref) does, silently, by row
+    order — writes one person's loss reason, winner and note onto the other
+    person's quote and then hands the next recorder a row that overwrites it
+    in place. So this refuses, and names the books it is torn between.
 
     That refusal is a real loss of function in a two-book organization with
     colliding ids: neither quote's outcome can be recorded, not just the second.
     It is deliberately the trade taken, because the alternative destroys a fact
     only a person held, silently, and afterwards nothing distinguishes it from a
-    fact that was entered. The durable fix is a qualified pointer — the
-    connection stored beside the reference, the way every document table stores
-    it.
+    fact that was entered.
 
-    It is deliberately not built yet, and the capture screen was not enough to
-    build it: two preconditions of the collision both fail, in different
-    packages. ``normalize.normalize_quote_document`` keys ``external_ref`` on
-    ``estimate_id``, Zoho's system-wide record id, not the per-book
-    ``estimate_number`` it carries beside it — so three connected Zoho books
-    issue disjoint id spaces. And no connector in ``ingestion/erp`` implements
-    ``list_quotes`` at all, so the six ERPs whose quote numbers *are*
-    per-company sequences cannot write a ``quote_documents`` row to collide
-    with. The capture screen can echo a qualifier it was handed; it cannot know
-    one, and a column every caller writes NULL into is an ``is not None`` guard
-    around the objection.
-
-    What builds this is the first ``list_quotes`` in ``ingestion/erp`` whose
-    ``external_ref`` is a per-company sequence rather than a system-wide
-    surrogate: that commit knows which field disambiguates and has a caller
-    that can supply it.
+    **The collision is still not reachable through any connector shipped
+    today, and the reason is worth knowing because it is one line away from
+    being lost.** Every source that reads quotes keys ``external_ref`` on a
+    system-wide surrogate rather than the per-company number printed on the
+    document: Zoho's ``estimate_id``, Business Central's and Acumatica's row
+    GUIDs, NetSuite's internal ``t.id``. Each of those was chosen so a quote
+    this platform *wrote* is recognisable as the same document when the sync
+    reads it back — the join is on the id the writer returned — and disjoint
+    id spaces across connected books are a property that choice happens to
+    carry, not the reason for it. Re-key any of them onto the human number,
+    which a capture screen is exactly the kind of screen to ask for, and two
+    books of one system issue ``SQ-1001`` twice on the same day.
+    ``normalize.normalize_quote_document`` is where that property is asserted;
+    this paragraph and the capture grid point there.
 
     Public rather than private because a second caller now needs the document
     itself rather than the outcome written from it: ``routers.quote_intelligence``

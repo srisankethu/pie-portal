@@ -1295,10 +1295,21 @@ never opening `quote_outcomes` at all.
 ### 8.0 An ERP reference is unique only inside one book
 
 Every pointer to a quote an ERP raised carries **two** values: the reference
-that ERP gave it and the connected company whose book issued it. Zoho's
-estimate ids are system-wide, so three connected Zoho books never collided; the
-connectors in `ingestion/erp/` read systems whose quote numbers are per-company
-sequences, and two connected Business Central companies both issue `SQ-1001`.
+that ERP gave it and the connected company whose book issued it. The reference
+is unique only inside the book that issued it: two connected Business Central
+companies both print `SQ-1001` on a quote, and so do two Acumatica tenants and
+two NetSuite subsidiaries.
+
+**No connector shipped today actually collides, and the reason is one line of
+each reader.** Every source keys `external_ref` on a system-wide surrogate
+rather than the number printed on the document — Zoho's `estimate_id`,
+Business Central's and Acumatica's row GUIDs, NetSuite's internal `t.id` —
+because that is the id each writer returns, and a quote this platform sent has
+to be recognisable as the same document when the sync reads it back. Disjoint
+id spaces are a property that choice happens to carry, not its purpose. Key
+any reader on the human number instead, which a capture screen is exactly the
+kind of screen to ask for, and the collision is live the same day. The
+qualifier below is what makes that a schema question rather than an incident.
 
 So `quote_outcomes` is unique on `(organization, company, reference)`, the ERP
 quote page is reached at `/quotes/erp/:connection/:ref`, and the lines, the

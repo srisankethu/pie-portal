@@ -19,7 +19,7 @@ constant: sites on older builds enter theirs.
 from __future__ import annotations
 
 from datetime import date
-from typing import Any, Iterable, Iterator, Optional
+from typing import Any, Callable, Iterable, Iterator, Optional
 
 from ..errors import (IngestionError, SourceAuthError, SourceScopeError,
                       SourceWriteRefused, SourceWriteUncertain,
@@ -329,6 +329,50 @@ def translate_sales_order(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def translate_sales_quote(row: dict[str, Any]) -> dict[str, Any]:
+    """One ``SalesOrder`` row of type ``QT`` as the canonical quote payload.
+
+    ``estimate_id`` is the record's internal ``id`` — the GUID, deliberately
+    the same value ``create_sales_quotes`` returns as
+    ``WrittenDocument.document_id``. That is what lets a quote this platform
+    *wrote* be recognised as the same document when the sync reads it back:
+    the join is (system, company, that id). Note this differs from
+    ``translate_sales_order``, which keys on ``OrderNbr`` — an order is only
+    ever read, so its id may be the human one, while a quote is written and
+    then re-read and the two ends must agree on one id space.
+
+    ``reference_number`` carries ``CustomerOrderNbr``, the field the send goes
+    out under and the only thing on an Acumatica quote pointing back at the
+    draft it came from.
+
+    **The status is carried verbatim and classified nowhere here.** Acumatica's
+    quote status vocabulary has not been confirmed against vendor
+    documentation, so ``normalize._QUOTE_VOCABULARY`` has no entry for this
+    connector and every quote reads UNRECORDED and not-known-to-be-sent. That
+    under-claims on purpose: the alternative is manufacturing a customer
+    decision out of a word nobody has checked.
+    """
+    return {
+        "estimate_id": str(row.get("id") or ""),
+        "estimate_number": str(row.get("OrderNbr") or "") or None,
+        "reference_number": str(row.get("CustomerOrderNbr") or "") or None,
+        "customer_id": (str(row["CustomerID"]) if row.get("CustomerID") else None),
+        "customer_name": str(first(row, "CustomerName", "CustomerID") or ""),
+        "date": iso_date(row.get("Date")),
+        # No expiry. Which field on an Acumatica sales order carries a quote's
+        # lapse date is build-specific and has not been confirmed, and a
+        # guessed field name that happens to hold something else would put
+        # quotes on a chase list as overdue on a date nobody set. Absent is
+        # the honest answer and the normaliser keeps it distinct from a date.
+        "status": str(row.get("Status") or ""),
+        "total": row.get("OrderTotal"),
+        "currency_code": (str(row.get("CurrencyID")).upper()
+                          if row.get("CurrencyID") else None),
+        "line_items": _document_lines(row, qty_key="OrderQty",
+                                      price_key="UnitPrice"),
+    }
+
+
 def translate_purchase_order(row: dict[str, Any]) -> dict[str, Any]:
     return {
         "purchaseorder_id": str(first(row, "OrderNbr", "id") or ""),
@@ -344,6 +388,16 @@ def translate_purchase_order(row: dict[str, Any]) -> dict[str, Any]:
 
 def _is_trade(payload: dict[str, Any]) -> bool:
     return str(payload.get("status") or "").strip().lower() not in _EXCLUDED_STATUS
+
+
+def _is_quote(row: dict[str, Any]) -> bool:
+    """Whether this raw ``SalesOrder`` row is a quote rather than an order.
+
+    Reads the raw row because ``OrderType`` survives into neither canonical
+    payload — an order and a quote are different documents to this platform
+    and the distinction has to be made before the translation loses it.
+    """
+    return str(row.get("OrderType") or "").strip().upper() == _QUOTE_ORDER_TYPE
 
 
 class AcumaticaSource:
@@ -558,15 +612,39 @@ class AcumaticaSource:
     def _rows(self, entity: str, expand: str = "") -> Iterator[dict[str, Any]]:
         return (_plain(r) for r in self._client.entities(entity, expand=expand))
 
-    def _documents(self, entity: str, kind: str,
-                   translate: Any) -> Iterator[dict[str, Any]]:
+    def _documents(self, entity: str, kind: str, translate: Any, *,
+                   keep: Optional[Callable[[dict[str, Any]], bool]] = None,
+                   id_key: Optional[str] = None,
+                   trade_only: bool = True) -> Iterator[dict[str, Any]]:
+        """One document kind, windowed, tallied and translated.
+
+        Three parameters the invoice and bill pulls never needed and the quote
+        pull does. ``keep`` filters the *raw* row, because quotes and sales
+        orders are the same Acumatica entity split by a field no canonical
+        payload carries. ``id_key`` because the canonical payload spells a
+        quote's id ``estimate_id`` (Zoho's noun, which every adapter
+        translates into) while the sync stage is ``quote``.
+
+        ``trade_only`` is off for quotes, and the sentence that matters is
+        ``ZohoApiSource.list_quotes``' "no status exclusion": ``_is_trade``
+        encodes an invoice's question — is this a financial fact — where a
+        quote's is *was this offered*. A draft was; so, awkwardly, was one the
+        ERP has since cancelled, and including it is still the better error.
+        Excluded, it vanishes from the denominator and the deletion sweep
+        retires the row and dangles any loss reason a person recorded on it;
+        included, it sits on a worklist wearing its ERP's own status word,
+        where somebody reads it and moves on. A visible wrong beats a silent
+        one, and no status is classified here in any case.
+        """
         for row in self._rows(entity, expand="Details"):
+            if keep is not None and not keep(row):
+                continue
             payload = translate(row)
-            if not _is_trade(payload):
+            if trade_only and not _is_trade(payload):
                 continue
             if not in_window(payload.get("date"), self._since, self._until):
                 continue
-            self._tally.saw(kind, payload[f"{kind}_id"])
+            self._tally.saw(kind, payload[id_key or f"{kind}_id"])
             self._tally.documents_fetched += 1
             yield payload
         self._tally.complete(kind)
@@ -599,9 +677,37 @@ class AcumaticaSource:
                 continue
             yield payload
 
+    def list_quotes(self, skip: Optional[SkipPredicate] = None
+                    ) -> Iterable[dict[str, Any]]:
+        """What was offered, including everything nobody ordered.
+
+        An Acumatica quote is a ``SalesOrder`` whose ``OrderType`` is ``QT``,
+        which is why this and ``list_sales_orders`` read one entity and split
+        it — and why the split is **client-side**. A server-side
+        ``OrderType eq 'QT'`` would be the cheaper read, and this module
+        already warns that the contract API's filter grammar varies across
+        builds: a filter that silently matched nothing here would not read as
+        a slow pull but as a complete listing of an empty book, and a complete
+        empty listing is exactly what the sync's retire sweep acts on. The
+        cost of reading the rows and discarding some is one listing; the cost
+        of the other failure is every quote on this connection retired.
+
+        ``skip`` is accepted and ignored: the lines arrive with the header
+        under the same ``$expand``, so there is no detail call for the resume
+        predicate to save. The signature matches the protocol because the
+        sync's one call site passes it by keyword.
+        """
+        return self._documents("SalesOrder", "quote", translate_sales_quote,
+                               keep=_is_quote, id_key="estimate_id",
+                               trade_only=False)
+
     def list_sales_orders(self) -> Iterable[dict[str, Any]]:
+        # Quotes live in this entity too and are read by ``list_quotes``.
+        # Without this exclusion one document would arrive twice under two
+        # kinds, and an offer nobody accepted would be counted as demand.
         return (p for p in (translate_sales_order(r)
-                            for r in self._rows("SalesOrder"))
+                            for r in self._rows("SalesOrder")
+                            if not _is_quote(r))
                 if _is_trade(p)
                 and in_window(p.get("date"), self._since, self._until))
 
@@ -687,11 +793,14 @@ SPEC = register(ConnectorSpec(
                    "supplier known only by its id.",
                    required=False, reads=("vendors",)),
         Permission("Sales Orders (SO301000) — View Only, plus Insert to send",
-                   "Sales orders — demand promised but not yet invoiced, and "
-                   "the screen a quote is created on. Reading it is optional; "
-                   "Insert is what the Send action needs, and without it "
-                   "everything else works and every send refuses.",
-                   required=False, reads=("sales_orders",),
+                   "One screen, three things: sales orders (demand promised "
+                   "but not yet invoiced), quotes (Acumatica keeps them here "
+                   "as OrderType QT, and without them a win rate has no "
+                   "denominator), and the record a quote sent from this "
+                   "platform becomes. Reading is optional; Insert is what the "
+                   "Send action needs, and without it everything else works "
+                   "and every send refuses.",
+                   required=False, reads=("sales_orders", "quotes"),
                    writes=("sales_quotes",)),
         Permission("Purchase Orders (PO301000) — View Only",
                    "Purchase orders — what is on the way from suppliers. "

@@ -229,6 +229,55 @@ def translate_purchase_invoice(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def translate_sales_quote(row: dict[str, Any]) -> dict[str, Any]:
+    """One ``salesQuotes`` row as the canonical quote payload.
+
+    ``estimate_id`` is the row's GUID, which is deliberately the same id
+    ``create_sales_quotes`` returns as ``WrittenDocument.document_id``. That
+    is what makes a quote this platform *wrote* recognisable as the same
+    document once the sync reads it back: the join in
+    ``quote_service.erp_documents_for`` is (system, company, that id), and a
+    reader keyed on the human-facing ``number`` instead would join nothing.
+
+    ``reference_number`` carries ``externalDocumentNumber`` — the key the
+    send goes out under, and the only field on a Business Central quote that
+    points back at the draft it came from.
+
+    **The status is carried verbatim and classified nowhere here.** Business
+    Central's own vocabulary for a quote has not been confirmed against
+    vendor documentation, so ``normalize._QUOTE_VOCABULARY`` has no entry for
+    this connector: every quote reads UNRECORDED and not-known-to-be-sent
+    until somebody reads the enum and writes it down. That under-claims, on
+    purpose — the alternative is manufacturing a customer decision out of a
+    word nobody has checked, which is the error that module's docstring is
+    largely about.
+    """
+    return {
+        "estimate_id": str(row.get("id")),
+        "estimate_number": str(row.get("number") or "") or None,
+        "reference_number": str(row.get("externalDocumentNumber") or "") or None,
+        "customer_id": (str(row["customerId"]) if row.get("customerId") else None),
+        "customer_name": str(row.get("customerName") or ""),
+        # Both read from the one field Business Central publishes for each,
+        # with no fallback behind it. An earlier draft of this function fell
+        # back through ``quoteDate``/``postingDate`` and ``dueDate``, and
+        # ``dueDate`` is the trap: the entity really has one and it is when
+        # payment falls due, not when the offer lapses — so a quote missing
+        # ``validUntilDate`` would have been dated from an unrelated field and
+        # landed on a chase list as overdue on a day nobody set. A name nobody
+        # has confirmed is worse than an absence, and the normaliser keeps an
+        # absent expiry distinct from a date.
+        "date": iso_date(row.get("documentDate")),
+        "expiry_date": iso_date(row.get("validUntilDate")),
+        "status": str(row.get("status") or ""),
+        "total": row.get("totalAmountExcludingTax"),
+        "currency_code": (str(row.get("currencyCode")).upper()
+                          if row.get("currencyCode") else None),
+        "last_modified_time": str(row.get("lastModifiedDateTime") or ""),
+        "line_items": _lines(row, "salesQuoteLines", price_key="unitPrice"),
+    }
+
+
 def translate_sales_order(row: dict[str, Any]) -> dict[str, Any]:
     shipped = row.get("fullyShipped")
     return {
@@ -308,14 +357,39 @@ class BusinessCentralSource:
         return self._client.pages(path, company_id=self._company, params=params)
 
     def _documents(self, path: str, expand: str, kind: str,
-                   translate: Any) -> Iterator[dict[str, Any]]:
+                   translate: Any, *, date_field: str = "invoiceDate",
+                   id_key: Optional[str] = None,
+                   trade_only: bool = True) -> Iterator[dict[str, Any]]:
+        """One document kind, windowed, tallied and translated.
+
+        Three parameters the invoice and bill pulls never needed and the
+        quote pull does. ``date_field`` because a quote is dated on
+        ``documentDate``, not ``invoiceDate`` — a filter naming a field the
+        entity does not have is one the server answers with nothing, which
+        reads as an empty book. ``id_key`` because the canonical payload
+        spells a quote's id ``estimate_id`` (Zoho's noun, which every adapter
+        translates into) while the sync stage is ``quote``. ``trade_only``
+        because a *draft quote* is real quoting activity: excluding it would
+        destroy the status split that makes the unanswered pile actionable.
+
+        ``trade_only`` is off for quotes, and the sentence that matters is
+        ``ZohoApiSource.list_quotes``' "no status exclusion": ``_is_trade``
+        encodes an invoice's question — is this a financial fact — where a
+        quote's is *was this offered*. A draft was; so, awkwardly, was one the
+        ERP has since cancelled, and including it is still the better error.
+        Excluded, it vanishes from the denominator and the deletion sweep
+        retires the row and dangles any loss reason a person recorded on it;
+        included, it sits on a worklist wearing its ERP's own status word,
+        where somebody reads it and moves on. A visible wrong beats a silent
+        one, and no status is classified here in any case.
+        """
         params = {"$expand": expand,
-                  **(self._window_filter("invoiceDate") or {})}
+                  **(self._window_filter(date_field) or {})}
         for row in self._rows(path, params):
             payload = translate(row)
-            if not _is_trade(payload):
+            if trade_only and not _is_trade(payload):
                 continue
-            self._tally.saw(kind, payload[f"{kind}_id"])
+            self._tally.saw(kind, payload[id_key or f"{kind}_id"])
             self._tally.documents_fetched += 1
             yield payload
         self._tally.complete(kind)
@@ -339,6 +413,21 @@ class BusinessCentralSource:
                    ) -> Iterable[dict[str, Any]]:
         return self._documents("purchaseInvoices", "purchaseInvoiceLines",
                                "bill", translate_purchase_invoice)
+
+    def list_quotes(self, skip: Optional[SkipPredicate] = None
+                    ) -> Iterable[dict[str, Any]]:
+        """What was offered, including everything nobody ordered.
+
+        ``skip`` is accepted and ignored: the lines arrive with the header in
+        the same ``$expand``, so there is no detail call for the resume
+        predicate to save. The signature matches the protocol because the
+        sync's one call site passes it by keyword — a source that dropped the
+        argument would raise ``TypeError`` and take the whole quote stage
+        down, which is exactly how the fixture source broke once.
+        """
+        return self._documents("salesQuotes", "salesQuoteLines", "quote",
+                               translate_sales_quote, date_field="documentDate",
+                               id_key="estimate_id", trade_only=False)
 
     def list_sales_orders(self) -> Iterable[dict[str, Any]]:
         params = self._window_filter("orderDate")
@@ -669,6 +758,12 @@ SPEC = register(ConnectorSpec(
                    "Suppliers. Optional: purchase invoices still land without "
                    "it, with the supplier known only by its GUID.",
                    required=False, reads=("vendors",)),
+        Permission("Read on salesQuotes (with salesQuoteLines)",
+                   "Quotes — what was offered, including the majority nobody "
+                   "ordered. Without it a win rate has no denominator and a "
+                   "lost quote leaves no trace. The lines are part of the "
+                   "same read. Optional.",
+                   required=False, reads=("quotes",)),
         Permission("Read on salesOrders",
                    "Sales orders — demand promised but not yet invoiced. "
                    "Optional.",

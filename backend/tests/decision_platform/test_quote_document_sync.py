@@ -1099,10 +1099,17 @@ def test_every_source_takes_the_argument_the_sync_passes(session):
     mismatch, a positional-only marker or a decorator that drops kwargs all
     pass an `inspect` check and fail here.
     """
+    from app.ingestion.erp import acumatica, dynamics365, netsuite
     from app.ingestion.mock_source import FixtureZohoSource
     from app.ingestion.zoho_client import ZohoApiSource
 
-    for source in (FixtureZohoSource, ZohoApiSource):
+    # Every source that offers quotes at all, not a list somebody remembers to
+    # extend: the sync probes ``hasattr(source, "list_quotes")``, so a
+    # connector gaining the method is a connector this protocol now binds, and
+    # the registry connectors arrived one at a time after the pair above.
+    for source in (FixtureZohoSource, ZohoApiSource,
+                   dynamics365.BusinessCentralSource,
+                   acumatica.AcumaticaSource, netsuite.NetSuiteSource):
         sig = inspect.signature(source.list_quotes)
         assert "skip" in sig.parameters, f"{source.__name__} cannot be resumed"
 

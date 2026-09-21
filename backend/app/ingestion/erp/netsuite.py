@@ -240,19 +240,83 @@ def translate_document(header: dict[str, Any], lines: list[dict[str, Any]], *,
         # whether a stamp can be placed on the UTC line, and a row it refuses is
         # excluded from evidence rather than dated from the document.
         "created_time": header.get("createdtime") or None,
-        "line_items": [
-            {
-                "line_item_id": str(ln.get("line_id")),
-                "item_id": str(ln.get("item")),
-                "quantity": _negate_for_sale(ln.get("quantity"), is_sale),
-                "rate": ln.get("rate"),
-                "item_total": _negate_for_sale(ln.get("netamount"), is_sale),
-                "name": str(ln.get("memo") or "") or None,
-            }
-            for ln in lines if ln.get("item")
-        ],
+        "line_items": _item_lines(lines, is_sale),
     }
     return out
+
+
+def _item_lines(lines: list[dict[str, Any]], is_sale: bool) -> list[dict[str, Any]]:
+    """The item lines of one transaction, in canonical shape.
+
+    Its own function because two document shapes now want it — an invoice or
+    bill through ``translate_document`` and an estimate through
+    ``translate_estimate`` — and a line list written twice is a line list where
+    only one copy learns the next thing about NetSuite's GL signs.
+    """
+    return [
+        {
+            "line_item_id": str(ln.get("line_id")),
+            "item_id": str(ln.get("item")),
+            "quantity": _negate_for_sale(ln.get("quantity"), is_sale),
+            "rate": ln.get("rate"),
+            "item_total": _negate_for_sale(ln.get("netamount"), is_sale),
+            "name": str(ln.get("memo") or "") or None,
+        }
+        for ln in lines if ln.get("item")
+    ]
+
+
+def translate_estimate(header: dict[str, Any],
+                       lines: list[dict[str, Any]]) -> dict[str, Any]:
+    """One ``Estim`` transaction plus its item lines → a canonical quote.
+
+    A sibling of ``translate_document`` rather than a ``kind`` of it, and the
+    reason is the shape rather than the name: that function emits ``due_date``
+    and ``balance``, which an offer has neither of, decides customer-versus-
+    vendor from ``kind == "invoice"``, and cannot carry ``expiry_date`` or
+    ``reference_number`` at all. Bending it would mean three new branches to
+    stop it emitting fields a quote does not have. The one part genuinely
+    shared — the item lines and their GL signs — *is* shared, through
+    ``_item_lines``.
+
+    ``estimate_id`` is the transaction's internal id, deliberately the same
+    value ``create_sales_quotes`` returns as ``WrittenDocument.document_id``,
+    so a quote this platform wrote is recognisable as the same document when
+    the sync reads it back.
+
+    ``reference_number`` is ``externalid`` — the field the upsert writes and
+    the only thing on a NetSuite estimate that points back at the draft it
+    came from.
+
+    **The status is carried verbatim and classified nowhere here.** NetSuite's
+    estimate status vocabulary has not been confirmed against vendor
+    documentation, so ``normalize._QUOTE_VOCABULARY`` has no entry for this
+    connector and every quote reads UNRECORDED and not-known-to-be-sent. That
+    under-claims on purpose: the alternative is manufacturing a customer
+    decision out of a word nobody has checked.
+    """
+    return {
+        "estimate_id": str(header.get("id")),
+        "estimate_number": str(header.get("tranid") or "") or None,
+        "reference_number": str(header.get("externalid") or "") or None,
+        "customer_id": (str(header["entity"]) if header.get("entity") else None),
+        "customer_name": str(header.get("customer_name") or ""),
+        "date": iso_date(header.get("trandate")),
+        # No expiry. Which transaction column carries an estimate's lapse date
+        # has not been confirmed, and ``duedate`` on an estimate is not it —
+        # reading it as one would put quotes on a chase list as overdue on a
+        # date nobody set. Absent is the honest answer and the normaliser keeps
+        # it distinct from a date.
+        "status": str(header.get("status") or ""),
+        # An estimate's foreigntotal carries the GL's sale sign, as an
+        # invoice's does.
+        "total": _negate_for_sale(header.get("foreigntotal"), True),
+        "currency_code": (str(header.get("currency_code")).upper()
+                          if header.get("currency_code") else None),
+        "last_modified_time": header.get("lastmodified") or "",
+        "created_time": header.get("createdtime") or None,
+        "line_items": _item_lines(lines, True),
+    }
 
 
 def translate_payment(row: dict[str, Any]) -> dict[str, Any]:
@@ -358,11 +422,37 @@ class NetSuiteSource:
         # document's own ``trandate`` must never stand in for it.
         "TO_CHAR(t.createddate, 'YYYY-MM-DD\"T\"HH24:MI:SS') AS createdtime")
 
-    def _documents(self, ns_type: str, kind: str) -> Iterator[dict[str, Any]]:
-        """Headers joined to their item lines, for one transaction type."""
+    def _documents(self, ns_type: str, kind: str, *,
+                   translate: Optional[Any] = None, columns: str = "",
+                   id_key: Optional[str] = None,
+                   trade_only: bool = True) -> Iterator[dict[str, Any]]:
+        """Headers joined to their item lines, for one transaction type.
+
+        Four parameters the invoice and bill pulls never needed and the quote
+        pull does. ``translate`` because an estimate is a different canonical
+        shape, not a different ``kind`` of the same one. ``columns`` because it
+        needs two the others do not — the external id that points back at the
+        draft, and the customer's name. ``id_key`` because the canonical
+        payload spells a quote's id ``estimate_id`` (Zoho's noun, which every
+        adapter translates into) while the sync stage is ``quote``.
+        ``trade_only`` because a draft estimate is real quoting activity, and
+        dropping it would shrink the denominator this pull exists to build.
+
+        ``trade_only`` is off for quotes, and the sentence that matters is
+        ``ZohoApiSource.list_quotes``' "no status exclusion": ``_is_trade``
+        encodes an invoice's question — is this a financial fact — where a
+        quote's is *was this offered*. A draft was; so, awkwardly, was one the
+        ERP has since cancelled, and including it is still the better error.
+        Excluded, it vanishes from the denominator and the deletion sweep
+        retires the row and dangles any loss reason a person recorded on it;
+        included, it sits on a worklist wearing its ERP's own status word,
+        where somebody reads it and moves on. A visible wrong beats a silent
+        one, and no status is classified here in any case.
+        """
+        make = translate or (lambda h, ln: translate_document(h, ln, kind=kind))
         where = f"t.type = '{ns_type}'" + self._window_clause()
         headers = list(self._client.suiteql(
-            f"SELECT {self._HEADER_COLUMNS} "
+            f"SELECT {self._HEADER_COLUMNS}{columns} "
             f"FROM transaction t LEFT JOIN currency c ON c.id = t.currency "
             f"WHERE {where} ORDER BY t.id"))
         lines = group_lines(self._client.suiteql(
@@ -374,11 +464,10 @@ class NetSuiteSource:
             "AND tl.item IS NOT NULL ORDER BY tl.transaction, tl.id"),
             "tid")
         for header in headers:
-            payload = translate_document(
-                header, lines.get(str(header.get("id")), []), kind=kind)
-            if not _is_trade(payload):
+            payload = make(header, lines.get(str(header.get("id")), []))
+            if trade_only and not _is_trade(payload):
                 continue
-            self._tally.saw(kind, payload[f"{kind}_id"])
+            self._tally.saw(kind, payload[id_key or f"{kind}_id"])
             self._tally.documents_fetched += 1
             yield payload
         self._tally.complete(kind)
@@ -601,6 +690,21 @@ class NetSuiteSource:
             "FROM transaction t LEFT JOIN currency c ON c.id = t.currency "
             f"WHERE {where} ORDER BY t.id"))
 
+    def list_quotes(self, skip: Optional[SkipPredicate] = None
+                    ) -> Iterable[dict[str, Any]]:
+        """What was offered, including everything nobody ordered.
+
+        ``skip`` is accepted and ignored: this connector reads headers and
+        lines in two bulk queries rather than a detail call per document, so
+        there is nothing for the resume predicate to save. The signature
+        matches the protocol because the sync's one call site passes it by
+        keyword.
+        """
+        return self._documents(
+            "Estim", "quote", translate=translate_estimate,
+            columns=", t.externalid, BUILTIN.DF(t.entity) AS customer_name",
+            id_key="estimate_id", trade_only=False)
+
     def list_sales_orders(self) -> Iterable[dict[str, Any]]:
         where = "t.type = 'SalesOrd'" + self._window_clause()
         return (translate_sales_order(r) for r in self._client.suiteql(
@@ -689,11 +793,15 @@ SPEC = register(ConnectorSpec(
                    "supplier known only by its internal id.",
                    required=False, reads=("vendors",)),
         Permission("Transactions → Estimate (Create)",
-                   "Estimates — the record a quote built here becomes. The one "
-                   "thing this platform writes to NetSuite, and the only "
-                   "permission on this list above View level. Without it "
-                   "everything else works and every send refuses.",
-                   required=False, writes=("sales_quotes",)),
+                   "Estimates — quotes, in NetSuite's vocabulary: both what "
+                   "was offered here and everything offered before this "
+                   "platform existed, which is what gives a win rate a "
+                   "denominator. It is also the one thing this platform "
+                   "writes to NetSuite and the only permission on this list "
+                   "above View level. At View the estimates read and every "
+                   "send refuses; without it neither happens.",
+                   required=False, reads=("quotes",),
+                   writes=("sales_quotes",)),
         Permission("Transactions → Sales Order (View)",
                    "Sales orders — demand promised but not yet invoiced. "
                    "Optional: without it the platform sees only what has "

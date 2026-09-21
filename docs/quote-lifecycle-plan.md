@@ -4,9 +4,9 @@
 recommendation. Phase 0 landed (`71f2a6b`). Phase 1 landed (`9d520f5`).
 Phase 2 landed (`d4767a6`), with two departures noted in place. Phase 3 landed
 (`a37d87d`, `104a5b0`, `ad6f803`), with three departures noted in place and an
-adversarial review answered. Phase 4 is landing now, in parts: the qualified
-pointer first, then the deletion sweep and counters, then the connectors that
-read quotes. Phases 5–6 after that.**
+adversarial review answered. Phase 4 is complete: the qualified pointer, the
+deletion sweep and counters, and the three connectors that read quotes.
+Phases 5–6 next.**
 
 The question this answers: *how do we handle quotes the ERP raised, quotes across
 several connected companies and ERPs, a PIE quote not yet sent to the ERP, and a
@@ -19,7 +19,13 @@ checked is in Appendix C — read it before treating any gap here as settled.
 
 ---
 
-## 0. The answer for the code as it stands
+## 0. The answer for the code as it was, before this plan
+
+**Read this section in the past tense.** It is the diagnosis the plan was
+written from, pinned to the tree at `23436d9`, and it is kept unedited so the
+phases below can be read against what they changed. Several sentences in it
+are now false on purpose — "Zoho only" below is the clearest, closed by Phase
+4. Where a phase closed something, its own **Landed** note says so.
 
 Four situations, four different sets of tables, and no join between them. The
 legend used throughout: **ERP_QUOTE**, **MULTI_CONNECTION**, **PIE_UNSENT**,
@@ -646,6 +652,51 @@ then Acumatica, whose quotes are `SalesOrder` rows of type `QT`; then NetSuite,
 - Acumatica `list_sales_orders` filters `OrderType ne 'QT'`; Sage and P21 the
   equivalent once their header vocabulary is confirmed against vendor
   documentation (G18 is cited, not verified).
+
+**Landed for Business Central, Acumatica and NetSuite** — the three that can
+also write one, which is the set where reading the quote back under the
+writer's own id is worth anything. Four departures from the text above, each
+decided while writing it:
+
+- **No vocabulary entries, for any of the three.** The plan lists them as a
+  change; they are deliberately absent. G18 says in as many words that these
+  status enums are cited and not verified, and a word read as WON invents a
+  customer decision where the silence merely leaves a quote on a worklist.
+  Everything reads UNRECORDED and not-known-to-be-sent — the module's
+  documented safe under-claim — and a parametrized test pins it with
+  `"Closed - Won"` among the strings, so the pin is only deleted together with
+  the vendor's own status list.
+- **Acumatica's split is client-side, not `OrderType ne 'QT'`.** A server-side
+  filter is the cheaper read and this module already states that the contract
+  API's filter grammar varies across builds. A filter that silently matches
+  nothing does not read as a broken filter; it reads as a finished listing of
+  an empty book, and Phase 4b made a finished empty listing the thing the
+  retire sweep acts on. One extra listing against every quote on the
+  connection retired is not a trade worth making.
+- **Prophet 21 and Sage read no quotes.** The plan has them "after,
+  read-only", gated on their header vocabulary being confirmed; it has not
+  been, so they are not here. Named in `docs/connectors.md` as a decision
+  rather than left as an omission — along with the corollary nobody had
+  written down, that P21's `oe_hdr` read may already be counting quotes as
+  orders, which the same unconfirmed field would be needed to fix.
+- **No expiry date from Acumatica or NetSuite.** Which column carries a
+  quote's lapse date is build-specific on one and unconfirmed on the other,
+  and a guessed field holding something else puts quotes on a chase list as
+  overdue on a date nobody set. Business Central states `validUntilDate` and
+  carries it.
+
+Two things the text did not name, both found by writing the code. Each
+connector's `_documents` helper was written for invoices and hardcoded three
+invoice facts — the date field in the window filter, the `{kind}_id` key, and
+that a non-trade status is droppable. All three are wrong for a quote: the
+filter would have named `invoiceDate` on an entity that has no such field
+(answered with nothing, which reads as a company that has never quoted), the
+canonical payload spells a quote's id `estimate_id` while the stage is
+`quote`, and a draft or on-hold quote is real quoting activity whose removal
+shrinks the denominator this pull exists to build. And the resume-signature
+pin in `test_quote_document_sync.py` named its two sources by hand; it now
+derives them, because the protocol it guards binds any source that offers the
+method.
 
 **Changes — generic**
 

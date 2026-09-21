@@ -46,7 +46,7 @@ from sqlalchemy import select                              # noqa: E402
 from app.commercial import quote_service                   # noqa: E402
 from app.db import SessionLocal                            # noqa: E402
 from app.domain import models                              # noqa: E402
-from app.domain.enums import QuoteOutcomeStatus            # noqa: E402
+from app.domain.enums import QuoteLossReason, QuoteOutcomeStatus  # noqa: E402
 
 
 def _newest_documents(session, org: str | None) -> dict[tuple[str, str], models.QuoteDocument]:
@@ -79,6 +79,11 @@ def plan(session, org: str | None) -> list[dict]:
             "document_id": doc.external_document_id, "written_at": doc.written_at,
             "status": row.status if row is not None else None,
             "ref": row.quote_document_ref if row is not None else None,
+            # Carried so ``apply`` can put back what ``set_outcome`` re-stamps.
+            # See the comment on the restore, which is where the reason is.
+            "decided_at": row.decided_at if row is not None else None,
+            "loss_reason": row.loss_reason if row is not None else None,
+            "lost_to": row.lost_to if row is not None else None,
         }
         if not doc.external_document_id:
             entry["action"] = "skip: document row carries no ERP id"
@@ -98,7 +103,21 @@ def plan(session, org: str | None) -> list[dict]:
 
 
 def apply(session, entries: list[dict]) -> int:
-    """Perform the plan through ``set_outcome``. Returns how many rows changed."""
+    """Perform the plan through ``set_outcome``. Returns how many rows changed.
+
+    The whole job on a "keep" entry is to fill an empty link, and
+    ``set_outcome`` is the one writer, so that is what it goes through. But
+    ``set_outcome`` is the *decision* writer: called with a status a row
+    already holds, it re-runs the decision's side effects. Two of them would
+    quietly rewrite a person's record, so both are handled here rather than by
+    weakening the function every other caller depends on.
+
+    Refusals are caught per entry and reported. One unrepairable row must not
+    abort the run: a LOST row whose reason predates the vocabulary raises
+    ``MissingLossReason`` before ``set_outcome`` touches anything, and
+    uncaught that took every other repair in the same organization down with
+    it, before the commit, with a traceback instead of a list.
+    """
     changed = 0
     for e in entries:
         if not (e["action"].startswith("open") or e["action"].startswith("DRAFT")
@@ -107,14 +126,35 @@ def apply(session, entries: list[dict]) -> int:
         draft = _draft(session, e["org"], e["quote_id"])
         status = (QuoteOutcomeStatus.SENT if e["status"] in (None, "DRAFT")
                   else QuoteOutcomeStatus(e["status"]))
+        # Handed back, never invented: on the LOST edge ``set_outcome`` rewrites
+        # BOTH ``loss_reason`` and ``lost_to`` from what it was given, so
+        # passing neither would erase the reason a person chose and the
+        # competitor they typed. These are those same two values, read off the
+        # row in ``plan``. A row holding no reason still refuses below, which is
+        # correct — a lost quote with no reason on record is a person's decision
+        # to make, not a repair's.
+        #
+        # ``lost_to`` is the half this originally missed, and a test caught it:
+        # preserving the reason alone still blanked the competitor, which is the
+        # one field the whole competitor mix is built from.
+        reason, lost_to = None, None
+        if status is QuoteOutcomeStatus.LOST:
+            lost_to = e["lost_to"]
+            if e["loss_reason"]:
+                try:
+                    reason = QuoteLossReason(e["loss_reason"])
+                except ValueError:
+                    reason = None
         try:
             row = quote_service.set_outcome(
                 session, e["org"], quote_id=e["quote_id"],
                 quote_document_ref=e["document_id"], status=status,
                 customer_ref=(draft.customer_name if draft is not None else ""),
                 customer_id=(draft.customer_id if draft is not None else None),
-                user_id=None)
-        except quote_service.QuoteOutcomeRepointed as exc:
+                loss_reason=reason, lost_to=lost_to, user_id=None)
+        except (quote_service.QuoteOutcomeRepointed,
+                quote_service.MissingLossReason,
+                quote_service.InvalidTransition) as exc:
             e["action"] = f"REPORT: {exc}"
             continue
         # The send happened when the document was written, and the row must
@@ -122,6 +162,15 @@ def apply(session, entries: list[dict]) -> int:
         # date every repaired quote to the day of the repair.
         if status is QuoteOutcomeStatus.SENT and e["status"] in (None, "DRAFT"):
             row.sent_at = e["written_at"]
+        # And the decision happened when the person recorded it. ``set_outcome``
+        # stamps ``decided_at`` on every WON or LOST call, including one that
+        # merely restates the status the row already holds — so filling the link
+        # on an already-won quote moved its decision date to the day of the
+        # repair. Every win-rate window and every "decided in this period"
+        # count reads that date, so the repair would have silently re-dated the
+        # book's history while reporting itself as a link fill.
+        if e["decided_at"] is not None:
+            row.decided_at = e["decided_at"]
         changed += 1
     return changed
 

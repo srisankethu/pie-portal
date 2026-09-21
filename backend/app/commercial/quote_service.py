@@ -1462,9 +1462,22 @@ def set_outcome(session: Session, org: str, *, quote_id: Optional[str] = None,
         session.add(row)
         session.flush()
 
-    # Refused before a single field is written, so a rejected call leaves the
-    # row exactly as it was rather than half-moved in the session.
-    #
+    # Both refusals below happen before a single field is written, so a
+    # rejected call leaves the row exactly as it was rather than half-moved in
+    # the session — and the transition is checked FIRST, which is load-bearing
+    # rather than cosmetic. The revision repoint a few lines down nulls the
+    # pointer, and a decided row has no legal transition at all
+    # (``QUOTE_OUTCOME_TRANSITIONS[WON]`` is empty): with the order reversed, a
+    # decided quote re-sent as a revision had its pointer cleared and *then*
+    # met ``InvalidTransition``, leaving the person's recorded win or loss in
+    # the session with nothing naming the document it was about. The exception
+    # made it look refused. Nothing downstream could tell that row from one
+    # recorded against a quote that was never pushed.
+    current = QuoteOutcomeStatus(row.status)
+    if status is not current and status not in QUOTE_OUTCOME_TRANSITIONS[current]:
+        raise InvalidTransition(
+            f"A quote that is {current.value} cannot become {status.value}")
+
     # The loss reason, the winner and the decision on this row were recorded
     # about one quote; silently repointing them at another would produce a loss
     # nobody entered against a customer nobody spoke to, and afterwards it is
@@ -1488,11 +1501,6 @@ def set_outcome(session: Session, org: str, *, quote_id: Optional[str] = None,
                 f"{row.quote_document_ref}; it cannot be moved onto "
                 f"{quote_document_ref}. Record the second quote's outcome "
                 "against its own reference.")
-
-    current = QuoteOutcomeStatus(row.status)
-    if status is not current and status not in QUOTE_OUTCOME_TRANSITIONS[current]:
-        raise InvalidTransition(
-            f"A quote that is {current.value} cannot become {status.value}")
 
     now = datetime.now(timezone.utc)
     row.status = status.value

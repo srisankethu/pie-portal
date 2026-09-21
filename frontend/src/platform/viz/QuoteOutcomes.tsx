@@ -74,7 +74,8 @@ type SliceRow = Sourced & {
 };
 
 type QuoteRow = {
-  quote_id: string; customer_label: string; status: string;
+  // `reference` identifies the row; `quote_id` is null on an ERP-raised quote.
+  reference: string; quote_id: string | null; customer_label: string; status: string;
   loss_reason: string | null; loss_reason_label: string | null;
   decided_on: string; lines: number; value: number;
 };
@@ -190,7 +191,7 @@ function OutcomePanel({
 
   const quoteColumns = useMemo<ColDef<QuoteRow>[]>(() => [
     text<QuoteRow>("customer_label", "Customer", { minWidth: 200 }),
-    text<QuoteRow>("quote_id", "Quote", { flex: 0.6, minWidth: 130 }),
+    text<QuoteRow>("reference", "Quote", { flex: 0.6, minWidth: 130 }),
     {
       field: "status" as never, headerName: "Outcome", width: 120,
       cellRenderer: (p: { data?: QuoteRow }) => (p.data ? (
@@ -368,7 +369,10 @@ function OutcomePanel({
             ariaLabel="Decided quotes"
             rows={data ? typed<QuoteRow>(data.quotes) : null}
             columns={quoteColumns}
-            getRowId={(r) => r.quote_id}
+            // Not `quote_id`: it is null for every quote the ERP raised itself,
+            // so those rows all shared one id and the grid could not tell them
+            // apart. `reference` is the platform number or the ERP's own.
+            getRowId={(r) => r.reference}
             empty={<EmptyState title="No quote has been marked won or lost"
                                reason={String(data?.empty_reason ?? "")} />}
           />

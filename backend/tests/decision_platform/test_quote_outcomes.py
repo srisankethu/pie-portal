@@ -462,6 +462,73 @@ def test_a_quote_the_erp_decided_counts_with_its_source_and_no_reason(
     assert reasons["PRICE"]["count"] == 5
 
 
+def _erp_raised_and_recorded(s, ref: str, *, customer: str, lost_to: str) -> None:
+    """A quote the ERP raised, with lines, that a person then recorded a loss on.
+
+    The shape that makes ``quote_outcomes.quote_id`` NULL: there is no platform
+    quote at all, so the outcome row can only name the ERP document. This is the
+    Unanswered worklist's own write path.
+    """
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteLossReason as Reason
+    from app.domain.enums import QuoteOutcomeStatus as Status
+
+    decided = (datetime.now(timezone.utc) - timedelta(days=2)).date()
+    s.add(models.QuoteDoc(
+        organization_id=ORG, connector="zoho", connection_id="cx1",
+        external_ref=ref, number=f"EST-{ref}", customer_id=customer,
+        customer_ref="Acme Engineering", date=decided - timedelta(days=5),
+        source_status="sent", outcome="UNRECORDED", total=Decimal("500")))
+    s.add(models.ErpQuoteLine(
+        erp_quote_line_id=f"{ref}:1", organization_id=ORG, connector="zoho",
+        connection_id="cx1", external_ref=f"{ref}:1", quote_ref=ref,
+        line_number=1, item_code="CNMG", description="CNMG 120408",
+        qty=Decimal("5"), rate=Decimal("80"), amount=Decimal("400")))
+    s.flush()
+    quote_service.set_outcome(
+        s, ORG, quote_document_ref=ref, status=Status.LOST,
+        loss_reason=Reason.PRICE, lost_to=lost_to,
+        customer_ref=customer, customer_id=customer,
+        quote_document_connection_id="cx1")
+
+
+def test_every_decided_quote_row_carries_an_id_the_grid_can_tell_apart(
+        client_with_erp_decisions):
+    """The evidence grid keys its rows on one field, so that field must be
+    unique and never null — including for the quotes this phase newly lets in.
+
+    ``quote_outcomes.quote_id`` is NULL for a quote the ERP raised itself, and
+    the row shipped it as the grid's ``getRowId``. One such quote looked fine;
+    two arrived carrying the same ``null``, and a grid cannot tell two rows
+    with one id apart — it drops or merges them, so the evidence behind a win
+    rate silently disagreed with the rate above it.
+
+    Asserted as a set-size equality rather than a null check, because that is
+    the property the grid actually needs: as many distinct ids as there are
+    rows.
+    """
+    client = client_with_erp_decisions
+    # TWO of them, which is the whole point: one null id looks like a working
+    # row, and only the second one collides with it.
+    with client.Maker() as s:
+        _erp_raised_and_recorded(s, "erp-a", customer="c1", lost_to="Sandvik")
+        _erp_raised_and_recorded(s, "erp-b", customer="c1", lost_to="Iscar")
+        s.commit()
+
+    body = client.get("/api/v1/insight/quote-outcomes",
+                      headers=_hdr(client, OWNER)).json()
+    rows = body["quotes"]
+    assert rows, "the fixture decides quotes, so this must not be vacuous"
+    refs = [r["reference"] for r in rows]
+    assert all(refs), "a blank row id is the defect this field exists to end"
+    assert len(set(refs)) == len(rows), sorted(refs)
+    # And the ERP-raised ones are in there, identified by the ERP's own
+    # document rather than by a platform quote they never had.
+    erp = [r for r in rows if r["quote_id"] is None]
+    assert len(erp) == 2, "the two ERP-raised losses must both be listed"
+    assert {r["reference"] for r in erp} == {"EST-erp-a", "EST-erp-b"}
+
+
 def test_the_three_readers_agree_on_one_fixture(client_with_erp_decisions):
     """Won & lost, the attribution evaluator and the diagnosis replay used to
     compute three answers from the human table alone. They read

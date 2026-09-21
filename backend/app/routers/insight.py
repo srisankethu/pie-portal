@@ -1453,6 +1453,15 @@ def _decided_quotes(outcomes: list[models.QuoteOutcome],
         won = rec.status is QuoteOutcomeStatus.WON
         out.append(outcomes_view.DecidedQuote(
             quote_id=row.quote_id,
+            # The ERP's own number first for a quote it raised — that is what a
+            # person can search for in their own book. ``external_ref`` is the
+            # fallback and never empty; ``quote_outcome_id`` is the last resort
+            # so this can never be blank, because a blank row id is the defect
+            # this field exists to end.
+            reference=(row.quote_id
+                       or (rec.erp.number or rec.erp.external_ref if rec.erp else None)
+                       or row.quote_document_ref
+                       or row.quote_outcome_id),
             customer_id=row.customer_id or "",
             customer_label=(customer_names.get(row.customer_id or "")
                             or row.customer_ref or "Unattributed"),

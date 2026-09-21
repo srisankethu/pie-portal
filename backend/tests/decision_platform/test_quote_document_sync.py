@@ -791,6 +791,50 @@ def test_a_platform_quote_that_became_an_erp_quote_is_one_row_not_two(session):
                                   status=QuoteOutcomeStatus.WON)
 
 
+def test_a_decided_quote_re_sent_keeps_the_document_its_outcome_names(session):
+    """A refusal must not leave the row half-moved, and this is the path where
+    the two refusals' order decides it.
+
+    ``QUOTE_OUTCOME_TRANSITIONS[WON]`` is empty, so a won quote re-sent as a
+    revision is going to be refused whatever else happens. The revision
+    repoint, though, nulls ``quote_document_ref`` and
+    ``quote_document_connection_id`` on its way — and with the repoint checked
+    before the transition, it nulled them and *then* raised. The caller saw a
+    clean refusal; the row in the session had lost the only thing naming the
+    document a person's recorded win was about, and afterwards nothing could
+    tell it from a win recorded on a quote that was never pushed.
+
+    Asserted on the row after the exception rather than on the exception type:
+    the type was already right. What was wrong was the state left behind.
+    """
+    quote_service.record_document(
+        session, "org_a", quote_id="qw-1", external_system="zoho",
+        number="EST-9", document_id="est-9", line_count=1, fingerprint="fw1")
+    quote_service.set_outcome(
+        session, "org_a", quote_id="qw-1", quote_document_ref="est-9",
+        status=QuoteOutcomeStatus.SENT, user_id="u1")
+    won = quote_service.set_outcome(
+        session, "org_a", quote_id="qw-1", quote_document_ref="est-9",
+        status=QuoteOutcomeStatus.WON, user_id="u1")
+    assert won.status == QuoteOutcomeStatus.WON.value
+    decided_at, ref = won.decided_at, won.quote_document_ref
+    session.commit()
+
+    quote_service.record_document(
+        session, "org_a", quote_id="qw-1", external_system="zoho",
+        number="EST-10", document_id="est-10", line_count=1, fingerprint="fw2",
+        revision=2, reference="QB-9-r2")
+    with pytest.raises(quote_service.InvalidTransition):
+        quote_service.set_outcome(
+            session, "org_a", quote_id="qw-1", quote_document_ref="est-10",
+            status=QuoteOutcomeStatus.SENT, user_id="u1", repoint_from="est-9")
+
+    row = session.get(models.QuoteOutcome, won.quote_outcome_id)
+    assert row.quote_document_ref == ref, "the refusal stranded the pointer"
+    assert row.status == QuoteOutcomeStatus.WON.value
+    assert row.decided_at == decided_at
+
+
 def test_an_outcome_follows_a_revision_of_its_own_quote_and_nothing_else(session):
     """The one exception to "never repointed", and it is narrow.
 

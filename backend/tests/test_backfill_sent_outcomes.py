@@ -20,7 +20,7 @@ from sqlalchemy.orm import sessionmaker
 import dbsupport
 from app.commercial import quote_service
 from app.domain import models
-from app.domain.enums import QuoteOutcomeStatus
+from app.domain.enums import QuoteLossReason, QuoteOutcomeStatus
 
 ORG = "org_a"
 SCRIPT = Path(__file__).resolve().parents[2] / "scripts" / "backfill_sent_outcomes.py"
@@ -115,8 +115,9 @@ def test_a_decided_quote_keeps_its_status_and_only_gains_the_link(session, backf
     _sent(session, "q4", "QB-0004", "est-4", written_at=datetime.now(timezone.utc))
     quote_service.set_outcome(session, ORG, quote_id="q4",
                               status=QuoteOutcomeStatus.SENT, user_id="u1")
-    quote_service.set_outcome(session, ORG, quote_id="q4",
-                              status=QuoteOutcomeStatus.WON, user_id="u1")
+    won = quote_service.set_outcome(session, ORG, quote_id="q4",
+                                    status=QuoteOutcomeStatus.WON, user_id="u1")
+    decided_at = won.decided_at
     session.commit()
 
     entries = backfill.plan(session, ORG)
@@ -125,6 +126,57 @@ def test_a_decided_quote_keeps_its_status_and_only_gains_the_link(session, backf
     session.commit()
     row = quote_service.get_outcome(session, ORG, "q4")
     assert (row.status, row.quote_document_ref) == ("WON", "est-4")
+    # And the day it was won is still the day it was won. This assertion is the
+    # point of the test rather than a detail of it: the two above passed while
+    # the repair moved every decided quote's ``decided_at`` to the day it ran.
+    # ``set_outcome`` stamps that column on every WON or LOST call, including
+    # one that merely restates the status the row already holds — and every
+    # win-rate window and "decided in this period" count reads it, so a link
+    # fill was silently re-dating the book's history.
+    assert row.decided_at == decided_at
+
+
+def test_a_lost_quote_keeps_its_reason_and_does_not_abort_the_run(session, backfill):
+    """One unrepairable row must not take the others with it.
+
+    ``set_outcome`` refuses a LOST call carrying no reason, before it touches
+    anything — correctly, because a loss with neither "went elsewhere" nor "the
+    requirement went away" on record cannot be counted as either. The repair
+    used to catch only ``QuoteOutcomeRepointed``, so that refusal escaped
+    ``apply`` and ended the whole organization's run before its commit: every
+    other repair in the same batch was lost, and an owner got a traceback in
+    place of the list the script exists to print.
+
+    Two rows here on purpose. The lost one is repaired rather than refused —
+    the reason it already carries is handed back, not invented — and the second
+    row proves the batch survives whatever happens to the first.
+    """
+    _sent(session, "q9", "QB-0009", "est-9", written_at=datetime.now(timezone.utc))
+    _sent(session, "q10", "QB-0010", "est-10", written_at=datetime.now(timezone.utc))
+    quote_service.set_outcome(session, ORG, quote_id="q9",
+                              status=QuoteOutcomeStatus.SENT, user_id="u1")
+    lost = quote_service.set_outcome(
+        session, ORG, quote_id="q9", status=QuoteOutcomeStatus.LOST,
+        loss_reason=QuoteLossReason.PRICE, lost_to="Rival Tools", user_id="u1")
+    decided_at = lost.decided_at
+    session.commit()
+
+    entries = backfill.plan(session, ORG)
+    by_quote = {e["quote_id"]: e for e in entries}
+    assert by_quote["q9"]["action"] == "keep LOST, fill link"
+
+    backfill.apply(session, entries)
+    session.commit()
+
+    row = quote_service.get_outcome(session, ORG, "q9")
+    assert row.quote_document_ref == "est-9"
+    # The reason and the winner are the person's words, unchanged — passing no
+    # reason would have blanked both on the LOST edge.
+    assert row.loss_reason == QuoteLossReason.PRICE.value
+    assert row.lost_to == "Rival Tools"
+    assert row.decided_at == decided_at
+    # And the row behind it in the same batch was still repaired.
+    assert quote_service.get_outcome(session, ORG, "q10").quote_document_ref == "est-10"
 
 
 def test_the_newest_document_is_the_one_linked(session, backfill):

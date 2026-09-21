@@ -173,7 +173,10 @@ class DecidedQuote:
     incomplete quotes is a comparison of coverage rather than of margin.
     """
 
-    quote_id: str
+    #: The platform quote, when this is one. ``None`` for a quote the ERP
+    #: raised itself: there is no draft here, and typing ``str`` was a lie the
+    #: screen paid for — see ``reference`` below.
+    quote_id: Optional[str]
     customer_id: str
     customer_label: str
     won: bool
@@ -205,6 +208,22 @@ class DecidedQuote:
     #: can say how many of its losses have no reason because nobody was
     #: asked, as distinct from a person having answered "not recorded".
     source: str = "HUMAN"
+    #: What identifies this row to a person and to a grid: the platform quote's
+    #: id when there is one, else the ERP document's own number. Separate from
+    #: ``quote_id`` because an ERP-raised quote has the second and not the
+    #: first, and the evidence grid keyed its rows on ``quote_id`` — so every
+    #: ERP-raised decided quote arrived carrying the same ``null`` and the grid
+    #: had no way to tell them apart.
+    #:
+    #: Defaulted rather than required so the one caller that knows the ERP
+    #: document supplies it and every other construction keeps the behaviour it
+    #: had: falling back to ``quote_id`` below is exactly what the grid used to
+    #: do, and it is correct for a platform quote.
+    reference: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.reference:
+            object.__setattr__(self, "reference", self.quote_id or "")
 
     @property
     def costed(self) -> bool:
@@ -732,6 +751,10 @@ def build(quotes: Iterable[DecidedQuote], *, as_of: date,
         "quotes": [
             {
                 "quote_id": q.quote_id,
+                # What the grid keys on and the column shows. ``quote_id`` is
+                # still published beside it — a row that has one is openable —
+                # but it is null on an ERP-raised quote and cannot identify.
+                "reference": q.reference,
                 "customer_id": q.customer_id,
                 "customer_label": q.customer_label,
                 "status": "WON" if q.won else "LOST",

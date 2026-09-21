@@ -200,6 +200,11 @@ class DecidedQuote:
     #: the grouping rule lives in one place and the display form stays
     #: recoverable; see ``competitor_key``.
     lost_to: str = ""
+    #: Who decided it — ``QuoteOutcomeSource``: a person here (``HUMAN``) or
+    #: the ERP's own record of the document (``ERP``). Carried so a screen
+    #: can say how many of its losses have no reason because nobody was
+    #: asked, as distinct from a person having answered "not recorded".
+    source: str = "HUMAN"
 
     @property
     def costed(self) -> bool:

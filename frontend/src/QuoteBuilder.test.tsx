@@ -100,6 +100,7 @@ function quote(over: Partial<Quote> = {}): Quote {
       grand: 0, total: 0, unpriced: 0, atListPrice: 0,
     },
     filterCounts: {}, estimate: null, unverifiedSend: null,
+    canSendToErp: true, sendBlock: null,
     ...over,
   };
 }

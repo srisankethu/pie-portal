@@ -281,6 +281,39 @@ describe("a quote this platform wrote", () => {
   });
 });
 
+describe("recording what happened", () => {
+  it("offers to record an outcome where nobody has, and the books have not won it", async () => {
+    listErpQuotes.mockResolvedValue({
+      quotes_listed: [quote({ source_status: "sent", outcome: "UNRECORDED",
+                              decided_on: null, outcome_of_record: "UNRECORDED",
+                              outcome_source: null, recorded: null })],
+    });
+    draw();
+
+    await waitFor(() => expect(screen.getByText("CNMG120408")).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Record outcome" })).toBeTruthy();
+    expect(screen.getByText("No outcome")).toBeTruthy();
+  });
+
+  it("shows a person's decision beside the ERP's word, and offers nothing more", async () => {
+    listErpQuotes.mockResolvedValue({
+      quotes_listed: [quote({ source_status: "expired", outcome: "UNRECORDED",
+                              decided_on: null, outcome_of_record: "LOST",
+                              outcome_source: "HUMAN",
+                              recorded: { status: "LOST", loss_reason: "PRICE",
+                                          lost_to: "Sandvik", note: null,
+                                          decided_at: "2026-09-15T08:00:00Z" } })],
+    });
+    draw();
+
+    await waitFor(() => expect(screen.getByText("CNMG120408")).toBeTruthy());
+    expect(screen.getByText("Lost")).toBeTruthy();
+    expect(screen.getByText(/Recorded here: lost/)).toBeTruthy();
+    expect(screen.getByText(/to Sandvik/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Record outcome" })).toBeNull();
+  });
+});
+
 describe("read-only, for anyone", () => {
   it("offers nothing to press but the way back", async () => {
     // Not "hides the edit button from a salesperson" — there is no edit button

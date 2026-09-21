@@ -51,6 +51,7 @@ from sqlalchemy.orm import Session
 from ...domain import models
 from ...domain.origin import Companies
 from ...ingestion.normalize import ZOHO
+from .. import quote_service
 
 _ZERO = Decimal("0")
 
@@ -108,6 +109,19 @@ class BookQuote:
     #: direction), never stored on this table, which the sync rewrites whole.
     #: ``None`` for a quote raised in the ERP by hand, which is most of them.
     platform_quote: Optional[dict[str, str]]
+    #: What a person here recorded about this document, if anything — the
+    #: ``quote_outcomes`` row naming it by the ERP's own id: its status, the
+    #: reason and the winner where it was a loss, and when. ``None`` where
+    #: nobody has said. Read-side, like ``platform_quote``: the sync rewrites
+    #: this table whole and never opens the human one.
+    recorded: Optional[dict[str, Any]]
+    #: The outcome of record — ``quote_service.decide`` over the person's row
+    #: and the ERP's word: WON / LOST / UNRECORDED. The person wins; the ERP
+    #: fills silence. ``outcome`` above stays the ERP's own reading, so a
+    #: screen can show both and say which is which.
+    outcome_of_record: str
+    #: ``QuoteOutcomeSource`` for a decided quote, ``None`` while open.
+    outcome_source: Optional[str]
     #: The source's own fields on the quote, as the ERP holds them — quote
     #: type, pricing type, procurement type, branch, and whatever else this
     #: business configured. Only the keys the source actually set: an absent
@@ -143,6 +157,9 @@ class BookQuote:
             "company": self.company,
             "origin": self.origin,
             "platform_quote": self.platform_quote,
+            "recorded": self.recorded,
+            "outcome_of_record": self.outcome_of_record,
+            "outcome_source": self.outcome_source,
             # The wire key, not the field name, and deliberately unchanged by
             # the rename behind it: this is a published response field that
             # ``ErpQuoteScreen`` reads, and nothing in the gate binds the two,
@@ -190,6 +207,7 @@ def build(session: Session, org: str, *, customer_names: dict[str, str],
 
     docs = session.scalars(stmt).all()
     written = _platform_quotes(session, org, docs)
+    records = quote_service.erp_outcomes_of_record(session, org, docs)
     rows = [
         BookQuote(
             quote_document_ref=row.external_ref,
@@ -207,6 +225,10 @@ def build(session: Session, org: str, *, customer_names: dict[str, str],
                      else "Source not recorded"),
             origin=companies.of(row).to_dict() if companies else None,
             platform_quote=written.get(row.quote_document_id),
+            recorded=_recorded(records[row.quote_document_id].human),
+            outcome_of_record=_of_record(records[row.quote_document_id]),
+            outcome_source=(records[row.quote_document_id].source.value
+                            if records[row.quote_document_id].source else None),
             source_attributes=dict(row.source_attributes or {}),
             opened_at=row.client_viewed_at,
         )
@@ -215,6 +237,28 @@ def build(session: Session, org: str, *, customer_names: dict[str, str],
     rows.sort(key=lambda q: (q.raised_on, q.number or "",
                              q.quote_document_ref), reverse=True)
     return rows
+
+
+def _recorded(row: Optional[models.QuoteOutcome]) -> Optional[dict[str, Any]]:
+    """A person's row about an ERP document, as the screen reads it. Only a
+    decision is worth showing beside the ERP's word — a SENT a person recorded
+    says nothing the ERP's own status does not."""
+    if row is None or row.status not in ("WON", "LOST"):
+        return None
+    return {
+        "status": row.status,
+        "loss_reason": row.loss_reason,
+        "lost_to": row.lost_to,
+        "note": row.note,
+        "decided_at": row.decided_at.isoformat() if row.decided_at else None,
+    }
+
+
+def _of_record(rec: quote_service.OutcomeOfRecord) -> str:
+    """WON / LOST / UNRECORDED — the ERP tab's vocabulary for the outcome of
+    record. An open quote is UNRECORDED here whatever its lifecycle state,
+    which is what this tab has always meant by the word."""
+    return rec.status.value if rec.decided else "UNRECORDED"
 
 
 def _platform_quotes(session: Session, org: str,
@@ -350,9 +394,12 @@ def totals(quotes: list[BookQuote]) -> dict[str, Any]:
     names by sight.
     """
     valued = [q.value for q in quotes if q.value is not None]
+    # Counted on the outcome of record, not on the ERP's word alone: a loss
+    # a person recorded here against an ERP quote is a loss on this headline
+    # too, which is the difference between one win rate and three.
     by_outcome: dict[str, int] = {}
     for q in quotes:
-        by_outcome[q.outcome] = by_outcome.get(q.outcome, 0) + 1
+        by_outcome[q.outcome_of_record] = by_outcome.get(q.outcome_of_record, 0) + 1
     return {
         "count": len(quotes),
         "by_outcome": {

@@ -32,7 +32,9 @@ import { DataGrid, numeric, text } from "../platform/DataGrid";
 import type { ColDef } from "../platform/DataGrid";
 import { EmptyState, Meta, StatusChip } from "../platform/kit";
 import { erpQuotePath, pathFor } from "../platform/route";
-import { outcomeOf } from "../ErpQuoteScreen";
+import Button from "@mui/material/Button";
+import { TOUCH } from "../platform/kit";
+import { erpOutcome, outcomeOfRecord } from "../ErpQuoteScreen";
 import type { ErpQuote } from "../types";
 
 /** The chip readings live with the drawer and are imported here.
@@ -55,8 +57,18 @@ function when(iso: string | null): string {
   return iso ?? "—";
 }
 
-export function ErpQuoteList({ quotes, emptyReason, showCompany = false }: {
+/** Whether a row still wants a person's answer: nobody here has recorded
+ *  one and the ERP has not already recorded a win. A decline the ERP holds
+ *  still wants a reason, which the ERP cannot hold. */
+export function wantsOutcome(q: ErpQuote): boolean {
+  return !q.recorded && erpOutcome(q) !== "WON";
+}
+
+export function ErpQuoteList({ quotes, emptyReason, showCompany = false, onRecord }: {
   quotes: ErpQuote[];
+  /** Offer "Record…" on rows that want an answer, opening the caller's
+   *  outcome form. Absent where the list is read-only. */
+  onRecord?: (q: ErpQuote) => void;
   /** The server's sentence for an empty book. Rendered rather than replaced:
    *  it is the one that distinguishes "no quotes synced yet" from "the quote
    *  stage was refused a permission", and a generic "Nothing here" is exactly
@@ -106,13 +118,26 @@ export function ErpQuoteList({ quotes, emptyReason, showCompany = false }: {
     } as ColDef<ErpQuote>] : []),
     text("raised_on", "Raised", { width: 130, flex: 0 }),
     {
+      // The outcome of record — a person's decision first, the ERP's word
+      // where nobody here has said — with the tip naming which.
       field: "outcome", headerName: "Outcome", width: 150, flex: 0,
+      valueGetter: (p: { data?: ErpQuote }) => (p.data ? erpOutcome(p.data) : ""),
       cellRenderer: (p: { data?: ErpQuote }) => {
         if (!p.data) return null;
-        const o = outcomeOf(p.data.outcome);
+        const o = outcomeOfRecord(p.data);
         return <StatusChip label={o.label} tone={o.tone} tip={o.tip} />;
       },
     },
+    ...(onRecord ? [{
+      field: "recorded", headerName: "", width: 110, flex: 0, sortable: false,
+      cellRenderer: (p: { data?: ErpQuote }) =>
+        p.data && wantsOutcome(p.data) ? (
+          <Button size="small" sx={TOUCH}
+                  onClick={(e) => { e.stopPropagation(); onRecord(p.data!); }}>
+            Record…
+          </Button>
+        ) : null,
+    } as ColDef<ErpQuote>] : []),
     text("source_status", "ERP status", {
       width: 140, flex: 0,
       valueGetter: (p) => sourceWord(p.data?.source_status ?? ""),
@@ -149,7 +174,8 @@ export function ErpQuoteList({ quotes, emptyReason, showCompany = false }: {
       }
       renderNarrow={(q) => (
         <ErpQuoteCard key={q.quote_document_ref} q={q} showCompany={showCompany}
-                      onOpen={() => open(q)} />
+                      onOpen={() => open(q)}
+                      onRecord={onRecord && wantsOutcome(q) ? () => onRecord(q) : undefined} />
       )}
     />
     </>
@@ -163,11 +189,20 @@ export function ErpQuoteList({ quotes, emptyReason, showCompany = false }: {
  *  it has to be reachable by keyboard and announced as something that can be
  *  pressed. The wide grid gets that from `onRowActivate`; the narrow path has to
  *  say it itself. */
-function ErpQuoteCard({ q, onOpen, showCompany }: {
-  q: ErpQuote; onOpen: () => void; showCompany: boolean;
+function ErpQuoteCard({ q, onOpen, showCompany, onRecord }: {
+  q: ErpQuote; onOpen: () => void; showCompany: boolean; onRecord?: () => void;
 }) {
-  const o = outcomeOf(q.outcome);
+  const o = outcomeOfRecord(q);
   return (
+    <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
+    {/* The record control sits beside the card, not inside it: the card is
+        itself a button, and a button inside a button is not a control a
+        screen reader can name. */}
+    {onRecord && (
+      <Box sx={{ px: 2, pt: 1, display: "flex", justifyContent: "flex-end" }}>
+        <Button size="small" sx={TOUCH} onClick={onRecord}>Record…</Button>
+      </Box>
+    )}
     <Box
       component="button"
       type="button"
@@ -175,7 +210,7 @@ function ErpQuoteCard({ q, onOpen, showCompany }: {
       sx={{
         display: "block", width: "100%", textAlign: "left", font: "inherit",
         color: "inherit", background: "none", border: 0, cursor: "pointer",
-        p: 2, borderBottom: 1, borderColor: "divider",
+        p: 2,
       }}
     >
       <Stack direction="row" spacing={1}
@@ -194,6 +229,7 @@ function ErpQuoteCard({ q, onOpen, showCompany }: {
           {q.platform_quote ? ` · built in PIE as ${q.platform_quote.number || "a draft"}` : ""}
         </Meta>
       </Stack>
+    </Box>
     </Box>
   );
 }

@@ -229,6 +229,10 @@ export interface QuoteEstimate {
    *  amended quote sent again is a new document under a new reference, and
    *  the number after it. A counter, not a figure. */
   revision: number;
+  /** `ERP`: this platform wrote the document and `number` is its number
+   *  there. `MANUAL`: a person said the quote went out another way; there is
+   *  no document and `number` is empty. */
+  channel: "ERP" | "MANUAL";
   current: boolean;
   /** The system holding it, and its own names for itself and the document.
    *  "Sent · SQ-1001" does not say where, and two connected systems can both
@@ -269,8 +273,13 @@ export interface MarginFloor {
  *  `quote_workspace.READINESS`. Decided by the same functions the send runs,
  *  so a row reading READY is one the send would accept. */
 export type QuoteReadiness =
+  | "WON" | "LOST"
   | "EMPTY" | "NEEDS_ATTENTION" | "MISSING_DETAILS" | "NO_CUSTOMER"
   | "UNVERIFIED_SEND" | "SENT" | "AWAITING_APPROVAL" | "NEEDS_APPROVAL" | "READY";
+
+/** Who decided a quote — the server's `QuoteOutcomeSource`. A person here,
+ *  or the ERP's own record of the document where nobody here has said. */
+export type QuoteOutcomeSource = "HUMAN" | "ERP";
 
 /** What a quote-level field can hold — the server's `quote_fields.KINDS`. */
 export type QuoteFieldKind = "TEXT" | "MULTILINE" | "NUMBER" | "DATE" | "CHOICE";
@@ -369,9 +378,27 @@ export interface ErpQuote {
    *  it — joined server-side on system, company and the ERP's own id. Null
    *  for a quote raised in the ERP by hand, which is most of them. */
   platform_quote?: { quote_id: string; number: string } | null;
+  /** What a person here recorded about this document, if a decision: the
+   *  status, the reason and the winner where it was a loss, and when. Null
+   *  where nobody has said. */
+  recorded?: RecordedOutcome | null;
+  /** The outcome of record — the person's decision first, the ERP's word
+   *  where nobody here has said: WON / LOST / UNRECORDED. `outcome` above
+   *  stays the ERP's own reading, so a screen can show both. */
+  outcome_of_record?: string;
+  outcome_source?: QuoteOutcomeSource | null;
   /** The organization's own fields on the quote, as the ERP holds them. Only
    *  the keys the source set: an absent custom field is not a category. */
   attributes: Record<string, string>;
+}
+
+/** A person's decision about an ERP quote, as the ERP tab shows it. */
+export interface RecordedOutcome {
+  status: QuoteOutcomeStatus;
+  loss_reason: QuoteLossReason | null;
+  lost_to: string | null;
+  note: string | null;
+  decided_at: string | null;
 }
 
 export interface ErpQuoteLine {
@@ -502,6 +529,12 @@ export interface Quote {
    *  person opening the quote is told to look before pressing send again.
    *  Null when the last send was confirmed either way. */
   unverifiedSend: UnverifiedSend | null;
+  /** Whether Send can write this quote into its book from here. False for a
+   *  book this platform reads but cannot write to, and for a customer whose
+   *  book cannot be placed — `sendBlock` then says why, in the server's own
+   *  sentence, and the desk marks the quote as sent instead. */
+  canSendToErp: boolean;
+  sendBlock: string | null;
   /** Present when the last action taught the system something durable — today
    *  that is a confirmed "this customer's code means that product". Server-
    *  written prose, shown as-is; the client does not compose it. */

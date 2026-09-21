@@ -28,6 +28,7 @@ import { Stat, TOUCH } from "../platform/kit";
  */
 export function SummaryBar({
   quote,
+  onMarkSent,
   selectedCount,
   onDiscount,
   onCreateEstimate,
@@ -57,9 +58,18 @@ export function SummaryBar({
   blockers: Blocker[];
   /** What the total covers, and what it leaves out. */
   covers: string | null;
+  /** A person says it went out another way. Optional only so a caller with
+   *  no manual path need not wire it. */
+  onMarkSent?: () => void;
 }) {
   const hasLines = quote.lines.length > 0;
   const sent = quote.estimate !== null && quote.estimate !== undefined;
+  // Whether Send can write into the books at all — decided by the server on
+  // the draft (`canSendToErp`), never guessed here. Where it cannot, the
+  // primary action is to mark the quote as sent, and the reason is the
+  // server's own sentence.
+  const canSend = quote.canSendToErp !== false;
+  const current = sent && quote.estimate!.current;
   // What the send actually creates, in the words of the system it creates it
   // in — "Zoho Books estimate", "Dynamics 365 Business Central sales quote".
   // This button said "Create Zoho estimate" to every customer, which names a
@@ -175,9 +185,13 @@ export function SummaryBar({
             // "r2" only from the second revision on: a first send is not a
             // revision to the person who made it, and the suffix is what
             // tells two documents for one quote apart in the books.
-            quote.estimate!.revision > 1 ? `Sent r${quote.estimate!.revision}` : "Sent",
-            quote.estimate!.systemLabel,
-            quote.estimate!.number,
+            quote.estimate!.channel === "MANUAL"
+              ? (quote.estimate!.revision > 1
+                  ? `Marked as sent r${quote.estimate!.revision}` : "Marked as sent")
+              : (quote.estimate!.revision > 1 ? `Sent r${quote.estimate!.revision}` : "Sent"),
+            // A manual send has no number and no system holding one.
+            ...(quote.estimate!.channel === "MANUAL"
+              ? [] : [quote.estimate!.systemLabel, quote.estimate!.number]),
             ...(quote.estimate!.current ? [] : ["amended since"]),
           ].join(" · ")}
         />
@@ -216,8 +230,30 @@ export function SummaryBar({
         />
       )}
 
-      <Button
-        variant={sent && quote.estimate!.current ? "outlined" : "contained"}
+      {/* The manual way out. Primary where Send cannot write into the books
+          at all; otherwise beside it, for the quote that went out as a PDF.
+          Hidden once the current content is already sent either way. */}
+      {onMarkSent && !current && (
+        <Button
+          variant={canSend ? "outlined" : "contained"}
+          sx={TOUCH}
+          title={
+            readOnly
+              ? `Only ${quote.owner?.name || "the owner"} can mark this quote as sent.`
+              : blockers.length
+                ? `${blockers.map((b) => b.text).join(" · ")} — each is marked on its own line above.`
+                : quote.sendBlock
+                  ? `${quote.sendBlock} Marking it as sent records the quote as it stands, with no document number.`
+                  : "The quote went out another way — a PDF, a phone call. Records it as sent, as it stands, with no document number."
+          }
+          onClick={onMarkSent}
+          disabled={busy || readOnly || !hasLines || blockers.length > 0}
+        >
+          {busy ? "Marking…" : "Mark as sent"}
+        </Button>
+      )}
+      {canSend && <Button
+        variant={current ? "outlined" : "contained"}
         sx={TOUCH}
         title={
           readOnly
@@ -267,7 +303,14 @@ export function SummaryBar({
                 : sent
                   ? `Send amendment to ${quote.systemLabel}`
                   : `Send to ${quote.systemLabel}`}
-      </Button>
+      </Button>}
+      {/* Where nothing can be sent from here, the server's sentence says why,
+          on the draft — not after fourteen lines of work at the button. */}
+      {!canSend && quote.sendBlock && (
+        <Typography variant="body2" color="text.secondary" sx={{ maxWidth: "44ch" }}>
+          {quote.sendBlock}
+        </Typography>
+      )}
     </Paper>
   );
 }

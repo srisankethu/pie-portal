@@ -2,8 +2,8 @@
 
 **Status: approved 2026-09-20, all six decisions in §4 taken on the
 recommendation. Phase 0 landed (`71f2a6b`). Phase 1 landed (`9d520f5`).
-Phase 2 landed (this commit) — with two departures from the text below, both
-noted in place. Phase 3 next; 4–6 after review.**
+Phase 2 landed (`d4767a6`), with two departures noted in place. Phase 3 landed
+(this commit), with three departures noted in place. Phases 4–6 after review.**
 
 The question this answers: *how do we handle quotes the ERP raised, quotes across
 several connected companies and ERPs, a PIE quote not yet sent to the ERP, and a
@@ -527,14 +527,18 @@ stay findable by their own reference.
 
 **Changes — backend**
 
-- `commercial/insight/outcomes.py` (extend, not sibling): `outcome_of_record(...)`
-  as §2.5, returning `DecidedQuote` rows with `source ∈ {HUMAN, ERP}` and, for an
-  ERP-decided quote with no snapshot, `value` from `erp_quotes.total` (or Σ
-  `erp_quote_lines.amount`) and no margin. `routers/insight._quote_evidence`,
-  `attribution.evaluator._quote_outcomes`, `quote_diagnosis.replay._outcomes`, the
-  wallet's lost-asks and `quote_book.totals` all read it. Won & lost gains a
-  "decided in the ERP, reason not recorded" count beside `unpriced_quotes`; price
-  comparisons keep needing snapshots.
+- ~~`commercial/insight/outcomes.py`~~ → **`commercial/quote_service.decide`
+  (departure).** `outcomes.py` is a pure view over `DecidedQuote` rows with no
+  session, and the rule needs the join `quote_service` already owns
+  (`erp_documents_for`), so the rule lives beside the join: `decide(human, erp,
+  document)` is pure, and `outcomes_of_record` (platform quotes, keyed by quote
+  id) and `erp_outcomes_of_record` (ERP rows, keyed by `quote_document_id`) are
+  the two loaders over one rule. `DecidedQuote` gains `source`; an ERP-decided
+  quote with no snapshot takes `value` from `erp_quotes.total` and no margin.
+  `routers/insight._quote_evidence`, `attribution.evaluator._quote_outcomes`,
+  `quote_diagnosis.replay._outcomes`, the wallet's lost-asks and
+  `quote_book.totals` all read it. Won & lost gains `erp_decided_quotes` beside
+  `unpriced_quotes`; price comparisons keep needing snapshots.
 - `quote_workspace.readiness` gains `WON` and `LOST` from the outcome of record
   (`READINESS`, `QuoteReadiness`, `READINESS` map, `FILTERS` → "Decided").
 - **Mark as sent** (G12): `POST /api/v1/quotes/{id}/mark-sent` — for a quote with no
@@ -546,18 +550,23 @@ stay findable by their own reference.
   (sentence) come from `book_for_customer` at view time (no credential read), so a
   Prophet 21 / Sage quote shows "Mark as sent" instead of a Send that will refuse,
   and an unplaceable customer is named on the draft, not at the button (G35).
-- The send's outcome row carries `customer_id = q.customerId` (G24); Today passes
-  `customer_label` like the worklist (G38).
+- The send's outcome row carries `customer_id = q.customerId` (G24, landed in
+  Phase 0); Today passes `customer_label` like the worklist (G38) — looked up
+  from the unanswered rows it already holds, since the queue item carries no
+  label of its own (departure from "like the worklist" only in mechanism).
 - `delete_quote` refuses when the outcome of record is SENT/WON/LOST (G26).
 
 **Changes — frontend**
 
 - One outcome form (G37): `platform/RecordOutcomeDialog` gains `lost_to`;
   `useQuoteIntelligence.recordOutcome` and `intelligence.documentOutcome` carry both
-  `note` and `lost_to`; `QuoteOutcomeBar` uses the shared dialog. The ERP tab row
-  and `ErpQuoteScreen` gain "Record outcome" (scoped as the worklist is) and show
-  the recorded outcome beside the ERP's word (G13). `kit.FormDialog`, full screen on
-  a phone.
+  `note` and `lost_to` (the writers already did; the callback and the hook did
+  not); `QuoteOutcomeBar` uses the shared dialog. The ERP tab row and
+  `ErpQuoteScreen` gain "Record…" / "Record outcome" (scoped as the worklist is,
+  by the server) and show the recorded outcome beside the ERP's word (G13).
+  **Departure:** offered only where nobody here has said *and the ERP has not
+  already recorded a win* — a decline the ERP holds still wants a reason, an
+  acceptance wants nothing. `kit.FormDialog`, full screen on a phone.
 - `QuoteOutcomeBar`: SENT tip reads "Written into Zoho Books as EST-1001 (or marked
   sent). The ERP's own status is shown beside it once synced." A line "Zoho says:
   accepted 14 Sep" with **Record as won** when the ERP has decided and the person

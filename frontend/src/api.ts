@@ -292,4 +292,15 @@ export const api = {
       { method: "POST" },
       t,
     ),
+
+  /** A person says the quote went out another way — by PDF, into a book this
+   *  platform only reads. The same gates and the same assessment as the send,
+   *  with no writer; the quote is SENT from here on, with no document number
+   *  because there is no document. */
+  markSent: (t: string, id: string) =>
+    req<EstimateResult>(
+      `/api/v1/quotes/${id}/mark-sent`,
+      { method: "POST" },
+      t,
+    ),
 };

@@ -226,7 +226,7 @@ describe("recording a loss", () => {
     // surrogate is re-minted by a full re-sync and an outcome written to it
     // would lose its quote on the next rebuild.
     await waitFor(() => expect(write).toHaveBeenCalledWith(
-      "t", "zoho-1", "LOST", "Pitti Engineering", undefined, "PRICE"));
+      "t", "zoho-1", "LOST", "Pitti Engineering", undefined, "PRICE", undefined));
   });
 });
 

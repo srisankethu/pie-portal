@@ -391,6 +391,118 @@ def _hdr(c, email):
     return {"Authorization": f"Bearer {r.json()['token']}"}
 
 
+def _sent_and_read_back(s, quote_id: str, *, customer: str, erp_outcome: str,
+                        human: str = "SENT", price: str = "100",
+                        decided_days_ago: int = 3) -> None:
+    """A platform quote that was sent, and whose document the ERP has since
+    decided: a snapshot, the human row the send opened, the document row the
+    send wrote, and the ERP's own row for that document as a sync read it back.
+    ``human`` is what a person recorded — SENT means nobody has said."""
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteLossReason as Reason
+    from app.domain.enums import QuoteOutcomeStatus as Status
+
+    unit, quantity = Decimal(price), Decimal("10")
+    s.add(models.QuoteDecision(
+        organization_id=ORG, quote_id=quote_id, quote_line_id="L1",
+        customer_id=customer, product_id="p1", quantity=quantity,
+        quantity_band="1-10", quoted_unit_price=unit, unit_cost=Decimal("70"),
+        line_revenue=unit * quantity, cogs=Decimal("700"),
+        gross_profit=(unit - Decimal("70")) * quantity,
+        margin=float((unit - Decimal("70")) / unit), as_of=AS_OF,
+        thresholds_version="v1"))
+    quote_service.record_document(
+        s, ORG, quote_id=quote_id, external_system="zoho", number=f"EST-{quote_id}",
+        document_id=f"est-{quote_id}", line_count=1, fingerprint=f"f-{quote_id}")
+    quote_service.set_outcome(s, ORG, quote_id=quote_id, status=Status.SENT,
+                              quote_document_ref=f"est-{quote_id}",
+                              customer_ref=customer, customer_id=customer)
+    if human == "LOST":
+        quote_service.set_outcome(s, ORG, quote_id=quote_id, status=Status.LOST,
+                                  loss_reason=Reason.PRICE, lost_to="Sandvik")
+    decided = (datetime.now(timezone.utc) - timedelta(days=decided_days_ago)).date()
+    s.add(models.QuoteDoc(
+        organization_id=ORG, connector="zoho", connection_id="cx1",
+        external_ref=f"est-{quote_id}", number=f"EST-{quote_id}",
+        customer_id=customer, customer_ref="Acme Engineering",
+        date=decided - timedelta(days=7),
+        source_status="accepted" if erp_outcome == "WON" else "declined",
+        outcome=erp_outcome, decided_on=decided, total=Decimal("1000")))
+
+
+@pytest.fixture()
+def client_with_erp_decisions(client):
+    """The base book plus two quotes the ERP decided: ``e1`` where nobody here
+    has said (the ERP's word stands, source ERP) and ``e2`` where a person
+    recorded a loss the ERP contradicts (the person wins)."""
+    with client.Maker() as s:
+        _sent_and_read_back(s, "e1", customer="c1", erp_outcome="WON")
+        _sent_and_read_back(s, "e2", customer="c1", erp_outcome="WON", human="LOST")
+        s.commit()
+    return client
+
+
+def test_a_quote_the_erp_decided_counts_with_its_source_and_no_reason(
+        client_with_erp_decisions):
+    """G06/G08: one outcome of record. ``e1`` is a win the customer accepted
+    in the ERP and nobody here recorded — it used to sit in "awaiting" here
+    while the ERP tab counted it won. ``e2`` is a loss a person recorded,
+    and the ERP's contradicting word changes nothing."""
+    client = client_with_erp_decisions
+    body = client.get("/api/v1/insight/quote-outcomes",
+                      headers=_hdr(client, OWNER)).json()
+    # 6 won + 4 lost + 1 lost (c2) in the base fixture, then e1 won, e2 lost.
+    assert (body["decided"], body["won"], body["lost"]) == (13, 7, 6)
+    assert body["erp_decided_quotes"] == 1
+    assert body["unpriced_quotes"] == 0
+    awaiting = {row["quote_id"] for row in body["awaiting"]}
+    assert "e1" not in awaiting and "e2" not in awaiting
+    # e2's loss keeps the reason the person gave; e1 needed none.
+    reasons = {r["reason"]: r for r in body["reasons"]}
+    assert reasons["PRICE"]["count"] == 5
+
+
+def test_the_three_readers_agree_on_one_fixture(client_with_erp_decisions):
+    """Won & lost, the attribution evaluator and the diagnosis replay used to
+    compute three answers from the human table alone. They read
+    ``quote_service.decide`` now, and this is the test that ends "three win
+    rates"."""
+    from datetime import date as _date
+
+    from app.attribution import evaluator
+    from app.commercial.quote_diagnosis import replay
+
+    client = client_with_erp_decisions
+    with client.Maker() as s:
+        by_quote = replay._outcomes(s, ORG)
+        window = evaluator._quote_outcomes(
+            s, ORG, datetime.now(timezone.utc) - timedelta(days=30),
+            datetime.now(timezone.utc) + timedelta(days=1))
+    assert by_quote["e1"] == "WON" and by_quote["e2"] == "LOST"
+    assert window["quotes_won"] == 7 and window["quotes_lost"] == 6
+    assert window["quotes_decided"] == 13
+    # e1 and e2 were both sent — the ERP's row is proof of that on its own.
+    assert window["decided_quotes_ever_sent"] == 13
+    assert isinstance(_date.today(), _date)
+
+
+def test_an_erp_decision_without_a_date_is_not_a_decision(client):
+    """The line ``classify_outcome`` already draws, held here too: a decided
+    quote with no date is not usable as evidence, so the quote stays open."""
+    from app.commercial import quote_service
+
+    with client.Maker() as s:
+        _sent_and_read_back(s, "e3", customer="c1", erp_outcome="WON")
+        s.flush()
+        doc = s.query(models.QuoteDoc).filter_by(external_ref="est-e3").one()
+        doc.decided_on = None
+        s.commit()
+        rows = s.query(models.QuoteOutcome).filter_by(quote_id="e3").all()
+        rec = quote_service.outcomes_of_record(s, ORG, rows)["e3"]
+    assert rec.decided is False and rec.status.value == "SENT"
+    assert rec.source is None and rec.ever_sent is True
+
+
 def test_the_win_rate_endpoint_answers_for_every_role(client):
     body = client.get("/api/v1/insight/quote-outcomes",
                       headers=_hdr(client, MANAGER)).json()

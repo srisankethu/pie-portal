@@ -42,7 +42,9 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 
 import { api } from "./api";
+import { intelligence } from "./intelligence";
 import { money } from "./money";
+import { LOSS_REASON_LABELS, RecordOutcomeDialog } from "./platform/RecordOutcomeDialog";
 import { DataGrid, numeric, text } from "./platform/DataGrid";
 import type { ColDef } from "./platform/DataGrid";
 import {
@@ -85,6 +87,32 @@ export const OUTCOME: Record<string, { label: string; tone: Tone; tip: string }>
 
 export function outcomeOf(code: string) {
   return OUTCOME[code] ?? { label: code, tone: "neutral" as Tone, tip: "" };
+}
+
+/** The pile an ERP quote sits in: the outcome of record. `outcome_of_record`
+ *  is optional on the type only so older fixtures need not build it; the
+ *  server always sends it. */
+export function erpOutcome(q: Pick<ErpQuote, "outcome" | "outcome_of_record">): string {
+  return q.outcome_of_record ?? q.outcome;
+}
+
+/** The chip for an ERP quote's outcome of record, and who decided it.
+ *
+ *  The same three words as `OUTCOME`, with the tip saying which source the
+ *  word came from — a loss a person recorded here and a decline the ERP
+ *  recorded are the same pile and different facts, and a reader asking "who
+ *  says so" should not have to open the row. */
+export function outcomeOfRecord(q: Pick<ErpQuote, "outcome" | "outcome_of_record" | "outcome_source" | "recorded">) {
+  const o = outcomeOf(erpOutcome(q));
+  if (q.outcome_source === "HUMAN") {
+    const why = q.recorded?.loss_reason ? ` Reason: ${q.recorded.loss_reason.toLowerCase().replace(/_/g, " ")}.` : "";
+    const who = q.recorded?.lost_to ? ` Went to ${q.recorded.lost_to}.` : "";
+    return { ...o, tip: `Recorded here by a person, and it stands whatever the ERP says.${why}${who}` };
+  }
+  if (q.outcome_source === "ERP") {
+    return { ...o, tip: `${o.tip} Nobody here has recorded why; the ERP cannot say.` };
+  }
+  return o;
 }
 
 /** The organization's own field names, as a person reads them.
@@ -144,6 +172,10 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   const [quote, setQuote] = useState<ErpQuote | null | undefined>(undefined);
   const [lines, setLines] = useState<ErpQuoteLines | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
+  const [recording, setRecording] = useState(false);
+  /** Bumped after an outcome is recorded, so the page re-reads what the
+   *  server now says rather than patching a copy of it. */
+  const [nonce, setNonce] = useState(0);
 
   /* Both reads, on arrival. The header comes from the book rather than from a
      second endpoint, because the book already holds every field this page shows
@@ -175,7 +207,7 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
         setLines(undefined);
       });
     return () => { live = false; };
-  }, [ref, session.token]);
+  }, [ref, session.token, nonce]);
 
   const back = (
     <Button size="small" startIcon={<ArrowBackOutlined />} sx={TOUCH}
@@ -214,8 +246,12 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
     );
   }
 
-  const o = outcomeOf(quote.outcome);
+  const o = outcomeOfRecord(quote);
   const attributes = quote.attributes ?? {};
+  // Offered where nobody here has said and the ERP has not already recorded
+  // a win: a decline the ERP recorded still wants a reason, which the ERP
+  // cannot hold. Scoped by the server the way the worklist is.
+  const canRecord = !quote.recorded && erpOutcome(quote) !== "WON";
   const fields = Object.entries(attributes).filter(
     ([key]) => !(SUPERSEDED_BY[key] && attributes[SUPERSEDED_BY[key]]));
   const heading = (t: string) => (
@@ -231,7 +267,41 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
           strip below already says the number. Titling this "QT FY27-018"
           printed the number twice, ten millimetres apart, and left this screen
           the only one of its four states with a different heading. */}
-      <SectionHeader title={TITLE} sub={SUB} actions={back} />
+      <SectionHeader
+        title={TITLE} sub={SUB}
+        actions={
+          <Stack direction="row" spacing={1}>
+            {back}
+            {canRecord && (
+              <Button size="small" variant="outlined" sx={TOUCH}
+                      onClick={() => setRecording(true)}>
+                Record outcome
+              </Button>
+            )}
+          </Stack>
+        }
+      />
+
+      {/* One outcome form on this platform. This page stays read-only about
+          the document — nothing typed here reaches the ERP — and what it
+          records is a fact about the quote on the human table, which no sync
+          opens. */}
+      <RecordOutcomeDialog
+        open={recording}
+        title={`What happened to ${quote.number ?? quote.quote_document_ref}?`}
+        summary={`${quote.customer_label} · raised ${formatDate(quote.raised_on)} · ${quote.company}`}
+        caution="Recording an outcome is final: a decided quote cannot be
+                 reopened, because the analysis that reads it has already
+                 counted it."
+        onClose={() => setRecording(false)}
+        onRecord={async (status, lossReason, note, lostTo) => {
+          await intelligence.documentOutcome(
+            session.token, quote.quote_document_ref, status,
+            quote.customer_label, note, lossReason, lostTo);
+          setRecording(false);
+          setNonce((n) => n + 1);
+        }}
+      />
 
       {/* The same strip the Quote Builder opens with, and the reason it is a
           `kit` component rather than markup in one file: a person reading a
@@ -251,6 +321,16 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
           <Stack direction="row" spacing={1} sx={{ alignItems: "center" }}>
             <StatusChip label={o.label} tone={o.tone} tip={o.tip} />
             <Meta>{`ERP status: ${sourceWord(quote.source_status)}`}</Meta>
+            {/* A person's decision, beside the ERP's word rather than in
+                place of it: both are facts, and a reader is owed both. */}
+            {quote.recorded && (
+              <Meta>
+                {`Recorded here: ${quote.recorded.status.toLowerCase()}`}
+                {quote.recorded.loss_reason
+                  ? ` · ${LOSS_REASON_LABELS[quote.recorded.loss_reason]}` : ""}
+                {quote.recorded.lost_to ? ` · to ${quote.recorded.lost_to}` : ""}
+              </Meta>
+            )}
           </Stack>
         }
       />

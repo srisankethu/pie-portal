@@ -12,7 +12,7 @@
  * assumes.
  */
 import { ThemeProvider, createTheme } from "@mui/material/styles";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 
 import { SummaryBar } from "./SummaryBar";
@@ -38,10 +38,12 @@ function quote(over: Partial<Quote> = {}): Quote {
 function show(blockers: Blocker[], covers: string | null = null,
               over: Partial<Quote> = {}) {
   const onCreateEstimate = vi.fn();
+  const onMarkSent = vi.fn();
   render(
     <ThemeProvider theme={createTheme()}>
       <SummaryBar
         quote={quote(over)}
+        onMarkSent={onMarkSent}
         selectedCount={0}
         onDiscount={vi.fn()}
         onCreateEstimate={onCreateEstimate}
@@ -52,7 +54,7 @@ function show(blockers: Blocker[], covers: string | null = null,
       />
     </ThemeProvider>,
   );
-  return { onCreateEstimate };
+  return { onCreateEstimate, onMarkSent };
 }
 
 describe("the send button", () => {
@@ -80,9 +82,9 @@ describe("the send button", () => {
 
   it("names the document it sent, and from the second revision on, which one", () => {
     const sent = {
-      number: "EST-0002", lineCount: 1, revision: 2, current: true,
-      system: "zoho", systemLabel: "Zoho Books", documentTerm: "estimate",
-      erp: null,
+      number: "EST-0002", lineCount: 1, revision: 2, channel: "ERP" as const,
+      current: true, system: "zoho", systemLabel: "Zoho Books",
+      documentTerm: "estimate", erp: null,
     };
     show([], null, { estimate: sent });
     expect(screen.getByText("Sent r2 · Zoho Books · EST-0002")).toBeInTheDocument();
@@ -107,6 +109,36 @@ describe("the send button", () => {
     expect(screen.getByText(/QB-0042-ab12cd34/)).toBeInTheDocument();
     const retry = screen.getByRole("button", { name: /Retry send to Zoho Books/ });
     expect(retry).toBeEnabled();
+  });
+
+  it("offers Mark as sent beside Send, for the quote that went out as a PDF", () => {
+    const { onMarkSent } = show([]);
+    expect(screen.getByRole("button", { name: /Send to Zoho Books/ })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Mark as sent" }));
+    expect(onMarkSent).toHaveBeenCalled();
+  });
+
+  it("makes Mark as sent the only way out where the books cannot be written to", () => {
+    /* The server decided this on the draft: a Prophet 21 book, a customer
+       whose book cannot be placed. The Send button would only refuse, so it
+       is not there, and the server's own sentence says why. */
+    const block = "Prophet 21 is read by this platform but a quote cannot be "
+      + "created there from here. Send the quote another way and mark it as sent.";
+    show([], null, { canSendToErp: false, sendBlock: block });
+    expect(screen.queryByRole("button", { name: /Send to/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Mark as sent" })).toBeEnabled();
+    expect(screen.getByText(block)).toBeInTheDocument();
+  });
+
+  it("names a manual send for what it is, with no number", () => {
+    show([], null, {
+      estimate: {
+        number: "", lineCount: 1, revision: 1, channel: "MANUAL", current: true,
+        system: "zoho", systemLabel: "Zoho Books", documentTerm: "estimate", erp: null,
+      },
+    });
+    expect(screen.getByText("Marked as sent")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Mark as sent" })).not.toBeInTheDocument();
   });
 
   it("says what the total covers rather than letting the figure imply it", () => {

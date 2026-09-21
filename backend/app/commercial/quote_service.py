@@ -28,9 +28,11 @@ from ..domain.enums import (
     QUOTE_OUTCOME_TRANSITIONS,
     SELECTABLE_LOSS_REASONS,
     EvidenceSufficiency,
+    QuoteDocOutcome,
     QuoteDocumentChannel,
     QuoteDocumentWriteState,
     QuoteLossReason,
+    QuoteOutcomeSource,
     QuoteOutcomeStatus,
     Role,
 )
@@ -1039,6 +1041,168 @@ def erp_document_for(session: Session, org: str, *,
     the same join."""
     doc = latest_document(session, org, quote_id=quote_id)
     return erp_documents_for(session, org, [doc]).get(quote_id) if doc else None
+
+
+@dataclass(frozen=True)
+class OutcomeOfRecord:
+    """How one quote ended, from both sources, under one rule.
+
+    The answer every reader gives — Won & lost, the attribution evaluator,
+    the diagnosis replay, the wallet, the ERP tab's headline and the workspace
+    list. Before this each computed its own from the human table alone, so a
+    quote the ERP had marked accepted stayed "awaiting an answer" on one
+    screen while the ERP tab counted it won: three win rates over one book.
+
+    ``status`` is the state of record; ``source`` says who decided it and is
+    ``None`` while the quote is open. ``loss_reason`` and ``lost_to`` come
+    only from a person — the ERP holds neither, and an ERP-decided loss
+    reads ``LOSS_REASON_NOT_RECORDED`` downstream rather than a guess.
+    """
+
+    status: QuoteOutcomeStatus
+    source: Optional[QuoteOutcomeSource]
+    decided_on: Optional[date]
+    loss_reason: Optional[str]
+    lost_to: Optional[str]
+    #: The row a person wrote, if any.
+    human: Optional[models.QuoteOutcome]
+    #: The ERP's own row for the document, once a sync has read it.
+    erp: Optional[models.QuoteDoc]
+    #: The document this platform wrote or recorded, for a platform quote.
+    document: Optional[models.QuoteDocument] = None
+
+    @property
+    def decided(self) -> bool:
+        return self.status in (QuoteOutcomeStatus.WON, QuoteOutcomeStatus.LOST)
+
+    @property
+    def ever_sent(self) -> bool:
+        """Whether a win was ever reachable: a person or a document says the
+        quote went out. A LOST straight from DRAFT never could have won."""
+        return ((self.human is not None and self.human.sent_at is not None)
+                or self.document is not None or self.erp is not None)
+
+
+def decide(human: Optional[models.QuoteOutcome],
+           erp: Optional[models.QuoteDoc],
+           document: Optional[models.QuoteDocument] = None) -> OutcomeOfRecord:
+    """The one rule (plan §2.5), pure so every reader agrees by construction.
+
+    1. A human WON or LOST wins, always, with its reason and winner.
+    2. Otherwise the ERP's classification of the same document, when it is
+       WON or LOST *with a date* — an undated decision is not evidence, which
+       is the line ``classify_outcome`` already draws.
+    3. Otherwise the quote is open: SENT when a person, a document or the
+       ERP's own row says it went out, DRAFT when nothing does.
+
+    Derived, never written back. ``unrecorded._load`` states the same rule as
+    a SQL filter for the worklist — a quote leaves the pile once either
+    source has decided it — and a change to one is a change to both.
+    """
+    if human is not None and human.status in (QuoteOutcomeStatus.WON.value,
+                                              QuoteOutcomeStatus.LOST.value):
+        return OutcomeOfRecord(
+            status=QuoteOutcomeStatus(human.status),
+            source=QuoteOutcomeSource.HUMAN,
+            decided_on=(clock.aware(human.decided_at).date()
+                        if human.decided_at else None),
+            loss_reason=human.loss_reason, lost_to=human.lost_to,
+            human=human, erp=erp, document=document)
+    if (erp is not None and erp.decided_on is not None
+            and erp.outcome in (QuoteDocOutcome.WON.value, QuoteDocOutcome.LOST.value)):
+        return OutcomeOfRecord(
+            status=QuoteOutcomeStatus(erp.outcome),
+            source=QuoteOutcomeSource.ERP,
+            decided_on=erp.decided_on, loss_reason=None, lost_to=None,
+            human=human, erp=erp, document=document)
+    if human is not None:
+        status = QuoteOutcomeStatus(human.status)
+    elif document is not None or erp is not None:
+        status = QuoteOutcomeStatus.SENT
+    else:
+        status = QuoteOutcomeStatus.DRAFT
+    return OutcomeOfRecord(status=status, source=None, decided_on=None,
+                           loss_reason=None, lost_to=None,
+                           human=human, erp=erp, document=document)
+
+
+def latest_written_documents_for(session: Session, org: str,
+                                 quote_ids: Iterable[str],
+                                 ) -> dict[str, models.QuoteDocument]:
+    """``latest_written_document`` for many quotes in one query."""
+    wanted = {q for q in quote_ids if q}
+    if not wanted:
+        return {}
+    out: dict[str, models.QuoteDocument] = {}
+    for doc in session.scalars(
+            select(models.QuoteDocument)
+            .where(models.QuoteDocument.organization_id == org,
+                   models.QuoteDocument.quote_id.in_(wanted),
+                   models.QuoteDocument.write_state
+                   == QuoteDocumentWriteState.WRITTEN.value)
+            .order_by(models.QuoteDocument.written_at.desc(),
+                      models.QuoteDocument.quote_document_id.desc())):
+        out.setdefault(doc.quote_id, doc)        # newest first; first wins
+    return out
+
+
+def outcomes_of_record(session: Session, org: str,
+                       rows: Iterable[models.QuoteOutcome], *,
+                       written: Optional[dict[str, Optional[models.QuoteDocument]]] = None,
+                       erp: Optional[dict[str, models.QuoteDoc]] = None,
+                       ) -> dict[str, OutcomeOfRecord]:
+    """``decide`` for every platform quote among ``rows``, keyed by quote id.
+
+    The human row is the anchor: a platform quote enters the readers through
+    the row the send (or a person) wrote, and ``scripts/backfill_sent_outcomes``
+    opens one for every document sent before the send recorded anything. The
+    ERP side is joined through the quote's newest confirmed document —
+    ``erp_documents_for``, the qualified value join — so the ERP's word is
+    only ever read off the document this quote actually became.
+
+    ``written`` and ``erp`` let a caller that already holds the documents
+    (the workspace list does) pass them in rather than have them read twice.
+    """
+    rows = [r for r in rows if r.quote_id]
+    if not rows:
+        return {}
+    if written is None:
+        written = latest_written_documents_for(session, org, [r.quote_id for r in rows])
+    if erp is None:
+        erp = erp_documents_for(session, org, [written.get(r.quote_id) for r in rows])
+    return {r.quote_id: decide(r, erp.get(r.quote_id), written.get(r.quote_id))
+            for r in rows}
+
+
+def erp_outcomes_of_record(session: Session, org: str,
+                           docs: Iterable[models.QuoteDoc],
+                           ) -> dict[str, OutcomeOfRecord]:
+    """``decide`` for every ERP row, keyed by ``quote_document_id``.
+
+    The other direction of the same join: a person's row names an ERP
+    document by the ERP's own id (``quote_document_ref``), qualified by the
+    connected company where the row knows it. A row that names the company
+    joins only that company's document; one written before the qualifier
+    existed joins on the id alone.
+    """
+    docs = list(docs)
+    if not docs:
+        return {}
+    refs = {d.external_ref for d in docs}
+    by_ref: dict[str, list[models.QuoteOutcome]] = defaultdict(list)
+    for row in session.scalars(
+            select(models.QuoteOutcome).where(
+                models.QuoteOutcome.organization_id == org,
+                models.QuoteOutcome.quote_document_ref.in_(refs))):
+        by_ref[row.quote_document_ref].append(row)
+    out: dict[str, OutcomeOfRecord] = {}
+    for d in docs:
+        human = next(
+            (r for r in by_ref.get(d.external_ref, [])
+             if r.quote_document_connection_id in (None, d.connection_id)),
+            None)
+        out[d.quote_document_id] = decide(human, d)
+    return out
 
 
 def set_outcome(session: Session, org: str, *, quote_id: Optional[str] = None,

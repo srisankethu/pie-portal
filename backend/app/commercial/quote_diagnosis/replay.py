@@ -37,6 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from ...domain import models
+from .. import quote_service
 from ..config import CommercialThresholds
 from . import service
 from .rules import (BELOW_HISTORICAL_RANGE, INSUFFICIENT_EVIDENCE,
@@ -242,11 +243,16 @@ def _outcomes(session: Session, org: str) -> dict[str, str]:
     only one of those is a loss. ``ingestion.normalize.classify_outcome`` makes
     the same refusal on the ERP side.
     """
-    rows = session.execute(
-        select(models.QuoteOutcome.quote_id, models.QuoteOutcome.status)
+    rows = list(session.scalars(
+        select(models.QuoteOutcome)
         .where(models.QuoteOutcome.organization_id == org,
-               models.QuoteOutcome.quote_id.is_not(None))).all()
-    return {qid: status for qid, status in rows if status in ("WON", "LOST")}
+               models.QuoteOutcome.quote_id.is_not(None))))
+    # The outcome of record, not the row's own status: a quote the ERP marked
+    # accepted is a win here, as it is on Won & lost and in the evaluator —
+    # one rule (``quote_service.decide``) rather than a third reading.
+    return {qid: rec.status.value
+            for qid, rec in quote_service.outcomes_of_record(session, org, rows).items()
+            if rec.decided}
 
 
 def _dismissals(session: Session, org: str) -> dict[str, list[str]]:

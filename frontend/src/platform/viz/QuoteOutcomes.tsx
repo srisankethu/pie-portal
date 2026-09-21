@@ -152,6 +152,9 @@ function OutcomePanel({
   const floor = num(data?.min_decided_quotes);
   const sourcesDiffer = Boolean(data?.sources_differ);
   const unpriced = num(data?.unpriced_quotes);
+  // Decided in the books rather than here: counted in the rate, and named
+  // because a loss with no reason is one the loss mix cannot learn from.
+  const erpDecided = num(data?.erp_decided_quotes);
 
   const sliceRows = useMemo(
     () => (data ? typed<SliceRow>(data[slice]) : null), [data, slice]);
@@ -248,7 +251,10 @@ function OutcomePanel({
         </Box>
         <Box sx={{ flex: 1 }}>
           <MetricCard label="Value lost" value={<CurrencyValue value={num(data?.lost_value)} />}
-                      sub={unpriced ? `${unpriced} decided quote${unpriced === 1 ? "" : "s"} had no priced lines` : undefined} />
+                      sub={[
+                        unpriced ? `${unpriced} decided quote${unpriced === 1 ? "" : "s"} had no priced lines` : "",
+                        erpDecided ? `${erpDecided} decided in the books, reason not recorded` : "",
+                      ].filter(Boolean).join(" · ") || undefined} />
         </Box>
       </Stack>
 

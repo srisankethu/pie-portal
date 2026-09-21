@@ -509,6 +509,22 @@ class QuoteDocumentChannel(str, Enum):
     MANUAL = "MANUAL"
 
 
+class QuoteOutcomeSource(str, Enum):
+    """Who decided a quote, as ``quote_service.decide`` answers it.
+
+    ``HUMAN``: a person recorded WON or LOST on ``quote_outcomes``, with a
+    reason and a winner where it was a loss. ``ERP``: nobody here said, but
+    the ERP's own record of the same document is classified WON or LOST with
+    a date — the customer accepted or declined it there. A human row always
+    wins over the ERP's word; the ERP's word only ever fills silence. Derived
+    on every read and never written back: the sync still never opens the
+    human table, and a re-sync cannot change a recorded reason.
+    """
+
+    HUMAN = "HUMAN"
+    ERP = "ERP"
+
+
 class QuoteLossReason(str, Enum):
     """Why a quote was lost, from a list short enough that people use it.
 

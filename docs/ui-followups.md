@@ -36,6 +36,12 @@ Different answers give a materially different product.
 
 **PRODUCT** — unifying the two outcome forms is a server contract change
 
+**Closed.** Both writers already carried `lost_to` and `note`; what was missing
+was the dialog's callback and the hook's signature. `RecordOutcomeDialog` asks
+who won it on a loss, `useQuoteIntelligence.recordOutcome` carries the note, and
+`QuoteOutcomeBar` renders the shared dialog — one outcome form, used by the
+Quote Builder, the Unanswered worklist, the ERP tab and the ERP quote page.
+
 
 ### P2 · outcomes
 

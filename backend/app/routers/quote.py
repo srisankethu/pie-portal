@@ -28,7 +28,8 @@ from sqlalchemy.orm import Session
 from .. import approvals, clock, enquiry, quote_fields, quote_workspace, resolution
 from ..authz import Principal, current_principal
 from ..commercial import policy as policy_service, quote_service
-from ..domain.enums import QuoteDocumentWriteState, QuoteOutcomeStatus
+from ..domain import models
+from ..domain.enums import QuoteDocumentChannel, QuoteDocumentWriteState, QuoteOutcomeStatus
 from ..domain.origin import Companies
 from ..ai import reading
 from ..ai.provider import select_provider
@@ -497,6 +498,15 @@ def delete_quote(quote_id: str,
              if unverified else
              "This quote has been sent, so it stays on record. Only an unsent "
              "draft can be removed."))
+    # And a quote somebody has already answered for: a loss recorded straight
+    # from draft has no document, and is still a fact an analysis has counted.
+    human = quote_service.get_outcome(session, org, quote_id)
+    record = quote_service.decide(human, None) if human is not None else None
+    if record is not None and record.status is not QuoteOutcomeStatus.DRAFT:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"This quote is recorded as {record.status.value.lower()}, so it "
+            "stays on record. Only an unsent, undecided draft can be removed.")
     quote_workspace.delete(session, org, quote_id, principal.user_id)
     return {"ok": True}
 
@@ -1071,18 +1081,18 @@ def create_item(quote_id: str, line_id: str,
     return result
 
 
-@router.post("/{quote_id}/estimate", response_model=EstimateResponse)
-def create_estimate(quote_id: str,
-                    principal: Principal = Depends(current_principal),
-                    books: QuoteBooks = Depends(books_for_quote),
-                    session: Session = Depends(get_session)):
-    q = _get_editable(session, principal, quote_id)
-    _needs_saving(q, "be sent")
-    # The words for the system this quote is bound to, on every answer this
-    # endpoint gives — refusals included. They used to be filled in only where
-    # a document was actually written, so a screen that wanted to say what it
-    # had *failed* to create had nothing to name it with.
-    words = _system_words(_quote_connector(session, principal.organization_id, q))
+def _send_gates(session: Session, principal: Principal, q: Quote,
+                words: dict[str, str], *,
+                books: Optional[QuoteBooks] = None) -> Optional[EstimateResponse]:
+    """Everything a quote must satisfy before it can leave the desk, in the
+    order the workspace's ``readiness`` reports it — or ``None`` when it may.
+
+    One function for the two ways out (``create_estimate`` and ``mark_sent``),
+    so a quote the ERP send would refuse is one a person cannot mark as sent
+    either: the gates are about the quote, not about the writer. ``books`` is
+    the ERP send's book; the manual path has none and skips the one check
+    that is about it.
+    """
     blockers = store.blockers(q)
     if blockers:
         return EstimateResponse(
@@ -1124,7 +1134,8 @@ def create_estimate(quote_id: str,
             ok=False, **words,
             message=(f"{len(missing)} detail(s) this organization requires on every "
                      f"quote are missing: {', '.join(missing)}."))
-    if books.connection_id and q.connectionId and books.connection_id != q.connectionId:
+    if (books is not None and books.connection_id and q.connectionId
+            and books.connection_id != q.connectionId):
         # Belt and braces behind ``require_same_company``: the customer's book
         # and the catalogue that priced the lines disagree — a draft made
         # before the rule existed, or a customer re-attributed by a sync since.
@@ -1140,6 +1151,193 @@ def create_estimate(quote_id: str,
                      f"{companies.label_for(q.connectionId)}'s catalogue. A quote is "
                      f"written into the company that priced it — start it again "
                      f"from {companies.label_for(books.connection_id)}."))
+    return None
+
+
+@dataclass(frozen=True)
+class _RevisionPlan:
+    """Which revision a press would be, or the answer that it would be none."""
+
+    fingerprint: str
+    newest: Optional[models.QuoteDocument]
+    retrying: bool
+    revision: int
+    reference: str
+    #: Set when the newest document already covers this content: the press
+    #: creates nothing, records nothing, and this is its whole answer.
+    covers: Optional[EstimateResponse] = None
+
+
+def _revision_plan(session: Session, org: str, q: Quote, system: str) -> _RevisionPlan:
+    """Sending twice, and sending again — decided the same way for both ways out.
+
+    Three presses used to create three estimates in Zoho, because nothing on
+    the quote remembered that it had been sent and the button never changed.
+    Re-sending an *amended* quote is ordinary work, so this is not a lock:
+    unchanged content answers with the document it already produced, and
+    changed content is the next revision. Answered *before* the assessment is
+    recorded: a press that creates nothing is not a send, and writing a
+    snapshot set for it grew the audit trail by a duplicate decision per press.
+    """
+    fingerprint = store.priced_fingerprint(q)
+    newest = quote_service.latest_document(session, org, quote_id=q.id)
+    # An UNVERIFIED newest row is a send whose reply was lost and whose settle
+    # read failed. This press retries *that* revision under *its* reference,
+    # and the source's own pre-flight settles which of the two it was.
+    retrying = (newest is not None and
+                newest.write_state == QuoteDocumentWriteState.UNVERIFIED.value)
+    covers = None
+    if newest is not None and not retrying and newest.fingerprint == fingerprint:
+        # Named from the row rather than from the caller's book: this answers
+        # about the document that was actually written, which may predate a
+        # customer being re-pointed at a different system.
+        held = newest.external_system or system
+        if newest.channel == QuoteDocumentChannel.MANUAL.value:
+            message = (f"This quote was marked as sent (revision {newest.revision}) "
+                       "and nothing has changed since.")
+        else:
+            message = (f"{conn.system_label_for(held)} {conn.quote_term_for(held)} "
+                       f"{newest.external_document_number} already covers this quote "
+                       "— nothing has changed since it was created.")
+        covers = EstimateResponse(
+            ok=True, documentNumber=newest.external_document_number or None,
+            lineCount=newest.line_count, alreadyExisted=True,
+            revision=newest.revision, **_system_words(held), message=message)
+    revision = (1 if newest is None
+                else newest.revision if retrying
+                else newest.revision + 1)
+    return _RevisionPlan(
+        fingerprint=fingerprint, newest=newest, retrying=retrying,
+        revision=revision,
+        reference=quote_service.revision_reference(q.reference, revision),
+        covers=covers)
+
+
+def _assess_and_gate(session: Session, principal: Principal, q: Quote) -> None:
+    """Record the quote's own assessment *first*, then judge it — 403 if it
+    needs an approval it does not have.
+
+    The gate reads the latest snapshot per line, and until this call the only
+    thing writing snapshots was a salesperson choosing to open a drawer and
+    record an override — so the ordinary path wrote none, the gate found
+    nothing to judge, and `can_submit` was true no matter what the margins
+    were. A line priced at 0% against a 15% floor was reported sendable and
+    sent. The control the paragraph below describes existed; nothing ever
+    reached it. It also means the audit trail records every quote that was
+    *sent*, not only the ones somebody happened to annotate — and, since the
+    manual path shares this, every quote a person marked as sent too.
+
+    The gate needs an organization. It reads it from the signed-in principal
+    rather than from a second optional header — an identity the caller could
+    omit was an approval gate the caller could skip.
+    """
+    org = principal.organization_id
+    quote_service.assess_and_record(
+        session, org, quote_id=q.id, customer_ref=q.customer_ref,
+        # Which company's catalogue resolved these lines, so the frozen row
+        # says what it was judging as well as what it decided.
+        connection_id=q.connectionId,
+        lines=[quote_service.QuoteLineInput(
+            line_id=ln.id,
+            # The code, matching what the screen's own assessment sends. The
+            # description is prose and, on an unresolved line, a status message.
+            product_ref=ln.supplyCode or ln.reqCode,
+            qty=Decimal(str(ln.reqQty)),
+            proposed_price=Decimal(str(ln.quoted)) if ln.quoted is not None else None,
+            family=ln.family)
+            for ln in q.lines],
+        user_id=principal.user_id)
+    session.flush()
+
+    approval_policy = approvals.get_policy(session, org)
+    if approval_policy.require_approval_for_quotes:
+        blocked = approvals.quote_submission_block(
+            session, org, q.id,
+            # The lines this screen is already showing a below-floor warning
+            # about. Its margin uses the item's cost from the books, which is
+            # present for items the assessment has no synced bill rows for — so
+            # a line the person can see flagged in an alert was sendable.
+            also_requiring={ln.id: ln.reqCode
+                            for ln in q.lines if ln.economics().below_floor})
+        if blocked:
+            raise HTTPException(status.HTTP_403_FORBIDDEN, blocked)
+
+
+@router.post("/{quote_id}/mark-sent", response_model=EstimateResponse)
+def mark_sent(quote_id: str,
+              principal: Principal = Depends(current_principal),
+              session: Session = Depends(get_session)):
+    """A person says this quote went out — by PDF, by hand, into a book this
+    platform reads but cannot write to — and the quote is SENT from here on.
+
+    The same gates as the send and the same assessment, with no writer: a
+    quote the ERP send would refuse is one nobody can mark as sent either,
+    and the audit trail records what was marked exactly as it records what
+    was sent. What it leaves behind is a ``quote_documents`` row in channel
+    MANUAL — the content, the revision, the policy in force, and no document
+    id, because there is none — and the outcome row moved to SENT. Readiness,
+    the duplicate check and the delete guard all read that row already, so
+    nothing else has to know the difference.
+
+    Unchanged content answers that it is already marked, the way an unchanged
+    send answers that the document already covers it, and records nothing.
+    """
+    q = _get_editable(session, principal, quote_id)
+    _needs_saving(q, "be marked as sent")
+    org = principal.organization_id
+    connector = _quote_connector(session, org, q)
+    words = _system_words(connector)
+    refused = _send_gates(session, principal, q, words)
+    if refused is not None:
+        return refused
+    plan = _revision_plan(session, org, q, connector)
+    if plan.covers is not None:
+        return plan.covers
+    _assess_and_gate(session, principal, q)
+    lines = [ln for ln in q.lines if ln.supplyCode]
+    quote_service.record_document(
+        session, org, quote_id=quote_id, external_system=connector,
+        connection_id=q.connectionId, number="", document_id=None,
+        line_count=len(lines), fingerprint=plan.fingerprint,
+        reference=plan.reference, revision=plan.revision,
+        channel=QuoteDocumentChannel.MANUAL,
+        thresholds_version=policy_service.load_for_org(session, org).version)
+    session.commit()
+    warning: Optional[str] = None
+    try:
+        quote_service.set_outcome(
+            session, org, quote_id=quote_id, status=QuoteOutcomeStatus.SENT,
+            customer_ref=q.customer_ref, customer_id=q.customerId,
+            user_id=principal.user_id)
+    except (quote_service.InvalidTransition,
+            quote_service.QuoteOutcomeRepointed) as e:
+        # A decided quote, or an outcome about a different document. The
+        # marked row stands — the person said it went out — and the refusal
+        # travels with the answer rather than into a log.
+        warning = f"The outcome could not be updated: {e}"
+    session.commit()
+    return EstimateResponse(
+        ok=True, documentNumber=None, lineCount=len(lines),
+        revision=plan.revision, warning=warning, **words,
+        message=(f"Marked as sent — revision {plan.revision}, {len(lines)} lines. "
+                 f"Nothing was written into {words['systemLabel']} from here."))
+
+
+@router.post("/{quote_id}/estimate", response_model=EstimateResponse)
+def create_estimate(quote_id: str,
+                    principal: Principal = Depends(current_principal),
+                    books: QuoteBooks = Depends(books_for_quote),
+                    session: Session = Depends(get_session)):
+    q = _get_editable(session, principal, quote_id)
+    _needs_saving(q, "be sent")
+    # The words for the system this quote is bound to, on every answer this
+    # endpoint gives — refusals included. They used to be filled in only where
+    # a document was actually written, so a screen that wanted to say what it
+    # had *failed* to create had nothing to name it with.
+    words = _system_words(_quote_connector(session, principal.organization_id, q))
+    refused = _send_gates(session, principal, q, words, books=books)
+    if refused is not None:
+        return refused
 
     org = principal.organization_id
 
@@ -1159,30 +1357,11 @@ def create_estimate(quote_id: str,
     # assessment is recorded: a press that creates nothing is not a send, and
     # writing a snapshot set for it grew the audit trail by a duplicate
     # decision per press.
-    fingerprint = store.priced_fingerprint(q)
-    newest = quote_service.latest_document(session, org, quote_id=quote_id)
-    # An UNVERIFIED newest row is a send whose reply was lost and whose settle
-    # read failed. This press retries *that* revision under *its* reference,
-    # and the source's own pre-flight settles which of the two it was.
-    retrying = (newest is not None and
-                newest.write_state == QuoteDocumentWriteState.UNVERIFIED.value)
-    if newest is not None and not retrying and newest.fingerprint == fingerprint:
-        # Named from the row rather than from ``books``: this answers about the
-        # document that was actually written, which may predate a customer
-        # being re-pointed at a different system.
-        held = newest.external_system or books.system
-        return EstimateResponse(
-            ok=True, documentNumber=newest.external_document_number,
-            lineCount=newest.line_count, alreadyExisted=True,
-            revision=newest.revision, **_system_words(held),
-            message=(f"{conn.system_label_for(held)} "
-                     f"{conn.quote_term_for(held)} "
-                     f"{newest.external_document_number} already covers this quote "
-                     "— nothing has changed since it was created."))
-    revision = (1 if newest is None
-                else newest.revision if retrying
-                else newest.revision + 1)
-    reference = quote_service.revision_reference(q.reference, revision)
+    plan = _revision_plan(session, org, q, books.system)
+    if plan.covers is not None:
+        return plan.covers
+    fingerprint, newest, retrying = plan.fingerprint, plan.newest, plan.retrying
+    revision, reference = plan.revision, plan.reference
 
     # ── the commercial gate ──────────────────────────────────────────────────
     # Record the quote's own assessment *first*, then judge it. The gate reads
@@ -1199,35 +1378,7 @@ def create_estimate(quote_id: str,
     # The gate needs an organization. It reads it from the signed-in principal
     # rather than from a second optional header — an identity the caller could
     # omit was an approval gate the caller could skip.
-    quote_service.assess_and_record(
-        session, org, quote_id=quote_id, customer_ref=q.customer_ref,
-        # Which company's catalogue resolved these lines, so the frozen row
-        # says what it was judging as well as what it decided.
-        connection_id=q.connectionId,
-        lines=[quote_service.QuoteLineInput(
-            line_id=ln.id,
-            # The code, matching what the screen's own assessment sends. The
-            # description is prose and, on an unresolved line, a status message.
-            product_ref=ln.supplyCode or ln.reqCode,
-            qty=Decimal(str(ln.reqQty)),
-            proposed_price=Decimal(str(ln.quoted)) if ln.quoted is not None else None,
-            family=ln.family)
-            for ln in q.lines],
-        user_id=principal.user_id)
-    session.flush()
-
-    approval_policy = approvals.get_policy(session, org)
-    if approval_policy.require_approval_for_quotes:
-        blocked = approvals.quote_submission_block(
-            session, org, quote_id,
-            # The lines this screen is already showing a below-floor warning
-            # about. Its margin uses the item's cost from the books, which is
-            # present for items the assessment has no synced bill rows for — so
-            # a line the person can see flagged in an alert was sendable.
-            also_requiring={ln.id: ln.reqCode
-                            for ln in q.lines if ln.economics().below_floor})
-        if blocked:
-            raise HTTPException(status.HTTP_403_FORBIDDEN, blocked)
+    _assess_and_gate(session, principal, q)
     lines = [{"code": ln.supplyCode, "itemId": ln.itemId,
               "qty": ln.reqQty, "rate": ln.quoted}
              for ln in q.lines if ln.supplyCode]
@@ -1436,6 +1587,9 @@ def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
         "number": sent.external_document_number,
         "lineCount": sent.line_count,
         "revision": sent.revision,
+        # ERP: this platform wrote it. MANUAL: a person said it went out
+        # another way, and there is no number because there is no document.
+        "channel": sent.channel,
         "current": sent.fingerprint == store.priced_fingerprint(q),
         # Named, because "Sent · SQ-1001" does not say where it was sent and
         # two connected systems can both answer to that.
@@ -1454,7 +1608,39 @@ def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
         "writtenAt": clock.iso(newest.written_at),
         **_system_words(newest.external_system),
     }
+    # Whether the Send button can do anything, decided here rather than at
+    # the press: a quote whose book this platform only reads shows "Mark as
+    # sent" instead of a Send that will refuse, and an unplaceable customer
+    # is named on the draft, not after fourteen lines of work.
+    out["canSendToErp"], out["sendBlock"] = _send_capability(session, org, q)
     return out
+
+
+def _send_capability(session: Session, org: str, q: Quote) -> tuple[bool, Optional[str]]:
+    """Can this quote be written into its book from here — and if not, why.
+
+    Read at view time and without a credential: the writer's readiness is a
+    fact about the connector (``connections.quote_writer_ready``), and whether
+    the customer's book resolves is ``book_for_customer``, which lists
+    connections and reads no secret. In mock mode nothing is resolved and the
+    stand-in writes, as it always has.
+    """
+    if settings.ZOHO_QUOTE_SERVICE != "live":
+        return True, None
+    connector = _quote_connector(session, org, q)
+    if connector and not conn.quote_writer_ready(connector):
+        return False, (
+            f"{conn.system_label_for(connector)} is read by this platform but a "
+            f"{conn.quote_term_for(connector)} cannot be created there from here. "
+            "Send the quote another way and mark it as sent.")
+    if q.has_customer:
+        customer = quote_service.resolve_customer(session, org, q.customer_ref)
+        if customer is not None:
+            try:
+                conn.book_for_customer(session, org, customer)
+            except conn.ConnectionNotFound as e:
+                return False, str(e)
+    return True, None
 
 
 #: What to call the ledger when this organization has connected none.

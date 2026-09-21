@@ -725,6 +725,28 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       if (r.warning) flash(r.warning);
     });
 
+  /** The manual way out: the same gates and the same assessment as the send,
+   *  with no writer. Held the same way the send is. */
+  const doMarkSent = () =>
+    guard(async () => {
+      setSendBlock(null);
+      if (ci.gate && !ci.gate.can_submit) {
+        setSendBlock(ci.gate.blocked_reason
+          ?? "This quote needs approval before it can be marked as sent.");
+        setFilter("EXC");
+        return;
+      }
+      const r = await api.markSent(t, quote!.id);
+      if (!r.ok) {
+        setSendBlock(r.message);
+        if (r.blockers.length) setFilter("NEEDS");
+        return;
+      }
+      setQuote(await api.getQuote(t, quote!.id));
+      flash(r.message, "success");
+      if (r.warning) flash(r.warning);
+    });
+
   const selectedCount = selection.length;
   const hasLines = quote.lines.length > 0;
   const gateBlockedReason = ci.gate && !ci.gate.can_submit ? ci.gate.blocked_reason : null;
@@ -1246,6 +1268,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         blockers={blockers}
         covers={coverage(quote)}
         busy={busy}
+        onMarkSent={doMarkSent}
       />
 
       {/* Below the total, not above it: the question "did this win?" only
@@ -1254,6 +1277,8 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           QuoteOutcomeBar returns null without an outcome. */}
       <QuoteOutcomeBar
         outcome={ci.data?.outcome ?? null}
+        erp={quote.estimate?.erp ?? null}
+        systemLabel={quote.systemLabel}
         onRecord={ci.recordOutcome}
         busy={busy || ci.loading}
       />

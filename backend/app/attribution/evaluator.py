@@ -38,6 +38,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from .. import clock
+from ..commercial import quote_service
 from ..commercial.config import CommercialThresholds
 from ..commercial.insight import periods
 from ..commercial.policy import load_for_org
@@ -484,6 +485,22 @@ def _priced_lines(session: Session, org: str,
     }
 
 
+def _decided_within(rec: quote_service.OutcomeOfRecord,
+                    start: datetime, end: datetime) -> bool:
+    """Whether the decision falls in the window.
+
+    A person's decision carries an instant and is compared as one, exactly as
+    the GROUP BY this replaced compared it. The ERP records a date, so an
+    ERP-decided quote is compared on the day: a decision dated inside the
+    window's days is inside the window.
+    """
+    if rec.source is quote_service.QuoteOutcomeSource.HUMAN and rec.human is not None:
+        when = rec.human.decided_at
+        return when is not None and start <= clock.aware(when) <= end
+    return (rec.decided_on is not None
+            and start.date() <= rec.decided_on <= end.date())
+
+
 def _quote_outcomes(session: Session, org: str,
                     start: datetime, end: datetime) -> dict[str, Any]:
     """Won and lost counts for quotes decided in the window. One GROUP BY.
@@ -496,16 +513,25 @@ def _quote_outcomes(session: Session, org: str,
     structurally never records a win. Dividing that 0 by its losses states a 0%
     win rate for a question the evidence could not have answered either way.
     """
-    rows = session.execute(
-        select(models.QuoteOutcome.status, func.count(),
-               func.count().filter(models.QuoteOutcome.sent_at.is_not(None)))
-        .where(models.QuoteOutcome.organization_id == org,
-               models.QuoteOutcome.decided_at.is_not(None),
-               models.QuoteOutcome.decided_at >= start,
-               models.QuoteOutcome.decided_at <= end)
-        .group_by(models.QuoteOutcome.status)).all()
-    counts = {str(status): int(n or 0) for status, n, _ in rows}
-    sent_counts = {str(status): int(n or 0) for status, _, n in rows}
+    # Every row, then the outcome of record decides which are decided and
+    # when. It used to be one GROUP BY on the human table, which is the
+    # reading Won & lost and the replay each had their own copy of — and a
+    # quote the ERP had marked accepted counted on the ERP tab, nowhere else.
+    # ``quote_service.decide`` is now the one answer, so the three agree.
+    rows = list(session.scalars(
+        select(models.QuoteOutcome).where(
+            models.QuoteOutcome.organization_id == org)))
+    by_quote = quote_service.outcomes_of_record(session, org, rows)
+    counts: dict[str, int] = {}
+    sent_counts: dict[str, int] = {}
+    for row in rows:
+        rec = (by_quote[row.quote_id] if row.quote_id
+               else quote_service.decide(row, None))
+        if not rec.decided or not _decided_within(rec, start, end):
+            continue
+        counts[rec.status.value] = counts.get(rec.status.value, 0) + 1
+        if rec.ever_sent:
+            sent_counts[rec.status.value] = sent_counts.get(rec.status.value, 0) + 1
     won = counts.get(QuoteOutcomeStatus.WON.value, 0)
     lost = counts.get(QuoteOutcomeStatus.LOST.value, 0)
     decided = won + lost

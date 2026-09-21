@@ -522,9 +522,9 @@ def assignees(session: Session, org: str) -> list[dict[str, str]]:
 # ── the list ─────────────────────────────────────────────────────────────────
 #: What a draft is waiting on. The client maps these to words; the order here
 #: is the order they are decided in, and the first that applies wins.
-READINESS = ("EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER",
-             "UNVERIFIED_SEND", "SENT", "AWAITING_APPROVAL", "NEEDS_APPROVAL",
-             "READY")
+READINESS = ("WON", "LOST", "EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS",
+             "NO_CUSTOMER", "UNVERIFIED_SEND", "SENT", "AWAITING_APPROVAL",
+             "NEEDS_APPROVAL", "READY")
 
 
 class CompanyMismatch(ValueError):
@@ -655,6 +655,16 @@ def list_drafts(session: Session, org: str, *, user_id: str = "",
     # join ``quote_service.erp_documents_for`` performs, read-side.
     erp_by_quote = quote_service.erp_documents_for(
         session, org, list(sent_by_quote.values()))
+    # And how each quote ended, from both sources under the one rule — a
+    # quote the ERP marked accepted reads WON here, not "Sent", the same as
+    # it reads on Won & lost and on the ERP tab.
+    human_by_quote = {r.quote_id: r for r in session.scalars(
+        select(models.QuoteOutcome).where(
+            models.QuoteOutcome.organization_id == org,
+            models.QuoteOutcome.quote_id.in_([q.id for q in quotes])))}
+    records = quote_service.outcomes_of_record(
+        session, org, human_by_quote.values(),
+        written=sent_by_quote, erp=erp_by_quote)
     out = []
     for row, quote in zip(rows, quotes):
         summary = quote.to_dict(False)["summary"]
@@ -672,7 +682,8 @@ def list_drafts(session: Session, org: str, *, user_id: str = "",
             "unpriced": summary["unpriced"],
             "total": summary["grand"],
             "readiness": readiness(session, org, quote, policy,
-                                   newest_by_quote[quote.id], defs),
+                                   newest_by_quote[quote.id], defs,
+                                   record=records.get(quote.id)),
             "ownerId": quote.ownerId,
             "owner": names.get(quote.ownerId or "", ""),
             "canEdit": (may_edit(quote, user_id=user_id, role=role, policy=policy)
@@ -699,8 +710,13 @@ def _unverified(doc: Optional[models.QuoteDocument]) -> bool:
 def readiness(session: Session, org: str, quote: Quote,
               policy: models.OrgPolicy,
               newest: Optional[models.QuoteDocument],
-              defs: Optional[list[models.QuoteFieldDefinition]] = None) -> str:
+              defs: Optional[list[models.QuoteFieldDefinition]] = None, *,
+              record: Optional[quote_service.OutcomeOfRecord] = None) -> str:
     """What this draft is waiting on — one of ``READINESS``.
+
+    A decided quote is waiting on nothing: ``record`` is its outcome of
+    record (``quote_service.decide``), and WON or LOST there answers before
+    any gate is looked at — whether a person recorded it or the ERP did.
 
     The same tests the send runs, in the same order: technical blockers and
     unpriced lines first (``store.blockers``, the unpriced check), then the
@@ -721,6 +737,8 @@ def readiness(session: Session, org: str, quote: Quote,
     looking. It outranks SENT for that reason and sits after NO_CUSTOMER
     because the send itself checks blockers and the customer first.
     """
+    if record is not None and record.decided:
+        return record.status.value
     if not quote.lines:
         return "EMPTY"
     if store.blockers(quote) or any(

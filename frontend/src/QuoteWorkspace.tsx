@@ -42,7 +42,10 @@ import { CompanyRequired, api, forgetLegacyDraft } from "./api";
 import type { QuoteCompany } from "./api";
 import { CompanyPicker } from "./components/CompanyPicker";
 import { ErpQuoteList } from "./components/ErpQuoteList";
+import { erpOutcome } from "./ErpQuoteScreen";
+import { intelligence } from "./intelligence";
 import { CompanyFilter, useCompanyFilter } from "./platform/CompanyFilter";
+import { RecordOutcomeDialog } from "./platform/RecordOutcomeDialog";
 import { money } from "./money";
 import { DataGrid, numeric, text } from "./platform/DataGrid";
 import type { ColDef } from "./platform/DataGrid";
@@ -53,7 +56,7 @@ import {
 import { pathFor } from "./platform/route";
 import type { PlatformSession } from "./platform/types";
 import { since } from "./when";
-import type { ErpQuoteBook, QuoteDraftSummary, QuoteReadiness } from "./types";
+import type { ErpQuote, ErpQuoteBook, QuoteDraftSummary, QuoteReadiness } from "./types";
 
 const SUB =
   "Every quote the desk is working on, shared across the organization. Open a "
@@ -65,6 +68,16 @@ const SUB =
  *  `tip` carries the meaning, because a chip reading "Needs approval" that
  *  cannot say *what* needs approving is decoration. */
 const READINESS: Record<QuoteReadiness, { label: string; tone: Tone; tip: string }> = {
+  WON: {
+    label: "Won", tone: "good",
+    tip: "The customer ordered at this price — recorded here, or read off the "
+      + "books' own record of the document. Terminal.",
+  },
+  LOST: {
+    label: "Lost", tone: "bad",
+    tip: "Somebody else supplied it, or nobody did — recorded here, or read off "
+      + "the books' own record of the document. Terminal.",
+  },
   EMPTY: {
     label: "Empty", tone: "neutral",
     tip: "No lines yet. Open it and paste the RFQ.",
@@ -117,10 +130,10 @@ const READINESS: Record<QuoteReadiness, { label: string; tone: Tone; tip: string
 const FILTERS: [string, string, readonly QuoteReadiness[]][] = [
   ["ALL", "All", ["EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER",
                   "UNVERIFIED_SEND", "NEEDS_APPROVAL", "AWAITING_APPROVAL", "READY",
-                  "SENT"]],
+                  "SENT", "WON", "LOST"]],
   ["MINE", "Mine", ["EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER",
                     "UNVERIFIED_SEND", "NEEDS_APPROVAL", "AWAITING_APPROVAL", "READY",
-                    "SENT"]],
+                    "SENT", "WON", "LOST"]],
   // An unverified send is work: somebody has to look in the books before the
   // next press, and a pile that hid it would be the pile it was lost in.
   ["WORK", "Needs work", ["EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER",
@@ -128,14 +141,20 @@ const FILTERS: [string, string, readonly QuoteReadiness[]][] = [
   ["WAIT", "Awaiting approval", ["AWAITING_APPROVAL"]],
   ["READY", "Ready to send", ["READY"]],
   ["SENT", "Sent", ["SENT"]],
+  // Decided here or in the books — the outcome of record, the same answer
+  // Won & lost and the ERP tab give, so a quote is not "Sent" on this tab
+  // and won on the next.
+  ["DECIDED", "Decided", ["WON", "LOST"]],
 ];
 
-/** The ERP tab's piles: the sync's own classification of the ERP's word, and
- *  nothing this screen decided. "No outcome" is the common case and not a
- *  fault — silence is never read as a loss. */
+/** The ERP tab's piles: the outcome of record — a person's decision first,
+ *  the sync's classification of the ERP's word where nobody here has said —
+ *  and nothing this screen decided. "No outcome" is the common case and not a
+ *  fault: silence is never read as a loss. */
 const ERP_FILTERS: [string, string][] = [
   ["ALL", "All"], ["UNRECORDED", "No outcome"], ["WON", "Won"], ["LOST", "Lost"],
 ];
+
 
 /** What the customer cell prints for a draft nobody has assigned yet. Words
  *  rather than a blank, because a blank in a column of names reads as a
@@ -204,6 +223,8 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
    *  is "No outcome", never a loss — so the piles are the sync's, not this
    *  screen's. */
   const [erpFilter, setErpFilter] = useState("ALL");
+  /** The ERP quote whose outcome is being recorded, or none. */
+  const [recording, setRecording] = useState<ErpQuote | null>(null);
   /* One company or all, on each tab — the directory's own control, over the
      rows already loaded, and rendering nothing below two companies. The
      drafts carry the company their lines were priced from; the ERP rows carry
@@ -355,14 +376,14 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
     const c: Record<string, number> = { ALL: 0, UNRECORDED: 0, WON: 0, LOST: 0 };
     for (const q of book?.quotes_listed ?? []) {
       c.ALL += 1;
-      c[q.outcome] = (c[q.outcome] ?? 0) + 1;
+      c[erpOutcome(q)] = (c[erpOutcome(q)] ?? 0) + 1;
     }
     return c;
   }, [book]);
   const erpVisible = useMemo(() => {
     const company = erpCompany.company;
     return (book?.quotes_listed ?? []).filter((q) =>
-      (erpFilter === "ALL" || q.outcome === erpFilter)
+      (erpFilter === "ALL" || erpOutcome(q) === erpFilter)
       && (!company || q.origin?.connection_id === company));
   }, [book, erpFilter, erpCompany.company]);
 
@@ -507,9 +528,40 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
               )}
               <ErpQuoteList quotes={erpVisible}
                             showCompany={erpCompany.show}
+                            onRecord={setRecording}
                             emptyReason={book.quotes_listed.length
                               ? "Nothing matches this filter."
                               : book.empty_reason} />
+              {/* The same form the worklist and the Quote Builder use — one
+                  outcome form on this platform. The ERP raised these quotes
+                  and the platform never priced them, so the write names the
+                  ERP's own reference; the server scopes it the way the
+                  worklist is scoped. */}
+              <RecordOutcomeDialog
+                open={recording !== null}
+                title={recording
+                  ? `What happened to ${recording.number ?? recording.quote_document_ref}?`
+                  : "What happened to this quote?"}
+                summary={recording
+                  ? `${recording.customer_label} · raised ${since(recording.raised_on)}`
+                    + ` · ${recording.company}`
+                  : undefined}
+                caution="Recording an outcome is final: a decided quote cannot be
+                         reopened, because the analysis that reads it has already
+                         counted it."
+                onClose={() => setRecording(null)}
+                onRecord={async (status, lossReason, note, lostTo) => {
+                  if (!recording) return;
+                  await intelligence.documentOutcome(
+                    t, recording.quote_document_ref, status,
+                    recording.customer_label, note, lossReason, lostTo);
+                  enqueueSnackbar(
+                    `${recording.number ?? recording.quote_document_ref} recorded as `
+                    + status.toLowerCase(), { variant: "success" });
+                  setRecording(null);
+                  void loadBook();
+                }}
+              />
             </>
           )}
         </Box>

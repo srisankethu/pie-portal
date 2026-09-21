@@ -1150,7 +1150,18 @@ customer is a new quote (decision D4).
 **Branches.** Approval policy off → no approval gating (blockers and pricing
 checks still apply) · client-side gate pre-check saves a certain refusal but
 the server is the authority (an approval granted in another tab lets the send
-proceed) · refusing adapter → the binding failure held in the alert.
+proceed) · refusing adapter → the binding failure held in the alert ·
+**Mark as sent** (`POST /api/v1/quotes/{id}/mark-sent`) — the quote went out
+another way: a PDF, a phone call, a book this platform reads but cannot write
+to. The same gates and the same assessment as the send, with no writer; what it
+leaves is a `quote_documents` row in channel `MANUAL` (the content, the
+revision, the policy in force, no number because there is no document) and the
+outcome moved to SENT. Readiness, the duplicate check and the delete guard read
+that row like any other. The button sits beside Send for an ordinary quote and
+*replaces* it where the server says Send can do nothing (`canSendToErp` false,
+`sendBlock` naming why — decided on the draft, not at the button); the chip
+then reads "Marked as sent". Unchanged content answers that it is already
+marked and records nothing.
 **Ends.** Sent (chip + number, revision) · already-existed · unverified
 (reference recorded; retry) · unreachable (nothing recorded) · refused:
 unresolved / unpriced / 403 awaiting approval / source-refused · client-side
@@ -1159,16 +1170,28 @@ block.
 ### 7.9 Record the outcome (WON / LOST)
 
 **Trigger.** The outcome bar renders once an outcome row exists (first
-snapshot → DRAFT; send → SENT).
-**Path.** "Mark won" records immediately; "Mark lost…" opens a dialog whose
-reason list is the **server's** vocabulary (UNKNOWN excluded) plus optional
-"who won it" — LOST without a reason is the server's rule (422 naming every
-choice). Scoping: a salesperson may only move a quote they hold (attribution
-via outcome row → recorder → snapshot trail; everything else answers one
-uniform 404); managers/owners are unnarrowed. WON/LOST are terminal — 409 on
-any later transition; a loss recorded before the vocabulary existed renders
-"Not recorded — decided before the reason was asked for."
-**Ends.** WON · LOST with reason · refusal shown, state unchanged · cancelled.
+snapshot → DRAFT; send or mark-as-sent → SENT).
+**Path.** "Mark won" records immediately; "Mark lost…" opens **the platform's
+one outcome form** (`platform/RecordOutcomeDialog`, the same form the
+Unanswered worklist and the ERP tab use) whose reason list is the **server's**
+vocabulary (UNKNOWN excluded) plus optional "who won it" and a note — LOST
+without a reason is the server's rule (422 naming every choice). Scoping: a
+salesperson may only move a quote they hold (attribution via outcome row →
+recorder → snapshot trail; everything else answers one uniform 404);
+managers/owners are unnarrowed. WON/LOST are terminal — 409 on any later
+transition; a loss recorded before the vocabulary existed renders "Not
+recorded — decided before the reason was asked for."
+
+**The books' own word.** Once a sync has read the sent document back, the bar
+shows what the ERP recorded for it — "Zoho Books say: accepted · 14 Sep" — and
+the buttons read "Record as won" / "Record as lost…". That word is already
+**the outcome of record** everywhere else (§8.0): where nobody here has
+decided, Won & lost, the workspace list and the ERP tab all count the ERP's
+decision, source `ERP`, reason not recorded. Recording it here adds the one
+thing the ERP cannot hold — why — and a person's decision always wins over the
+ERP's word, whatever it says.
+**Ends.** WON · LOST with reason (and who) · refusal shown, state unchanged ·
+cancelled.
 
 ### 7.10 Per-line decision support (facts + AI reading)
 
@@ -1195,7 +1218,10 @@ the response is answered; the "Saved HH:MM" chip in the header is the server's
 old `localStorage` key is removed on the next visit to the workspace). The same
 draft opens on whichever desk follows its link, and a backend restart changes
 nothing. "Remove" archives the row — the number is never minted again — and is
-refused on a quote that has been sent.
+refused on a quote that has been sent, marked as sent, or decided (a loss
+recorded straight from draft has no document and is still a fact an analysis
+has counted); an unverified send is refused by name, with the reference to
+look for.
 
 An **unsaved form** is written the same way to `quote_form_drafts`, so a reload
 does not lose the work and the lines keep the cost the browser could not hold.
@@ -1246,6 +1272,28 @@ body could carry fixes it) · uniform 404 for a quote this principal does not
 hold · cancel keeps the typed state until the next successful record.
 **Ends.** Recorded (terminal) · cancelled · refusal held in the open dialog.
 
+### 8.0 The outcome of record
+
+One rule, `commercial/quote_service.decide`, answers "how did this quote end"
+for every reader — Won & lost, the attribution evaluator, the diagnosis replay,
+the wallet's lost asks, the ERP tab's headline and outcome column, and the
+workspace list's WON/LOST readiness:
+
+1. A human WON/LOST row wins, always, with its reason and winner.
+2. Otherwise the ERP's classification of the same document (joined on system,
+   company and the ERP's own id — the join §7.8 writes), when it is WON or
+   LOST **with a date**; source `ERP`, reason `NOT_RECORDED`.
+3. Otherwise the quote is open: SENT if a person, a document or the ERP's row
+   says so, DRAFT if not.
+
+Derived on every read, never written back: the sync still never opens
+`quote_outcomes`, a re-sync cannot change a recorded reason, and nothing invents
+a reason the ERP does not hold. Won & lost names the ERP-decided count beside
+the unpriced one ("N decided in the books, reason not recorded"). Before this
+each reader computed its own answer from the human table alone, which is how a
+quote the customer had accepted in Zoho stayed "awaiting an answer" on one
+screen while the ERP tab counted it won.
+
 ### 8.3 Unanswered quotes worklist (`#/unanswered-quotes`)
 
 **Trigger.** Nav "Unanswered" (every role; deliberately no count badge).
@@ -1261,6 +1309,15 @@ recorded rows leave the pile on reload. This flow records against the ERP's
 platform quote id.
 **Ends.** Outcome recorded, pile shrinks · pile read · empty ("no quotes
 synced" distinguished from "every quote decided") · error with retry.
+
+The ERP tab of the workspace and the ERP quote page record through the same
+form and the same writer: "Record…" on a row (and "Record outcome" on the page)
+where nobody here has said and the ERP has not already recorded a win — a
+decline the ERP holds still wants a reason, which the ERP cannot. A person's
+decision then shows beside the ERP's word ("Recorded here: lost · Price — … ·
+to Sandvik"), the Outcome chip reads the outcome of record with a tip naming
+who decided, and the tab's piles count that outcome rather than the ERP's word
+alone.
 
 ### 8.4 Attribution: what PIE changed (`#/what-pie-changed`)
 
@@ -1996,6 +2053,7 @@ shims, are mounted but are not flows and are not listed here.
 | PUT | `/api/v1/quotes/{quote_id}/owner` | signed-in | Hand the quote to another member; owner or a permitted manager only |
 | POST | `/api/v1/quotes/{quote_id}/discount` | signed-in | Apply a percentage discount to selected line ids, off the current quoted rate; returns 'applied' count |
 | POST | `/api/v1/quotes/{quote_id}/estimate` | signed-in | The send: blocker/unpriced refusals naming lines, assess_and_record snapshot, quote_submission_block (incl. screen's below-floor lines), fingerprint… |
+| POST | `/api/v1/quotes/{quote_id}/mark-sent` | signed-in | A person says the quote went out another way: the send's gates, assessment and revision plan with no writer; records a MANUAL document row (content, revision, policy; no number) and moves the outcome to SENT. Same guard as the send |
 | POST | `/api/v1/quotes/{quote_id}/intake` | signed-in | Paste RFQ text: AI reading with regex fallback, per-line pie-parser resolution + Zoho enrichment, AI_CALL audit, optional enquiry-corpus capture… |
 | DELETE | `/api/v1/quotes/{quote_id}/lines/{line_id}` | signed-in | Remove a line from the quote |
 | POST | `/api/v1/quotes/{quote_id}/lines/{line_id}/confirm-reading` | signed-in | Clear the proposed flag on one AI/heuristic-read line — one at a time by design |

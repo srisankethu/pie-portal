@@ -6,7 +6,7 @@
 // screen renders what it is handed, and that the two values a list over money
 // must never invent — a missing total, and an outcome nobody recorded — are not
 // invented on the way to the DOM.
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -50,6 +50,32 @@ function q(over: Partial<ErpQuote> = {}): ErpQuote {
     ...over,
   };
 }
+
+describe("recording from the list", () => {
+  it("offers Record… on the rows that want an answer, and only those", () => {
+    const onRecord = vi.fn();
+    pretendViewportIs(412);
+    render(
+      <MemoryRouter>
+        <ErpQuoteList emptyReason={null} onRecord={onRecord} quotes={[
+          q({ quote_document_ref: "open", number: "QTN-1" }),
+          q({ quote_document_ref: "won", number: "QTN-2", outcome: "WON",
+              outcome_of_record: "WON", outcome_source: "ERP",
+              source_status: "accepted", decided_on: "2026-05-20" }),
+          q({ quote_document_ref: "answered", number: "QTN-3",
+              outcome_of_record: "LOST", outcome_source: "HUMAN",
+              recorded: { status: "LOST", loss_reason: "PRICE", lost_to: null,
+                          note: null, decided_at: "2026-05-21T00:00:00Z" } }),
+        ]} />
+      </MemoryRouter>);
+    const buttons = screen.getAllByRole("button", { name: "Record…" });
+    expect(buttons).toHaveLength(1);
+    fireEvent.click(buttons[0]);
+    expect(onRecord).toHaveBeenCalledWith(expect.objectContaining({ quote_document_ref: "open" }));
+    // The outcome of record, not the ERP's word alone: the answered row reads Lost.
+    expect(screen.getByText("Lost")).toBeInTheDocument();
+  });
+});
 
 describe("a decided quote", () => {
   it("is on the list, which is the whole reason this screen exists", () => {

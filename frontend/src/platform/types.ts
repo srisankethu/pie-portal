@@ -1677,6 +1677,13 @@ export interface ZohoConnection {
   /** A registered connector's non-secret settings (company GUID, branch,
    *  endpoint …). Null for Zoho rows. Secrets are never in any response. */
   config: Record<string, string> | null;
+  /** The non-secret half of the SIGN-IN this connection uses — a different
+   *  dictionary from `config` and disjoint from it. `config` holds the
+   *  per-company fields; this holds the credential's own (a Business Central
+   *  `environment`, an Acumatica `endpoint_version`, Prophet 21's OData path),
+   *  which is what a rotation carries forward when it does not name them. Null
+   *  for Zoho rows and for a connector whose sign-in is all secret. */
+  credential_config: Record<string, string> | null;
   last_checked_at: string | null;
   last_check_ok: boolean | null;
   last_check_detail: string | null;

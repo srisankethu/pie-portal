@@ -37,31 +37,18 @@ ITEM = {
 
 
 class FakeBooks(FakeHttp):
-    """``FakeHttp`` with a write side.
+    """``FakeHttp``, with ``routes`` optional because most write tests set none.
 
-    Subclassed rather than rewritten: the GET routing, the OAuth-header
-    assertion and the token exchange are the same behaviour the read client's
-    tests already pin, and a second copy of them would be free to drift into
-    agreeing with a broken adapter.
-
-    ``writes`` maps a path fragment to a ``FakeResponse``, or to a callable
-    taking the posted body — which may raise, to stand in for a socket that
-    died mid-write.
+    The write side used to be defined here and now lives on the base, because
+    the transport's own tests send a POST through ``_request`` and needed the
+    same thing. Two fakes answering one question is the copy worth avoiding:
+    they are what the suites measure *against*, so a divergence between them
+    shows up as two suites disagreeing about the adapter rather than about the
+    fake.
     """
 
     def __init__(self, routes=None, writes=None, token_body=None):
-        super().__init__(routes or {}, token_body=token_body)
-        self.writes = writes or {}
-        self.posts: list[tuple[str, dict]] = []
-
-    def post(self, url, params=None, headers=None, json=None, **kw):
-        if "/oauth/" in url:
-            return super().post(url, params=params, **kw)
-        self.posts.append((url, dict(json or {})))
-        for fragment, body in self.writes.items():
-            if url.rstrip("/").endswith(fragment):
-                return body(json) if callable(body) else body
-        return FakeResponse({"code": 0})
+        super().__init__(routes or {}, token_body=token_body, writes=writes)
 
 
 @pytest.fixture(autouse=True)
@@ -286,14 +273,27 @@ def test_a_rate_limited_read_is_unavailable_not_a_wrong_price():
         svc.get_item("CNMG120408KCP25")
 
 
-def test_a_rate_limited_write_is_refused_because_it_never_reached_the_ledger():
-    """A 429 is the limiter declining the call outright, so nothing was written
-    and saying so — rather than "outcome unknown" — is the honest answer."""
-    svc, _ = _service(routes={"/estimates": _estimates([])},
-                      writes={"/estimates": FakeResponse({}, status=429)})
+def test_a_rate_limited_write_is_settled_by_reading_not_by_waiting_and_re_sending():
+    """Same verdict as before this test was rewritten, reached the opposite way.
+
+    It used to assert ZohoWriteRefused on the reasoning that "a 429 is the
+    limiter declining the call outright, so nothing was written". That is not
+    knowable from here — a front end can throttle a call its own backend has
+    already accepted — and the transport no longer claims it. The refusal now
+    comes from evidence instead: the write is abandoned as uncertain, the
+    settle read looks for the reference, and it is the read finding nothing
+    that says nothing landed.
+
+    Which is why the post count is asserted too. The old assertion would still
+    have passed against a transport that waited out the backoff and sent the
+    estimate a second time.
+    """
+    svc, http = _service(routes={"/estimates": _estimates([])},
+                         writes={"/estimates": FakeResponse({}, status=429)})
     with pytest.raises(ZohoWriteRefused):
         svc.create_sales_quotes("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
                             customer_ref="9", reference="r")
+    assert len(http.posts) == 1, "the estimate must not be sent a second time"
 
 
 def test_a_write_is_never_replayed_after_a_server_error():
@@ -305,6 +305,53 @@ def test_a_write_is_never_replayed_after_a_server_error():
         svc.create_sales_quotes("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
                             customer_ref="9", reference="r")
     assert len(http.posts) == 1, "the write must be attempted exactly once"
+
+
+def test_an_estimate_zoho_created_but_could_not_describe_is_found_by_reading():
+    """HTTP 201 with a body that will not parse — the document is in the books.
+
+    An intercepting proxy or a truncated transfer is enough. Reported as a
+    refusal, which is what it was, the desk is told the estimate does not exist
+    while it sits under its reference in the customer's ledger, and the quote
+    stays DRAFT: a salesperson who re-keys it by hand or tells the customer the
+    send failed has been given the wrong answer by the platform. The status had
+    already said the call landed, so the only honest next move is the read.
+    """
+    landed = {"estimate_id": "77", "estimate_number": "EST-000900",
+              "reference_number": "QB-9-zz", "line_items": [{"item_id": "44"}]}
+    seen = {"n": 0}
+
+    def estimates(params):
+        seen["n"] += 1
+        return _estimates([] if seen["n"] == 1 else [landed])
+
+    svc, http = _service(routes={"/estimates": estimates},
+                         writes={"/estimates": FakeResponse(None, status=201)})
+    est = svc.create_sales_quotes("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
+                              customer_ref="9", reference="QB-9-zz")
+    assert est.number == "EST-000900" and est.already_existed is True
+    assert len(http.posts) == 1, "the estimate must not be sent a second time"
+    assert seen["n"] == 2, "the answer has to come from a read, not from a guess"
+
+
+def test_a_forbidden_estimate_is_settled_by_reading_rather_than_declared_unwritten():
+    """403, which Books is not documented to send and an edge in front of it is.
+
+    This used to fall past the auth branch into "Zoho refused the estimate —
+    nothing was written" with no read behind it. The gateway that can answer
+    401 after the backend accepted the call answers 403 the same way, so the
+    settle read is what decides, exactly as it does for the 401.
+    """
+    svc, http = _service(routes={"/estimates": _estimates([])},
+                         writes={"/estimates": FakeResponse(
+                             {"message": "Forbidden"}, status=403)})
+    with pytest.raises(ZohoWriteRefused) as e:
+        svc.create_sales_quotes("Pitti", [{"code": "C", "itemId": "44", "qty": 1, "rate": 10}],
+                            customer_ref="9", reference="QB-9-zz")
+    assert len(http.posts) == 1, "the estimate must not be sent a second time"
+    # Refused in the end, but on evidence: the read looked and found nothing,
+    # which is the only thing that makes "send it again" safe to say.
+    assert "safe" in str(e.value)
 
 
 def test_a_network_timeout_is_settled_by_reading_not_by_sending_again():

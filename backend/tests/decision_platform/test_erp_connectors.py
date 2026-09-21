@@ -29,6 +29,8 @@ from datetime import date
 from decimal import Decimal
 from urllib.parse import quote, unquote
 
+import dataclasses
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -53,11 +55,13 @@ from app.ingestion.erp.transport import RestTransport
 from app.ingestion.normalize import (normalize_bill, normalize_invoice,
                                      normalize_quote_document)
 from app.ingestion.sync import SyncService
+from app.repositories import ReadModelRepository
 from app.routers import connections as connections_router, platform_auth
 from app.seed import SEED_PASSWORD, ensure_org_and_users
 
 ORG = "org_pie"
 OWNER = "s.menon@pie.example"
+MANAGER = "m.rao@pie.example"
 SALES = "r.nair@pie.example"
 
 
@@ -1659,6 +1663,81 @@ def test_rotation_replaces_the_whole_secret_document(db):
         "token_id": "ti2", "token_secret": "ts2"})
     material = conn.credential_material(db, row)
     assert material.secrets == {"consumer_secret": "cs2", "token_secret": "ts2"}
+    # And the readable half, which this test did not look at for as long as it
+    # has existed. That omission is why the defect the sibling below pins
+    # survived: a rotation that asserts only ``secrets`` cannot see what it did
+    # to the settings stored beside them. NetSuite has no optional field to
+    # lose, so what is pinned here is the narrower half — the non-secret fields
+    # this rotation *did* name are the ones on file afterwards, and nothing
+    # else has appeared beside them.
+    assert row.credential.config == {"consumer_key": "ck", "token_id": "ti2"}
+
+
+#: The three connectors whose credential declares an OPTIONAL non-secret field,
+#: with the rotation an owner actually sends. The rotate form
+#: (``ConnectionsPanel.tsx``) opens empty and gates its button on the REQUIRED
+#: fields, so the optional one is simply absent from every rotation where
+#: nobody thought to re-type it — which is the input, not an edge case.
+#:
+#: Each connector reads its field with a *default*, so losing one is not
+#: neutral: Business Central falls back from "sandbox" to production against a
+#: tenant where the same company GUID exists, and the rotation returns 200.
+_OPTIONAL_SETTINGS = {
+    "dynamics365": {
+        "connect": {"tenant_id": "t", "client_id": "c", "client_secret": "s1",
+                    "environment": "sandbox", "company_id": "bc-guid"},
+        "rotate": {"tenant_id": "t", "client_id": "c", "client_secret": "s2"},
+        "kept": {"environment": "sandbox"},
+        "secrets": {"client_secret": "s2"},
+    },
+    "acumatica": {
+        "connect": {"base_url": "https://acu.example", "username": "u",
+                    "password": "p1", "endpoint_version": "20.200.001",
+                    "tenant": "T1"},
+        "rotate": {"base_url": "https://acu.example", "username": "u",
+                   "password": "p2"},
+        "kept": {"endpoint_version": "20.200.001"},
+        "secrets": {"password": "p2"},
+    },
+    "prophet21": {
+        "connect": {"base_url": "https://p21.example", "username": "api",
+                    "password": "p1", "odata_root": "/odataservice/odata/view",
+                    "view_prefix": "p21_view_", "company_id": "1234567"},
+        "rotate": {"base_url": "https://p21.example", "username": "api",
+                   "password": "p2"},
+        "kept": {"odata_root": "/odataservice/odata/view",
+                 "view_prefix": "p21_view_"},
+        "secrets": {"password": "p2"},
+    },
+}
+
+
+def test_a_rotation_keeps_the_optional_settings_it_never_named(db):
+    """Re-typing a sign-in must not silently move the connection somewhere else.
+
+    Replacing ``config`` wholesale on rotation erased every optional setting the
+    caller had not re-entered, because ``split_credential_inputs`` emits only
+    the keys that arrived non-empty. A Business Central credential rotated
+    without ``environment`` lost "sandbox" and the source fell back to
+    production; the call returned 200 and the follow-up check reported success,
+    because the same company GUID exists on the live tenant. Acumatica's
+    endpoint version and Prophet 21's OData path and view prefix revert to their
+    own defaults by exactly the same route.
+
+    The secret half is asserted whole in the same pass, on purpose: the fix is a
+    merge of the *readable* fields only, and a merge that leaked into the
+    secrets would leave half an old sign-in on file. Equality on the whole
+    document is what says it did not.
+    """
+    for connector, case in _OPTIONAL_SETTINGS.items():
+        row = conn.connect_erp(db, ORG, connector=connector,
+                               values=case["connect"])
+        conn.rotate_erp_credential(db, ORG, row.credential_id,
+                                   values=case["rotate"])
+        assert conn.credential_material(db, row).secrets == case["secrets"], connector
+        for name, value in case["kept"].items():
+            assert row.credential.config.get(name) == value, (
+                f"{connector}: {name} was erased by a rotation that never named it")
 
 
 def test_the_zoho_typed_resolver_refuses_another_connectors_row(db):
@@ -1733,6 +1812,40 @@ def us_org(db):
     return "org_us"
 
 
+#: Every table a pull writes that carries provenance, against the column
+#: holding the source system's own id — masters key on ``external_id``, the
+#: document tables on ``external_ref``. That is the same split
+#: ``ReadModelRepository._for_upsert`` takes as ``ref_col``, and it is written
+#: down here because the pins below have to walk *all five*: the id-space pin
+#: in this module counted customers and nothing else, so a regression that
+#: pooled the invoice and bill lines while leaving the masters alone would have
+#: read clean. A table also makes an added table a visible edit rather than a
+#: silent omission.
+_SOURCED = {
+    models.Customer: "external_id",
+    models.Product: "external_id",
+    models.Vendor: "external_id",
+    models.SalesTxn: "external_ref",
+    models.CostRecord: "external_ref",
+}
+
+
+def _rows_for(db, model, org):
+    return db.scalars(select(model).where(model.organization_id == org)).all()
+
+
+def _record_connection(db, org, connection_id):
+    """A connected company on the books, which is what ``_sole_connection``
+    counts. The connector is incidental to that query — it filters on the
+    organization alone — but it is set truthfully so the row is not a fixture
+    that could only exist in a test."""
+    db.add(models.ZohoConnection(connection_id=connection_id,
+                                 organization_id=org, connector="netsuite",
+                                 label=connection_id,
+                                 zoho_organization_id=connection_id))
+    db.flush()
+
+
 def test_multi_connector_sync(db, us_org):
     """A NetSuite pull leaves no row anywhere claiming Zoho."""
     report = SyncService(db, _CanonicalStub(), us_org,
@@ -1776,14 +1889,142 @@ def test_multi_connector_sync(db, us_org):
 
 
 def test_two_connectors_sharing_external_ids_stay_two_sets_of_records(db, us_org):
+    """Every kind of row, not only the customers.
+
+    This pin checked ``len(customers) == 2`` and stopped, so the four other
+    tables the same unique key protects were covered by nothing — and two of
+    them key on ``external_ref``, a different column and a different argument
+    to ``_for_upsert``, which is where the two sides would drift apart first.
+    """
     SyncService(db, _CanonicalStub(), us_org,
                 connector="netsuite", connection_id="conn-ns").run()
     SyncService(db, _CanonicalStub(), us_org,
                 connector="prophet21", connection_id="conn-p21").run()
-    customers = db.scalars(select(models.Customer).where(
-        models.Customer.organization_id == us_org)).all()
-    assert len(customers) == 2
-    assert {c.connector for c in customers} == {"netsuite", "prophet21"}
+    for model, ref in _SOURCED.items():
+        rows = _rows_for(db, model, us_org)
+        # Both stubs run on the default prefix, so the ids genuinely collide.
+        # Asserted rather than assumed: a pin for non-pooling that quietly
+        # stopped colliding would pass on two rows that were never in danger of
+        # pooling in the first place.
+        assert len({getattr(r, ref) for r in rows}) == 1, model.__name__
+        assert len(rows) == 2, f"{model.__name__}: {[r.connector for r in rows]}"
+        assert {r.connector for r in rows} == {"netsuite", "prophet21"}, model.__name__
+
+
+def test_two_connections_of_one_connector_stay_two_sets_of_records(db, us_org):
+    """Two books of the SAME ERP, both issuing ``SAME-C1``, are two records.
+
+    This is the entire reason ``connection_id`` sits in ``uq_customer_source``
+    beside the connector, and until the connector matrix was run nothing pinned
+    it: the test above varies the *connector* and holds nothing constant about
+    two connections of one. Two companies on one NetSuite account is the
+    ordinary shape of a US client, not an exotic one, and the id spaces of two
+    books under one subscription overlap freely.
+    """
+    for connection_id in ("conn-1", "conn-2"):
+        SyncService(db, _CanonicalStub("SAME"), us_org,
+                    connector="netsuite", connection_id=connection_id).run()
+    for model, ref in _SOURCED.items():
+        rows = _rows_for(db, model, us_org)
+        assert len({getattr(r, ref) for r in rows}) == 1, model.__name__
+        assert len(rows) == 2, f"{model.__name__}: pooled onto one row"
+        assert {r.connection_id for r in rows} == {"conn-1", "conn-2"}, model.__name__
+
+
+def test_two_organizations_on_one_connector_never_reach_each_others_rows(db, us_org):
+    """``organization_id`` is the first column of that key, and it holds.
+
+    Two of this platform's own clients, both on NetSuite, both with customer
+    ``SAME-C1``. Cheap to pin and expensive to be wrong about: this is the
+    boundary between tenants rather than between books, so a leak here is one
+    client reading another's suppliers and invoice lines.
+
+    Read back through ``ReadModelRepository`` and not only off the tables,
+    because that is the surface a pull resolves against — and it is the one
+    with a plausible route across, since it falls back to an unsourced match
+    when the exact one misses.
+    """
+    other = "org_mw"
+    db.add(models.Organization(organization_id=other, name="Midwest Tooling",
+                               currency="USD"))
+    db.flush()
+    SyncService(db, _CanonicalStub("SAME"), us_org,
+                connector="netsuite", connection_id="conn-a").run()
+    SyncService(db, _CanonicalStub("SAME"), other,
+                connector="netsuite", connection_id="conn-b").run()
+
+    for model, ref in _SOURCED.items():
+        for org, connection_id in ((us_org, "conn-a"), (other, "conn-b")):
+            rows = _rows_for(db, model, org)
+            assert len(rows) == 1, f"{model.__name__} in {org}: {len(rows)} rows"
+            assert rows[0].connection_id == connection_id, model.__name__
+            assert rows[0].connector == "netsuite", model.__name__
+        assert len(db.scalars(select(model)).all()) == 2, model.__name__
+
+    for org, connection_id in ((us_org, "conn-a"), (other, "conn-b")):
+        repo = ReadModelRepository(db, org, connector="netsuite",
+                                   connection_id=connection_id)
+        for resolve, external_id in (
+                (repo.get_customer_by_external, "SAME-C1"),
+                (repo.get_product_by_external, "SAME-I1"),
+                (repo.get_vendor_by_external, "SAME-V1")):
+            row = resolve(external_id)
+            assert row is not None, f"{org} cannot resolve its own {external_id}"
+            assert row.organization_id == org, (
+                f"{org} resolved {external_id} to {row.organization_id}")
+
+
+def test_a_first_sync_under_a_new_connection_adopts_every_kind_of_row(db, us_org):
+    """Rows written before a connection was recorded are claimed by the one
+    connection there is — on every table, not on the four somebody checked.
+
+    ``adopt_connectionless`` had no test anywhere in the repo; the only places
+    the name appeared were the line that sets it and the line that reads it.
+    What that silence cost was one table: ``upsert_vendor`` ran its own
+    exact-source select instead of going through ``_for_upsert``, so the first
+    pull after a connection was recorded re-stamped the customers, products,
+    sales and cost rows in place and inserted the entire supplier master a
+    second time beside itself — each old row reading "source not recorded",
+    with nothing left hanging off it.
+    """
+    SyncService(db, _CanonicalStub(), us_org,
+                connector="netsuite", connection_id=None).run()
+    _record_connection(db, us_org, "conn-ns")
+    SyncService(db, _CanonicalStub(), us_org,
+                connector="netsuite", connection_id="conn-ns").run()
+
+    for model, ref in _SOURCED.items():
+        rows = _rows_for(db, model, us_org)
+        assert len(rows) == 1, (
+            f"{model.__name__} twinned: "
+            f"{[(getattr(r, ref), r.connection_id) for r in rows]}")
+        assert rows[0].connection_id == "conn-ns", model.__name__
+
+
+def test_a_connectionless_row_is_left_alone_when_the_org_has_two_books(db, us_org):
+    """With two connections on file nothing can say which book an unclaimed row
+    came from, so the pull inserts its own rather than guessing.
+
+    The other half of the pin above, and the half worth having: the duplicate
+    this leaves is the cheap failure, deliberate, and reported by
+    ``scripts/diagnose_attribution.py`` for an owner to decide. Adopting under a
+    guess is the expensive one — it pools two companies' customers into one
+    book, and nothing downstream can unpick that. A fix for the twinning above
+    that stopped consulting ``_sole_connection`` would pass there and fail here,
+    which is the only reason this test exists.
+    """
+    SyncService(db, _CanonicalStub(), us_org,
+                connector="netsuite", connection_id=None).run()
+    for connection_id in ("conn-1", "conn-2"):
+        _record_connection(db, us_org, connection_id)
+    SyncService(db, _CanonicalStub(), us_org,
+                connector="netsuite", connection_id="conn-1").run()
+
+    for model in _SOURCED:
+        # "" stands in for the unattributed row so the comparison sorts; what
+        # matters is that it is still unattributed and still there.
+        books = sorted(r.connection_id or "" for r in _rows_for(db, model, us_org))
+        assert books == ["", "conn-1"], f"{model.__name__}: {books}"
 
 
 def test_a_foreign_currency_document_is_refused_not_pooled(db, us_org):
@@ -1950,3 +2191,142 @@ def test_zoho_rotation_and_erp_rotation_refuse_each_others_rows(client):
                                          "token_secret": "t2"}})
     assert right.status_code == 200, right.text
     assert right.json()["rotated"] is True
+
+
+def test_the_connections_list_publishes_the_settings_a_rotation_carries_forward(client):
+    """The rotate form shows what it is about to keep, so the list must serve it.
+
+    Two dictionaries of non-secret settings hang off a connection and they are
+    disjoint: ``config`` is the per-company half and the credential's own half
+    — the Business Central ``environment``, the Acumatica endpoint version,
+    Prophet 21's OData path — sits on the shared credential row. The response
+    carried only the first, so the form that reads "a box left blank keeps its
+    stored value" opened every box blank and nothing failed anywhere: an empty
+    prefill and no prefill render identically, which is why this is pinned on
+    the response rather than left to the screen.
+
+    The two are asserted as *whole* dictionaries, not by looking up the one key
+    that matters. A response that started merging them would satisfy any
+    `in`-style assertion while handing the form per-company keys that the
+    rotate endpoint refuses by name.
+    """
+    hdr = _hdr(client, OWNER)
+    r = client.post("/api/v1/connections/erp", headers=hdr,
+                    json={"connector": "dynamics365",
+                          "values": {"tenant_id": "t1", "client_id": "c1",
+                                     "client_secret": "s3cr3t",
+                                     "environment": "sandbox",
+                                     "company_id": "bc-guid"}})
+    assert r.status_code == 201, r.text
+    body = client.get("/api/v1/connections", headers=hdr)
+    assert body.status_code == 200, body.text
+    row = next(c for c in body.json()["connections"]
+               if c["connector"] == "dynamics365")
+    assert row["credential_config"] == {"tenant_id": "t1", "client_id": "c1",
+                                        "environment": "sandbox"}
+    assert row["config"] == {"company_id": "bc-guid"}
+    # The other half, over the whole body rather than over the fields somebody
+    # thought to name: a secret reaches a screen through whichever key is added
+    # next, not through the one being reviewed today.
+    assert "s3cr3t" not in body.text
+
+
+def test_a_manager_is_not_served_the_sign_in_the_rotate_form_reads(client):
+    """Owner-only, and the only field in this response that is.
+
+    ``GET /api/v1/connections`` is ``require_manager_or_owner`` and the field
+    above was added to it unqualified, so a sales manager started receiving an
+    ERP service account's user name and the base URL it signs in at — NetSuite
+    hands over a consumer key and token id the same way. Nothing had reached
+    that role before: ``connect_erp`` never fills the typed ``client_id``
+    column for a registry connector, so a manager's row carried the company
+    half and nothing of the sign-in.
+
+    Asserted over the whole body and not only on the key, because the point is
+    that the value is absent rather than that one field name is. Nothing on a
+    screen would have caught it either way — the card renders ``config``, and
+    the rotate form that consumes this is behind ``canManage``, which is the
+    same owner test.
+    """
+    owner = _hdr(client, OWNER)
+    r = client.post("/api/v1/connections/erp", headers=owner,
+                    json={"connector": "acumatica",
+                          "values": {"base_url": "https://acu.example",
+                                     "username": "svc_pie_integration",
+                                     "password": "p1",
+                                     "endpoint_version": "20.200.001",
+                                     "tenant": "T1"}})
+    assert r.status_code == 201, r.text
+
+    body = client.get("/api/v1/connections", headers=_hdr(client, MANAGER))
+    assert body.status_code == 200, body.text
+    assert body.json()["can_manage"] is False
+    row = next(c for c in body.json()["connections"]
+               if c["connector"] == "acumatica")
+    assert row["credential_config"] is None
+    assert "svc_pie_integration" not in body.text
+    assert "acu.example" not in body.text
+    # The per-company half is what this role did get before and still gets;
+    # withholding the sign-in is not meant to blank the card.
+    assert row["config"] == {"tenant": "T1"}
+
+    owner_row = next(c for c in client.get("/api/v1/connections", headers=owner)
+                     .json()["connections"] if c["connector"] == "acumatica")
+    assert owner_row["credential_config"] == {
+        "base_url": "https://acu.example", "username": "svc_pie_integration",
+        "endpoint_version": "20.200.001"}
+
+
+def test_a_field_the_spec_has_moved_into_the_secrets_stops_being_published(client):
+    """The read path filters through the spec, as the write path already did.
+
+    ``rotate_erp_credential`` rebuilds the readable half from
+    ``spec.credential_fields`` on every rotation, and says why: a key the spec
+    has dropped, or has since moved into the secrets, is not resurrected into
+    something a reader can read. Nothing rewrites the rows already on file when
+    a spec changes, so a credential stored before the change still carries the
+    old key in ``cred.config`` until it is next rotated — and this response
+    served that dictionary verbatim. Write defended, read disclosed, and read
+    is the half that reaches a browser.
+    """
+    owner = _hdr(client, OWNER)
+    r = client.post("/api/v1/connections/erp", headers=owner,
+                    json={"connector": "acumatica",
+                          "values": {"base_url": "https://acu.example",
+                                     "username": "svc_pie_integration",
+                                     "password": "p1",
+                                     "endpoint_version": "20.200.001",
+                                     "tenant": "T1"}})
+    assert r.status_code == 201, r.text
+
+    def row_now():
+        body = client.get("/api/v1/connections", headers=owner)
+        assert body.status_code == 200, body.text
+        return body, next(c for c in body.json()["connections"]
+                          if c["connector"] == "acumatica")
+
+    _, before = row_now()
+    assert before["credential_config"]["username"] == "svc_pie_integration"
+
+    # The spec reclassifies an existing field, with the stored row untouched —
+    # which is the whole scenario, since no migration rewrites those rows.
+    stored = erp.get_spec("acumatica")
+    reclassified = dataclasses.replace(
+        stored,
+        credential_fields=tuple(
+            dataclasses.replace(f, secret=True) if f.name == "username" else f
+            for f in stored.credential_fields))
+    original = erp.get_spec
+    erp.get_spec = lambda key: reclassified if key == "acumatica" else original(key)
+    try:
+        body, after = row_now()
+        assert "username" not in after["credential_config"]
+        assert "svc_pie_integration" not in body.text
+        # Still the connector's own non-secret fields, not an empty dictionary:
+        # a filter that dropped everything would pass the assertion above and
+        # blank the rotate form, which is the defect this whole change fixes.
+        assert after["credential_config"] == {
+            "base_url": "https://acu.example",
+            "endpoint_version": "20.200.001"}
+    finally:
+        erp.get_spec = original

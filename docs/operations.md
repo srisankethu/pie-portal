@@ -522,6 +522,46 @@ in a crontab is an unexpiring credential with an owner's authority, and
 withdrawing it means rotating `AUTH_SECRET` and signing every user out. A
 password can be changed for one account without touching anyone else.
 
+### Clearing vendor twins left by the adoption bug
+
+A book synced before `upsert_vendor` was routed through `_for_upsert` carries a
+duplicate of every supplier: a good row naming the connection, and a
+NULL-connection twin beside it holding only a name. The bills are fine —
+`get_vendor_by_external` finds the exact-source match first, so everything
+written since hangs off the good row — but the twin will not clear itself. That
+same lookup returning first is what stops a later sync ever adopting it.
+
+Look first. The default run writes nothing:
+
+```bash
+cd backend && python3 ../scripts/diagnose_attribution.py
+```
+
+It splits the NULL-connection vendors into three kinds and only the first is
+ever deleted:
+
+```
+vendors with no connection: 3  (2 have a surviving twin, 1 are the only copy)
+twinned orphans: 1 deletable, 1 blocked by a reference
+   DELETABLE V-1   Kennametal        twin(s)=1
+   BLOCKED   V-2   Sandvik           held by cost_records.vendor_id=1
+```
+
+Then, once the DELETABLE list reads the way you expect:
+
+```bash
+cd backend && python3 ../scripts/diagnose_attribution.py --repair
+```
+
+**An only-copy row is never deleted.** Without a surviving twin the row is not a
+duplicate, it is the sole record of that supplier, and a sync on a
+single-connection book will adopt it. **A blocked row is never deleted either** —
+something still points at it, and moving those references onto the twin would be
+a guess about which vendor a historical document meant. Both are printed and
+left for a person.
+
+Re-run without `--repair` afterwards to confirm the deletable count is zero.
+
 ### crontab
 
 Pick the hour to suit the business: the pull should land before the first person
@@ -931,8 +971,9 @@ Runs weekly (Mondays, 04:00 UTC / 09:30 IST) and on demand via
 `ai`, `zoho` or both.
 
 It exercises `backend/tests/live/`, which the default suite deliberately
-excludes (`pytest.ini` carries `addopts = -m "not live"`) because these tests
-call a real model and a real Zoho book. That exclusion was right and the suites
+excludes (`pytest.ini` carries `not live` in its `addopts`, alongside the
+unrelated `not matrix`) because these tests call a real model and a real Zoho
+book. That exclusion was right and the suites
 still ended up never running anywhere, which is why this workflow exists.
 
 It fails loudly when a contract breaks — a red scheduled workflow emails the

@@ -375,9 +375,23 @@ class ZohoWriteUncertain(ZohoError, SourceWriteUncertain):
 
     Raised instead of retrying when a non-idempotent call fails in a way that
     cannot distinguish "Zoho never saw it" from "Zoho did it and the answer was
-    lost" — a 5xx, or a dropped connection. Replaying either of those is how one
-    quote becomes two estimates in a customer's inbox, so the caller is told the
-    truth and given a way to look the record up instead.
+    lost": a dropped connection, a 429, a 5xx, a 401 or 403 whose body does not
+    say the endpoint was outside the grant, and a 2xx whose body this adapter
+    cannot read as a created record. Replaying any of those is how one quote
+    becomes two estimates in a customer's inbox, so the caller is told the truth
+    and given a way to look the record up instead.
+
+    That list read "a 5xx, or a dropped connection" while the 401 and 429
+    branches were still re-sending on their own reasoning. It is written out in
+    full here because this docstring is where a caller deciding what to catch
+    looks, and a taxonomy that under-reports its own membership invites exactly
+    the second settlement path ``_request`` exists to make unnecessary.
+
+    The last member arrived the same way the first two did — by someone reading
+    the list back against the code. A 201 with a truncated body is Zoho saying
+    the estimate exists; parsing it was what failed, and reporting that as
+    "refused" is the one answer in this taxonomy that asserts nothing was
+    written about a record that is there.
     """
 
 
@@ -491,13 +505,29 @@ class ZohoTransport:
     credential ends up applied on one side and stale on the other.
 
     ``_request`` is method-aware on purpose. A GET may be replayed freely, so it
-    keeps the full retry budget. Anything else is replayed only where the
-    request provably never reached the books — a rejected token, a rate-limit
-    refusal — and never after a 5xx, which cannot be told apart from a
-    successful write whose response was lost.
+    keeps the full retry budget. Anything else is sent exactly once: a dropped
+    connection, a 429 and a 5xx raise ``ZohoWriteUncertain``, and so do a 401
+    and a 403 — unless Zoho's body says the endpoint was never in the grant,
+    which is the one refusal that is definite about having refused before
+    acting. So does an answer in the 2xx band that cannot be read back as a
+    created record, because the status has already said the call landed.
+    Uncertain hands the caller the only safe way to learn what happened, which
+    is to read the record back.
+
+    That paragraph used to end "replayed only where the request provably never
+    reached the books — a rejected token, a rate-limit refusal", and neither of
+    those is provable from here. A gateway can mint a 401 after the backend has
+    accepted the call, and a front end can throttle a call its backend already
+    took; both are the same bytes as the case where nothing happened.
+    ``erp/transport.py`` — the same discipline written later, for the five other
+    ERPs — refuses both readings, and one quote becoming two estimates in a
+    customer's books is far too expensive for the two transports to hold two
+    policies about it.
     """
 
-    #: Methods safe to replay. Replaying anything else risks a duplicate write.
+    #: Methods safe to replay. Everything else goes exactly once, whatever the
+    #: failure looks like — the failures that look safest to re-send are
+    #: precisely the ones that duplicate a document.
     _REPLAYABLE = frozenset({"GET"})
 
     def __init__(self, http: Any = None,
@@ -692,35 +722,104 @@ class ZohoTransport:
             }
             if json is not None:
                 kwargs["json"] = json
-            resp = getattr(self._client(), verb.lower())(url, **kwargs)
+            # Both resolved outside the try: building the client sends
+            # nothing and neither does looking up the method on it, so a
+            # failure in either must not be reported as a write of unknown
+            # fate. An injected transport missing the verb is a programming
+            # error here, and dressing it as "check Zoho before sending it
+            # again" sends someone to hunt a ledger for a record that was
+            # never on the wire.
+            client = self._client()
+            send = getattr(client, verb.lower())
+            try:
+                resp = send(url, **kwargs)
+            except Exception as e:                           # noqa: BLE001
+                # A fault on this side of the answer is the same unknown as a
+                # 5xx: the request may well have been received, acted on, and
+                # answered into a socket that had gone. Raised raw it reaches a
+                # write caller as a bare connection error, which reads as
+                # "nothing happened" — which is why both write paths in
+                # ``zoho_books_service`` grew a trailing ``except Exception``
+                # that settles by reading. The fault belongs in the taxonomy
+                # here, not in a second settlement path at each call site.
+                if replayable:
+                    raise
+                raise ZohoWriteUncertain(
+                    f"Zoho did not answer {verb} {path} ({type(e).__name__}: {e}). "
+                    "Whether the record was written cannot be told from here, so it "
+                    "has not been sent again — check Zoho before sending it again."
+                ) from e
             self._last_call_at = time.monotonic()
             self.calls += 1
 
-            if resp.status_code == 401:
+            # 403 alongside 401 because the argument for the 401 is about the
+            # hop that answers, not about Zoho: a gateway, WAF or proxy in front
+            # of the books can mint either one *after* the backend has accepted
+            # the call. Books itself signals auth as 401 and nothing in this
+            # repo has seen it send a 403 — which is the reason to cover it
+            # rather than a reason not to. ``erp/transport.py`` pairs the two
+            # without that proof; a 403 arriving here from an edge it did not
+            # name would otherwise have fallen to the generic branch below and
+            # been reported to a salesperson as "Zoho said no, nothing was
+            # written", with no read to back the claim up.
+            if resp.status_code in (401, 403):
+                if not replayable:
+                    # A write gets one attempt, so every answer it is ever going
+                    # to get has to be read out of this one response.
+                    scope = self._scope_refusal(path, verb, resp)
+                    if scope is not None:
+                        # Zoho declined before acting on the call, so this one
+                        # is definite: nothing was written, and the owner needs
+                        # a permission rather than a lookup. The read path below
+                        # asks the same question only on the *second* refusal,
+                        # and the difference in ordering is deliberate on both
+                        # sides. A retry costs a read nothing, so it is worth
+                        # minting one fresh token to rule out the cheap
+                        # explanation before blaming the grant; a write never
+                        # reaches a second attempt, so an answer only reachable
+                        # from there is an answer never reached at all — and a
+                        # connection simply missing estimates.CREATE would be
+                        # reported as "may or may not have been written" for a
+                        # call that certainly was not.
+                        raise scope
+                    self._forget_access_token()
+                    # Everything else these two can mean is ambiguous. It is
+                    # *usually* "nothing happened" — but only usually: a gateway
+                    # can mint one after the backend accepted the call, and
+                    # re-sending on that reading is how one quote becomes two.
+                    # The token is dead for every source built on this
+                    # credential either way, so it goes; the request does not.
+                    raise ZohoWriteUncertain(
+                        f"Zoho answered HTTP {resp.status_code} to {verb} {path} and the "
+                        "access token has been dropped, but the call has not been sent "
+                        "again — whether the record was written cannot be told from "
+                        "here. Check Zoho before sending it again.")
                 # Token may have been revoked mid-run; drop the cache and retry
-                # once. Safe for a write too: a rejected token never reached the
-                # books, so nothing can have been created.
+                # once.
                 self._forget_access_token()
-                last = "401 unauthorized"
+                last = f"HTTP {resp.status_code} (unauthorized)"
                 if attempt == 0:
                     continue
-                # A *second* 401 on a freshly minted token is not a bad token —
-                # the token endpoint just issued it. It is this endpoint being
-                # outside the grant, and Zoho says so in the body.
-                scope = scope_for_path(path, verb)
-                if scope and self._is_scope_refusal(resp):
-                    raise ZohoScopeError(
-                        f"Zoho refused {path}: this connection was not granted "
-                        f"{scope}. The credentials are valid — everything else "
-                        f"is still readable. Re-authorise the connection with "
-                        f"{scope} added to the scope list to enable it.",
-                        path=path, scope=scope)
+                # A *second* refusal on a freshly minted token is not a bad
+                # token — the token endpoint just issued it. It is this endpoint
+                # being outside the grant, and Zoho says so in the body.
+                scope = self._scope_refusal(path, verb, resp)
+                if scope is not None:
+                    raise scope
                 raise ZohoAuthError(
                     "Zoho rejected the access token. Confirm the refresh token, the "
                     "client credentials and the data centre all belong to the same account.")
             if resp.status_code == 429:
-                # Also safe to replay for a write: the limiter refuses the call
-                # outright rather than half-applying it.
+                if not replayable:
+                    # Not "the limiter refused the call outright", which is what
+                    # this branch used to assume. A front end can throttle a
+                    # call its own backend has already accepted, and from here
+                    # that is the same 429; waiting and re-sending bets a
+                    # customer's books on the other reading.
+                    raise ZohoWriteUncertain(
+                        f"Zoho rate-limited {verb} {path} (HTTP 429). Whether the "
+                        "record was written cannot be told from here, so it has not "
+                        "been sent again — check Zoho before sending it again.")
                 throttled = True
                 last = "HTTP 429 (rate limited)"
                 delay = self._retry_after(resp)
@@ -740,11 +839,42 @@ class ZohoTransport:
                 last = f"HTTP {resp.status_code}"
                 self._sleep(min(settings.ZOHO_MAX_BACKOFF_SECONDS, 2 ** attempt))
                 continue
+            # Past every branch above, the status is in the 2xx band for a
+            # 2xx answer and Zoho has therefore *taken* the call. Whatever goes
+            # wrong from here is about reading the answer, not about whether
+            # there is a record — and for a write those are opposite outcomes.
+            # An unreadable 201 was the last member of the set the
+            # ``ZohoWriteUncertain`` docstring writes out in full that still
+            # left as a definite refusal: a truncating proxy on a POST that
+            # created the estimate gave the desk "Zoho refused the estimate",
+            # no settle read, and a quote left DRAFT beside a document sitting
+            # in the customer's books under its reference.
+            accepted = not replayable and 200 <= resp.status_code < 300
             try:
                 body = resp.json()
-            except ValueError:
+            except ValueError as e:
+                if accepted:
+                    raise ZohoWriteUncertain(
+                        f"Zoho answered HTTP {resp.status_code} to {verb} {path} and the "
+                        "body could not be read. The status says the call reached the "
+                        "books, so whether the record was written cannot be told from "
+                        "here — check Zoho before sending it again.") from e
                 raise ZohoError(f"Zoho returned non-JSON for {path} (HTTP {resp.status_code})")
-            if resp.status_code not in (200, 201) or body.get("code", 0) not in (0, None):
+            # Split from the status check below so the two stay distinguishable:
+            # an error code in the body of a 2xx is Zoho's own application
+            # answering, and that one really is definite. Only the status half
+            # is ambiguous, and only a 2xx status this adapter cannot read as a
+            # created record — a 202, say — reaches it.
+            if body.get("code", 0) not in (0, None):
+                raise ZohoError(
+                    f"Zoho error on {path}: {body.get('message') or resp.status_code}")
+            if resp.status_code not in (200, 201):
+                if accepted:
+                    raise ZohoWriteUncertain(
+                        f"Zoho answered HTTP {resp.status_code} to {verb} {path}, which "
+                        "this adapter cannot read as a created record. The status says "
+                        "the call reached the books, so whether the record was written "
+                        "cannot be told from here — check Zoho before sending it again.")
                 raise ZohoError(
                     f"Zoho error on {path}: {body.get('message') or resp.status_code}")
             return body
@@ -758,6 +888,29 @@ class ZohoTransport:
 
     def _get(self, path: str, **params: Any) -> dict[str, Any]:
         return self._request("GET", path, **params)
+
+    def _scope_refusal(self, path: str, verb: str,
+                       resp: Any) -> Optional[ZohoScopeError]:
+        """The error for "this endpoint was never in the grant", or None.
+
+        One construction, because both 401 branches in ``_request`` can reach
+        this conclusion and a second copy of the sentence would drift from the
+        first. Named for the hook that does this job in ``erp/transport.py``; it
+        takes the verb as well because a Zoho grant is per verb — ``POST items``
+        and ``GET items`` are two permissions behind one word.
+
+        Errs towards None the way that hook does: calling a revoked credential a
+        missing permission sends an owner to widen a grant that is already wide.
+        """
+        scope = scope_for_path(path, verb)
+        if not scope or not self._is_scope_refusal(resp):
+            return None
+        return ZohoScopeError(
+            f"Zoho refused {path}: this connection was not granted "
+            f"{scope}. The credentials are valid — everything else "
+            f"is still readable. Re-authorise the connection with "
+            f"{scope} added to the scope list to enable it.",
+            path=path, scope=scope)
 
     @staticmethod
     def _is_scope_refusal(resp: Any) -> bool:

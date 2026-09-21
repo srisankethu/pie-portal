@@ -243,12 +243,18 @@ class ZohoBooksService(ZohoTransport):
             raise ZohoWriteRefused(
                 f"Zoho would not create item {code}: {e}", codes=[code]) from e
         except Exception as e:                       # noqa: BLE001
-            # A transport-level fault (timeout, dropped connection) never
-            # reached the retry logic, so the request's fate is unknown for the
-            # same reason a 5xx is. Same treatment: settle it by reading, never
-            # by sending again. Without this the fault left this method
-            # unwrapped and the caller got a 500 — no outcome it could act on,
-            # for an item that may well be sitting in the books.
+            # Everything else, settled the same way: by reading, never by
+            # sending again. This used to be where a dropped connection on the
+            # POST itself landed; the transport raises that as
+            # ``ZohoWriteUncertain`` now and it is caught above. The likeliest
+            # thing left is a fault before the write goes out —
+            # ``_access_token`` exchanges the refresh token through a call with
+            # no wrapper of its own — but "likeliest" is the whole reason this
+            # still reads the item back instead of reporting that nothing
+            # happened: an unenumerated failure is not evidence of an unmade
+            # write. Without the handler the fault left this method unwrapped
+            # and the caller got a 500 — no outcome it could act on, for an
+            # item that may well be sitting in the books.
             return self._settle_item(code, str(e))
         raw = body.get("item") or {}
         return self._item_from(raw, code)
@@ -403,13 +409,27 @@ class ZohoBooksService(ZohoTransport):
         except ZohoWriteUncertain as e:
             return self._settle_estimate(reference, customer, len(lines), str(e))
         except ZohoError as e:
-            # Zoho answered, and said no. Nothing was written.
+            # Zoho answered, and said no. Nothing was written — and this
+            # handler is now entitled to say so, which it was not while an
+            # unreadable 201 and a proxy's 403 both arrived here wearing the
+            # same class. Both are ``ZohoWriteUncertain`` in the transport now
+            # and are caught above, so what is left is Zoho's own application
+            # refusing: a 4xx it described, or an error code in the body of an
+            # answer it otherwise accepted. ``create_item`` follows its own
+            # refusal with ``_recover_item`` because Zoho's commonest one there
+            # is "that SKU exists" and the item it names is the right answer.
+            # The estimate's equivalent is asked *before* the send instead —
+            # the by-reference pre-flight at the top of this method — so by
+            # here a refusal is a refusal.
             raise ZohoWriteRefused(f"Zoho refused the estimate: {e}") from e
         except Exception as e:                       # noqa: BLE001
-            # A transport-level fault (timeout, dropped connection) never
-            # reached the retry logic, so the request's fate is unknown for the
-            # same reason a 5xx is. Same treatment: settle it by reading, never
-            # by sending again.
+            # Everything else, settled the same way: by reading, never by
+            # sending again. The write's own transport fault is
+            # ``ZohoWriteUncertain`` now and is caught above; the likeliest
+            # thing left is a failure before the estimate went out, the token
+            # exchange being the call still unwrapped. It is read back anyway,
+            # because a handler catching what it cannot enumerate has no
+            # standing to report that nothing was created.
             return self._settle_estimate(reference, customer, len(lines), str(e))
         return self._estimate_from(body.get("estimate") or {}, customer,
                                    len(lines), already_existed=False)

@@ -1,5 +1,5 @@
 .PHONY: help setup verify verify-fast catalog bootstrap migrate seed \
-        backend frontend dev test test-frontend test-live e2e lint \
+        backend frontend dev test test-frontend test-live test-matrix e2e lint \
         deploy-build deploy-release deploy-up deploy-down deploy-logs \
         deploy-runbook deploy-sync
 
@@ -23,6 +23,7 @@ help:
 	@echo "  make test-frontend  frontend tests only (vitest)"
 	@echo "  make e2e          browser end-to-end: role scoping through the real API"
 	@echo "  make test-live    the live contract suites — real AI, real Zoho"
+	@echo "  make test-matrix  the connector matrix alone (in make verify too)"
 	@echo "  make lint         ruff only"
 	@echo "  make bootstrap    create the DB, migrate, seed users + demo data"
 	@echo "  make migrate      apply database migrations"
@@ -103,6 +104,12 @@ e2e:
 # from .github/workflows/live.yml.
 test-live:
 	cd backend && python3 -m pytest tests/live -m live -q -ra
+
+# Excluded from `make test` by pytest.ini, for time rather than for money: it
+# builds a fresh database per scenario. `make verify` runs it, so this target is
+# for running it alone after touching the sync, the repository or a connector.
+test-matrix:
+	cd backend && python3 -m pytest -m matrix -q -n $${PYTEST_WORKERS:-auto}
 
 lint:
 	python3 -m ruff check .

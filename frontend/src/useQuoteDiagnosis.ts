@@ -180,9 +180,12 @@ export function useQuoteDiagnosis(quote: Quote | null,
  *  diagnosable now, and a copy of that filter here would be the second answer
  *  that drifts. This only needs to know whether to ask at all. */
 export function useErpQuoteDiagnosis(quoteRef: string, hasLines: boolean,
-                                     token: string): QuoteDiagnosisState {
+                                     token: string,
+                                     connectionId?: string | null,
+                                     ): QuoteDiagnosisState {
   const path = quoteRef && hasLines
     ? `/api/v1/quote-diagnosis/erp-quote/${encodeURIComponent(quoteRef)}`
+      + (connectionId ? `?connection=${encodeURIComponent(connectionId)}` : "")
     : null;
   // A body the endpoint does not read. `post` sends JSON and FastAPI is happy
   // with an empty object; the alternative is a second request helper for the

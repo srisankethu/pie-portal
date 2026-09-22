@@ -100,7 +100,8 @@ purpose-built ones.
 | Table | The label it carries | Who supplies it | Arrives |
 |---|---|---|---|
 | `payment_applications` | `paid_on − invoice_due_date` | **Nobody — it is arithmetic over synced dates** | Automatically |
-| `quote_outcomes` | `status` | **Zoho's estimate status** — `invoiced`/`accepted` is a won label the business maintains for its own accounting (§5.1). Ingested since `a344f6d` | Automatically |
+| `erp_quotes` | `outcome` (WON / LOST / UNRECORDED) | **Zoho's estimate status**, classified by `ingestion.normalize.classify_outcome` — `invoiced`/`accepted` is a won label the business maintains for its own accounting (§5.1). Ingested since `a344f6d` | Automatically |
+| `quote_outcomes` | `status` | A person (the outcome form), an override snapshot (DRAFT), or the send (SENT). **Never the sync** — `test_the_pull_never_names_the_table_a_person_writes` pins that. Joining a PIE quote's row to its ERP row is read-side work; see `docs/quote-lifecycle-plan.md` §2.5 | Only when acted on |
 | `quote_outcomes` | `loss_reason`, `lost_to` | A salesperson — the ERP has a `declined` flag and no field for *why* | Only if asked |
 | `inbound_line_dispositions` | `disposition` (QUOTED / NO_STOCK / …) | Whoever worked the enquiry | Only if asked |
 | `decisions` | `status`, `human_action` | Whoever worked the queue | Only if worked |

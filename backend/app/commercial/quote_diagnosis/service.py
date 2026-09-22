@@ -79,7 +79,8 @@ def diagnose_line(session: Session, org: str, *, quote_id: str, line_id: str,
                   quoted_unit_price: Optional[Decimal], as_of: date,
                   knowable_by: datetime, th: CommercialThresholds,
                   segment: Optional[frozenset[str]] = None,
-                  backfill_before: Optional[date] = None) -> DiagnosisResult:
+                  backfill_before: Optional[date] = None,
+                  connection_id: Optional[str] = None) -> DiagnosisResult:
     """Diagnose one quote line as of a moment. Reads; writes nothing.
 
     ``knowable_by`` is separate from ``as_of`` and both are required. The first
@@ -121,7 +122,8 @@ def diagnose_line(session: Session, org: str, *, quote_id: str, line_id: str,
         backfill_cutover_unknown=(backfill_before is None))
 
     supplier = _supplier_credit(session, org, cost=cost, costs=kept_costs)
-    record = _source_record(session, org, quote_id=quote_id)
+    record = _source_record(session, org, quote_id=quote_id,
+                            connection_id=connection_id)
 
     owner = rules.diagnose(
         line_id=line_id, subject_customer_id=customer_id, product_id=product_id,
@@ -167,7 +169,8 @@ def diagnose_line(session: Session, org: str, *, quote_id: str, line_id: str,
 # ── the quote's own record ───────────────────────────────────────────────────
 
 def _source_record(session: Session, org: str, *,
-                   quote_id: str) -> intent.SourceRecord:
+                   quote_id: str,
+                   connection_id: Optional[str] = None) -> intent.SourceRecord:
     """The document the source system holds for this quote, if there is one.
 
     ``quote_id`` is an ``erp_quotes.external_ref`` on the path that diagnoses an
@@ -202,7 +205,14 @@ def _source_record(session: Session, org: str, *,
     rows = session.scalars(
         select(models.QuoteDoc).where(
             models.QuoteDoc.organization_id == org,
-            models.QuoteDoc.external_ref == quote_id)).all()
+            models.QuoteDoc.external_ref == quote_id,
+            # The company the reference is unique inside, where the caller
+            # knows it. With two connected books holding one reference the
+            # sort below picks a winner, which is a guess about which
+            # document the reader is looking at; given the qualifier there is
+            # nothing to guess.
+            *([models.QuoteDoc.connection_id == connection_id]
+              if connection_id else []))).all()
     if not rows:
         return intent.NO_RECORD
     row = sorted(rows, key=lambda r: (r.connector or "", r.connection_id or ""))[0]

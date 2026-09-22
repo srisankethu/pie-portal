@@ -17,7 +17,7 @@ honest 403.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from decimal import Decimal
 from typing import Any, Iterable, Optional
@@ -54,7 +54,7 @@ from ..commercial.insight import (absence, adoption, bonds, cadence, capital,
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import (LOSS_REASON_NOT_RECORDED,
-                            QUOTE_OUTCOME_TRANSITIONS, DecisionStatus,
+                            DecisionStatus,
                             EnterpriseActivity, MsmeClassification,
                             MsmeEvidence, QuoteLossReason,
                             QuoteOutcomeStatus, Role)
@@ -1412,38 +1412,75 @@ def _decided_quotes(outcomes: list[models.QuoteOutcome],
                     lines_by_quote: dict[str, list[models.QuoteDecision]],
                     customer_names: dict[str, str],
                     principal_of: dict[str, str],
-                    line_of: dict[str, str]) -> list[outcomes_view.DecidedQuote]:
+                    line_of: dict[str, str],
+                    records: dict[str, quote_service.OutcomeOfRecord],
+                    erp_values: Optional[dict[str, Decimal]] = None,
+                    ) -> list[outcomes_view.DecidedQuote]:
     """Outcome rows and their priced lines, as the grain the view computes on.
 
     A quote with no snapshot behind it is skipped rather than counted at zero.
     That is a quote somebody marked won or lost without ever recording what it
     was priced at — real, and it belongs in a data-quality note rather than in a
-    denominator where it would drag every value figure down.
+    denominator where it would drag every value figure down. The one exception
+    is a quote the ERP holds priced lines for — whoever decided it, the ERP
+    or a person recording an ERP-raised quote from the worklist: Σ of those
+    line amounts (``_erp_line_values`` — pre-tax, the grain ``line_revenue``
+    is) is what was put in front of the customer, so it counts at that value,
+    with no margin — a number nobody here priced cannot carry one. (The
+    wallet's lost asks still value from snapshots alone; that asymmetry is
+    recorded in the plan rather than papered over here.)
+
+    Which way a quote went, when, and why come off the outcome of record
+    (``records``), never off the row alone: a row still reading SENT whose
+    document the ERP marked accepted is a win here, source ERP.
     """
     out = []
     for row in outcomes:
-        lines = lines_by_quote.get(row.quote_id) or []
-        if not lines or row.decided_at is None:
+        rec = records[row.quote_outcome_id]
+        if rec.decided_on is None:
             continue
-        value = sum((_line_value(ln) for ln in lines), Decimal("0"))
-        # Only a fully-costed quote carries a profit. See ``DecidedQuote``.
-        profits = [ln.gross_profit for ln in lines]
-        gross_profit = (sum((Decimal(p) for p in profits), Decimal("0"))
-                        if all(p is not None for p in profits) else None)
-        won = row.status == "WON"
+        lines = lines_by_quote.get(row.quote_id) or []
+        if lines:
+            value = sum((_line_value(ln) for ln in lines), Decimal("0"))
+            # Only a fully-costed quote carries a profit. See ``DecidedQuote``.
+            profits = [ln.gross_profit for ln in lines]
+            gross_profit = (sum((Decimal(p) for p in profits), Decimal("0"))
+                            if all(p is not None for p in profits) else None)
+        elif rec.erp is not None and (erp_values or {}).get(rec.erp.quote_document_id) is not None:
+            value, gross_profit = erp_values[rec.erp.quote_document_id], None
+        else:
+            continue
+        won = rec.status is QuoteOutcomeStatus.WON
         out.append(outcomes_view.DecidedQuote(
             quote_id=row.quote_id,
+            # Readable: the ERP's own number for a quote it raised, which is
+            # what a person can search for in their own book.
+            reference=(row.quote_id
+                       or (rec.erp.number or rec.erp.external_ref if rec.erp else None)
+                       or row.quote_document_ref
+                       or row.quote_outcome_id),
+            # Unique: an ERP quote number is a per-company sequence, so two
+            # connected books both issue ``EST-1041`` and keying the grid on the
+            # number puts two different quotes under one id — the same defect
+            # the null ``quote_id`` caused, one level up. The company qualifies
+            # it, exactly as it qualifies every other pointer on this branch,
+            # and ``quote_outcome_id`` is the last resort so it cannot be blank.
+            row_id=(row.quote_id
+                    or (f"{row.quote_document_connection_id or rec.erp.connection_id}:"
+                        f"{rec.erp.external_ref}" if rec.erp else None)
+                    or row.quote_outcome_id),
             customer_id=row.customer_id or "",
             customer_label=(customer_names.get(row.customer_id or "")
                             or row.customer_ref or "Unattributed"),
             won=won,
-            ever_sent=row.sent_at is not None,
+            ever_sent=rec.ever_sent,
             loss_reason=("" if won
-                         else (row.loss_reason or LOSS_REASON_NOT_RECORDED)),
-            decided_on=clock.aware(row.decided_at).date(),
+                         else (rec.loss_reason or LOSS_REASON_NOT_RECORDED)),
+            decided_on=rec.decided_on,
             lines=len(lines),
             value=value,
             gross_profit=gross_profit,
+            source=rec.source.value if rec.source else "",
             principals=tuple(sorted({principal_of[ln.product_id]
                                      for ln in lines
                                      if ln.product_id in principal_of})),
@@ -1455,7 +1492,7 @@ def _decided_quotes(outcomes: list[models.QuoteOutcome],
             # the router owning half of a rule stated in ``competitor_key``,
             # and a won quote carrying a winner's name would be a fact about
             # nobody, so it is dropped here rather than filtered downstream.
-            lost_to=("" if won else (row.lost_to or "")),
+            lost_to=("" if won else (rec.lost_to or "")),
         ))
     return out
 
@@ -1528,23 +1565,80 @@ class _QuoteEvidence:
     lines_by_quote: dict[str, list[models.QuoteDecision]]
     principal_names: dict[str, str]
     quotes: list[outcomes_view.DecidedQuote]
+    #: The outcome of record per row, keyed by ``quote_outcome_id`` — the one
+    #: answer ``quote_service.decide`` gives, which is what sorts a row into
+    #: ``decided`` or ``awaiting`` above.
+    records: dict[str, quote_service.OutcomeOfRecord] = field(default_factory=dict)
+
+
+def _records_of(session: Session, org: str,
+                rows: list[models.QuoteOutcome],
+                ) -> dict[str, quote_service.OutcomeOfRecord]:
+    """The outcome of record for each human row, keyed by the row's own id —
+    ``quote_service.records_for_rows``, which joins a platform quote's row
+    through its newest confirmed document and an ERP-raised quote's row
+    through the reference it names. One name here so both readers in this
+    file ask the same function."""
+    return quote_service.records_for_rows(session, org, rows)
+
+
+def _erp_line_values(session: Session, org: str,
+                     docs: list[models.QuoteDoc]) -> dict[str, Decimal]:
+    """Σ of each ERP document's *priced* line amounts, keyed by its id.
+
+    The value a decided quote counts at when this platform holds no snapshot
+    for it. Pre-tax line amounts, summed — the same grain as ``line_revenue``
+    on a snapshot — never the header's ``total``, which is the ERP's
+    tax-inclusive figure for the whole document and would sit beside pre-tax
+    revenue in one sum. A line the ERP never priced is left out, never added
+    as zero; a document with no priced line at all has no value here and
+    stays out of every sum, counted as unpriced.
+    """
+    refs = {d.external_ref for d in docs}
+    if not refs:
+        return {}
+    out: dict[str, Decimal] = {}
+    for ref, connection_id, amount in session.execute(
+            select(models.ErpQuoteLine.quote_ref, models.ErpQuoteLine.connection_id,
+                   func.sum(models.ErpQuoteLine.amount))
+            .where(models.ErpQuoteLine.organization_id == org,
+                   models.ErpQuoteLine.quote_ref.in_(refs),
+                   models.ErpQuoteLine.amount.is_not(None))
+            .group_by(models.ErpQuoteLine.quote_ref,
+                      models.ErpQuoteLine.connection_id)):
+        for d in docs:
+            if d.external_ref == ref and d.connection_id == connection_id:
+                out[d.quote_document_id] = Decimal(str(amount))
+    return out
 
 
 def _quote_evidence(session: Session, principal: Principal,
                     group: Optional[groups.ResolvedGroup] = None,
                     ) -> _QuoteEvidence:
     org, snapshot, th = _labels_only(session, principal)
-    decided = _scoped_outcomes(session, org, principal, _DECIDED, group)
-    awaiting = _scoped_outcomes(session, org, principal, _AWAITING, group)
+    # One read of every row this reader may see, then the outcome of record
+    # sorts them: a quote the ERP marked accepted is decided here too, not
+    # "awaiting an answer" on this screen and won on the ERP tab.
+    rows = _scoped_outcomes(session, org, principal, _DECIDED + _AWAITING, group)
+    records = _records_of(session, org, rows)
+    decided = [r for r in rows if records[r.quote_outcome_id].decided]
+    awaiting = [r for r in rows if not records[r.quote_outcome_id].decided]
     lines_by_quote = _latest_lines(
         session, org, [o.quote_id for o in decided + awaiting])
     principal_names, principal_of, line_of = _quote_facets(session, org, th)
+    # The ERP's priced lines, for the decided quotes this platform never
+    # snapshotted — one query, only for the rows that need it.
+    erp_values = _erp_line_values(session, org, [
+        records[r.quote_outcome_id].erp for r in decided
+        if records[r.quote_outcome_id].erp is not None
+        and not lines_by_quote.get(r.quote_id or "")])
     return _QuoteEvidence(
         org=org, snapshot=snapshot, th=th, as_of=clock.today(th.timezone),
         decided=decided, awaiting=awaiting, lines_by_quote=lines_by_quote,
         principal_names=principal_names,
         quotes=_decided_quotes(decided, lines_by_quote, snapshot.customer_names,
-                               principal_of, line_of))
+                               principal_of, line_of, records, erp_values),
+        records=records)
 
 
 @router.get("/quote-outcomes")
@@ -1596,9 +1690,14 @@ def quote_outcomes(months: int = Query(12, ge=1, le=36),
             "value": float(sum((_line_value(ln) for ln
                                 in lines_by_quote.get(row.quote_id) or []),
                                Decimal("0"))),
+            # Through ``quote_service`` rather than off the table directly:
+            # a DRAFT row naming an ERP document may be recorded WON, and a
+            # button list that did not know that would offer Lost and not Won
+            # for a quote the API accepts either way.
             "allowed_next": sorted(
-                s.value for s in
-                QUOTE_OUTCOME_TRANSITIONS[QuoteOutcomeStatus(row.status)]),
+                s.value for s in quote_service.allowed_transitions(
+                    QuoteOutcomeStatus(row.status),
+                    names_erp_document=bool(row.quote_document_ref))),
         }
         for row in sorted(awaiting, key=lambda r: r.updated_at, reverse=True)
     ]
@@ -1612,6 +1711,11 @@ def quote_outcomes(months: int = Query(12, ge=1, le=36),
     #: Quotes decided without a priced snapshot behind them — real, and named
     #: rather than silently absent from the counts above.
     result["unpriced_quotes"] = len(ev.decided) - len(quotes)
+    #: Of the quotes counted, the ones the ERP decided rather than a person:
+    #: the customer accepted or declined the document there and nobody here
+    #: recorded why. Real decisions, counted — and named, because a loss with
+    #: no reason is one the loss mix cannot learn from.
+    result["erp_decided_quotes"] = sum(1 for q in quotes if q.source == "ERP")
     return _envelope(
         result, th=th, group=group_scope.ref(group),
         empty_reason=(None if quotes else
@@ -1772,6 +1876,8 @@ def quote_book_list(limit: int = Query(200, ge=1, le=1000),
 
 @router.get("/quote-book/{quote_ref:path}/lines")
 def quote_book_lines(quote_ref: str,
+                     connection: str = Query("", description=(
+                         "The connected company whose book raised this quote. An ERP reference is unique only inside one book; omitted, the reference is read as before, which is correct while it names one quote.")),
                      principal: Principal = Depends(current_principal),
                      session: Session = Depends(get_session)) -> dict:
     """What was on one quote the ERP raised.
@@ -1793,18 +1899,26 @@ def quote_book_lines(quote_ref: str,
     real state rather than a transient one.
     """
     org, snapshot, th = _labels_only(session, principal)
+    # Scoped *and* qualified through the book. A reference this reader may see
+    # in one connected company is not one they may see in another, so the pair
+    # is what the visibility set holds — and a caller that names a company it
+    # cannot see is answered by the same 404 as one that names nothing real.
     visible = {
-        q.quote_document_ref
+        (q.quote_document_ref, (q.origin or {}).get("connection_id"))
         for q in quote_book_view.build(
             session, org, customer_names={},
-            customer_ids=_assigned_customer_ids(session, principal))
+            customer_ids=_assigned_customer_ids(session, principal),
+            companies=Companies(session, org))
     }
-    if quote_ref not in visible:
+    if quote_ref not in {ref for ref, _ in visible} or (
+            connection and (quote_ref, connection) not in visible):
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such quote")
 
-    rows = quote_book_view.lines_for(session, org, quote_ref=quote_ref)
+    rows = quote_book_view.lines_for(session, org, quote_ref=quote_ref,
+                                     connection_id=connection or None)
     return _envelope(
         {"quote_document_ref": quote_ref,
+         "connection_id": connection or None,
          "lines": [row.to_dict() for row in rows],
          "lines_held": bool(rows)},
         th=th,
@@ -3231,14 +3345,20 @@ def _lost_asks(session: Session, org: str,
                models.QuoteDecision.customer_id == customer_id)
         .group_by(models.QuoteDecision.quote_id)).all())
 
+    # Every row on the account, then the outcome of record picks the losses:
+    # a quote the ERP recorded as declined is a lost ask here too, with no
+    # reason and therefore on neither side of the went-elsewhere split.
     rows = session.scalars(
         select(models.QuoteOutcome).where(
             models.QuoteOutcome.organization_id == org,
-            models.QuoteOutcome.customer_id == customer_id,
-            models.QuoteOutcome.status == QuoteOutcomeStatus.LOST.value)).all()
+            models.QuoteOutcome.customer_id == customer_id)).all()
+    records = _records_of(session, org, rows)
 
     out: list[wallet.LostAsk] = []
     for row in rows:
+        rec = records[row.quote_outcome_id]
+        if rec.status is not QuoteOutcomeStatus.LOST:
+            continue
         value = values.get(row.quote_id)
         if value is None:
             # A lost quote with no priced snapshot behind it has no value to
@@ -3251,11 +3371,11 @@ def _lost_asks(session: Session, org: str,
         # genuinely unknown, which is not the same as CUSTOMER_CANCELLED: it
         # maps to None and is excluded from both sides, never folded into
         # "nobody bought it".
-        went_elsewhere = (QuoteLossReason(row.loss_reason).went_elsewhere
-                          if row.loss_reason else None)
+        went_elsewhere = (QuoteLossReason(rec.loss_reason).went_elsewhere
+                          if rec.loss_reason else None)
         out.append(wallet.LostAsk(
             quote_id=row.quote_id, value=Decimal(str(value)),
-            decided_on=row.decided_at.date() if row.decided_at else None,
+            decided_on=rec.decided_on,
             went_elsewhere=went_elsewhere))
     return out
 

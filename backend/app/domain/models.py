@@ -3145,7 +3145,20 @@ class QuoteOutcome(Base):
     __tablename__ = "quote_outcomes"
     __table_args__ = (
         UniqueConstraint("organization_id", "quote_id", name="uq_quote_outcome_org_quote"),
-        UniqueConstraint("organization_id", "quote_document_ref",
+        # Qualified by the connected company, because an ERP reference is
+        # unique only inside the book that issued it. Zoho's estimate ids are
+        # system-wide so three connected Zoho books never collided; the
+        # connectors in ``ingestion/erp`` read systems whose quote numbers are
+        # per-company sequences, and two connected books of one of those issue
+        # ``SQ-1001`` twice. Unqualified, the second book's outcome could not
+        # be recorded at all.
+        #
+        # A NULL company is distinct from every other NULL under SQL's unique
+        # semantics on both engines, so rows written before the qualifier
+        # existed are not refused — and are no longer refused *by each other*
+        # either, which ``set_outcome``'s own guard is what now catches.
+        UniqueConstraint("organization_id", "quote_document_connection_id",
+                         "quote_document_ref",
                          name="uq_quote_outcome_org_document"),
     )
 
@@ -3167,6 +3180,18 @@ class QuoteOutcome(Base):
     #: counted data-quality figure and never auto-cleaned: deleting a human's
     #: recorded loss reason because a document went missing is the larger loss.
     quote_document_ref: Mapped[Optional[str]] = mapped_column(String(128), index=True)
+    #: Which connected company's book that reference is unique in. The
+    #: qualifier ``sole_erp_quote``'s docstring deferred: written by the send
+    #: (which knows the book it wrote into) and by the ERP-only path (which
+    #: has the document in hand), read by every lookup that would otherwise
+    #: answer a reference two books both issued. NULL on rows written before it
+    #: existed, which readers treat as "unqualified" — resolvable while the bare
+    #: reference is unique, refused by name otherwise. The unique constraint
+    #: above keys on this column too — it was widened by ``w10qptr``, in the
+    #: same change that landed the first registry ``list_quotes``, which is the
+    #: day this comment predicted and no longer has to wait for.
+    quote_document_connection_id: Mapped[Optional[str]] = mapped_column(
+        String(64), index=True)
     customer_ref: Mapped[str] = mapped_column(String(255), default="")
     customer_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
 
@@ -3214,7 +3239,11 @@ class QuoteDocument(Base):
 
     Append-only, and history in the §1 sense — it records what was written,
     when, under which policy — so it is never updated. A re-send of amended
-    content writes another row; the newest is the current one. That is also why
+    content writes another row, as a new ``revision`` under a reference of its
+    own; the newest row the source confirmed (``write_state`` WRITTEN) is the
+    current document, and a newer UNVERIFIED row is a send still to be settled
+    (``quote_service.latest_document`` and ``latest_written_document`` are the
+    two questions). That is also why
     there is no unique key on ``fingerprint``: a crash between the source write
     and this insert must be recoverable by writing the row late, not by turning
     a recorded send into an integrity error.
@@ -3234,6 +3263,16 @@ class QuoteDocument(Base):
     #: The connector this was written into — ``connections.ZOHO_CONNECTOR`` and,
     #: in time, whatever else declares ``sales_quotes`` in its writes.
     external_system: Mapped[str] = mapped_column(String(32), default="")
+    #: Which connected company's book holds it. The half of the document's
+    #: identity this row went without: an ERP id is unique only inside the
+    #: company that issued it, so ``(external_system, external_document_id)``
+    #: named a document in a one-company organization and a guess in a
+    #: three-company one — and the join to the same document once the sync has
+    #: read it back (``erp_quotes`` keys on connector, company and id) had one
+    #: leg missing. Nullable because a row written before the column existed
+    #: cannot be attributed after the fact; readers join those on (system, id)
+    #: only while that is unique, the rule ``sole_erp_quote`` applies.
+    connection_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     #: That system's own id for the document, where it returns one.
     external_document_id: Mapped[Optional[str]] = mapped_column(String(64))
     #: The number a person sees and can search for in that system.
@@ -3252,6 +3291,23 @@ class QuoteDocument(Base):
     #: already held, rather than creating one. Recorded because "sent" and "was
     #: already there" are different facts and the screen says so.
     already_existed: Mapped[bool] = mapped_column(Boolean, default=False)
+    #: Which revision of this quote the row is. The quote's reference is minted
+    #: once and stays the key of revision 1; every send of changed content is a
+    #: new revision under a reference of its own (``quote_service.revision_reference``),
+    #: because every live source keys its idempotency on the reference — sent
+    #: again under the first one, an amendment was answered with the document
+    #: the source already held, and this platform then recorded the new content
+    #: against the old number.
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+    #: ``QuoteDocumentChannel``: written into a source by this platform, or
+    #: recorded by a person as sent another way.
+    channel: Mapped[str] = mapped_column(String(8), default="ERP")
+    #: ``QuoteDocumentWriteState``: whether the source confirmed the document
+    #: exists. An UNVERIFIED row has a reference and no id — the write was
+    #: sent, the reply was lost, and reading it back failed too — and it is
+    #: what makes "look for reference X before sending again" survive the
+    #: response it was first said in.
+    write_state: Mapped[str] = mapped_column(String(16), default="WRITTEN")
     #: The commercial policy in force when this went out. A signed, append-only
     #: row keeps the version that judged it — the same rule approvals and
     #: snapshots follow, and the reason a past send stays explainable after the

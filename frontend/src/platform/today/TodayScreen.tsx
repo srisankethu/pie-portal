@@ -176,9 +176,17 @@ export default function TodayScreen({
     item: QueueItem, status: "WON" | "LOST", reason?: QuoteLossReason,
   ) => {
     const [, ref] = item.id.split(/:(.+)/);
+    // The customer's label travels with the write, as it does from the
+    // worklist: the server resolves it under this reader's scope and the
+    // outcome lands on the account rather than unattributed. An empty name
+    // here filed every morning's answers against nobody.
+    const row = (unanswered.data?.quotes ?? [])
+      .find((q) => q.quote_document_ref === ref);
     setBusy(true);
     try {
-      await intelligence.documentOutcome(session.token, ref, status, "", undefined, reason);
+      await intelligence.documentOutcome(
+        session.token, ref, status, row?.customer_label ?? "", undefined, reason,
+        undefined, row?.connection_id);
       unanswered.reload();
       settle(item, status === "WON" ? "won" : `lost · ${reason ?? ""}`.trim());
     } catch (e) {

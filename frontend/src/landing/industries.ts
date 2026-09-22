@@ -2281,10 +2281,12 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
         {
           title: "April: the bid is priced, outside PIE",
           body:
-            "No connector imports quotes, so the bid itself is invisible to PIE. "
-            + "What is visible is the purchase history behind the item and what this "
+            "Whether PIE sees the bid itself depends on the book it sits in: "
+            + "quotes are imported from Zoho Books, Business Central, Acumatica "
+            + "and NetSuite, and not yet from Prophet 21 or Sage. What is visible "
+            + "on every book is the purchase history behind the item and what this "
             + "customer has paid for it before — which is what the bid should have "
-            + "been priced against.",
+            + "been priced against either way.",
         },
         {
           title: "July: your cost moves and the detector notices",
@@ -2342,11 +2344,18 @@ export const INDUSTRY_PAGES: IndustryPageData[] = [
       {
         question: "Our bids stay open for months. Does PIE track a quote over time?",
         answer:
-          "Not yet, and it is the honest gap on this book. No connector imports "
-          + "quotes, so a bid raised in your ERP is invisible to PIE until you "
-          + "start quoting inside it. What PIE can do today is read the invoices "
-          + "that came out of that bid and tell you where the realized margin went.",
-        source: "this page's limits section; READ_STAGES includes quotes and no connector declares it",
+          "Partly, and which part depends on your ERP. PIE imports the quotes "
+          + "themselves from Zoho Books, Business Central, Acumatica and "
+          + "NetSuite — so a bid raised in one of those books is visible, with "
+          + "its lines, and counts in what was offered against what was won. It "
+          + "does not yet read them from Prophet 21 or Sage, where a bid stays "
+          + "invisible until you quote inside PIE. What PIE does not do on any "
+          + "book is judge how a bid ended from a status word its ERP wrote: "
+          + "only Zoho's own vocabulary is read that way, so elsewhere a quote "
+          + "reads as undecided until somebody records the outcome. On every "
+          + "book it reads the invoices that came out of the bid and tells you "
+          + "where the realized margin went.",
+        source: "erp.ts read stages per connector; normalize._QUOTE_VOCABULARY has one entry",
       },
       {
         question: "Does PIE know what pipe is going to cost next month?",

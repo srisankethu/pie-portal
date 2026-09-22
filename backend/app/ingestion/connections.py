@@ -437,10 +437,15 @@ def quote_writer_ready(connector: str) -> bool:
 #: merely permitted to write. The two are different questions and both have to
 #: be Yes: ``writes_for`` says the *grant* covers creating a quote there, this
 #: says there is code that knows how. They coincide at all four entries today —
-#: they did not when this set was written, and the sentence here still said so
-#: long after the Business Central writer landed. Kept as a set rather than
-#: collapsed into ``writes_for`` precisely because the next connector to declare
-#: the write will arrive before its adapter does.
+#: Zoho, Business Central, Acumatica and NetSuite — and each writer is pinned
+#: against its declared grant by ``test_connector_writes``. Prophet 21, Sage 100
+#: and Sage X3 declare no write, so their customers are refused by name rather
+#: than routed to a book they never came from.
+#:
+#: The two questions did not coincide when this set was written, and the
+#: sentence here still said so long after the Business Central writer landed.
+#: Kept as a set rather than collapsed into ``writes_for`` precisely because the
+#: next connector to declare the write will arrive before its adapter does.
 #:
 #: It exists because capability alone is not enough to route on. A customer
 #: from a connector that declares the write but has no adapter must still be

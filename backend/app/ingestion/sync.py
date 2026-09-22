@@ -252,7 +252,11 @@ class SyncReport:
                     or self.purchase_orders or self.sales_orders
                     or self.vendor_payments or self.credit_notes
                     or self.vendor_credits
-                    or self.locations or self.stock_locations)
+                    or self.locations or self.stock_locations
+                    # A pull that read nothing but quotes still wrote
+                    # something: without this a quotes-only run was reported
+                    # PARTIAL-or-FAILED with several hundred rows on the book.
+                    or self.quote_documents)
 
     def merge(self, other: "SyncReport") -> "SyncReport":
         """Fold another connected company's pull into this one.
@@ -860,7 +864,25 @@ class SyncService:
         # re-read from the list row alone, so their headers still update —
         # `source_status` and `outcome` are exactly the columns that change
         # after a quote is raised — and only their line breakdown is skipped.
-        for raw in self.source.list_quotes(skip=self._skipper("quote")):
+        #
+        # The predicate is wrapped so this loop knows its own answer. The
+        # cursor used to be written only for a quote that came back *with*
+        # lines, so a quote the source genuinely holds none for — a header
+        # somebody raised and never filled in — was never marked as held and
+        # paid its detail call again on every run for ever. Asking the
+        # payload instead cannot tell that apart from a resumed row, which
+        # carries no lines either; the producer of the answer is this loop,
+        # so this loop records it rather than re-deriving it downstream.
+        base = self._skipper("quote")
+        resumed: set[str] = set()
+
+        def skipper(doc_id: str, modified_at: str) -> bool:
+            answered = base(doc_id, modified_at) if base is not None else False
+            if answered:
+                resumed.add(doc_id)
+            return answered
+
+        for raw in self.source.list_quotes(skip=skipper if base else None):
             ref = str(raw.get("estimate_id", "?"))
             try:
                 q = normalize_quote_document(raw, system=self.connector)
@@ -884,6 +906,12 @@ class SyncService:
             if q.lines:
                 self.repo.replace_quote_lines(q)
                 self.report.quote_document_lines += len(q.lines)
+            # Marked for every quote whose detail this run actually read,
+            # lines or none — see the predicate above. It is also what the
+            # deletion sweep reconciles against: a document with no cursor row
+            # is not a candidate for retirement, which is why this runs before
+            # ``_mirror`` and not only where a breakdown came back.
+            if ref not in resumed:
                 self.repo.mark_ingested(
                     "quote", ref, str(raw.get("last_modified_time") or ""))
             if dropped_an_undated_decision(q, system=self.connector):
@@ -891,6 +919,11 @@ class SyncService:
             if unreadable_view_stamp(raw):
                 self.report.quote_documents_unreadable_view += 1
             self.report.quote_documents += 1
+        # A quote deleted or voided in the source, under the three guards
+        # ``_mirror`` states. The human outcome recorded against it is *not*
+        # swept: it is a fact a person entered, not something derived, so the
+        # pointer is left dangling and the retirement counted.
+        self._mirror("quote", "quote")
 
     def _sync_locations(self) -> None:
         """The branch list. Small, and read once per company."""

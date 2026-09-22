@@ -44,9 +44,9 @@ def _doc(s, ref: str, *, status: str = "sent",
          customer: str | None = "c1", customer_ref: str = "Acme Engineering",
          raised: date = date(2026, 5, 1), expires: date | None = None,
          total: str | None = "10000", decided: date | None = None,
-         opened: datetime | None = None) -> None:
+         opened: datetime | None = None, connection_id: str = "conn1") -> None:
     s.add(models.QuoteDoc(
-        organization_id=ORG, connector="zoho", connection_id="conn1",
+        organization_id=ORG, connector="zoho", connection_id=connection_id,
         external_ref=ref, number=f"SLS/QTN-{ref}", customer_id=customer,
         customer_ref=customer_ref, date=raised, expires_on=expires,
         source_status=status, outcome=outcome, decided_on=decided,
@@ -86,6 +86,57 @@ def _build(Maker, **kw):
 
 
 # ── the reason this module exists ────────────────────────────────────────────
+
+def _written(s, quote_id: str, number: str, doc_id: str,
+             connection_id: str | None) -> None:
+    from datetime import datetime, timezone
+    s.add(models.QuoteDraft(quote_id=quote_id, organization_id=ORG,
+                            customer_name="Acme Engineering", customer_id="c1",
+                            number=number, sequence=int(number.split("-")[1]),
+                            reference=f"{number}-deadbeef"))
+    s.add(models.QuoteDocument(
+        organization_id=ORG, quote_id=quote_id, external_system="zoho",
+        connection_id=connection_id, external_document_id=doc_id,
+        external_document_number=f"SLS/QTN-{doc_id}", reference=f"{number}-deadbeef",
+        line_count=1, fingerprint="f", written_at=datetime.now(timezone.utc)))
+
+
+def test_a_quote_this_platform_wrote_names_its_draft(maker):
+    """The reverse of the workspace's join: the ERP row says which PIE quote it
+    came from, so the same document is not two unrelated rows on two tabs."""
+    s = maker()
+    _doc(s, "est-9")
+    _doc(s, "est-8")
+    _written(s, "q9", "QB-0009", "est-9", connection_id="conn1")
+    s.commit()
+    s.close()
+
+    by_ref = {q.quote_document_ref: q for q in _build(maker)}
+    assert by_ref["est-9"].platform_quote == {"quote_id": "q9", "number": "QB-0009"}
+    assert by_ref["est-8"].platform_quote is None
+    assert by_ref["est-9"].to_dict()["platform_quote"]["number"] == "QB-0009"
+
+
+def test_a_document_that_does_not_say_its_book_joins_only_where_the_id_is_unique(maker):
+    s = maker()
+    _doc(s, "est-7")
+    s.add(models.QuoteDoc(
+        organization_id=ORG, connector="zoho", connection_id="conn2",
+        external_ref="est-7", number="4U/QTN-est-7", customer_id="c1",
+        customer_ref="Acme Engineering", date=date(2026, 5, 1),
+        source_status="sent", outcome=QuoteDocOutcome.UNRECORDED.value))
+    _written(s, "q7", "QB-0007", "est-7", connection_id=None)
+    _written(s, "q6", "QB-0006", "est-6", connection_id=None)
+    _doc(s, "est-6")
+    s.commit()
+    s.close()
+
+    rows = _build(maker)
+    assert all(q.platform_quote is None for q in rows if q.quote_document_ref == "est-7"), \
+        "two books answer to est-7; a company-less document names neither"
+    assert next(q for q in rows if q.quote_document_ref == "est-6").platform_quote == {
+        "quote_id": "q6", "number": "QB-0006"}
+
 
 def test_a_decided_quote_is_listed(maker):
     """The defect, pinned.
@@ -466,9 +517,9 @@ def test_an_empty_book_says_what_would_have_filled_it(maker):
 def _line(s, quote_ref: str, ref: str, *, number: int = 0, code: str = "CNMG120408",
           desc: str = "Turning insert", product: str | None = None,
           qty: str | None = "10", rate: str | None = "450",
-          amount: str | None = "4500") -> None:
+          amount: str | None = "4500", connection_id: str = "conn1") -> None:
     s.add(models.ErpQuoteLine(
-        organization_id=ORG, connector="zoho", connection_id="conn1",
+        organization_id=ORG, connector="zoho", connection_id=connection_id,
         external_ref=ref, quote_ref=quote_ref, line_number=number,
         product_id=product, item_code=code, description=desc,
         qty=Decimal(qty) if qty is not None else None, unit="pcs",
@@ -547,6 +598,50 @@ def test_a_quote_this_reader_may_not_see_is_a_404_rather_than_an_empty_list(clie
                    headers=_hdr(client, SALES))
 
     assert r.status_code == 404
+
+
+def test_two_books_holding_one_reference_serve_their_own_lines(maker):
+    """An ERP reference is unique only inside the book that issued it.
+
+    Two connected Business Central companies both raise ``SQ-1001``. Read on
+    the bare reference the endpoint returned both quotes' lines interleaved
+    under one document — a breakdown that matches no quote anybody holds.
+    """
+    s = maker()
+    _doc(s, "SQ-1001", connection_id="conn1")
+    _doc(s, "SQ-1001", connection_id="conn2")
+    _line(s, "SQ-1001", "a:1", code="CNMG120408", connection_id="conn1")
+    _line(s, "SQ-1001", "b:1", code="DNMG150608", connection_id="conn2")
+    s.commit()
+    s.close()
+
+    s = maker()
+    try:
+        first = quote_book.lines_for(s, ORG, quote_ref="SQ-1001",
+                                     connection_id="conn1")
+        second = quote_book.lines_for(s, ORG, quote_ref="SQ-1001",
+                                      connection_id="conn2")
+        unqualified = quote_book.lines_for(s, ORG, quote_ref="SQ-1001")
+    finally:
+        s.close()
+    assert [ln.item_code for ln in first] == ["CNMG120408"]
+    assert [ln.item_code for ln in second] == ["DNMG150608"]
+    # Unqualified it still reads both, which is why the caller resolves the
+    # document first and the endpoint 404s a reference it cannot place.
+    assert len(unqualified) == 2
+
+
+def test_the_lines_endpoint_refuses_a_book_this_reader_cannot_see(client):
+    """The qualifier is scoped the way the reference is: naming a company
+    whose quotes this reader may not see is the same 404 as naming nothing."""
+    ok = client.get("/api/v1/insight/quote-book/won/lines?connection=conn1",
+                    headers=_hdr(client, MANAGER))
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["connection_id"] == "conn1"
+
+    wrong = client.get("/api/v1/insight/quote-book/won/lines?connection=conn9",
+                       headers=_hdr(client, MANAGER))
+    assert wrong.status_code == 404
 
 
 def test_a_quote_that_does_not_exist_is_also_a_404(client):

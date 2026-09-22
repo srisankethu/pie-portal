@@ -151,9 +151,11 @@ export const api = {
   /** What was on one ERP quote. Fetched when somebody opens it rather than
    *  carried on every row: a hundred quotes with their lines is a payload
    *  nobody reads most of. */
-  erpQuoteLines: (t: string, ref: string) =>
+  erpQuoteLines: (t: string, ref: string, connectionId?: string | null) =>
     req<ErpQuoteLines>(
-      `/api/v1/insight/quote-book/${encodeURIComponent(ref)}/lines`, {}, t),
+      `/api/v1/insight/quote-book/${encodeURIComponent(ref)}/lines`
+      + (connectionId ? `?connection=${encodeURIComponent(connectionId)}` : ""),
+      {}, t),
 
   getQuote: (t: string, id: string) => req<Quote>(`/api/v1/quotes/${id}`, {}, t),
 
@@ -289,6 +291,17 @@ export const api = {
   createEstimate: (t: string, id: string) =>
     req<EstimateResult>(
       `/api/v1/quotes/${id}/estimate`,
+      { method: "POST" },
+      t,
+    ),
+
+  /** A person says the quote went out another way — by PDF, into a book this
+   *  platform only reads. The same gates and the same assessment as the send,
+   *  with no writer; the quote is SENT from here on, with no document number
+   *  because there is no document. */
+  markSent: (t: string, id: string) =>
+    req<EstimateResult>(
+      `/api/v1/quotes/${id}/mark-sent`,
       { method: "POST" },
       t,
     ),

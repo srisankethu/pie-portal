@@ -1252,6 +1252,8 @@ export default function PlatformApp() {
             {/* Declared before the draft pattern for legibility; React Router
                 ranks the three-segment static path above `/quotes/:id`
                 regardless, so "erp" can never be read as a draft id. */}
+            <Route path={PATTERN.erpQuoteInBook}
+                   element={<ErpQuoteScreen session={session} />} />
             <Route path={PATTERN.erpQuote}
                    element={<ErpQuoteScreen session={session} />} />
             <Route path={PATTERN.quote} element={<QuoteBuilder session={session} />} />

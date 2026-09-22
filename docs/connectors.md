@@ -94,10 +94,11 @@ says so.
 Declaring the write and being able to perform it stay two questions.
 `connections.writes_for` answers the first from the connector's spec, and from
 `REQUIRED_SCOPES` for Zoho; `quote_writer_ready` answers the second by also
-requiring a quote-write adapter on this side, and it is that second answer the
-catalog serves as `can_write_quotes`, so a screen never offers a send that
-would refuse. The two coincide at all four today. They come apart exactly while
-a writer is being built, which is the window the distinction exists for.
+requiring a quote-write adapter on this side — `connections._QUOTE_ADAPTERS` —
+and it is that second answer the catalog serves as `can_write_quotes`, so a
+screen never offers a send that would refuse. The two coincide at all four
+today. They come apart exactly while a writer is being built, which is the
+window the distinction exists for.
 
 Both lists are pinned against the implementation **in both directions**. A
 declared capability with no `create_<stage>` method sends an owner to grant a
@@ -171,6 +172,88 @@ socket that dies *there* died before the write went out at all. They settle it
 by reading regardless — a handler for what it cannot enumerate is the last place
 that should be deciding nothing was written.
 
+The reference is also what makes an amended quote a *new* document. Every
+writer's pre-flight answers with the document already under the reference it
+was given, so the send mints a fresh reference per revision (`QB-0042-…` for
+the first send, `-r2`, `-r3` after — `quote_service.revision_reference`) and
+the adapter's job is unchanged: exact match on the reference, create only when
+nothing is there. An adapter that matched loosely — a prefix, a case-folded
+`-r2` against the bare reference — would report the old document as already
+sent and the amendment would never reach the book; the connector tests pin the
+exact re-check for Zoho, Business Central and Acumatica.
+
+## Which connectors read quotes, and which deliberately do not
+
+A quote read back is what gives a win rate a denominator: `READ_STAGES`
+includes `quotes`, and the sync runs that stage for any source offering
+`list_quotes`, with no branch naming a connector. Four do — `zoho`,
+`dynamics365`, `acumatica` and `netsuite` — which is the same four that can
+write one, and not by accident: each reads the quote back under **the same id
+its writer returned**, so a quote this platform sent is recognisable as the
+same document on the next pull rather than arriving as a stranger.
+
+| Connector | Where a quote lives | Read back under |
+|---|---|---|
+| `zoho` | `estimates` | the estimate id |
+| `dynamics365` | `salesQuotes` (lines via `$expand`) | the row's GUID, which the create returns |
+| `acumatica` | `SalesOrder` rows of `OrderType` `QT` | the record's `id` GUID |
+| `netsuite` | `transaction` rows of type `Estim` | the internal `t.id` |
+
+Acumatica's is the one split: quotes and orders are one entity there, so
+`list_quotes` and `list_sales_orders` each filter it and a `QT` row reaches
+exactly one of them. The filter is **client-side**, against this module's own
+warning that the contract API's filter grammar varies by build — a server-side
+filter that silently matched nothing would not read as a slow pull but as a
+finished listing of an empty book, and a finished empty listing is what the
+deletion sweep acts on.
+
+**Prophet 21 and Sage read no quotes yet, and that is a decision rather than a
+backlog item.** P21 keeps quotes in `oe_hdr` beside orders and Sage in its own
+sales documents, and which header field separates the two has not been
+confirmed against vendor documentation. A guessed field name has two failure
+modes here and both are silent: it matches nothing, which reads as a company
+that has never quoted anybody, or it matches the wrong rows, which puts orders
+in a win rate. They keep reading orders exactly as before. (P21's `oe_hdr`
+read may therefore already include quotes as orders — the same unconfirmed
+field would be needed to exclude them, so it is named here rather than fixed
+on a guess.)
+
+**A quote is read whatever status it wears, cancelled included.** The
+`_is_trade` helper each connector shares asks an invoice's question — is this a
+financial fact — and a quote's is *was this offered*. A draft or on-hold quote
+plainly was; a cancelled one is the honest hard case, and it is read anyway.
+Excluded, it would vanish from the denominator **and** the deletion sweep would
+retire the row, dangling whatever loss reason a person had recorded against it,
+which is the one thing in that table a re-sync cannot rebuild. Included, it sits
+on a worklist wearing its ERP's own word until somebody looks. This is the same
+divergence `ZohoApiSource.list_quotes` already states under "no status
+exclusion".
+
+**No registry connector classifies a quote's status.**
+`normalize._QUOTE_VOCABULARY` and `_QUOTE_SENT_STATUSES` have an entry for Zoho
+and for nobody else, so every quote from Business Central, Acumatica or
+NetSuite reads `UNRECORDED` and not-known-to-be-sent whatever word its ERP
+wrote on it. That under-claims on purpose: an unanswered quote sits on a
+worklist somebody works, where a status read as WON invents a customer
+decision and puts it in a win rate.
+`test_no_registry_connectors_status_word_is_read_as_a_customer_decision` pins
+it, and a row leaves that test only together with the vendor's own status list
+cited beside it.
+
+**A person can still record a win on one, and that took a fix.** Silence about
+the status word turned out not to be silent. An outcome row opens SENT only
+where `reached_the_customer` can read the source's own word for it, so on these
+three it opened at DRAFT — and `QUOTE_OUTCOME_TRANSITIONS[DRAFT]` allows only
+SENT and LOST. Recording a win was a 409 on every Business Central, Acumatica
+and NetSuite quote, so those books could record losses and not wins, and their
+win rates read zero wins and all losses. That is not an under-claim, it is a
+wrong number. `quote_service.allowed_transitions` now lets a person record WON
+straight from DRAFT **when the row names an ERP document**: a customer cannot
+accept a quote they never received, so somebody recording a win is asserting
+the send as well, and that claim is theirs to make. Nothing derived is widened
+— no SENT the source never said is stored, `sent_at` stays empty, and a
+platform quote still cannot be won without being sent.
+
 ## What each sign-in must already be granted
 
 A half-granted sign-in is the most common way a connection authenticates and
@@ -190,9 +273,9 @@ person granting it is reading:
 | Connector | Where it is granted | Shape |
 |---|---|---|
 | `zoho` | Zoho API console, scope field | Twelve `ZohoBooks.*.READ` scopes for the pull, plus `estimates.CREATE` and `settings.CREATE` for the write — and `estimates.READ`, declared on both lists because the send reads the estimate back. Pasted as one string |
-| `netsuite` | Setup → Users/Roles → Manage Roles, on the token's role | Setup and Reports permissions plus View on each list/transaction, and Create on Estimate for the send |
+| `netsuite` | Setup → Users/Roles → Manage Roles, on the token's role | Setup and Reports permissions plus View on each list/transaction, and Create on Estimate for the send — the one grant above View, and the one that also carries the estimate read |
 | `dynamics365` | Entra ID app registration + permission sets on the app's user | `API.ReadWrite.All` with admin consent (BC publishes no read-only variant), then read on each entity plus create on sales quotes |
-| `acumatica` | User Security → Access Rights by Role | Endpoint access plus View Only per screen, and Insert on Sales Orders for the send |
+| `acumatica` | User Security → Access Rights by Role | Endpoint access plus View Only per screen, and Insert on Sales Orders for the send — that one screen (SO301000) carries the order read, the quote read and the send |
 | `prophet21` | P21 user API flag + the middleware's exposed views | Per OData view |
 | `sagex3` | Syracuse role | SData access plus read per X3 table |
 | `sage100` | Library Master → Role Maintenance | SData access plus inquiry per module |
@@ -227,15 +310,21 @@ names each skipped row. Nothing estimates around a gap.
   Central alone for as long as four connectors were missing it: once a gap is
   on the list under one connector's name, nobody rereads it to count who else
   has it.
-- **Quotes, users and vendor payments — all six**. No ERP connector reads any
-  of the three. `REQUIRED_SCOPES` spells out what each buys, because Zoho asks
-  for all three: quotes are the denominator of a win rate, so without them a
-  book sees only what it invoiced and a lost quote leaves no trace; users map a
-  salesperson to a platform account, and without them accounts stay unassigned
-  and every decision routes to management; vendor payments are the money-out
-  half of liquidity, which one side of the ledger cannot give. On any of the
-  six, those screens are empty by construction. That is the correct behaviour
-  — and it is a gap, which is what this list is for.
+- **Quotes — Prophet 21 and both Sage connectors.** Business Central,
+  Acumatica and NetSuite read them; see the section above for where each keeps
+  a quote and why a guessed header field on the other three is worse than the
+  gap. Quotes are the denominator of a win rate, so on a P21 or Sage book the
+  platform still sees only what it invoiced and a lost quote leaves no trace.
+  Half a gap remains on all six: `normalize._QUOTE_VOCABULARY` has one entry,
+  Zoho's, so the three that do read quotes cannot say how one *ended* until a
+  person records it.
+- **Users and vendor payments — all six**. No ERP connector reads either.
+  `REQUIRED_SCOPES` spells out what each buys, because Zoho asks for both:
+  users map a salesperson to a platform account, and without them accounts stay
+  unassigned and every decision routes to management; vendor payments are the
+  money-out half of liquidity, which one side of the ledger cannot give. On any
+  of the six, those screens are empty by construction. That is the correct
+  behaviour — and it is a gap, which is what this list is for.
 - **All six**: credit notes and per-location stock (Zoho-only today).
 - **`created_time`** — *when the source system recorded the document*, which is
   a different fact from its date and from when this platform synced it. Every

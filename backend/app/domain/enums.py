@@ -480,6 +480,51 @@ QUOTE_OUTCOME_TRANSITIONS: dict[QuoteOutcomeStatus, frozenset] = {
 }
 
 
+class QuoteDocumentWriteState(str, Enum):
+    """What a ``quote_documents`` row knows about the document it names.
+
+    ``WRITTEN`` is the ordinary row: the source answered, the document exists
+    and its id and number are on the row. ``UNVERIFIED`` is the row a send
+    leaves behind when the source could not say — the request was sent and
+    the reply was lost, and the settle read failed too. It carries the
+    reference the write went out under and nothing else, so that "look for
+    reference X before sending again" is on the quote where the next person
+    finds it rather than in an HTTP response the first person closed. The
+    next press retries the same revision under the same reference, and the
+    source's own pre-flight settles which of the two it was.
+    """
+
+    WRITTEN = "WRITTEN"
+    UNVERIFIED = "UNVERIFIED"
+
+
+class QuoteDocumentChannel(str, Enum):
+    """How a quote left the desk. ``ERP``: this platform wrote the document
+    into a source system. ``MANUAL``: a person said it went out another way —
+    a PDF, a book this platform cannot write to — and the row records the
+    content and the policy in force, with no document id because there is
+    none."""
+
+    ERP = "ERP"
+    MANUAL = "MANUAL"
+
+
+class QuoteOutcomeSource(str, Enum):
+    """Who decided a quote, as ``quote_service.decide`` answers it.
+
+    ``HUMAN``: a person recorded WON or LOST on ``quote_outcomes``, with a
+    reason and a winner where it was a loss. ``ERP``: nobody here said, but
+    the ERP's own record of the same document is classified WON or LOST with
+    a date — the customer accepted or declined it there. A human row always
+    wins over the ERP's word; the ERP's word only ever fills silence. Derived
+    on every read and never written back: the sync still never opens the
+    human table, and a re-sync cannot change a recorded reason.
+    """
+
+    HUMAN = "HUMAN"
+    ERP = "ERP"
+
+
 class QuoteLossReason(str, Enum):
     """Why a quote was lost, from a list short enough that people use it.
 

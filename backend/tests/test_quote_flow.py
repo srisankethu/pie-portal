@@ -27,7 +27,7 @@ from app.ingestion.zoho_client import ZohoCredentials
 from app.routers import platform_auth, quote
 from app.routers.quote import QuoteBooks, books_for_quote
 from app.seed import SEED_PASSWORD, ensure_org_and_users, provision_organization
-from app.zoho import MockZoho, ZohoWriteRefused, ZohoWriteUnknown
+from app.zoho import MockZoho, ZohoUnavailable, ZohoWriteRefused, ZohoWriteUnknown
 
 from decision_platform.test_zoho_books_service import FakeBooks
 
@@ -541,18 +541,162 @@ def test_sending_the_same_quote_twice_returns_the_one_estimate(client, mgmt_hdr)
 
 @pytest.mark.requires_pie
 def test_amending_a_sent_quote_produces_a_new_estimate(client, mgmt_hdr):
-    """Re-sending an amended quote is ordinary work, so this is not a lock."""
+    """Re-sending an amended quote is ordinary work, so this is not a lock.
+
+    And it is a *revision*: a new document under a reference of its own. Every
+    live adapter keys its idempotency on the reference, so an amendment sent
+    under the first one came back as the document already there — the mock
+    minted a second document on every call, which is why this assertion held
+    while the live path could not. The mock honours the reference now, so the
+    second document here is earned by the ``-r2`` reference, not handed over.
+    """
+    from app.commercial import quote_service
+
     qid = _clean_quote(client, mgmt_hdr)
     first = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
-    lid = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()["lines"][0]["id"]
+    assert first["revision"] == 1 and first["superseded"] is None
+    view = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()
+    lid = view["lines"][0]["id"]
+    with client.Maker() as s:
+        one = quote_service.latest_document(s, "org_pie", quote_id=qid)
+        assert one.reference == view["reference"], "revision 1 keeps the bare reference"
 
     q = client.post(f"/api/v1/quotes/{qid}/lines/{lid}/price", json={"price": 8000},
                     headers=mgmt_hdr).json()
     assert q["estimate"]["current"] is False, "the estimate no longer describes this quote"
 
     second = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
-    assert second["ok"] is True
+    assert second["ok"] is True, second
     assert second["documentNumber"] != first["documentNumber"]
+    assert second["revision"] == 2
+    # The document it replaces is named, never voided from here (decision D2).
+    assert second["superseded"] == first["documentNumber"]
+    assert first["documentNumber"] in second["message"]
+
+    with client.Maker() as s:
+        two = quote_service.latest_document(s, "org_pie", quote_id=qid)
+        row = quote_service.get_outcome(s, "org_pie", qid)
+    assert two.revision == 2
+    assert two.reference == view["reference"] + "-r2"
+    # The outcome follows the newest document.
+    assert row.status == "SENT"
+    assert row.quote_document_ref == two.external_document_id
+    assert row.quote_document_ref != one.external_document_id
+    q = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()
+    assert q["estimate"]["number"] == second["documentNumber"]
+    assert q["estimate"]["revision"] == 2 and q["estimate"]["current"] is True
+
+
+@pytest.mark.requires_pie
+def test_a_manual_mark_between_two_erp_sends_does_not_strand_the_outcome(client, mgmt_hdr):
+    """The document a revision supersedes is the newest *ERP* document.
+
+    A MANUAL row in between has no id to move the outcome from and no number
+    to void; naming it refused the move and left the outcome on a document
+    two revisions old, with an empty number in the sentence about voiding.
+    """
+    from app.commercial import quote_service
+
+    qid = _clean_quote(client, mgmt_hdr)
+    first = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert first["ok"] is True, first
+    lid = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()["lines"][0]["id"]
+
+    client.post(f"/api/v1/quotes/{qid}/lines/{lid}/price", json={"price": 7000},
+                headers=mgmt_hdr)
+    marked = client.post(f"/api/v1/quotes/{qid}/mark-sent", headers=mgmt_hdr).json()
+    assert marked["ok"] is True and marked["revision"] == 2, marked
+
+    client.post(f"/api/v1/quotes/{qid}/lines/{lid}/price", json={"price": 6500},
+                headers=mgmt_hdr)
+    third = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert third["ok"] is True and third["revision"] == 3, third
+    assert third["warning"] is None, third
+    assert third["superseded"] == first["documentNumber"]
+    with client.Maker() as s:
+        doc = quote_service.latest_document(s, "org_pie", quote_id=qid)
+        row = quote_service.get_outcome(s, "org_pie", qid)
+    assert doc.revision == 3 and doc.channel == "ERP"
+    assert row.quote_document_ref == doc.external_document_id
+
+
+@pytest.mark.requires_pie
+def test_an_unchanged_press_records_no_second_decision_set(client, mgmt_hdr):
+    """"Already covers" is answered before the assessment is recorded.
+
+    A press that creates nothing is not a send; writing a snapshot set for it
+    grew the audit trail by one duplicate decision per line per press.
+    """
+    from app.domain import models
+
+    qid = _clean_quote(client, mgmt_hdr)
+    assert client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()["ok"]
+
+    def decisions():
+        with client.Maker() as s:
+            return s.query(models.QuoteDecision).filter_by(quote_id=qid).count()
+
+    recorded = decisions()
+    assert recorded > 0, "the send itself must record the assessment it was judged on"
+    again = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert again["alreadyExisted"] is True
+    assert decisions() == recorded
+
+
+@pytest.mark.requires_pie
+def test_a_send_moves_the_outcome_to_sent_and_links_the_document(client, mgmt_hdr):
+    """Presses the endpoint and reads the row — the two halves no other test joins.
+
+    ``test_quote_workspace`` asserts readiness from the document row, and the
+    outcome-scope tests call ``set_outcome`` directly. Between them the send's
+    own call went unexercised, and it had been raising ``AttributeError`` into
+    a swallow-all ``except`` since the written-document record was renamed:
+    every send answered "created", no quote reached SENT, and the join to the
+    ERP document was never written.
+    """
+    from app.commercial import quote_service
+
+    qid = _clean_quote(client, mgmt_hdr)
+    r = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert r["ok"] is True, r
+    assert r["warning"] is None, r
+    with client.Maker() as s:
+        row = quote_service.get_outcome(s, "org_pie", qid)
+        doc = quote_service.latest_document(s, "org_pie", quote_id=qid)
+    assert row is not None, "the send must open the outcome row"
+    assert row.status == "SENT"
+    assert row.sent_at is not None
+    assert doc is not None
+    assert row.quote_document_ref == doc.external_document_id, \
+        "the outcome names the ERP document the send created"
+
+
+@pytest.mark.requires_pie
+def test_a_bookkeeping_refusal_is_in_the_response_not_the_log(client, mgmt_hdr):
+    """The estimate exists whatever the outcome table says.
+
+    So a lifecycle refusal is a ``warning`` on a successful answer — never a
+    failed send, and never only a log line behind a green snackbar, which is
+    how the missing link went unnoticed for two weeks.
+    """
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteOutcomeStatus
+
+    qid = _clean_quote(client, mgmt_hdr)
+    # Somebody already recorded this quote's outcome against another document.
+    with client.Maker() as s:
+        quote_service.set_outcome(
+            s, "org_pie", quote_id=qid, quote_document_ref="est-from-elsewhere",
+            status=QuoteOutcomeStatus.SENT, user_id="u1")
+        s.commit()
+
+    r = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert r["ok"] is True and r["documentNumber"], r
+    assert r["warning"] and "est-from-elsewhere" in r["warning"], r
+    with client.Maker() as s:
+        row = quote_service.get_outcome(s, "org_pie", qid)
+    assert row.quote_document_ref == "est-from-elsewhere", \
+        "a fact a person recorded is never repointed by a send"
 
 
 @pytest.mark.requires_pie
@@ -653,7 +797,11 @@ class _StubBooks:
     def create_sales_quotes(self, customer, lines, *, customer_ref=None, reference=None):
         if self.error:
             raise self.error
-        return self._mock.create_sales_quotes(customer, lines)
+        # The reference goes through, so the stub is idempotent the way every
+        # live adapter is: a retry under the reference an unverified send went
+        # out under finds the document that press landed, if it did.
+        return self._mock.create_sales_quotes(customer, lines, customer_ref=customer_ref,
+                                              reference=reference)
 
     @property
     def available(self) -> bool:
@@ -823,9 +971,23 @@ def test_the_send_response_carries_no_economics(client, mgmt_hdr):
     # like the three beside it — it varies with the connector and with nothing
     # else, so there is no price to walk and no boundary to place. That is the
     # argument this assertion exists to make somebody write down.
+    #
+    # ``warning`` joined when the send started reporting, rather than logging,
+    # that the outcome row could not follow the document. It carries one of
+    # ``set_outcome``'s own refusals — a lifecycle word, a document reference —
+    # or an exception's type name. Nothing in it is derived from a price, it is
+    # null on every ordinary send, and a sentence about which row a quote's
+    # status lives on has no boundary a caller could walk.
+    #
+    # ``revision`` and ``superseded`` joined when an amended quote became a new
+    # document rather than a re-labelled old one. A revision is a counter of
+    # sends — 1, 2, 3 — and ``superseded`` is the previous document's number,
+    # both already on the quote's own screen. Neither moves with a price, so
+    # there is nothing to walk; they say *which* document, never what is in it.
     assert set(sent) == {"ok", "documentNumber", "lineCount", "blockers",
                          "message", "system", "systemLabel", "systemShort",
-                         "documentTerm", "alreadyExisted"}, (
+                         "documentTerm", "alreadyExisted", "warning",
+                         "revision", "superseded"}, (
         "a field was added to the send response — if it answers a margin "
         "question, in any form, it does not belong here")
     body = json.dumps(sent).lower()
@@ -888,13 +1050,138 @@ def test_the_document_a_send_produced_names_its_system_and_its_policy(
 @pytest.mark.requires_pie
 def test_an_unknown_write_outcome_is_neither_success_nor_silence(client, mgmt_hdr):
     """The state that must never be rounded off. The response says the outcome
-    is unresolved and carries the reference to look up in Zoho."""
+    is unresolved and carries the reference to look up in Zoho.
+
+    And the quote says so too, to whoever opens it next: the response was the
+    only place the sentence lived, so the person who pressed the button and
+    closed the tab was the only one ever told to look before sending again.
+    """
+    from app.commercial import quote_service
+
     with _books(client, _StubBooks(ZohoWriteUnknown(
             "sent, reply lost — look for reference QB-1-abcd", reference="QB-1-abcd"))):
         qid = _clean_quote(client, mgmt_hdr)
         est = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
     assert est["ok"] is False and est["documentNumber"] is None
     assert "QB-1-abcd" in est["message"]
+    assert est["revision"] == 1
+
+    # Written down: a row in UNVERIFIED, with the reference and no number.
+    with client.Maker() as s:
+        doc = quote_service.latest_document(s, "org_pie", quote_id=qid)
+        written = quote_service.latest_written_document(s, "org_pie", quote_id=qid)
+        outcome = quote_service.get_outcome(s, "org_pie", qid)
+    assert doc is not None and doc.write_state == "UNVERIFIED"
+    assert doc.external_document_id is None and doc.external_document_number == ""
+    assert doc.reference, "the reference is the whole of what the next person needs"
+    assert written is None, "nothing the source confirmed"
+    assert outcome is None or outcome.status != "SENT", "unverified is not sent"
+
+    # And said on the quote and on the list, not only in the reply.
+    view = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()
+    assert view["estimate"] is None
+    assert view["unverifiedSend"]["reference"] == doc.reference
+    assert view["unverifiedSend"]["revision"] == 1
+    assert view["unverifiedSend"]["systemLabel"]
+    rows = client.get("/api/v1/quotes", headers=mgmt_hdr).json()["quotes"]
+    assert next(r for r in rows if r["id"] == qid)["readiness"] == "UNVERIFIED_SEND"
+
+
+@pytest.mark.requires_pie
+def test_a_retry_after_an_unverified_send_keeps_the_reference_and_the_revision(
+        client, mgmt_hdr):
+    """The next press retries *that* revision under *its* reference.
+
+    A fresh reference would make the source create a second document beside
+    the one the lost press may have landed; the same reference lets the
+    source's own pre-flight settle which of the two it was.
+    """
+    from app.commercial import quote_service
+
+    lost = _StubBooks(ZohoWriteUnknown("reply lost", reference="whatever"))
+    with _books(client, lost):
+        qid = _clean_quote(client, mgmt_hdr)
+        assert client.post(f"/api/v1/quotes/{qid}/estimate",
+                           headers=mgmt_hdr).json()["ok"] is False
+    with client.Maker() as s:
+        unverified = quote_service.latest_document(s, "org_pie", quote_id=qid)
+
+    # The source answers this time — and holds nothing under the reference, so
+    # the write runs now.
+    with _books(client, _StubBooks()):
+        again = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert again["ok"] is True, again
+    assert again["revision"] == 1 and again["superseded"] is None
+    assert again["alreadyExisted"] is False
+    with client.Maker() as s:
+        doc = quote_service.latest_document(s, "org_pie", quote_id=qid)
+        outcome = quote_service.get_outcome(s, "org_pie", qid)
+    assert doc.write_state == "WRITTEN" and doc.revision == 1
+    assert doc.reference == unverified.reference
+    assert doc.external_document_number == again["documentNumber"]
+    assert outcome.status == "SENT"
+    assert outcome.quote_document_ref == doc.external_document_id
+    view = client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()
+    assert view["unverifiedSend"] is None
+    assert view["estimate"]["number"] == again["documentNumber"]
+
+
+@pytest.mark.requires_pie
+def test_a_source_that_cannot_be_reached_answers_in_words_not_a_500(client, mgmt_hdr):
+    """A failed pre-flight read, a revoked grant, a throttle: nothing was
+    written, and the honest answer is that sentence with the system's name on
+    it. It used to escape the endpoint as an unhandled exception."""
+    from app.commercial import quote_service
+
+    with _books(client, _StubBooks(ZohoUnavailable("Zoho Books is not answering"))):
+        qid = _clean_quote(client, mgmt_hdr)
+        r = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr)
+    assert r.status_code == 200, r.text
+    est = r.json()
+    assert est["ok"] is False and est["documentNumber"] is None
+    assert est["systemLabel"] and est["systemLabel"] in est["message"]
+    assert "Nothing is recorded as sent" in est["message"]
+    with client.Maker() as s:
+        assert quote_service.latest_document(s, "org_pie", quote_id=qid) is None
+        assert quote_service.get_outcome(s, "org_pie", qid) is None
+
+
+@pytest.mark.requires_pie
+def test_the_customer_cannot_change_once_a_document_is_written(client, mgmt_hdr):
+    """A document already written sits on one customer's account in the
+    source, and nothing in PIE could say so if the quote moved to another
+    (decision D4). Choosing the same customer again is not a change."""
+    with _books(client, _StubBooks()):
+        qid = _clean_quote(client, mgmt_hdr)
+        sent = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+        assert sent["ok"] is True, sent
+        moved = client.put(f"/api/v1/quotes/{qid}/customer",
+                           json={"customer": "Somebody Else"}, headers=mgmt_hdr)
+        same = client.put(f"/api/v1/quotes/{qid}/customer",
+                          json={"customer": "Pitti"}, headers=mgmt_hdr)
+    assert moved.status_code == 409, moved.text
+    assert sent["documentNumber"] in moved.json()["detail"]
+    assert "Pitti" in moved.json()["detail"]
+    assert same.status_code == 200, same.text
+    assert client.get(f"/api/v1/quotes/{qid}", headers=mgmt_hdr).json()["customer"] == "Pitti"
+
+
+@pytest.mark.requires_pie
+def test_a_mock_mode_send_records_the_system_the_response_names(client, mgmt_hdr):
+    """The row and the reply name one system.
+
+    In mock mode no book is resolved, and the document row used to record the
+    one connector that could write when the column was added — while the
+    response named the quote's own connector. Two words for one send.
+    """
+    from app.commercial import quote_service
+
+    qid = _clean_quote(client, mgmt_hdr)
+    sent = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr).json()
+    assert sent["ok"] is True, sent
+    with client.Maker() as s:
+        doc = quote_service.latest_document(s, "org_pie", quote_id=qid)
+    assert doc.external_system == sent["system"]
 
 
 @pytest.mark.requires_pie

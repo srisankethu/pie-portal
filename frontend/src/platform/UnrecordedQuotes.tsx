@@ -416,7 +416,7 @@ export function UnrecordedQuotesScreen({ session }: { session: PlatformSession }
                  reopened, because the analysis that reads it has already
                  counted it."
         onClose={() => setRecording(null)}
-        onRecord={async (status, lossReason, note) => {
+        onRecord={async (status, lossReason, note, lostTo) => {
           if (!recording) return;
           // The ERP raised this quote and the platform never priced it, so it is
           // named by the source system's own reference rather than by a
@@ -425,7 +425,8 @@ export function UnrecordedQuotesScreen({ session }: { session: PlatformSession }
           // carrying the server's own sentence, which the dialog shows verbatim.
           await intelligence.documentOutcome(
             session.token, recording.quote_document_ref, status,
-            recording.customer_label, note, lossReason);
+            recording.customer_label, note, lossReason, lostTo,
+            recording.connection_id);
           enqueueSnackbar(
             `${recording.number ?? recording.quote_document_ref} recorded as `
             + status.toLowerCase(),

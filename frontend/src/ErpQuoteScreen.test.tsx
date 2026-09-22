@@ -173,10 +173,15 @@ describe("the quote", () => {
     expect(screen.getByText("₹1,01,139")).toBeTruthy();
   });
 
-  it("asks for its own reference", async () => {
+  it("asks for its own reference, and for the book that issued it", async () => {
+    // An ERP reference is unique only inside one connected company, so the
+    // read carries both. This fixture is drawn at the bare route, which a
+    // reader may still have bookmarked: the company is null there and the
+    // server reads the reference as it always did.
     draw();
 
-    await waitFor(() => expect(erpQuoteLines).toHaveBeenCalledWith("tok", REF));
+    await waitFor(() => expect(erpQuoteLines)
+      .toHaveBeenCalledWith("tok", REF, null));
   });
 
   it("shows a dash for a date the ERP never set, not a guess", async () => {
@@ -261,11 +266,67 @@ describe("it always resolves", () => {
   });
 });
 
+describe("a quote this platform wrote", () => {
+  it("links back to the draft it came from, and nothing else changes", async () => {
+    // The same document used to be a "Sent" draft on one tab and an ERP quote
+    // on the other with nothing joining them. The page stays read-only: the
+    // one control it gains opens the draft, not the document.
+    listErpQuotes.mockResolvedValue({
+      quotes_listed: [quote({ platform_quote: { quote_id: "q42", number: "QB-0042" } })],
+    });
+    draw();
+
+    await waitFor(() => expect(screen.getByText("CNMG120408")).toBeTruthy());
+    expect(screen.getByText(/Built in PIE as QB-0042/)).toBeTruthy();
+    const pressable = screen.getAllByRole("button")
+      .map((b) => (b.textContent ?? "").trim())
+      .filter((label) => label !== "");
+    expect(pressable).toEqual(["All quotes", "Open in the Quote Builder"]);
+    expect(screen.getByText(/Nothing on this page can be edited/)).toBeTruthy();
+  });
+});
+
+describe("recording what happened", () => {
+  it("offers to record an outcome where nobody has, and the books have not won it", async () => {
+    listErpQuotes.mockResolvedValue({
+      quotes_listed: [quote({ source_status: "sent", outcome: "UNRECORDED",
+                              decided_on: null, outcome_of_record: "UNRECORDED",
+                              outcome_source: null, recorded: null })],
+    });
+    draw();
+
+    await waitFor(() => expect(screen.getByText("CNMG120408")).toBeTruthy());
+    expect(screen.getByRole("button", { name: "Record outcome" })).toBeTruthy();
+    expect(screen.getByText("No outcome")).toBeTruthy();
+  });
+
+  it("shows a person's decision beside the ERP's word, and offers nothing more", async () => {
+    listErpQuotes.mockResolvedValue({
+      quotes_listed: [quote({ source_status: "expired", outcome: "UNRECORDED",
+                              decided_on: null, outcome_of_record: "LOST",
+                              outcome_source: "HUMAN",
+                              recorded: { status: "LOST", loss_reason: "PRICE",
+                                          lost_to: "Sandvik", note: null,
+                                          decided_at: "2026-09-15T08:00:00Z" } })],
+    });
+    draw();
+
+    await waitFor(() => expect(screen.getByText("CNMG120408")).toBeTruthy());
+    expect(screen.getByText("Lost")).toBeTruthy();
+    expect(screen.getByText(/Recorded here: lost/)).toBeTruthy();
+    expect(screen.getByText(/to Sandvik/)).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Record outcome" })).toBeNull();
+  });
+});
+
 describe("read-only, for anyone", () => {
-  it("offers nothing to press but the way back", async () => {
+  it("offers nothing to press but the way back, on a quote the books have won", async () => {
     // Not "hides the edit button from a salesperson" — there is no edit button
     // for any role. A change typed here would be overwritten by the next sync,
-    // so the page must not invite one.
+    // so the page must not invite one. The fixture is a quote the ERP has
+    // recorded as accepted, on purpose: that is the one state with nothing
+    // left to record either, so the way back is the only control. An open
+    // quote gains "Record outcome" — see "recording what happened" above.
     draw();
 
     await waitFor(() => expect(screen.getByText("CNMG120408")).toBeTruthy());

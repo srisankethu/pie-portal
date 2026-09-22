@@ -299,6 +299,330 @@ def test_removing_a_draft(client, owner):
     assert client.delete(f"/api/v1/quotes/{q['id']}", headers=owner).status_code == 404
 
 
+# ── one quote, two records, one join ────────────────────────────────────────
+# A sent draft and the ERP's own row for the same document, joined on system,
+# company and the ERP's id — never on a surrogate — and only where that names
+# exactly one row.
+
+def _erp_row(s, ref: str, *, connection_id: str, status: str = "sent",
+             outcome: str = "UNRECORDED", decided=None) -> None:
+    from datetime import date
+    s.add(models.QuoteDoc(
+        organization_id=ORG, connector="zoho", connection_id=connection_id,
+        external_ref=ref, number=f"EST-{ref}", customer_ref="Pitti",
+        date=date(2026, 9, 1), source_status=status, outcome=outcome,
+        decided_on=decided))
+
+
+def _sent(client, owner, *, doc_id: str, connection_id: str | None) -> str:
+    from app.commercial import quote_service
+    from app.store import store
+
+    # Named, because the second test connects a second company and an
+    # organization reading two books is asked which one a quote is from.
+    r = client.post("/api/v1/quotes", json={"customer": "Pitti", "connection_id": COMPANY},
+                    headers=owner)
+    assert r.status_code == 200, r.text
+    q = r.json()
+    _seed_lines(client, q["id"], _line("L1"))
+    with client.Maker() as s:
+        draft = quote_workspace.load(s, ORG, q["id"])
+        quote_service.record_document(
+            s, ORG, quote_id=q["id"], external_system="zoho",
+            connection_id=connection_id, number=f"EST-{doc_id}", document_id=doc_id,
+            line_count=1, fingerprint=store.priced_fingerprint(draft))
+        s.commit()
+    return q["id"]
+
+
+def test_a_sent_quote_shows_what_the_erp_says_once_the_sync_has_read_it(client, owner):
+    qid = _sent(client, owner, doc_id="est-1", connection_id=COMPANY)
+    rows = client.get("/api/v1/quotes", headers=owner).json()["quotes"]
+    row = next(r for r in rows if r["id"] == qid)
+    assert row["sent"]["number"] == "EST-est-1"
+    assert row["sent"]["erp"] is None, "nothing to say until a sync has read it"
+    assert row["company"] == "SLS Engineers" and row["connectionId"] == COMPANY
+    assert row["origin"]["connection_id"] == COMPANY
+
+    with client.Maker() as s:
+        _erp_row(s, "est-1", connection_id=COMPANY, status="sent")
+        s.commit()
+    rows = client.get("/api/v1/quotes", headers=owner).json()["quotes"]
+    erp = next(r for r in rows if r["id"] == qid)["sent"]["erp"]
+    assert erp["sourceStatus"] == "sent" and erp["outcome"] == "UNRECORDED"
+    assert erp["number"] == "EST-est-1"
+    # The builder reads the same join.
+    q = client.get(f"/api/v1/quotes/{qid}", headers=owner).json()
+    assert q["estimate"]["erp"]["sourceStatus"] == "sent"
+    assert q["company"] == "SLS Engineers"
+
+
+def test_the_same_id_in_another_companys_book_does_not_join(client, owner):
+    """Two books can issue one id. A document that says which book it went
+    into joins only to that book's row; one that does not (written before the
+    company was recorded) joins to nothing rather than to either."""
+    with client.Maker() as s:
+        s.add(models.ZohoConnection(connection_id="cx_other", organization_id=ORG,
+                                    label="4U Precision", zoho_organization_id="z2"))
+        _erp_row(s, "est-2", connection_id="cx_other", status="accepted")
+        _erp_row(s, "est-2", connection_id=COMPANY, status="sent")
+        s.commit()
+    qualified = _sent(client, owner, doc_id="est-2", connection_id=COMPANY)
+    legacy = _sent(client, owner, doc_id="est-2", connection_id=None)
+    rows = {r["id"]: r for r in client.get("/api/v1/quotes", headers=owner).json()["quotes"]}
+    assert rows[qualified]["sent"]["erp"]["sourceStatus"] == "sent"
+    assert rows[legacy]["sent"]["erp"] is None
+
+
+def test_a_legacy_document_joins_while_the_bare_id_is_unique(client, owner):
+    with client.Maker() as s:
+        _erp_row(s, "est-3", connection_id=COMPANY, status="viewed")
+        s.commit()
+    qid = _sent(client, owner, doc_id="est-3", connection_id=None)
+    rows = client.get("/api/v1/quotes", headers=owner).json()["quotes"]
+    assert next(r for r in rows if r["id"] == qid)["sent"]["erp"]["sourceStatus"] == "viewed"
+
+
+# ── a quote belongs to the company whose catalogue priced it ────────────────
+
+def _two_companies(client) -> tuple[str, str]:
+    """A second connected company and one customer in each. Returns the two
+    customer ids: (this company's, the other company's)."""
+    with client.Maker() as s:
+        s.add(models.ZohoConnection(connection_id="cx_other", organization_id=ORG,
+                                    label="4U Precision", zoho_organization_id="z2"))
+        s.add(models.Customer(customer_id="c_sls", organization_id=ORG,
+                              connector="zoho", connection_id=COMPANY,
+                              external_id="3300000001", name="Alpha Tools"))
+        s.add(models.Customer(customer_id="c_4u", organization_id=ORG,
+                              connector="zoho", connection_id="cx_other",
+                              external_id="3300000002", name="Beta Works"))
+        s.commit()
+    return "c_sls", "c_4u"
+
+
+def test_a_customer_from_another_company_is_refused_by_name_at_creation(client, owner):
+    _, theirs = _two_companies(client)
+    r = client.post("/api/v1/quotes",
+                    json={"customer": "Beta Works", "customer_id": theirs,
+                          "connection_id": COMPANY}, headers=owner)
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "4U Precision" in detail and "SLS Engineers" in detail
+    assert "Beta Works" in detail
+
+
+def test_the_customers_own_company_answers_when_none_was_named(client, owner):
+    """Starting a quote from an account page in a two-company organization
+    used to be asked "which book?" about a customer whose row already says."""
+    _, theirs = _two_companies(client)
+    r = client.post("/api/v1/quotes",
+                    json={"customer": "Beta Works", "customer_id": theirs}, headers=owner)
+    assert r.status_code == 200, r.text
+    assert r.json()["connectionId"] == "cx_other"
+    assert r.json()["company"] == "4U Precision"
+    # And with no customer either, the organization is still asked.
+    r = client.post("/api/v1/quotes", json={}, headers=owner)
+    assert r.status_code == 422
+
+
+def test_changing_to_a_customer_from_another_company_is_refused(client, owner):
+    mine, theirs = _two_companies(client)
+    q = client.post("/api/v1/quotes", json={"connection_id": COMPANY}, headers=owner).json()
+    r = client.put(f"/api/v1/quotes/{q['id']}/customer",
+                   json={"customer": "Beta Works", "customer_id": theirs}, headers=owner)
+    assert r.status_code == 422, r.text
+    assert "4U Precision" in r.json()["detail"]
+    ok = client.put(f"/api/v1/quotes/{q['id']}/customer",
+                    json={"customer": "Alpha Tools", "customer_id": mine}, headers=owner)
+    assert ok.status_code == 200, ok.text
+    assert ok.json()["customerId"] == mine
+
+
+def test_a_customer_with_no_recorded_company_is_not_refused_here(client, owner):
+    """Provenance not recorded is ``book_for_customer``'s question, at the send."""
+    with client.Maker() as s:
+        s.add(models.Customer(customer_id="c_old", organization_id=ORG,
+                              external_id="3300000003", name="Old Imports"))
+        s.commit()
+    r = client.post("/api/v1/quotes",
+                    json={"customer": "Old Imports", "customer_id": "c_old",
+                          "connection_id": COMPANY}, headers=owner)
+    assert r.status_code == 200, r.text
+
+
+def test_a_quote_the_erp_marked_accepted_reads_won_on_the_list(client, owner):
+    """The outcome of record, on the Drafts tab.
+
+    The send moved the row to SENT, the customer accepted the document in the
+    ERP, the sync read that back — and the list kept saying "Sent" because
+    readiness only ever read the human table. It reads the one answer now:
+    a person's decision first, the ERP's word where nobody here has said.
+    """
+    from datetime import date
+
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteOutcomeStatus
+
+    qid = _sent(client, owner, doc_id="est-won", connection_id=COMPANY)
+    with client.Maker() as s:
+        quote_service.set_outcome(s, ORG, quote_id=qid, status=QuoteOutcomeStatus.SENT,
+                                  quote_document_ref="est-won",
+                                  quote_document_connection_id=COMPANY)
+        _erp_row(s, "est-won", connection_id=COMPANY, status="accepted",
+                 outcome="WON", decided=date(2026, 9, 14))
+        s.commit()
+    assert _readiness(client, owner, qid) == "WON"
+
+    # A person's own record beats the ERP's word, whatever it says.
+    with client.Maker() as s:
+        quote_service.set_outcome(s, ORG, quote_id=qid, status=QuoteOutcomeStatus.LOST,
+                                  loss_reason=quote_service.QuoteLossReason.PRICE)
+        s.commit()
+    assert _readiness(client, owner, qid) == "LOST"
+
+
+def test_marking_a_quote_as_sent_records_it_like_a_send_without_a_writer(client, owner):
+    """A quote that went out by PDF, or into a book this platform only reads.
+
+    The same gates, the same assessment, a MANUAL document row with the
+    content and no number, and the outcome moved to SENT — so readiness, the
+    duplicate check and the delete guard all see a sent quote without having
+    to know how it went out.
+    """
+    from app.commercial import quote_service
+
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=owner).json()
+    _seed_lines(client, q["id"], _line("L1"))
+    r = client.post(f"/api/v1/quotes/{q['id']}/mark-sent", headers=owner).json()
+    assert r["ok"] is True, r
+    assert r["documentNumber"] is None and r["revision"] == 1
+    assert "Marked as sent" in r["message"]
+
+    with client.Maker() as s:
+        doc = quote_service.latest_document(s, ORG, quote_id=q["id"])
+        outcome = quote_service.get_outcome(s, ORG, q["id"])
+        decisions = s.query(models.QuoteDecision).filter_by(quote_id=q["id"]).count()
+    assert doc.channel == "MANUAL" and doc.write_state == "WRITTEN"
+    assert doc.external_document_number == "" and doc.external_document_id is None
+    assert doc.reference == q["reference"] and doc.thresholds_version
+    assert outcome.status == "SENT"
+    assert decisions == 1, "the manual path records the assessment the send does"
+    assert _readiness(client, owner, q["id"]) == "SENT"
+
+    # Unchanged content: already marked, nothing recorded twice.
+    again = client.post(f"/api/v1/quotes/{q['id']}/mark-sent", headers=owner).json()
+    assert again["alreadyExisted"] is True
+    assert "marked as sent" in again["message"].lower()
+    view = client.get(f"/api/v1/quotes/{q['id']}", headers=owner).json()
+    assert view["estimate"]["channel"] == "MANUAL"
+    assert view["estimate"]["number"] == "" and view["estimate"]["current"] is True
+    row = next(r for r in client.get("/api/v1/quotes", headers=owner).json()["quotes"]
+               if r["id"] == q["id"])
+    assert row["sent"]["channel"] == "MANUAL" and row["sent"]["number"] == ""
+
+    # Sent is sent: it stays on record.
+    assert client.delete(f"/api/v1/quotes/{q['id']}", headers=owner).status_code == 409
+
+    # A manual mark covers a manual press, not the ERP send: the books hold
+    # nothing for it, so Send writes the document — as the next revision.
+    sent = client.post(f"/api/v1/quotes/{q['id']}/estimate", headers=owner).json()
+    assert sent["ok"] is True and sent["alreadyExisted"] is False, sent
+    assert sent["revision"] == 2 and sent["documentNumber"]
+    assert sent["superseded"] is None, "a manual row has no number to void"
+    view = client.get(f"/api/v1/quotes/{q['id']}", headers=owner).json()
+    assert view["estimate"]["channel"] == "ERP" and view["estimate"]["revision"] == 2
+
+
+def test_a_quote_cannot_be_marked_as_sent_over_an_unverified_send(client, owner):
+    """A confirmed row written over an open question would erase the
+    reference to look for, and the retry the next press performs with it."""
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteDocumentWriteState
+    from app.store import store
+
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=owner).json()
+    _seed_lines(client, q["id"], _line("L1"))
+    with client.Maker() as s:
+        draft = quote_workspace.load(s, ORG, q["id"])
+        quote_service.record_document(
+            s, ORG, quote_id=q["id"], external_system="zoho", number="",
+            document_id=None, line_count=1, reference=q["reference"],
+            fingerprint=store.priced_fingerprint(draft),
+            write_state=QuoteDocumentWriteState.UNVERIFIED)
+        s.commit()
+    r = client.post(f"/api/v1/quotes/{q['id']}/mark-sent", headers=owner).json()
+    assert r["ok"] is False
+    assert q["reference"] in r["message"] and "unverified" in r["message"].lower()
+    assert _readiness(client, owner, q["id"]) == "UNVERIFIED_SEND"
+    with client.Maker() as s:
+        assert s.query(models.QuoteDocument).filter_by(quote_id=q["id"]).count() == 1
+
+
+def test_marking_as_sent_runs_the_same_gates_as_the_send(client, owner):
+    """A quote the ERP send would refuse is one nobody can mark as sent."""
+    q = client.post("/api/v1/quotes", json={}, headers=owner).json()
+    _seed_lines(client, q["id"], _line("L1", price=None))
+    r = client.post(f"/api/v1/quotes/{q['id']}/mark-sent", headers=owner).json()
+    assert r["ok"] is False and r["blockers"] == ["L1"]
+    assert "no rate" in r["message"]
+    with client.Maker() as s:
+        assert s.query(models.QuoteDocument).filter_by(quote_id=q["id"]).count() == 0
+
+
+def test_a_decided_quote_cannot_be_removed_even_without_a_document(client, owner):
+    """A loss recorded straight from draft has no document and is still a
+    fact an analysis has counted."""
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteOutcomeStatus
+
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=owner).json()
+    _seed_lines(client, q["id"], _line("L1"))
+    with client.Maker() as s:
+        quote_service.set_outcome(s, ORG, quote_id=q["id"], status=QuoteOutcomeStatus.LOST,
+                                  loss_reason=quote_service.QuoteLossReason.NO_DECISION)
+        s.commit()
+    r = client.delete(f"/api/v1/quotes/{q['id']}", headers=owner)
+    assert r.status_code == 409, r.text
+    assert "recorded as lost" in r.json()["detail"]
+    assert _readiness(client, owner, q["id"]) == "LOST"
+
+
+def test_the_view_says_whether_send_can_do_anything(client, owner, monkeypatch):
+    """A quote raised from a book this platform reads but cannot write to
+    shows "Mark as sent" instead of a Send that will refuse — decided on the
+    draft, in words, not at the button after fourteen lines of work."""
+    from app.config import settings
+
+    # Mock mode: the stand-in writes, as it always has.
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=owner).json()
+    view = client.get(f"/api/v1/quotes/{q['id']}", headers=owner).json()
+    assert view["canSendToErp"] is True and view["sendBlock"] is None
+
+    # Live mode, on a company whose connector has no writer here.
+    with client.Maker() as s:
+        s.add(models.ZohoConnection(connection_id="cx_p21", organization_id=ORG,
+                                    connector="prophet21", label="Prophet 21 branch",
+                                    zoho_organization_id="p21-1"))
+        s.commit()
+    p21 = client.post("/api/v1/quotes", json={"customer": "Pitti",
+                                              "connection_id": "cx_p21"},
+                      headers=owner).json()
+    monkeypatch.setattr(settings, "ZOHO_QUOTE_SERVICE", "live")
+    view = client.get(f"/api/v1/quotes/{p21['id']}", headers=owner).json()
+    assert view["canSendToErp"] is False
+    assert view["sendBlock"] and "mark it as sent" in view["sendBlock"]
+
+    # And a customer that matches no row: unplaceable, said on the draft in
+    # the sentence the send would otherwise answer with at the button.
+    nobody = client.post("/api/v1/quotes", json={"customer": "Nobody At All Ltd",
+                                                 "connection_id": COMPANY},
+                         headers=owner).json()
+    view = client.get(f"/api/v1/quotes/{nobody['id']}", headers=owner).json()
+    assert view["canSendToErp"] is False
+    assert "does not match any customer" in view["sendBlock"]
+
+
 def test_a_sent_quote_cannot_be_removed(client, owner):
     from app.commercial import quote_service
 
@@ -364,6 +688,40 @@ def test_readiness_follows_the_send_gates_own_order(client, owner):
     client.post(f"/api/v1/quotes/{q['id']}/lines/L1/price", json={"price": 480},
                 headers=owner)
     assert _readiness(client, owner, q["id"]) == "READY"
+
+
+def test_an_unverified_send_is_what_the_desk_is_waiting_on(client, owner):
+    """A send whose reply was lost outranks SENT and is not NEEDS_ATTENTION.
+
+    NEEDS_ATTENTION means a line is unresolved; this means the books may hold
+    a document nobody has confirmed. Mixing them would put the one that needs
+    a person to look in the books into the pile it would be lost in. The
+    list's ``sent`` block keeps showing the last document the source *did*
+    confirm, because that is the only one with a number.
+    """
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteDocumentWriteState
+    from app.store import store
+
+    qid = _sent(client, owner, doc_id="est-1", connection_id=COMPANY)
+    assert _readiness(client, owner, qid) == "SENT"
+
+    # Re-priced, sent again, and the reply to that second send was lost.
+    client.post(f"/api/v1/quotes/{qid}/lines/L1/price", json={"price": 480},
+                headers=owner)
+    with client.Maker() as s:
+        draft = quote_workspace.load(s, ORG, qid)
+        quote_service.record_document(
+            s, ORG, quote_id=qid, external_system="zoho", connection_id=COMPANY,
+            number="", document_id=None, line_count=1, revision=2,
+            reference="QB-x-r2", fingerprint=store.priced_fingerprint(draft),
+            write_state=QuoteDocumentWriteState.UNVERIFIED)
+        s.commit()
+    rows = client.get("/api/v1/quotes", headers=owner).json()["quotes"]
+    row = next(r for r in rows if r["id"] == qid)
+    assert row["readiness"] == "UNVERIFIED_SEND"
+    assert row["sent"]["number"] == "EST-est-1", "the confirmed document, not the lost one"
+    assert row["sent"]["current"] is False
 
 
 def test_readiness_reports_the_approval_the_gate_is_waiting_on(client, owner):

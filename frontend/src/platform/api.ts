@@ -1054,10 +1054,16 @@ export const papi = {
       `/api/v1/commercial/customers/${encodeURIComponent(customerId)}` +
       `/items/${encodeURIComponent(productId)}`, {}, t),
 
-  listAccounts: (t: string, q = "", status: StatusFilter = "active", group = "") => {
+  listAccounts: (t: string, q = "", status: StatusFilter = "active", group = "",
+                 connectionId = "") => {
     const p = new URLSearchParams({ status });
     if (q) p.set("q", q);
     if (group) p.set("group", group);
+    // One connected company's customers only. The Quote Builder asks with the
+    // company its quote prices from: a quote belongs to the company whose
+    // catalogue priced it, and offering another company's customers there is
+    // how a quote is written into the wrong book.
+    if (connectionId) p.set("connection_id", connectionId);
     return req<Account[]>(`/api/v1/accounts?${p}`, {}, t);
   },
 

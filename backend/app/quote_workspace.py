@@ -34,6 +34,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any, Optional
 
 from sqlalchemy import func, select
@@ -43,7 +44,8 @@ from sqlalchemy.orm import Session
 from . import approvals, clock, memberships, quote_fields
 from .commercial import quote_service
 from .domain import models
-from .domain.enums import ApprovalKind, ApprovalStatus, Role
+from .domain.enums import ApprovalKind, ApprovalStatus, QuoteDocumentWriteState, Role
+from .domain.origin import Companies
 from .ingestion import connections as conn
 from .store import Line, Quote, store
 
@@ -520,8 +522,98 @@ def assignees(session: Session, org: str) -> list[dict[str, str]]:
 # ── the list ─────────────────────────────────────────────────────────────────
 #: What a draft is waiting on. The client maps these to words; the order here
 #: is the order they are decided in, and the first that applies wins.
-READINESS = ("EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS", "NO_CUSTOMER", "SENT",
-             "AWAITING_APPROVAL", "NEEDS_APPROVAL", "READY")
+READINESS = ("WON", "LOST", "EMPTY", "NEEDS_ATTENTION", "MISSING_DETAILS",
+             "NO_CUSTOMER", "UNVERIFIED_SEND", "SENT", "AWAITING_APPROVAL",
+             "NEEDS_APPROVAL", "READY")
+
+
+class CompanyMismatch(ValueError):
+    """A customer from one connected company on a quote priced from another's
+    catalogue. Its own type so a router can answer 422 with the sentence, the
+    way ``resolution.CompanyNotNamed`` is answered."""
+
+
+def company_of_customer(session: Session, org: str,
+                        customer_id: Optional[str]) -> Optional[str]:
+    """The connected company a customer was imported from, or ``None``.
+
+    ``None`` for no customer, a customer this organization does not hold, and
+    a customer imported before provenance was recorded — three different
+    facts, and one answer, because every caller treats them the same way: no
+    company can be inferred, so the caller falls back to asking.
+    """
+    if not customer_id:
+        return None
+    row = session.get(models.Customer, customer_id)
+    if row is None or row.organization_id != org:
+        return None
+    return row.connection_id or None
+
+
+def require_same_company(session: Session, org: str, *,
+                         connection_id: Optional[str],
+                         customer_id: Optional[str]) -> None:
+    """Refuse a customer whose book is not the company this quote prices from.
+
+    A quote belongs to the company whose catalogue priced its lines, and that
+    is the company that invoices — so its customer has to be that company's.
+    The two used to be decided independently: the company once, at creation,
+    from the picker; the book at every read and at the send, from the
+    customer alone (``routers.quote.books_for_quote``). Nothing compared them,
+    and a draft resolved against SLS Engineers' catalogue could be priced from
+    and written into 4U Precision's book with the audit stamp naming SLS.
+
+    Silent where nothing can be compared: no customer yet, a customer with no
+    recorded company (``book_for_customer``'s own rule decides those at the
+    send), or a quote with no company (nothing connected). The sentence names
+    both companies, because "wrong company" sends the reader to check the
+    wrong one.
+    """
+    if not connection_id or not customer_id:
+        return
+    theirs = company_of_customer(session, org, customer_id)
+    if theirs is None or theirs == connection_id:
+        return
+    companies = Companies(session, org)
+    customer = session.get(models.Customer, customer_id)
+    name = customer.name if customer is not None else "This customer"
+    raise CompanyMismatch(
+        f"{name} belongs to {companies.label_for(theirs)}; this quote prices "
+        f"from {companies.label_for(connection_id)}'s catalogue. Start the "
+        f"quote from {companies.label_for(theirs)}, or choose one of "
+        f"{companies.label_for(connection_id)}'s customers.")
+
+
+def erp_side(doc: Optional[models.QuoteDoc]) -> Optional[dict[str, Any]]:
+    """What the ERP itself says about a document this platform wrote — the
+    same document, read back by the sync. ``None`` until a sync has read it.
+
+    Four facts and a number, all the ERP's own: its status word verbatim, the
+    sync's classification of it, when it decided, and when the customer opened
+    it. No cost, no margin, nothing derived. The workspace row and the
+    builder's estimate block both carry this, so they cannot describe one
+    document two ways.
+    """
+    if doc is None:
+        return None
+    return {
+        "number": doc.number,
+        "sourceStatus": doc.source_status or "",
+        "outcome": doc.outcome,
+        "decidedOn": doc.decided_on.isoformat() if doc.decided_on else None,
+        "clientViewedAt": clock.iso(doc.client_viewed_at) if doc.client_viewed_at else None,
+    }
+
+
+def _origin(companies: Companies, connection_id: Optional[str]) -> Optional[dict[str, Any]]:
+    """A draft's company, in the shape every other list stamps on its rows
+    (``origin.Companies.of``), so the workspace filters and labels the way the
+    directory does. ``None`` for a draft raised with nothing connected: that is
+    not an unrecorded source, it is no source."""
+    if not connection_id:
+        return None
+    return companies.of(SimpleNamespace(
+        connector=None, connection_id=connection_id, external_id="")).to_dict()
 
 
 def list_drafts(session: Session, org: str, *, user_id: str = "",
@@ -547,18 +639,51 @@ def list_drafts(session: Session, org: str, *, user_id: str = "",
                         | {r.updated_by_user_id for r in rows})
     policy = approvals.get_policy(session, org)
     defs = quote_fields.definitions_for(session, org)
+    companies = Companies(session, org)
+    quotes = [_to_quote(row) for row in rows]
+    # Two documents per quote, usually the same row. ``newest`` is what the
+    # last press left behind and is what readiness reads — it may be an
+    # UNVERIFIED row with a reference and no number. ``sent`` is the newest
+    # the source confirmed, and is the only one with a number to show.
+    newest_by_quote = {q.id: quote_service.latest_document(session, org, quote_id=q.id)
+                       for q in quotes}
+    sent_by_quote = {
+        qid: (quote_service.latest_written_document(session, org, quote_id=qid)
+              if _unverified(doc) else doc)
+        for qid, doc in newest_by_quote.items()}
+    # What the ERP says about each sent document, one query for the list — the
+    # join ``quote_service.erp_documents_for`` performs, read-side.
+    erp_by_quote = quote_service.erp_documents_for(
+        session, org, list(sent_by_quote.values()))
+    # And how each quote ended, from both sources under the one rule — a
+    # quote the ERP marked accepted reads WON here, not "Sent", the same as
+    # it reads on Won & lost and on the ERP tab.
+    human_by_quote = {r.quote_id: r for r in session.scalars(
+        select(models.QuoteOutcome).where(
+            models.QuoteOutcome.organization_id == org,
+            models.QuoteOutcome.quote_id.in_([q.id for q in quotes])))}
+    records = quote_service.outcomes_of_record(
+        session, org, human_by_quote.values(),
+        written=sent_by_quote, erp=erp_by_quote)
     out = []
-    for row in rows:
-        quote = _to_quote(row)
+    for row, quote in zip(rows, quotes):
         summary = quote.to_dict(False)["summary"]
-        sent = quote_service.latest_document(session, org, quote_id=quote.id)
+        sent = sent_by_quote[quote.id]
         out.append({
             "id": quote.id, "number": quote.number,
             "customer": quote.customer, "customerId": quote.customerId,
+            # Which company's catalogue priced it — and, in a multi-company
+            # organization, the column that tells two desks' quotes apart.
+            "connectionId": quote.connectionId,
+            "company": (companies.label_for(quote.connectionId)
+                        if quote.connectionId else ""),
+            "origin": _origin(companies, quote.connectionId),
             "lineCount": len(quote.lines),
             "unpriced": summary["unpriced"],
             "total": summary["grand"],
-            "readiness": readiness(session, org, quote, policy, sent, defs),
+            "readiness": readiness(session, org, quote, policy,
+                                   newest_by_quote[quote.id], defs,
+                                   record=records.get(quote.id)),
             "ownerId": quote.ownerId,
             "owner": names.get(quote.ownerId or "", ""),
             "canEdit": (may_edit(quote, user_id=user_id, role=role, policy=policy)
@@ -567,6 +692,11 @@ def list_drafts(session: Session, org: str, *, user_id: str = "",
                 "number": sent.external_document_number,
                 "systemLabel": conn.system_label_for(sent.external_system),
                 "current": sent.fingerprint == store.priced_fingerprint(quote),
+                # ERP: the books hold the number. MANUAL: a person said it
+                # went out another way, and there is no number to show.
+                "channel": sent.channel,
+                "revision": sent.revision,
+                "erp": erp_side(erp_by_quote.get(quote.id)),
             },
             "createdBy": names.get(row.salesperson_id or "", ""),
             "updatedBy": names.get(row.updated_by_user_id or "", ""),
@@ -576,11 +706,21 @@ def list_drafts(session: Session, org: str, *, user_id: str = "",
     return out
 
 
+def _unverified(doc: Optional[models.QuoteDocument]) -> bool:
+    return (doc is not None and
+            doc.write_state == QuoteDocumentWriteState.UNVERIFIED.value)
+
+
 def readiness(session: Session, org: str, quote: Quote,
               policy: models.OrgPolicy,
-              sent: Optional[models.QuoteDocument],
-              defs: Optional[list[models.QuoteFieldDefinition]] = None) -> str:
+              newest: Optional[models.QuoteDocument],
+              defs: Optional[list[models.QuoteFieldDefinition]] = None, *,
+              record: Optional[quote_service.OutcomeOfRecord] = None) -> str:
     """What this draft is waiting on — one of ``READINESS``.
+
+    A decided quote is waiting on nothing: ``record`` is its outcome of
+    record (``quote_service.decide``), and WON or LOST there answers before
+    any gate is looked at — whether a person recorded it or the ERP did.
 
     The same tests the send runs, in the same order: technical blockers and
     unpriced lines first (``store.blockers``, the unpriced check), then the
@@ -592,7 +732,17 @@ def readiness(session: Session, org: str, quote: Quote,
     state of its own here because it is not one for the send either: an
     approved quote is a READY one, and an approval the price has since moved
     past is NEEDS_APPROVAL again.
+
+    ``newest`` is the quote's most recent document row of *any* write state —
+    ``quote_service.latest_document``, not ``latest_written_document``. A
+    send whose reply was lost leaves an UNVERIFIED row, and that row is what
+    the desk is waiting on: the source either holds a document under its
+    reference or it does not, and nobody should press send again before
+    looking. It outranks SENT for that reason and sits after NO_CUSTOMER
+    because the send itself checks blockers and the customer first.
     """
+    if record is not None and record.decided:
+        return record.status.value
     if not quote.lines:
         return "EMPTY"
     if store.blockers(quote) or any(
@@ -604,7 +754,9 @@ def readiness(session: Session, org: str, quote: Quote,
         return "MISSING_DETAILS"
     if not quote.has_customer:
         return "NO_CUSTOMER"
-    if sent is not None and sent.fingerprint == store.priced_fingerprint(quote):
+    if _unverified(newest):
+        return "UNVERIFIED_SEND"
+    if newest is not None and newest.fingerprint == store.priced_fingerprint(quote):
         return "SENT"
     if not policy.require_approval_for_quotes:
         return "READY"

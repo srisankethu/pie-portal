@@ -719,6 +719,32 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
       // carries; the send endpoint answers with the estimate, not the quote.
       setQuote(await api.getQuote(t, quote!.id));
       flash(r.message, "success");
+      // The document exists; the outcome did not follow it. Said in its own
+      // words, after the success — a warning that replaced the success would
+      // read as a failed send, and this is not one.
+      if (r.warning) flash(r.warning);
+    });
+
+  /** The manual way out: the same gates and the same assessment as the send,
+   *  with no writer. Held the same way the send is. */
+  const doMarkSent = () =>
+    guard(async () => {
+      setSendBlock(null);
+      if (ci.gate && !ci.gate.can_submit) {
+        setSendBlock(ci.gate.blocked_reason
+          ?? "This quote needs approval before it can be marked as sent.");
+        setFilter("EXC");
+        return;
+      }
+      const r = await api.markSent(t, quote!.id);
+      if (!r.ok) {
+        setSendBlock(r.message);
+        if (r.blockers.length) setFilter("NEEDS");
+        return;
+      }
+      setQuote(await api.getQuote(t, quote!.id));
+      flash(r.message, "success");
+      if (r.warning) flash(r.warning);
     });
 
   const selectedCount = selection.length;
@@ -881,6 +907,19 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
               </Button>
             ),
           },
+          // Which company's catalogue priced this quote — and whose book it is
+          // written into. The ERP page names its Book in the same place, and
+          // a three-company desk needs the word here for the same reason:
+          // "SLS Engineers" beside the customer is what says the two agree.
+          // Absent, not blank, where nothing is connected.
+          ...(quote.company ? [{
+            label: "Book",
+            value: (
+              <Typography sx={{ fontFamily: "var(--font-heading)", fontWeight: 600 }}>
+                {quote.company}
+              </Typography>
+            ),
+          }] : []),
           {
             label: "Owner",
             // Whose quote this is. Every quote has one — whoever started it —
@@ -1229,6 +1268,7 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         blockers={blockers}
         covers={coverage(quote)}
         busy={busy}
+        onMarkSent={doMarkSent}
       />
 
       {/* Below the total, not above it: the question "did this win?" only
@@ -1237,6 +1277,8 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           QuoteOutcomeBar returns null without an outcome. */}
       <QuoteOutcomeBar
         outcome={ci.data?.outcome ?? null}
+        erp={quote.estimate?.erp ?? null}
+        systemLabel={quote.systemLabel}
         onRecord={ci.recordOutcome}
         busy={busy || ci.loading}
       />
@@ -1332,6 +1374,9 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         open={pickerOpen}
         session={session}
         busy={busy}
+        // Only this company's customers: the quote prices from its catalogue
+        // and is written into its book, and the server refuses any other.
+        connectionId={quote.connectionId}
         title={hasCustomer ? "Change customer" : "Who is this quote for?"}
         note={quote.lines.length
           ? `This quote has ${quote.lines.length} line(s)`

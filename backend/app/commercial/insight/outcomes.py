@@ -173,7 +173,10 @@ class DecidedQuote:
     incomplete quotes is a comparison of coverage rather than of margin.
     """
 
-    quote_id: str
+    #: The platform quote, when this is one. ``None`` for a quote the ERP
+    #: raised itself: there is no draft here, and typing ``str`` was a lie the
+    #: screen paid for — see ``reference`` below.
+    quote_id: Optional[str]
     customer_id: str
     customer_label: str
     won: bool
@@ -200,6 +203,31 @@ class DecidedQuote:
     #: the grouping rule lives in one place and the display form stays
     #: recoverable; see ``competitor_key``.
     lost_to: str = ""
+    #: Who decided it — ``QuoteOutcomeSource``: a person here (``HUMAN``) or
+    #: the ERP's own record of the document (``ERP``). Carried so a screen
+    #: can say how many of its losses have no reason because nobody was
+    #: asked, as distinct from a person having answered "not recorded".
+    source: str = "HUMAN"
+    #: What a person reads and can search for in their own book: the platform
+    #: quote's id when there is one, else the ERP document's own number. It is
+    #: NOT an identifier — an ERP quote number is a per-company sequence, so two
+    #: connected books both print ``EST-1041`` and this field is the same string
+    #: for both. See ``row_id``.
+    reference: str = ""
+    #: What the evidence grid keys its rows on, and the reason the two are
+    #: separate fields. It used to be ``quote_id``, which is NULL for a quote
+    #: the ERP raised — so those rows all shared one id and the grid dropped
+    #: all but one. The first fix pointed the grid at ``reference`` instead and
+    #: reintroduced the same bug one level up: readable *and* unique is not one
+    #: field. This one is unique and never shown; ``reference`` is shown and
+    #: never keyed on.
+    row_id: str = ""
+
+    def __post_init__(self) -> None:
+        if not self.reference:
+            object.__setattr__(self, "reference", self.quote_id or "")
+        if not self.row_id:
+            object.__setattr__(self, "row_id", self.quote_id or self.reference)
 
     @property
     def costed(self) -> bool:
@@ -727,6 +755,11 @@ def build(quotes: Iterable[DecidedQuote], *, as_of: date,
         "quotes": [
             {
                 "quote_id": q.quote_id,
+                # ``reference`` is shown; ``row_id`` is keyed on. ``quote_id``
+                # is published beside both — a row that has one is openable —
+                # but it is null on an ERP-raised quote and cannot identify.
+                "reference": q.reference,
+                "row_id": q.row_id,
                 "customer_id": q.customer_id,
                 "customer_label": q.customer_label,
                 "status": "WON" if q.won else "LOST",

@@ -642,6 +642,87 @@ def test_a_reference_naming_two_books_quotes_is_refused_not_guessed(session):
     assert session.query(models.QuoteOutcome).count() == 0
 
 
+def test_a_reference_qualified_by_its_book_is_not_ambiguous(session):
+    """The qualifier the refusal above deferred. Named with the book it is
+    unique in, the same reference resolves, and the row remembers the book."""
+    _sync(session, [_quote("1001", "sent")], connection_id="conn-a")
+    _sync(session, [_quote("1001", "sent")], connection_id="conn-b")
+
+    row = quote_service.set_outcome(
+        session, "org_a", quote_document_ref="1001",
+        quote_document_connection_id="conn-b",
+        status=QuoteOutcomeStatus.LOST, loss_reason=QuoteLossReason.PRICE,
+        lost_to="Sandvik")
+    assert (row.quote_document_ref, row.quote_document_connection_id) == ("1001", "conn-b")
+    assert row.status == "LOST"
+    assert quote_service.sole_erp_quote(session, "org_a", "1001", "conn-a").connection_id == "conn-a"
+    with pytest.raises(quote_service.AmbiguousQuoteDocument):
+        quote_service.sole_erp_quote(session, "org_a", "1001")
+
+
+def test_two_books_holding_one_reference_each_get_their_own_outcome(session):
+    """The constraint that used to refuse the second book's quote outright.
+
+    ``uq_quote_outcome_org_document`` was ``(organization, reference)``, which
+    is unique only by accident: Zoho's estimate ids are system-wide. Business
+    Central and Acumatica number quotes per company, so two connected books
+    both issue ``SQ-1001`` — and the second recorded outcome hit an
+    IntegrityError at commit, about a quote it has nothing to do with. The
+    constraint carries the company now, and each book's quote has its own
+    answer, its own reason and its own winner.
+    """
+    _sync(session, [_quote("SQ-1001", "sent")], connection_id="conn-a")
+    _sync(session, [_quote("SQ-1001", "sent")], connection_id="conn-b")
+
+    quote_service.set_outcome(
+        session, "org_a", quote_document_ref="SQ-1001",
+        quote_document_connection_id="conn-a",
+        status=QuoteOutcomeStatus.LOST, loss_reason=QuoteLossReason.PRICE,
+        lost_to="Sandvik")
+    quote_service.set_outcome(
+        session, "org_a", quote_document_ref="SQ-1001",
+        quote_document_connection_id="conn-b",
+        status=QuoteOutcomeStatus.WON)
+    session.commit()
+
+    rows = {r.quote_document_connection_id: r
+            for r in session.query(models.QuoteOutcome)}
+    assert set(rows) == {"conn-a", "conn-b"}
+    assert rows["conn-a"].status == "LOST" and rows["conn-a"].lost_to == "Sandvik"
+    assert rows["conn-b"].status == "WON" and rows["conn-b"].lost_to is None
+
+    # And each book's document reads its own book's answer back — the join in
+    # the other direction, which would have shown one loss on both quotes.
+    docs = session.query(models.QuoteDoc).all()
+    records = quote_service.erp_outcomes_of_record(session, "org_a", docs)
+    by_book = {d.connection_id: records[d.quote_document_id] for d in docs}
+    assert by_book["conn-a"].status.value == "LOST"
+    assert by_book["conn-b"].status.value == "WON"
+
+
+def test_a_company_less_outcome_still_contests_every_book_of_its_reference(session):
+    """The other side of widening the constraint, and it must not be silent.
+
+    A row written before the qualifier existed names no book, so nothing on it
+    says which of two it meant. It keeps contesting the reference — the
+    domain refusal, with a sentence, where the constraint used to raise an
+    IntegrityError at commit.
+    """
+    _sync(session, [_quote("SQ-1001", "sent")], connection_id="conn-a")
+    _sync(session, [_quote("SQ-1001", "sent")], connection_id="conn-b")
+    session.add(models.QuoteOutcome(
+        organization_id="org_a", quote_document_ref="SQ-1001",
+        status="LOST", loss_reason="PRICE", customer_ref="Pitti"))
+    session.flush()
+
+    with pytest.raises(quote_service.QuoteOutcomeRepointed) as caught:
+        quote_service.set_outcome(
+            session, "org_a", quote_document_ref="SQ-1001",
+            quote_document_connection_id="conn-b",
+            status=QuoteOutcomeStatus.WON)
+    assert "SQ-1001" in str(caught.value)
+
+
 def test_the_ambiguous_reference_refusal_survives_the_trip_through_http(
         session, api_client):
     """And it arrives as 409 with both books still named in a readable string.
@@ -710,6 +791,192 @@ def test_a_platform_quote_that_became_an_erp_quote_is_one_row_not_two(session):
                                   status=QuoteOutcomeStatus.WON)
 
 
+@pytest.mark.parametrize("connector", ["dynamics365", "acumatica", "netsuite"])
+def test_a_win_can_be_recorded_on_a_quote_from_a_book_we_cannot_read(
+        session, connector):
+    """A person may record WON on an ERP-raised quote straight from DRAFT.
+
+    ``_QUOTE_SENT_STATUSES`` has an entry for Zoho and for nobody else, on
+    purpose: the other vocabularies are cited and not verified, and reading an
+    unchecked word as "sent" would invent a claim about a customer. The cost of
+    that silence was not silence — it was a refusal. The outcome row opened at
+    DRAFT, ``QUOTE_OUTCOME_TRANSITIONS[DRAFT]`` allows only SENT and LOST, so
+    recording a win on any Business Central, Acumatica or NetSuite quote was a
+    409 and only a loss could be recorded. Those books' win rates read zero
+    wins and all losses, which is not an under-claim, it is a wrong number.
+
+    A customer cannot accept a quote they never received, so a person recording
+    WON is asserting the send too, and that claim is theirs to make. Nothing
+    derived is widened: no SENT the ERP never said is stored, and ``sent_at``
+    stays empty — the honest record of a win whose send date we never learned.
+    """
+    session.add(models.QuoteDoc(
+        organization_id="org_a", connector=connector, connection_id="cx",
+        external_ref=f"{connector}-1", number="EST-1", customer_ref="Acme",
+        date=date(2026, 6, 1), source_status="Open", outcome="UNRECORDED",
+        total=Decimal("100")))
+    session.commit()
+
+    row = quote_service.set_outcome(
+        session, "org_a", quote_document_ref=f"{connector}-1",
+        status=QuoteOutcomeStatus.WON, customer_ref="Acme",
+        quote_document_connection_id="cx", user_id="u1")
+    assert row.status == QuoteOutcomeStatus.WON.value
+    assert row.sent_at is None, "no send date was ever learned; none is claimed"
+
+
+def test_a_platform_quote_still_cannot_be_won_without_being_sent(session):
+    """The guarantee the ERP exception must not cost.
+
+    DRAFT on a platform quote means *we have not sent it*, and a quote that
+    never went out could not have come back won — ``ever_sent`` and the
+    win-rate denominator both lean on that. The exception above is scoped to a
+    row that names an ERP document, so this path is unchanged: a draft nobody
+    has sent still refuses, and the two-step through SENT is still the way.
+    """
+    quote_service.set_outcome(
+        session, "org_a", quote_id="qd-1", status=QuoteOutcomeStatus.DRAFT,
+        customer_ref="Acme", user_id="u1")
+    with pytest.raises(quote_service.InvalidTransition):
+        quote_service.set_outcome(
+            session, "org_a", quote_id="qd-1", status=QuoteOutcomeStatus.WON,
+            user_id="u1")
+    # And the buttons agree with the refusal, which is the point of routing
+    # both through one rule.
+    assert "WON" not in quote_service.outcome_to_dict(
+        quote_service.get_outcome(session, "org_a", "qd-1"))["allowed_next"]
+
+
+def test_a_decided_quote_re_sent_keeps_the_document_its_outcome_names(session):
+    """A refusal must not leave the row half-moved, and this is the path where
+    the two refusals' order decides it.
+
+    ``QUOTE_OUTCOME_TRANSITIONS[WON]`` is empty, so a won quote re-sent as a
+    revision is going to be refused whatever else happens. The revision
+    repoint, though, nulls ``quote_document_ref`` and
+    ``quote_document_connection_id`` on its way — and with the repoint checked
+    before the transition, it nulled them and *then* raised. The caller saw a
+    clean refusal; the row in the session had lost the only thing naming the
+    document a person's recorded win was about, and afterwards nothing could
+    tell it from a win recorded on a quote that was never pushed.
+
+    Asserted on the row after the exception rather than on the exception type:
+    the type was already right. What was wrong was the state left behind.
+    """
+    quote_service.record_document(
+        session, "org_a", quote_id="qw-1", external_system="zoho",
+        number="EST-9", document_id="est-9", line_count=1, fingerprint="fw1")
+    quote_service.set_outcome(
+        session, "org_a", quote_id="qw-1", quote_document_ref="est-9",
+        status=QuoteOutcomeStatus.SENT, user_id="u1")
+    won = quote_service.set_outcome(
+        session, "org_a", quote_id="qw-1", quote_document_ref="est-9",
+        status=QuoteOutcomeStatus.WON, user_id="u1")
+    assert won.status == QuoteOutcomeStatus.WON.value
+    decided_at, ref = won.decided_at, won.quote_document_ref
+    session.commit()
+
+    quote_service.record_document(
+        session, "org_a", quote_id="qw-1", external_system="zoho",
+        number="EST-10", document_id="est-10", line_count=1, fingerprint="fw2",
+        revision=2, reference="QB-9-r2")
+    with pytest.raises(quote_service.InvalidTransition):
+        quote_service.set_outcome(
+            session, "org_a", quote_id="qw-1", quote_document_ref="est-10",
+            status=QuoteOutcomeStatus.SENT, user_id="u1", repoint_from="est-9")
+
+    row = session.get(models.QuoteOutcome, won.quote_outcome_id)
+    assert row.quote_document_ref == ref, "the refusal stranded the pointer"
+    assert row.status == QuoteOutcomeStatus.WON.value
+    assert row.decided_at == decided_at
+
+
+def test_an_outcome_follows_a_revision_of_its_own_quote_and_nothing_else(session):
+    """The one exception to "never repointed", and it is narrow.
+
+    A quote re-sent as a new revision is one quote whose newest document has
+    changed, and its outcome follows the newest document. Allowed only when
+    the caller names the document it is moving *from*, that is the one the row
+    holds, and this quote itself wrote it. A row pointing at a document the
+    quote never wrote — an ERP-raised one, or another quote's — is a human
+    fact about that document and stays where it was recorded.
+    """
+    quote_service.record_document(
+        session, "org_a", quote_id="q1-1", external_system="zoho",
+        number="EST-1", document_id="est-1", line_count=1, fingerprint="f1")
+    quote_service.set_outcome(
+        session, "org_a", quote_id="q1-1", quote_document_ref="est-1",
+        status=QuoteOutcomeStatus.SENT, user_id="u1")
+    session.commit()
+
+    # Revision 2 of the same quote: written, then the outcome moves onto it.
+    quote_service.record_document(
+        session, "org_a", quote_id="q1-1", external_system="zoho",
+        number="EST-2", document_id="est-2", line_count=1, fingerprint="f2",
+        revision=2, reference="QB-1-r2")
+    row = quote_service.set_outcome(
+        session, "org_a", quote_id="q1-1", quote_document_ref="est-2",
+        status=QuoteOutcomeStatus.SENT, user_id="u1", repoint_from="est-1")
+    assert row.quote_document_ref == "est-2"
+    assert session.query(models.QuoteOutcome).count() == 1
+
+    # Naming a document the row does not hold moves nothing.
+    with pytest.raises(quote_service.QuoteOutcomeRepointed):
+        quote_service.set_outcome(
+            session, "org_a", quote_id="q1-1", quote_document_ref="est-3",
+            status=QuoteOutcomeStatus.SENT, repoint_from="est-1")
+    # Nor does naming the held one when this quote never wrote it: q2's row
+    # points at an ERP-raised document a person recorded it against.
+    quote_service.set_outcome(
+        session, "org_a", quote_id="q2-1", quote_document_ref="erp-77",
+        status=QuoteOutcomeStatus.SENT, user_id="u1")
+    quote_service.record_document(
+        session, "org_a", quote_id="q2-1", external_system="zoho",
+        number="EST-9", document_id="est-9", line_count=1, fingerprint="f9",
+        revision=2, reference="QB-2-r2")
+    with pytest.raises(quote_service.QuoteOutcomeRepointed):
+        quote_service.set_outcome(
+            session, "org_a", quote_id="q2-1", quote_document_ref="est-9",
+            status=QuoteOutcomeStatus.SENT, repoint_from="erp-77")
+    held = {r.quote_id: r.quote_document_ref
+            for r in session.query(models.QuoteOutcome)}
+    assert held == {"q1-1": "est-2", "q2-1": "erp-77"}
+
+
+def test_an_unqualified_outcome_joins_no_document_where_two_books_share_the_id(session):
+    """The read side of ``sole_erp_quote``'s refusal. Two connected books
+    issued the same id; a person's row that names no book names neither
+    document, and neither ERP row shows that person's decision. A row that
+    names its book joins that book's document and nothing else."""
+    from datetime import date
+
+    def doc(conn: str) -> models.QuoteDoc:
+        return models.QuoteDoc(
+            organization_id="org_a", connector="dynamics365", connection_id=conn,
+            external_ref="SQ-1001", number="SQ-1001", customer_ref="Pitti",
+            date=date(2026, 9, 1), source_status="open", outcome="UNRECORDED")
+
+    a, b = doc("conn-a"), doc("conn-b")
+    session.add_all([a, b])
+    row = models.QuoteOutcome(
+        organization_id="org_a", quote_document_ref="SQ-1001",
+        status="LOST", loss_reason="PRICE", customer_ref="Pitti")
+    session.add(row)
+    session.flush()
+    records = quote_service.erp_outcomes_of_record(session, "org_a", [a, b])
+    assert records[a.quote_document_id].source is None
+    assert records[b.quote_document_id].source is None
+
+    # The reference is unique per organization on the human table, so the
+    # qualified case is the same row saying which book it meant.
+    row.quote_document_connection_id = "conn-b"
+    session.flush()
+    records = quote_service.erp_outcomes_of_record(session, "org_a", [a, b])
+    assert records[a.quote_document_id].source is None
+    assert records[b.quote_document_id].status.value == "LOST"
+    assert records[b.quote_document_id].source.value == "HUMAN"
+
+
 def test_quotes_are_scoped_to_their_organization(session):
     """Two organizations quoting the same ERP id keep separate rows."""
     _sync(session, [_quote("est-1", "expired")], org="org_a")
@@ -771,8 +1038,13 @@ def test_the_job_reads_quotes_and_commits_at_the_phase_boundary(session, monkeyp
     # ``lines: 0`` because these fixtures are list rows without a breakdown —
     # the shape a resumed pull yields. Counted separately from the quotes so a
     # run that refreshed every header and read no lines is visibly that.
+    # ``unreadable_view_stamps`` was counted on the report and never
+    # persisted, so nobody could see it climb — the same argument
+    # ``undated_decisions`` beside it is here for: a rule that discards
+    # evidence has to say how often it fires.
     assert (run.notes or {}).get("quotes") == {
-        "read": 4, "lines": 0, "undated_decisions": 1}
+        "read": 4, "lines": 0, "undated_decisions": 1,
+        "unreadable_view_stamps": 0}
 
 
 def test_an_unreadable_view_stamp_costs_the_field_and_not_the_quote():
@@ -927,10 +1199,17 @@ def test_every_source_takes_the_argument_the_sync_passes(session):
     mismatch, a positional-only marker or a decorator that drops kwargs all
     pass an `inspect` check and fail here.
     """
+    from app.ingestion.erp import acumatica, dynamics365, netsuite
     from app.ingestion.mock_source import FixtureZohoSource
     from app.ingestion.zoho_client import ZohoApiSource
 
-    for source in (FixtureZohoSource, ZohoApiSource):
+    # Every source that offers quotes at all, not a list somebody remembers to
+    # extend: the sync probes ``hasattr(source, "list_quotes")``, so a
+    # connector gaining the method is a connector this protocol now binds, and
+    # the registry connectors arrived one at a time after the pair above.
+    for source in (FixtureZohoSource, ZohoApiSource,
+                   dynamics365.BusinessCentralSource,
+                   acumatica.AcumaticaSource, netsuite.NetSuiteSource):
         sig = inspect.signature(source.list_quotes)
         assert "skip" in sig.parameters, f"{source.__name__} cannot be resumed"
 

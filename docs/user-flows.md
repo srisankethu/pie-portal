@@ -815,13 +815,24 @@ LOST; WON and LOST are terminal ("a margin analysis has already counted it").
 
 **Path.**
 1. `#/quotes` is the workspace: `GET /api/v1/quotes` lists every draft in
-   the organization — number, customer (or "No customer yet"), line count,
+   the organization — number, customer (or "No customer yet"), the company
+   whose catalogue priced it, line count,
    selling total, who started it and who last changed it — with a status
    chip computed on the server by the same functions the send runs
    (`quote_workspace.readiness`): Empty · Needs attention · Details missing ·
    Needs a customer ·
    Needs approval · Awaiting approval · Ready to send · Sent. Filters group
-   those into "Needs work", "Awaiting approval", "Ready to send", "Sent".
+   those into "Needs work", "Awaiting approval", "Ready to send", "Sent"; a
+   company filter and a Book column appear only where the drafts come from
+   more than one connected company. A sent row carries the document's number
+   and, once a sync has read that document back, the ERP's own status word as
+   a chip (`sent.erp` — the read-side join `quote_service.erp_documents_for`
+   makes on system, company and the ERP's id; null until synced).
+   The **From your ERP** tab lists the book with the same company filter,
+   outcome filters (No outcome · Won · Lost), and a "Built in PIE" chip on any
+   ERP quote this platform wrote (`platform_quote`, the same join in reverse),
+   which opens the draft. A PIE-written quote is still listed and counted as
+   an ERP quote — it is one — and the ERP page for it links back to the draft.
 2. "New quote" → `POST /api/v1/quotes/form` with **no customer** opens a blank
    form and **creates nothing** (the company is still decided here, once,
    because the first pasted RFQ line needs a catalogue to resolve against; an
@@ -851,12 +862,23 @@ LOST; WON and LOST are terminal ("a margin analysis has already counted it").
    ones named in an alert, and the send refuses by name until they are filled.
 3. The customer is chosen when the desk knows — before or after the RFQ is
    pasted — through the **customer picker** (server-side debounced search of
-   the directory, `GET /api/v1/accounts?q=…`) → `PUT /api/v1/quotes/{id}/customer`
+   the directory, `GET /api/v1/accounts?q=…&connection_id=…`, narrowed to the
+   quote's own company) → `PUT /api/v1/quotes/{id}/customer`
    carrying both name and customer id (identically-named customers in
    different books stay apart). Lines already on the quote are resolved again
    under that customer's identity scope; a price the desk typed is kept where
    the same product came back, and the response's `note` says how many.
    The same control changes the customer later, in place.
+   **A quote belongs to the company whose catalogue priced it, and that is the
+   company that invoices** — so its customer must be that company's. A customer
+   imported from another connected company is refused, at creation, at
+   `PUT /customer` and at the send, with a sentence naming both companies
+   (`quote_workspace.require_same_company`). Starting a quote from an account
+   page in a multi-company organization infers the company from the customer
+   rather than asking. A customer with no recorded company is placed by
+   `book_for_customer`'s existing rule at the send.
+   The header's identity strip names the **Book** beside the customer where a
+   company is connected, the way the ERP quote page does.
 
 **Branches.** A draft "Ready to send" can be sent from the list ("Send")
 without opening it — the same endpoint as the builder's button · "Remove"
@@ -1080,39 +1102,100 @@ failed to create still has to name it.
    uncovered re-price). The gate also folds in the screen's own below-floor
    lines (screen margin uses catalogue cost; the assessment uses bill cost —
    the parameter closes the gap).
-5. **Idempotency** — a fingerprint of (supply : qty : rate) per line is
-   compared against the last persisted document row (survives restarts):
-   unchanged content answers "already covers this quote", creating nothing.
+5. **Idempotency and revisions** — a fingerprint of (supply : qty : rate) per
+   line is compared against the newest persisted document row (survives
+   restarts): unchanged content answers "already covers this quote", creating
+   nothing and recording nothing. Changed content is a **new revision**: the
+   first send goes out under the quote's own reference (minted once, so every
+   document already written stays findable), every later one under
+   `⟨reference⟩-r⟨n⟩` — a reference no source has seen, which is what makes a
+   live book *create* the amended document instead of answering with the one
+   it already holds. Every live adapter keys its idempotency on the reference,
+   so before this an amendment came back as the old document and the new
+   content was recorded against the old number.
 6. **The write** — exactly three possible answers: created ·
    `SourceWriteRefused` (the named lines + the source's sentence) ·
    `SourceWriteUnknown` (a reference to search for). Never a claimed-created
-   estimate that may not exist.
-7. **Bookkeeping** — the document row is persisted and the outcome moves
-   DRAFT→SENT with the ERP's own estimate id as the durable join; bookkeeping
-   failure never undoes a real send.
-The summary bar then shows a durable "Sent · ⟨system⟩ · ⟨number⟩" chip that
-turns "amended since" once the priced content moves, and the button becomes
-"Send the amended quote".
+   estimate that may not exist. A source that cannot be reached at all (a
+   failed pre-flight read, a revoked grant, a throttle) answers `ok: false`
+   with the system's name and its sentence, and records nothing — never a bare
+   500. An *unknown* outcome is written down: a `quote_documents` row in
+   `write_state = UNVERIFIED` with the reference and no number, so the quote
+   itself tells the next person to look for that reference before sending
+   again. Readiness reads **UNVERIFIED_SEND** (in the workspace's "Needs work"
+   pile), the summary bar shows the reference, and the button reads "Retry
+   send": the next press retries *that* revision under *its* reference, and
+   the source's own pre-flight settles it — the document it already landed is
+   recorded as written (with the content it was sent with, so the chip reads
+   "amended since" if the lines have moved on), or nothing is there and the
+   write runs now.
+7. **Bookkeeping** — the document row is persisted (system, company, revision,
+   reference, content fingerprint) and the outcome moves DRAFT→SENT with the
+   ERP's own document id as the durable join. On a revision the outcome
+   follows the newest document (`repoint_from` the previous one — allowed only
+   for a document this quote itself wrote; a human record about another
+   document is never moved). Bookkeeping failure never undoes a real send: a
+   lifecycle refusal (a decided quote, an outcome already recorded about
+   another document) arrives as `warning` on a successful answer, shown as a
+   second snackbar. **The previous document is left in the source and named**
+   (`superseded` in the response, "EST-1001 is still in Zoho Books; void it
+   there") — the platform never voids a document it did not decide about
+   (decision D2 in `docs/quote-lifecycle-plan.md`).
+The summary bar then shows a durable "Sent · ⟨system⟩ · ⟨number⟩" chip —
+"Sent r2 · …" from the second revision on — that turns "amended since" once
+the priced content moves, and the button becomes "Send amendment to
+⟨system⟩". **The customer cannot be changed once a document has been
+written** (409, naming the document and the account it sits on): a different
+customer is a new quote (decision D4).
 **Branches.** Approval policy off → no approval gating (blockers and pricing
 checks still apply) · client-side gate pre-check saves a certain refusal but
 the server is the authority (an approval granted in another tab lets the send
-proceed) · refusing adapter → the binding failure held in the alert.
-**Ends.** Sent (chip + number) · already-existed · refused: unresolved /
-unpriced / 403 awaiting approval / source-refused · client-side block.
+proceed) · refusing adapter → the binding failure held in the alert ·
+**Mark as sent** (`POST /api/v1/quotes/{id}/mark-sent`) — the quote went out
+another way: a PDF, a phone call, a book this platform reads but cannot write
+to. The same gates and the same assessment as the send, with no writer; what it
+leaves is a `quote_documents` row in channel `MANUAL` (the content, the
+revision, the policy in force, no number because there is no document) and the
+outcome moved to SENT. Readiness, the duplicate check and the delete guard read
+that row like any other. The button sits beside Send for an ordinary quote and
+*replaces* it where the server says Send can do nothing (`canSendToErp` false,
+`sendBlock` naming why — decided on the draft, not at the button); the chip
+then reads "Marked as sent". Unchanged content answers that it is already
+marked and records nothing — but a manual mark covers only a manual press:
+the books hold nothing for it, so Send still writes the document, as the next
+revision under a reference of its own. Refused while an ERP send is
+unverified (§7.8 step 6): a confirmed row over that open question would erase
+the reference to look for and the retry the next press performs with it.
+**Ends.** Sent (chip + number, revision) · already-existed · unverified
+(reference recorded; retry) · unreachable (nothing recorded) · refused:
+unresolved / unpriced / 403 awaiting approval / source-refused · client-side
+block.
 
 ### 7.9 Record the outcome (WON / LOST)
 
 **Trigger.** The outcome bar renders once an outcome row exists (first
-snapshot → DRAFT; send → SENT).
-**Path.** "Mark won" records immediately; "Mark lost…" opens a dialog whose
-reason list is the **server's** vocabulary (UNKNOWN excluded) plus optional
-"who won it" — LOST without a reason is the server's rule (422 naming every
-choice). Scoping: a salesperson may only move a quote they hold (attribution
-via outcome row → recorder → snapshot trail; everything else answers one
-uniform 404); managers/owners are unnarrowed. WON/LOST are terminal — 409 on
-any later transition; a loss recorded before the vocabulary existed renders
-"Not recorded — decided before the reason was asked for."
-**Ends.** WON · LOST with reason · refusal shown, state unchanged · cancelled.
+snapshot → DRAFT; send or mark-as-sent → SENT).
+**Path.** "Mark won" records immediately; "Mark lost…" opens **the platform's
+one outcome form** (`platform/RecordOutcomeDialog`, the same form the
+Unanswered worklist and the ERP tab use) whose reason list is the **server's**
+vocabulary (UNKNOWN excluded) plus optional "who won it" and a note — LOST
+without a reason is the server's rule (422 naming every choice). Scoping: a
+salesperson may only move a quote they hold (attribution via outcome row →
+recorder → snapshot trail; everything else answers one uniform 404);
+managers/owners are unnarrowed. WON/LOST are terminal — 409 on any later
+transition; a loss recorded before the vocabulary existed renders "Not
+recorded — decided before the reason was asked for."
+
+**The books' own word.** Once a sync has read the sent document back, the bar
+shows what the ERP recorded for it — "Zoho Books say: accepted · 14 Sep" — and
+the buttons read "Record as won" / "Record as lost…". That word is already
+**the outcome of record** everywhere else (§8.0): where nobody here has
+decided, Won & lost, the workspace list and the ERP tab all count the ERP's
+decision, source `ERP`, reason not recorded. Recording it here adds the one
+thing the ERP cannot hold — why — and a person's decision always wins over the
+ERP's word, whatever it says.
+**Ends.** WON · LOST with reason (and who) · refusal shown, state unchanged ·
+cancelled.
 
 ### 7.10 Per-line decision support (facts + AI reading)
 
@@ -1139,7 +1222,10 @@ the response is answered; the "Saved HH:MM" chip in the header is the server's
 old `localStorage` key is removed on the next visit to the workspace). The same
 draft opens on whichever desk follows its link, and a backend restart changes
 nothing. "Remove" archives the row — the number is never minted again — and is
-refused on a quote that has been sent.
+refused on a quote that has been sent, marked as sent, or decided (a loss
+recorded straight from draft has no document and is still a fact an analysis
+has counted); an unverified send is refused by name, with the reference to
+look for.
 
 An **unsaved form** is written the same way to `quote_form_drafts`, so a reload
 does not lose the work and the lines keep the cost the browser could not hold.
@@ -1190,6 +1276,75 @@ body could carry fixes it) · uniform 404 for a quote this principal does not
 hold · cancel keeps the typed state until the next successful record.
 **Ends.** Recorded (terminal) · cancelled · refusal held in the open dialog.
 
+### 7.12 A quote deleted in the ERP leaves this book too
+
+The sync is a mirror, and until now it only ever added quotes: one voided or
+deleted in the source stayed here for ever, counting in every win rate and
+sitting on the Unanswered worklist as a question nobody could answer. The
+deletion sweep covers quotes now, under the three guards it has always
+applied — only a listing that ran to its end, only inside the window the pull
+actually covered, and only this connected company's documents. The header goes
+and its lines with it.
+
+**What a sync may never delete is the outcome a person recorded.** Why a quote
+was lost and who took it is a fact somebody entered, not something derived
+from the source, so the pointer is left dangling and the retirement counted
+(`report.retired`). That is the same property `_sync_quote_documents` keeps by
+never opening `quote_outcomes` at all.
+
+### 8.0 An ERP reference is unique only inside one book
+
+Every pointer to a quote an ERP raised carries **two** values: the reference
+that ERP gave it and the connected company whose book issued it. The reference
+is unique only inside the book that issued it: two connected Business Central
+companies both print `SQ-1001` on a quote, and so do two Acumatica tenants and
+two NetSuite subsidiaries.
+
+**No connector shipped today actually collides, and the reason is one line of
+each reader.** Every source keys `external_ref` on a system-wide surrogate
+rather than the number printed on the document — Zoho's `estimate_id`,
+Business Central's and Acumatica's row GUIDs, NetSuite's internal `t.id` —
+because that is the id each writer returns, and a quote this platform sent has
+to be recognisable as the same document when the sync reads it back. Disjoint
+id spaces are a property that choice happens to carry, not its purpose. Key
+any reader on the human number instead, which a capture screen is exactly the
+kind of screen to ask for, and the collision is live the same day. The
+qualifier below is what makes that a schema question rather than an incident.
+
+So `quote_outcomes` is unique on `(organization, company, reference)`, the ERP
+quote page is reached at `/quotes/erp/:connection/:ref`, and the lines, the
+diagnosis and the outcome write all take the company. **An unqualified pointer
+is not a guess** — it resolves while the reference names one quote in the
+organization and is refused by name when it names two (`sole_erp_quote`), which
+is what keeps a link somebody already has working. The same rule governs a row
+recorded before the qualifier existed: it answers for its reference while that
+reference is unambiguous, and where two books share it the row is contested
+rather than adopted and neither quote leaves the Unanswered worklist. Being
+asked about a quote somebody already answered is recoverable; never being asked
+is not.
+
+### 8.0.1 The outcome of record
+
+One rule, `commercial/quote_service.decide`, answers "how did this quote end"
+for every reader — Won & lost, the attribution evaluator, the diagnosis replay,
+the wallet's lost asks, the ERP tab's headline and outcome column, and the
+workspace list's WON/LOST readiness:
+
+1. A human WON/LOST row wins, always, with its reason and winner.
+2. Otherwise the ERP's classification of the same document (joined on system,
+   company and the ERP's own id — the join §7.8 writes), when it is WON or
+   LOST **with a date**; source `ERP`, reason `NOT_RECORDED`.
+3. Otherwise the quote is open: SENT if a person, a document or the ERP's row
+   says so, DRAFT if not.
+
+Derived on every read, never written back: the sync still never opens
+`quote_outcomes`, a re-sync cannot change a recorded reason, and nothing invents
+a reason the ERP does not hold. Won & lost names the ERP-decided count beside
+the unpriced one ("N decided in the books, reason not recorded"). Before this
+each reader computed its own answer from the human table alone, which is how a
+quote the customer had accepted in Zoho stayed "awaiting an answer" on one
+screen while the ERP tab counted it won.
+
 ### 8.3 Unanswered quotes worklist (`#/unanswered-quotes`)
 
 **Trigger.** Nav "Unanswered" (every role; deliberately no count badge).
@@ -1205,6 +1360,15 @@ recorded rows leave the pile on reload. This flow records against the ERP's
 platform quote id.
 **Ends.** Outcome recorded, pile shrinks · pile read · empty ("no quotes
 synced" distinguished from "every quote decided") · error with retry.
+
+The ERP tab of the workspace and the ERP quote page record through the same
+form and the same writer: "Record…" on a row (and "Record outcome" on the page)
+where nobody here has said and the ERP has not already recorded a win — a
+decline the ERP holds still wants a reason, which the ERP cannot. A person's
+decision then shows beside the ERP's word ("Recorded here: lost · Price — … ·
+to Sandvik"), the Outcome chip reads the outcome of record with a tip naming
+who decided, and the tab's piles count that outcome rather than the ERP's word
+alone.
 
 ### 8.4 Attribution: what PIE changed (`#/what-pie-changed`)
 
@@ -1940,6 +2104,7 @@ shims, are mounted but are not flows and are not listed here.
 | PUT | `/api/v1/quotes/{quote_id}/owner` | signed-in | Hand the quote to another member; owner or a permitted manager only |
 | POST | `/api/v1/quotes/{quote_id}/discount` | signed-in | Apply a percentage discount to selected line ids, off the current quoted rate; returns 'applied' count |
 | POST | `/api/v1/quotes/{quote_id}/estimate` | signed-in | The send: blocker/unpriced refusals naming lines, assess_and_record snapshot, quote_submission_block (incl. screen's below-floor lines), fingerprint… |
+| POST | `/api/v1/quotes/{quote_id}/mark-sent` | signed-in | A person says the quote went out another way: the send's gates, assessment and revision plan with no writer; records a MANUAL document row (content, revision, policy; no number) and moves the outcome to SENT. Same guard as the send |
 | POST | `/api/v1/quotes/{quote_id}/intake` | signed-in | Paste RFQ text: AI reading with regex fallback, per-line pie-parser resolution + Zoho enrichment, AI_CALL audit, optional enquiry-corpus capture… |
 | DELETE | `/api/v1/quotes/{quote_id}/lines/{line_id}` | signed-in | Remove a line from the quote |
 | POST | `/api/v1/quotes/{quote_id}/lines/{line_id}/confirm-reading` | signed-in | Clear the proposed flag on one AI/heuristic-read line — one at a time by design |

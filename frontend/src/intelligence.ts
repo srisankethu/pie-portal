@@ -87,10 +87,12 @@ export async function post<T>(path: string, body: unknown,
 function postOutcome(
   token: string, subject: QuoteOutcomeSubject, status: QuoteOutcomeStatus,
   customer: string, note?: string, lossReason?: QuoteLossReason, lostTo?: string,
+  connectionId?: string | null,
 ) {
   return post<QuoteOutcome>(
     "/api/v1/quote-intelligence/outcome",
     { quote_id: subject.quoteId, quote_document_ref: subject.documentRef,
+      quote_document_connection_id: connectionId ?? undefined,
       status, customer, note, loss_reason: lossReason, lost_to: lostTo },
     token,
   );
@@ -155,8 +157,9 @@ export const intelligence = {
   documentOutcome: (
     token: string, documentRef: string, status: QuoteOutcomeStatus,
     customer = "", note?: string, lossReason?: QuoteLossReason, lostTo?: string,
+    connectionId?: string | null,
   ) => postOutcome(token, { documentRef }, status, customer, note, lossReason,
-                   lostTo),
+                   lostTo, connectionId),
 
   /** Ask a manager or owner to sign off this line at the price on it now.
    *  Recording a reason is not the same as being allowed — this is the ask. */

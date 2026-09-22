@@ -51,6 +51,23 @@ function draw(quotes: ErpQuote[]) {
 beforeEach(() => { navigate.mockReset(); });
 afterEach(() => { vi.unstubAllGlobals(); });
 
+describe("a quote this platform wrote", () => {
+  it("says which draft it came from, and still opens like the rest", () => {
+    // The same document used to be two unrelated rows on two tabs — a "Sent"
+    // draft here and an ERP quote there — with nothing saying they were one.
+    draw([q({ platform_quote: { quote_id: "q42", number: "QB-0042" } })]);
+
+    expect(screen.getByText(/built in PIE as QB-0042/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText("QT FY27-013"));
+    expect(navigate).toHaveBeenCalledWith("/quotes/erp/2263307000011272461");
+  });
+
+  it("names the book only when asked to", () => {
+    draw([q()]);
+    expect(screen.queryByText(/SLS Engineers/)).not.toBeInTheDocument();
+  });
+});
+
 describe("pressing a quote", () => {
   it("goes to that quote's page", () => {
     // The report this came from: the rows were on screen and none of them did

@@ -109,9 +109,14 @@ function emptyCopy(reason: EmptyReason, isSalesperson: boolean):
 type EmptyReason = "NONE" | "INACTIVE_ONLY" | null;
 
 export function CustomerPicker({
-  open, session, title, note, busy = false, onPick, onCancel,
+  open, session, title, note, busy = false, connectionId = null, onPick, onCancel,
 }: {
   open: boolean;
+  /** Offer only this connected company's customers. The Quote Builder passes
+   *  the company its quote prices from, because a quote belongs to the company
+   *  whose catalogue priced it and the server refuses a customer from another —
+   *  so the list should not offer one. Null offers the whole directory. */
+  connectionId?: string | null;
   /** The platform session. Passed in rather than read from storage: the Quote
    *  Builder runs on the platform's own session now, so its caller already
    *  holds this and a second source would be one to keep in step. The whole
@@ -185,7 +190,9 @@ export function CustomerPicker({
     // Debounced: a keystroke per request would put three hundred queries
     // through a search that reads the whole customer table.
     const t = setTimeout(() => {
-      papi.listAccounts(token, query)
+      (connectionId
+        ? papi.listAccounts(token, query, "active", "", connectionId)
+        : papi.listAccounts(token, query))
         .then(async (r) => {
           if (!live) return;
           setRows(r);
@@ -210,7 +217,7 @@ export function CustomerPicker({
         .finally(() => { if (live) setLoading(false); });
     }, 220);
     return () => { live = false; clearTimeout(t); };
-  }, [open, token, query, reloads]);
+  }, [open, token, query, reloads, connectionId]);
 
   // What this dialog is entitled to offer: the rows, once they answer the
   // question currently in the box. While a search is in flight there is no

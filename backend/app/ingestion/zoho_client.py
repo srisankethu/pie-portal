@@ -2008,6 +2008,11 @@ class ZohoApiSource(ZohoTransport):
         """
         cutoff = self._cutoff()
         until = self._until
+        # What this listing saw, for the deletion sweep. Recorded before the
+        # resume check below, exactly as ``_documents`` does it: a resumed pull
+        # *yields* almost nothing, so a caller reconciling against what it
+        # received would conclude the whole book had been deleted.
+        seen: set[str] = self.listed.setdefault("quote", set())
         for est in self._paginate("estimates", "estimates",
                                   sort_column="date", sort_order="D", **self._window()):
             try:
@@ -2017,6 +2022,7 @@ class ZohoApiSource(ZohoTransport):
             if quoted < cutoff or (until is not None and quoted > until):
                 continue
             estimate_id = str(est.get("estimate_id"))
+            seen.add(estimate_id)
             detail: dict[str, Any] = {}
             if skip is not None and skip(estimate_id,
                                          str(est.get("last_modified_time") or "")):
@@ -2081,6 +2087,13 @@ class ZohoApiSource(ZohoTransport):
                 # resumed quote whose detail call was skipped.
                 "source_attributes": source_attributes(est),
             }
+        # Reached only when the loop above ran to its end rather than being
+        # abandoned by an exception or by the consumer breaking out early —
+        # the guard ``_mirror`` needs before it may read absence as deletion.
+        # This listing is never incremental (it sorts on ``date`` and has no
+        # high-water short circuit), so reaching the end always means the
+        # whole window was seen.
+        self.listing_complete.add("quote")
 
     def list_vendor_payments(
             self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:

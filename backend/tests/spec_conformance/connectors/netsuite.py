@@ -56,6 +56,20 @@ PAYMENTS = [{"id": "90310", "trandate": "2026-06-20", "entity": "3041",
              "foreigntotal": "-2250.00", "lastmodified": "2026-06-20T14:00:00",
              "createdtime": "2026-06-20T13:59:01"}]
 
+#: An estimate. ``externalid`` is what the upsert writes and the only field on
+#: one that points back at the draft it came from; ``customer_name`` is the
+#: BUILTIN.DF the quote query selects and the invoice query does not. The GL
+#: sale sign is on ``foreigntotal`` and on the line, as it is for an invoice.
+ESTIMATE_HEADERS = [{
+    "id": "55120", "tranid": "EST-55120", "externalid": "QB-0042-3f9a1c2e",
+    "trandate": "2026-06-01", "entity": "3041", "customer_name": "Vaya Precision LLC",
+    "status": "Open", "foreigntotal": "-2250.00", "currency_code": "USD",
+    "lastmodified": "2026-06-02T09:15:00", "createdtime": "2026-06-01T08:40:00",
+}]
+ESTIMATE_LINES = [{"tid": "55120", "line_id": "1", "item": "9155",
+                   "quantity": "-10", "rate": "250.00", "netamount": "-2250.00",
+                   "memo": "CNMG 120408 MP"}]
+
 SALES_ORDERS = [{"id": "77010", "tranid": "SO-77010", "trandate": "2026-05-02",
                  "shipdate": "2026-05-30", "entity": "3041", "status": "Billed",
                  "foreigntotal": "-2250.00"}]
@@ -78,9 +92,18 @@ class _Client:
         if "FROM item" in query:
             return iter(ITEMS)
         if "FROM transactionline" in query:
-            return iter(INVOICE_LINES if "'CustInvc'" in query else BILL_LINES)
+            # Keyed on the type the query names rather than on a default, now
+            # that three document pulls join lines: an ``else BILL_LINES``
+            # fallback would have handed an estimate the bill's lines and the
+            # conformance checks would have read a coherent document.
+            for marker, rows in (("'CustInvc'", INVOICE_LINES),
+                                 ("'Estim'", ESTIMATE_LINES)):
+                if marker in query:
+                    return iter(rows)
+            return iter(BILL_LINES)
         for marker, rows in (("'CustInvc'", INVOICE_HEADERS), ("'VendBill'", BILL_HEADERS),
-                             ("'CustPymt'", PAYMENTS), ("'SalesOrd'", SALES_ORDERS),
+                             ("'CustPymt'", PAYMENTS), ("'Estim'", ESTIMATE_HEADERS),
+                             ("'SalesOrd'", SALES_ORDERS),
                              ("'PurchOrd'", PURCHASE_ORDERS)):
             if marker in query:
                 return iter(rows)

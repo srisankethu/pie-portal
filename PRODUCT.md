@@ -58,6 +58,13 @@ it.
   customer context, product lookup, price, and availability.
 - **Currency INR, timezone Asia/Kolkata.** Money is `Decimal`; margin is a ratio,
   movement is percentage points.
+- **A quote belongs to the company whose catalogue priced it**, and that is the
+  company that invoices and whose book it is written into. Its customer must be
+  that company's; one from another connected company is refused by name. A sent
+  document is recorded with its system, its company and the ERP's own id, which
+  is how the platform's copy and the ERP's copy of one quote are joined once the
+  sync has read it back — a value join, never a stored link, so a rebuild of the
+  ERP tables cannot orphan it.
 
 ## Capabilities and Constraints
 

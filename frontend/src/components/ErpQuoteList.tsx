@@ -22,6 +22,7 @@
  * salesperson, to the accounts they hold.
  */
 import Box from "@mui/material/Box";
+import Chip from "@mui/material/Chip";
 import Stack from "@mui/material/Stack";
 import Typography from "@mui/material/Typography";
 import { useNavigate } from "react-router-dom";
@@ -30,8 +31,10 @@ import { money } from "../money";
 import { DataGrid, numeric, text } from "../platform/DataGrid";
 import type { ColDef } from "../platform/DataGrid";
 import { EmptyState, Meta, StatusChip } from "../platform/kit";
-import { erpQuotePath } from "../platform/route";
-import { outcomeOf } from "../ErpQuoteScreen";
+import { erpQuotePath, pathFor } from "../platform/route";
+import Button from "@mui/material/Button";
+import { TOUCH } from "../platform/kit";
+import { erpOutcome, outcomeOfRecord } from "../ErpQuoteScreen";
 import type { ErpQuote } from "../types";
 
 /** The chip readings live with the drawer and are imported here.
@@ -54,32 +57,98 @@ function when(iso: string | null): string {
   return iso ?? "—";
 }
 
-export function ErpQuoteList({ quotes, emptyReason }: {
+/** Whether a row still wants a person's answer: nobody here has recorded
+ *  one and the ERP has not already recorded a win. A decline the ERP holds
+ *  still wants a reason, which the ERP cannot hold. */
+export function wantsOutcome(q: ErpQuote): boolean {
+  return !q.recorded && erpOutcome(q) !== "WON";
+}
+
+/** The grid's Record column: a control on the rows that want an answer.
+ *
+ *  Exported so the one thing that cannot be seen from a rendered test can be
+ *  pinned: the grid opens the row on a cell click, a React stopPropagation
+ *  does not reach it, and `context.noRowClick` is how a column opts out (see
+ *  `DataGrid.tsx`). A test at phone width renders the cards, never this. */
+export function recordColumn(onRecord: (q: ErpQuote) => void): ColDef<ErpQuote> {
+  return {
+    field: "recorded", headerName: "", width: 110, flex: 0, sortable: false,
+    context: { noRowClick: true },
+    cellRenderer: (p: { data?: ErpQuote }) =>
+      p.data && wantsOutcome(p.data) ? (
+        <Button size="small" sx={TOUCH} onClick={() => onRecord(p.data!)}>
+          Record…
+        </Button>
+      ) : null,
+  } as ColDef<ErpQuote>;
+}
+
+export function ErpQuoteList({ quotes, emptyReason, showCompany = false, onRecord }: {
   quotes: ErpQuote[];
+  /** Offer "Record…" on rows that want an answer, opening the caller's
+   *  outcome form. Absent where the list is read-only. */
+  onRecord?: (q: ErpQuote) => void;
   /** The server's sentence for an empty book. Rendered rather than replaced:
    *  it is the one that distinguishes "no quotes synced yet" from "the quote
    *  stage was refused a permission", and a generic "Nothing here" is exactly
    *  what sent the original report. */
   emptyReason: string | null;
+  /** Name the book on every row. Only worth the width where the rows come
+   *  from more than one company — the caller decides, from the same rule the
+   *  source badges follow: one company means one word repeated down a column. */
+  showCompany?: boolean;
 }) {
   const navigate = useNavigate();
   /* Opening a quote is a route change, not an overlay. It is the document, and
      a person opening one wants it the way they get a draft — full width, the
      lines in a grid — which a 520px drawer cannot be. */
-  const open = (q: ErpQuote) => navigate(erpQuotePath(q.quote_document_ref));
+  const open = (q: ErpQuote) =>
+    navigate(erpQuotePath(q.quote_document_ref, q.origin?.connection_id));
+  /* A document this platform wrote is still an ERP quote — it is listed, it
+     is counted, and it opens like the rest. What it gains is its draft, one
+     click away, so the same quote is never two unrelated rows on two tabs. */
+  const fromPie = quotes.some((q) => q.platform_quote);
 
   const columns: ColDef<ErpQuote>[] = [
     text("number", "Quote", { minWidth: 150 }),
     text("customer_label", "Customer", { minWidth: 200 }),
+    ...(showCompany
+      ? [text<ErpQuote>("company", "Book", { minWidth: 150, flex: 0, width: 170 })]
+      : []),
+    ...(fromPie ? [{
+      field: "platform_quote", headerName: "Built in PIE", width: 130, flex: 0,
+      sortable: false, filter: false,
+      // Its own control, so a click on it must not also open the ERP page.
+      context: { noRowClick: true },
+      valueGetter: (p: { data?: ErpQuote }) => p.data?.platform_quote?.number ?? "",
+      cellRenderer: (p: { data?: ErpQuote }) =>
+        p.data?.platform_quote ? (
+          <Chip
+            size="small"
+            variant="outlined"
+            clickable
+            label={p.data.platform_quote.number || "Open draft"}
+            title="Written from this draft in the Quote Builder — open it"
+            onClick={(e) => {
+              e.stopPropagation();
+              navigate(pathFor("quotes", p.data!.platform_quote!.quote_id));
+            }}
+          />
+        ) : null,
+    } as ColDef<ErpQuote>] : []),
     text("raised_on", "Raised", { width: 130, flex: 0 }),
     {
+      // The outcome of record — a person's decision first, the ERP's word
+      // where nobody here has said — with the tip naming which.
       field: "outcome", headerName: "Outcome", width: 150, flex: 0,
+      valueGetter: (p: { data?: ErpQuote }) => (p.data ? erpOutcome(p.data) : ""),
       cellRenderer: (p: { data?: ErpQuote }) => {
         if (!p.data) return null;
-        const o = outcomeOf(p.data.outcome);
+        const o = outcomeOfRecord(p.data);
         return <StatusChip label={o.label} tone={o.tone} tip={o.tip} />;
       },
     },
+    ...(onRecord ? [recordColumn(onRecord)] : []),
     text("source_status", "ERP status", {
       width: 140, flex: 0,
       valueGetter: (p) => sourceWord(p.data?.source_status ?? ""),
@@ -115,8 +184,9 @@ export function ErpQuoteList({ quotes, emptyReason }: {
         />
       }
       renderNarrow={(q) => (
-        <ErpQuoteCard key={q.quote_document_ref} q={q}
-                      onOpen={() => open(q)} />
+        <ErpQuoteCard key={q.quote_document_ref} q={q} showCompany={showCompany}
+                      onOpen={() => open(q)}
+                      onRecord={onRecord && wantsOutcome(q) ? () => onRecord(q) : undefined} />
       )}
     />
     </>
@@ -130,9 +200,20 @@ export function ErpQuoteList({ quotes, emptyReason }: {
  *  it has to be reachable by keyboard and announced as something that can be
  *  pressed. The wide grid gets that from `onRowActivate`; the narrow path has to
  *  say it itself. */
-function ErpQuoteCard({ q, onOpen }: { q: ErpQuote; onOpen: () => void }) {
-  const o = outcomeOf(q.outcome);
+function ErpQuoteCard({ q, onOpen, showCompany, onRecord }: {
+  q: ErpQuote; onOpen: () => void; showCompany: boolean; onRecord?: () => void;
+}) {
+  const o = outcomeOfRecord(q);
   return (
+    <Box sx={{ borderBottom: 1, borderColor: "divider" }}>
+    {/* The record control sits beside the card, not inside it: the card is
+        itself a button, and a button inside a button is not a control a
+        screen reader can name. */}
+    {onRecord && (
+      <Box sx={{ px: 2, pt: 1, display: "flex", justifyContent: "flex-end" }}>
+        <Button size="small" sx={TOUCH} onClick={onRecord}>Record…</Button>
+      </Box>
+    )}
     <Box
       component="button"
       type="button"
@@ -140,7 +221,7 @@ function ErpQuoteCard({ q, onOpen }: { q: ErpQuote; onOpen: () => void }) {
       sx={{
         display: "block", width: "100%", textAlign: "left", font: "inherit",
         color: "inherit", background: "none", border: 0, cursor: "pointer",
-        p: 2, borderBottom: 1, borderColor: "divider",
+        p: 2,
       }}
     >
       <Stack direction="row" spacing={1}
@@ -155,8 +236,11 @@ function ErpQuoteCard({ q, onOpen }: { q: ErpQuote; onOpen: () => void }) {
         </Typography>
         <Meta>
           raised {q.raised_on} · {sourceWord(q.source_status)}
+          {showCompany ? ` · ${q.company}` : ""}
+          {q.platform_quote ? ` · built in PIE as ${q.platform_quote.number || "a draft"}` : ""}
         </Meta>
       </Stack>
+    </Box>
     </Box>
   );
 }

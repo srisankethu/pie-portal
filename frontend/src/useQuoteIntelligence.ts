@@ -35,6 +35,7 @@ export interface QuoteIntelligenceState {
   requestApproval: (lineId: string, reasonCode: string, reason: string) => Promise<void>;
   recordOutcome: (
     status: QuoteOutcomeStatus, lossReason?: QuoteLossReason, lostTo?: string,
+    note?: string,
   ) => Promise<void>;
   gate: QuoteGate | null;
   refresh: () => void;
@@ -137,9 +138,9 @@ export function useQuoteIntelligence(quote: Quote | null, token: string): QuoteI
    */
   const recordOutcome = useCallback(
     async (status: QuoteOutcomeStatus, lossReason?: QuoteLossReason,
-           lostTo?: string) => {
+           lostTo?: string, note?: string) => {
       if (!quoteId) throw new Error("There is no quote open to record this against");
-      await intelligence.outcome(token, quoteId, status, customer, undefined,
+      await intelligence.outcome(token, quoteId, status, customer, note,
                                  lossReason, lostTo);
       setNonce((n) => n + 1);
     },

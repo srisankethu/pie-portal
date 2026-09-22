@@ -1,3 +1,5 @@
+import type { EntityOrigin } from "./platform/types";
+
 /* There is no `Session` type here any more, and no `"sales" | "mgmt"` role
  * beside it. Both belonged to the Quote Builder's own login, which was a second
  * identity with a second role vocabulary — so "is this person management?" had
@@ -182,11 +184,55 @@ export interface EstimateResult {
   /** True where the document was already there under this quote's reference.
    *  "Sent" and "was already sent" are different facts. */
   alreadyExisted: boolean;
+  /** The document was created but the quote's outcome could not follow it —
+   *  a sentence to show beside the success, never a reason to call the send
+   *  failed. Null when the bookkeeping went through. */
+  warning: string | null;
+  /** Which revision this send was, or would have been. Present on refusals
+   *  too, so a screen can say which press went missing. */
+  revision: number | null;
+  /** On a revision, the number of the document it replaces. The source still
+   *  holds it and a person voids it there; the platform never does (D2). */
+  superseded: string | null;
+}
+
+/** What the ERP itself says about a document this platform wrote, once a sync
+ *  has read it back. The ERP's own status word, the sync's classification of
+ *  it, and the two dates the ERP recorded — never this platform's guess, and
+ *  null until the sync has seen the document. */
+export interface ErpSide {
+  number: string | null;
+  /** The ERP's own word, verbatim — `draft`, `sent`, `accepted`. */
+  sourceStatus: string;
+  /** WON / LOST / UNRECORDED as the sync classified that word. */
+  outcome: string;
+  decidedOn: string | null;
+  clientViewedAt: string | null;
+}
+
+/** The send the source could not confirm — see `Quote.unverifiedSend`. */
+export interface UnverifiedSend {
+  /** The reference the write went out under; what to search the source for. */
+  reference: string;
+  revision: number;
+  writtenAt: string | null;
+  system: string;
+  systemLabel: string;
+  systemShort: string;
+  documentTerm: string;
 }
 
 export interface QuoteEstimate {
   number: string;
   lineCount: number | null;
+  /** Which revision of the quote this document is. 1 for the first send; an
+   *  amended quote sent again is a new document under a new reference, and
+   *  the number after it. A counter, not a figure. */
+  revision: number;
+  /** `ERP`: this platform wrote the document and `number` is its number
+   *  there. `MANUAL`: a person said the quote went out another way; there is
+   *  no document and `number` is empty. */
+  channel: "ERP" | "MANUAL";
   current: boolean;
   /** The system holding it, and its own names for itself and the document.
    *  "Sent · SQ-1001" does not say where, and two connected systems can both
@@ -194,6 +240,9 @@ export interface QuoteEstimate {
   system: string;
   systemLabel: string;
   documentTerm: string;
+  /** The same document as the ERP holds it, joined on system, company and
+   *  the ERP's own id. Null until a sync has read it. */
+  erp: ErpSide | null;
 }
 
 /** How the lines in this response were produced. Sent only by `/intake`, so it
@@ -224,8 +273,13 @@ export interface MarginFloor {
  *  `quote_workspace.READINESS`. Decided by the same functions the send runs,
  *  so a row reading READY is one the send would accept. */
 export type QuoteReadiness =
-  | "EMPTY" | "NEEDS_ATTENTION" | "MISSING_DETAILS" | "NO_CUSTOMER" | "SENT"
-  | "AWAITING_APPROVAL" | "NEEDS_APPROVAL" | "READY";
+  | "WON" | "LOST"
+  | "EMPTY" | "NEEDS_ATTENTION" | "MISSING_DETAILS" | "NO_CUSTOMER"
+  | "UNVERIFIED_SEND" | "SENT" | "AWAITING_APPROVAL" | "NEEDS_APPROVAL" | "READY";
+
+/** Who decided a quote — the server's `QuoteOutcomeSource`. A person here,
+ *  or the ERP's own record of the document where nobody here has said. */
+export type QuoteOutcomeSource = "HUMAN" | "ERP";
 
 /** What a quote-level field can hold — the server's `quote_fields.KINDS`. */
 export type QuoteFieldKind = "TEXT" | "MULTILINE" | "NUMBER" | "DATE" | "CHOICE";
@@ -256,11 +310,26 @@ export interface QuoteDraftSummary {
   /** Empty until somebody chooses — see `Quote.customer`. */
   customer: string;
   customerId: string | null;
+  /** Which connected company's catalogue priced this quote, and its name.
+   *  `company` is empty where nothing is connected. `origin` is the same fact
+   *  in the shape every directory row carries, so the workspace filters by
+   *  company the way the directory does; null where there is no company. */
+  connectionId: string | null;
+  company: string;
+  origin?: EntityOrigin | null;
   lineCount: number;
   unpriced: number;
   total: number;
   readiness: QuoteReadiness;
-  sent: { number: string; systemLabel: string; current: boolean } | null;
+  sent: {
+    number: string; systemLabel: string; current: boolean;
+    /** `ERP`: the books hold `number`. `MANUAL`: a person said it went out
+     *  another way, and `number` is empty. Optional only so older fixtures
+     *  need not build it; the server always sends it. */
+    channel?: "ERP" | "MANUAL";
+    /** What the ERP says about the same document, once synced. */
+    erp: ErpSide | null;
+  } | null;
   /** Whose it is, and whether *this* reader may change it — the server's
    *  answer, in the same rule the mutations enforce. */
   ownerId: string | null;
@@ -305,9 +374,35 @@ export interface ErpQuote {
   /** Which connected company's books raised it. `"Source not recorded"` where
    *  the connection is unknown — an absence named, not a blank. */
   company: string;
+  /** The same fact as `company`, in the shape every directory row carries,
+   *  so the ERP tab filters by company the way the directory does. Optional
+   *  only so a test fixture need not build one. */
+  origin?: EntityOrigin | null;
+  /** The PIE quote this document was written from, where the platform wrote
+   *  it — joined server-side on system, company and the ERP's own id. Null
+   *  for a quote raised in the ERP by hand, which is most of them. */
+  platform_quote?: { quote_id: string; number: string } | null;
+  /** What a person here recorded about this document, if a decision: the
+   *  status, the reason and the winner where it was a loss, and when. Null
+   *  where nobody has said. */
+  recorded?: RecordedOutcome | null;
+  /** The outcome of record — the person's decision first, the ERP's word
+   *  where nobody here has said: WON / LOST / UNRECORDED. `outcome` above
+   *  stays the ERP's own reading, so a screen can show both. */
+  outcome_of_record?: string;
+  outcome_source?: QuoteOutcomeSource | null;
   /** The organization's own fields on the quote, as the ERP holds them. Only
    *  the keys the source set: an absent custom field is not a category. */
   attributes: Record<string, string>;
+}
+
+/** A person's decision about an ERP quote, as the ERP tab shows it. */
+export interface RecordedOutcome {
+  status: QuoteOutcomeStatus;
+  loss_reason: QuoteLossReason | null;
+  lost_to: string | null;
+  note: string | null;
+  decided_at: string | null;
 }
 
 export interface ErpQuoteLine {
@@ -368,6 +463,10 @@ export interface Quote {
    *  organization has no company connected — then nothing resolves, which the
    *  lines say for themselves. */
   connectionId: string | null;
+  /** That company's name, for the identity strip — beside the customer, so a
+   *  three-company desk can see the two agree. Empty where nothing is
+   *  connected. */
+  company: string;
   number: string;
   /** Whether a quote exists for this yet.
    *
@@ -426,8 +525,20 @@ export interface Quote {
   /** Manager and owner only, and *absent* rather than null for a salesperson —
    *  as is `filterCounts.MFLOOR`, for the reason `store._filter_counts` gives. */
   marginFloor?: MarginFloor | null;
-  /** The Zoho estimate already created from this quote, if any. */
+  /** The document the source most recently *confirmed* for this quote, if
+   *  any — never an unverified send, which is `unverifiedSend` below. */
   estimate: QuoteEstimate | null;
+  /** A send whose reply was lost and whose settle read failed too. The source
+   *  either holds a document under this reference or it does not, and the
+   *  person opening the quote is told to look before pressing send again.
+   *  Null when the last send was confirmed either way. */
+  unverifiedSend: UnverifiedSend | null;
+  /** Whether Send can write this quote into its book from here. False for a
+   *  book this platform reads but cannot write to, and for a customer whose
+   *  book cannot be placed — `sendBlock` then says why, in the server's own
+   *  sentence, and the desk marks the quote as sent instead. */
+  canSendToErp: boolean;
+  sendBlock: string | null;
   /** Present when the last action taught the system something durable — today
    *  that is a confirmed "this customer's code means that product". Server-
    *  written prose, shown as-is; the client does not compose it. */

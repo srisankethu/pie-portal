@@ -689,6 +689,20 @@ class ReadModelRepository:
         listing this is compared against was bounded that way, and comparing
         against anything else would treat a document the pull never looked for
         as one Zoho has deleted.
+
+        **Scoped to this connection's own rows, like ``retire_document``**, and
+        it was not — the cursor subquery pinned the *reference* to this book
+        while the date bound read whatever row carried that reference. Where two
+        connected companies issue one reference, this company's document could
+        sit outside the covered window and the other's inside it, and the date
+        test would pass on the neighbour's row: a document this pull never
+        looked for, reported as one the source has deleted. ``retire_document``
+        is scoped and so would delete only this company's row — which is the row
+        that should never have been a candidate. No connector shipped today
+        keys ``external_ref`` on anything but a system-wide id, so the collision
+        is not reachable; the two functions disagreeing about their own rule is
+        reason enough, and ``retire_document``'s comment already claims this one
+        behaves this way.
         """
         table = _MIRRORED.get(doc_type)
         if table is None:
@@ -697,6 +711,7 @@ class ReadModelRepository:
         rows = self.s.scalars(
             select(getattr(model, ref_col)).where(
                 model.organization_id == self.org,
+                *self._source(model),
                 getattr(model, date_col) >= start,
                 getattr(model, date_col) <= end,
                 getattr(model, ref_col).in_(self._cursor_refs(doc_type)),
@@ -1737,6 +1752,11 @@ class SignalRepository:
 _MIRRORED: dict[str, tuple[Any, str, str]] = {
     "invoice": (models.InvoiceDoc, "external_ref", "date"),
     "bill": (models.BillDoc, "external_ref", "date"),
+    # A quote deleted or voided in the source used to stay on this book for
+    # ever, counting in every win rate and sitting on the Unanswered worklist
+    # as a question nobody could answer. Dated on the quote's own ``date``,
+    # which is what the listing was bounded by.
+    "quote": (models.QuoteDoc, "external_ref", "date"),
 }
 
 #: What to delete when a document is retired. The boolean says whether the
@@ -1750,4 +1770,16 @@ _RETIRE_FROM: dict[str, tuple[tuple[Any, str, bool], ...]] = {
                 (models.InvoiceDoc, "external_ref", False)),
     "bill": ((models.CostRecord, "external_ref", True),
              (models.BillDoc, "external_ref", False)),
+    # The lines go with the header, as they do for an invoice: a quote
+    # retired without them would leave a breakdown attached to nothing, and
+    # the ERP quote page reads those rows directly. ``quote_ref`` holds the
+    # header's own id, so this is the document id rather than a line key.
+    #
+    # What is deliberately **not** here is ``quote_outcomes``: a person's
+    # record of why a quote was lost and who took it is not derived from the
+    # source and is never deleted by a sync. The pointer is left dangling and
+    # counted (``report.retired``), which is the recoverable half of the two
+    # possible mistakes.
+    "quote": ((models.ErpQuoteLine, "quote_ref", False),
+              (models.QuoteDoc, "external_ref", False)),
 }

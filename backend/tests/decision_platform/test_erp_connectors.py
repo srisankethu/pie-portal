@@ -25,6 +25,7 @@ import hashlib
 import hmac
 import json
 import re
+from datetime import date
 from decimal import Decimal
 from urllib.parse import quote, unquote
 
@@ -51,7 +52,8 @@ from app.ingestion.errors import (IngestionError, SourceAuthError,
                                   SourceWriteRefused, SourceWriteUncertain,
                                   SourceWriteUnknown)
 from app.ingestion.erp.transport import RestTransport
-from app.ingestion.normalize import normalize_bill, normalize_invoice
+from app.ingestion.normalize import (normalize_bill, normalize_invoice,
+                                     normalize_quote_document)
 from app.ingestion.sync import SyncService
 from app.repositories import ReadModelRepository
 from app.routers import connections as connections_router, platform_auth
@@ -302,6 +304,156 @@ def test_acumatica_unwraps_the_value_dress_end_to_end():
     txns = normalize_invoice(payload, system="acumatica")
     assert txns[0].line_revenue == Decimal("250.0")
     assert txns[0].source_ref.system == "acumatica"
+
+
+# ── the three quote readers ─────────────────────────────────────────────────
+# One section rather than three, because what has to hold is the same sentence
+# for each: the id a quote is read back under is the id its writer returned,
+# and no connector's status word is read as a customer decision.
+def test_a_bc_quote_reads_back_under_the_id_its_writer_returned():
+    row = {
+        "id": "quote-guid", "number": "SQ-1001",
+        "externalDocumentNumber": "QB-0042-3f9a1c2e",
+        "customerId": "cust-guid", "customerName": "Acme",
+        "documentDate": "2026-06-01", "validUntilDate": "2026-06-30",
+        "status": "Open", "currencyCode": "USD",
+        "totalAmountExcludingTax": 250,
+        "lastModifiedDateTime": "2026-06-01T12:00:00Z",
+        "salesQuoteLines": [
+            {"id": "l1", "lineType": "Item", "itemId": "item-guid",
+             "quantity": 10, "unitPrice": 25, "amountExcludingTax": 250,
+             "description": "Insert"},
+            {"id": "l2", "lineType": "Account", "itemId": None,
+             "quantity": 1, "unitPrice": 40, "amountExcludingTax": 40},
+        ],
+    }
+    payload = dynamics365.translate_sales_quote(row)
+    # The GUID, not the human number. The writer returns this same value as
+    # WrittenDocument.document_id, and the join that recognises a quote this
+    # platform sent is on that id — keyed on "SQ-1001" it would join nothing.
+    assert payload["estimate_id"] == "quote-guid"
+    assert payload["estimate_number"] == "SQ-1001"
+    assert payload["reference_number"] == "QB-0042-3f9a1c2e"
+
+    doc = normalize_quote_document(payload, system="dynamics365")
+    assert doc.external_ref == "quote-guid"
+    assert doc.source_reference == "QB-0042-3f9a1c2e"
+    assert doc.expires_on.isoformat() == "2026-06-30"
+    assert [ln.item_external_id for ln in doc.lines] == ["item-guid"]
+    assert doc.source_ref.system == "dynamics365"
+
+
+def test_a_bc_quote_with_no_validity_date_has_no_expiry_rather_than_year_one():
+    """Business Central sends a blank date as ``0001-01-01``, not as null.
+
+    That is a valid ISO date, so every layer accepted it: ``iso_date`` returned
+    it verbatim, ``normalize`` parsed it, ``QuoteDocIn.expires_on`` has no lower
+    bound, and the Unanswered worklist then read the quote as about 740,000 days
+    past expiry — sorting it above every genuinely lapsed quote in the book,
+    because that bucket orders by days-past-expiry descending.
+
+    ``validUntilDate`` is the field it arrives on in practice: it is blank
+    unless somebody set a Quote Validity Calculation, so this is the default
+    install rather than an edge case. The reader's own comment about not
+    falling back to ``dueDate`` guards the wrong-field mistake and cannot help
+    here — an absence wearing a date gets past a guard that only checks which
+    field was read.
+    """
+    payload = dynamics365.translate_sales_quote({
+        "id": "q-blank", "number": "SQ-2001", "customerId": "c-1",
+        "documentDate": "2026-06-01", "validUntilDate": "0001-01-01",
+        "status": "Open", "salesQuoteLines": []})
+    assert payload["expiry_date"] is None
+    doc = normalize_quote_document(payload, system="dynamics365")
+    assert doc.expires_on is None
+    # A real validity date still comes through untouched.
+    dated = dynamics365.translate_sales_quote({
+        "id": "q-dated", "number": "SQ-2002", "customerId": "c-1",
+        "documentDate": "2026-06-01", "validUntilDate": "2026-06-30",
+        "status": "Open", "salesQuoteLines": []})
+    assert dated["expiry_date"] == "2026-06-30"
+
+
+def test_an_acumatica_quote_reads_back_under_the_id_its_writer_returned():
+    raw = {
+        "id": "so-guid", "OrderType": {"value": "QT"},
+        "OrderNbr": {"value": "SQ-1001"},
+        "CustomerOrderNbr": {"value": "QB-0042-3f9a1c2e"},
+        "CustomerID": {"value": "ACME"},
+        "CustomerName": {"value": "Acme Industrial"},
+        "Date": {"value": "2026-06-01T00:00:00+00:00"},
+        "Status": {"value": "Open"}, "OrderTotal": {"value": 250.0},
+        "CurrencyID": {"value": "USD"},
+        "Details": [
+            {"LineNbr": {"value": 1}, "InventoryID": {"value": "CNMG-1"},
+             "OrderQty": {"value": 10.0}, "UnitPrice": {"value": 25.0},
+             "Amount": {"value": 250.0}},
+        ],
+    }
+    plain = acumatica._plain(raw)
+    assert acumatica._is_quote(plain)
+    payload = acumatica.translate_sales_quote(plain)
+    # The GUID, deliberately unlike translate_sales_order, which keys on
+    # OrderNbr. An order is only ever read; a quote is written and then read
+    # back, and the two ends have to agree on one id space.
+    assert payload["estimate_id"] == "so-guid"
+    assert payload["estimate_number"] == "SQ-1001"
+
+    doc = normalize_quote_document(payload, system="acumatica")
+    assert doc.external_ref == "so-guid"
+    assert doc.source_reference == "QB-0042-3f9a1c2e"
+    assert doc.customer_ref == "Acme Industrial"
+    assert [ln.item_external_id for ln in doc.lines] == ["CNMG-1"]
+    assert doc.source_ref.system == "acumatica"
+
+
+def test_a_netsuite_estimate_reads_back_under_the_id_its_writer_returned():
+    header = {"id": 4242, "tranid": "SQ-1001", "externalid": "QB-0042-3f9a1c2e",
+              "entity": 55, "customer_name": "Acme Industrial",
+              "trandate": "2026-06-01", "status": "Open",
+              "foreigntotal": -250.0, "currency_code": "USD",
+              "lastmodified": "2026-06-02T10:00:00"}
+    lines = [{"tid": 4242, "line_id": 1, "item": 7, "quantity": -10,
+              "rate": 25.0, "netamount": -250.0}]
+    payload = netsuite.translate_estimate(header, lines)
+    assert payload["estimate_id"] == "4242"
+    assert payload["reference_number"] == "QB-0042-3f9a1c2e"
+    # An estimate carries the GL's sale sign exactly as an invoice does.
+    assert payload["total"] == Decimal("250.0")
+    assert payload["line_items"][0]["quantity"] == Decimal("10")
+
+    doc = normalize_quote_document(payload, system="netsuite")
+    assert doc.external_ref == "4242"
+    assert doc.customer_ref == "Acme Industrial"
+    assert doc.source_ref.system == "netsuite"
+
+
+@pytest.mark.parametrize("system, payload", [
+    ("dynamics365", dict(estimate_id="q1", date="2026-06-01", status="Open")),
+    ("acumatica", dict(estimate_id="q2", date="2026-06-01", status="Completed")),
+    ("netsuite", dict(estimate_id="q3", date="2026-06-01",
+                      status="Closed - Won")),
+])
+def test_no_registry_connectors_status_word_is_read_as_a_customer_decision(
+        system, payload):
+    """Every quote from these three reads UNRECORDED, and that is the design.
+
+    ``normalize._QUOTE_VOCABULARY`` has an entry for Zoho and for nobody else,
+    so no word any of these connectors writes on a quote is classified WON or
+    LOST. "Closed - Won" is in the list on purpose: it is the most persuasive
+    string of the three and it still must not decide anything, because whether
+    NetSuite spells it that way, and whether that state means the customer
+    accepted or that we closed the record, has not been confirmed against
+    vendor documentation. Under-claiming leaves a quote unanswered on a
+    worklist somebody works; over-claiming invents a customer decision and
+    puts it in a win rate.
+
+    Delete a row here only together with the vocabulary entry that makes it
+    false, and only with the vendor's own status list cited beside it.
+    """
+    doc = normalize_quote_document(payload, system=system)
+    assert doc.outcome == "UNRECORDED", doc.source_status
+    assert doc.decided_on is None
 
 
 # ── Prophet 21 ──────────────────────────────────────────────────────────────
@@ -627,6 +779,24 @@ def test_a_quote_already_in_bc_under_this_reference_is_never_sent_twice():
     assert not _sent(src, "POST"), "the quote was already there and was sent anyway"
 
 
+def test_a_bc_revision_reference_does_not_match_the_first_documents_row():
+    """``<reference>-r2`` is a new document, not the one under ``<reference>``.
+
+    The server-side filter is exact, but the local re-check is what this
+    connector's protocol actually rests on — so a fake that answers every
+    filter with the revision-1 row must still see the amended quote created,
+    under its own reference. Matching here would report the old document as
+    "already sent" and the amendment would never reach the book.
+    """
+    src = _bc({**_CLEAN,
+               ("GET", "salesQuotes"): _Resp(200, {"value": [_bc_row()]})})
+    doc = src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                                  reference="QB-1-abcd-r2")
+    assert doc.already_existed is False
+    header, _ = _sent(src, "POST")
+    assert header["json"]["externalDocumentNumber"] == "QB-1-abcd-r2"
+
+
 def test_the_preflight_match_is_not_defeated_by_the_case_bc_stores():
     """externalDocumentNumber is an AL Code[35], which upper-cases what it
     stores; the references generated here carry lowercase hex. An exact
@@ -701,6 +871,38 @@ def test_a_settled_header_whose_lines_were_not_returned_is_unknown():
         src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
                                 reference="QB-1-abcd")
     assert "did not return its lines" in str(e.value)
+
+
+def test_a_403_on_a_line_after_the_header_landed_is_unknown_not_unreachable():
+    """A permission refused mid-write leaves a header in the ledger, and the
+    caller must be told that rather than "nothing was sent".
+
+    The line loop used to re-raise SourceScopeError, SourceAuthError and
+    SourceThrottleError unchanged, so the remedy they name would reach the
+    screen. It could not: all three are IngestionError subclasses, so the
+    router's last handler caught them and answered "Nothing is recorded as
+    sent" about a quote header sitting in a customer's Business Central ledger
+    — and recorded no document row, so nothing here pointed at it.
+
+    SourceWriteUnknown is the outcome that is true, it carries the reference,
+    and it is the branch that files an UNVERIFIED row. The remedy survives in
+    the message.
+    """
+    src = _bc({("GET", "salesQuotes"): _Resp(200, {"value": []}),
+               ("POST", "salesQuotes"): _Resp(201, {"id": "q-guid",
+                                                    "number": "SQ-1001"}),
+               ("POST", "salesQuoteLines"): _Resp(403)})
+    with pytest.raises(SourceWriteUnknown) as e:
+        src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                                reference="QB-1-abcd")
+    # It is not an IngestionError, so the router cannot mistake it for
+    # "the source was never written to".
+    assert not isinstance(e.value, IngestionError)
+    assert e.value.reference == "QB-1-abcd"
+    said = str(e.value)
+    assert "SQ-1001" in said and "incomplete" in said
+    # And the remedy the permission error named is still in the sentence.
+    assert "403" in said or "permission" in said.lower() or "grant" in said.lower()
 
 
 def test_a_bc_write_the_read_proves_never_landed_is_safe_to_retry():
@@ -825,6 +1027,65 @@ def test_a_throttled_write_is_uncertain_rather_than_waited_out_and_resent():
     assert len(_sent(landed, "POST")) == 1
 
 
+def test_a_bc_quote_listing_filters_on_the_date_a_quote_actually_has():
+    """The window filter names ``documentDate``, not ``invoiceDate``.
+
+    ``_documents`` was written for invoices and bills and hardcoded the
+    invoice's date field. Pointed at ``salesQuotes`` unchanged it would have
+    sent ``invoiceDate ge …`` to an entity with no such field, and an OData
+    filter on a field the entity does not have is answered with nothing —
+    which does not read as a broken filter, it reads as a company that has
+    never quoted anybody. Worse, the listing still finishes, and a finished
+    empty listing is what the sync's retire sweep acts on.
+    """
+    src = dynamics365.BusinessCentralSource(
+        _bc({("GET", "salesQuotes"): _Resp(200, {"value": [_bc_row(
+            status="Draft", documentDate="2026-06-01")]})})._client,
+        "company-guid", since=date(2026, 1, 1))
+    quotes = list(src.list_quotes())
+
+    params = src._client._http.calls[0]["params"]
+    assert params["$expand"] == "salesQuoteLines"
+    assert params["$filter"] == "documentDate ge 2026-01-01"
+
+    # And a draft is kept. ``_is_trade`` excludes "draft", which is right for
+    # an invoice and wrong for an offer — a quote in draft in the ERP was
+    # still raised, and the status split is what makes the unanswered pile
+    # actionable.
+    assert [q["estimate_id"] for q in quotes] == ["q-guid"]
+    assert src.listed["quote"] == {"q-guid"}
+    assert "quote" in src.listing_complete
+
+
+def test_a_netsuite_estimate_listing_asks_for_the_estimate_type():
+    """The type, the external id and the customer's name, in one query.
+
+    ``externalid`` is what the upsert writes and the only field on a NetSuite
+    estimate pointing back at the draft it came from; without it a quote this
+    platform sent reads as one that arrived from nowhere.
+    """
+    seen: list[str] = []
+
+    class _Client:
+        def suiteql(self, query):
+            seen.append(query)
+            if "transactionline" in query:
+                return []
+            return [{"id": 4242, "tranid": "SQ-1001", "trandate": "2026-06-01",
+                     "externalid": "QB-1-abcd", "entity": 55,
+                     "customer_name": "Acme", "status": "Open",
+                     "foreigntotal": -250.0}]
+
+    src = netsuite.NetSuiteSource(_Client(), since=date(2026, 1, 1))
+    quotes = list(src.list_quotes())
+    assert [q["estimate_id"] for q in quotes] == ["4242"]
+    assert quotes[0]["reference_number"] == "QB-1-abcd"
+    assert "t.type = 'Estim'" in seen[0]
+    assert "t.externalid" in seen[0]
+    assert src.listed["quote"] == {"4242"}
+    assert "quote" in src.listing_complete
+
+
 # ── the Acumatica quote write ───────────────────────────────────────────────
 # The same contract again. What differs is worth knowing: Acumatica takes one
 # PUT carrying its own lines, so "found" means "complete" and the header-without-
@@ -889,6 +1150,86 @@ _ACU_CLEAN = {("GET", "SalesOrder"): _Resp(200, []),
               ("POST", "logout"): _Resp(204)}
 
 
+def test_an_acumatica_quote_is_read_as_a_quote_and_never_also_as_an_order():
+    """One entity, two documents, and the split has to be exact both ways.
+
+    Acumatica keeps quotes in ``SalesOrder`` under ``OrderType`` ``QT``.
+    Before this split ``list_sales_orders`` returned them too, so an offer
+    nobody had accepted would have been counted as promised demand — and once
+    ``list_quotes`` existed the same document would have arrived twice under
+    two kinds.
+
+    The split is client-side on purpose. A server-side ``OrderType eq 'QT'``
+    is the cheaper read, and this module already warns that the contract API's
+    filter grammar varies across builds: a filter that silently matched
+    nothing would not read as a slow pull but as a *complete listing of an
+    empty book*, which is exactly the state the sync's retire sweep acts on.
+    One wasted listing against every quote on the connection retired is not a
+    trade worth making.
+    """
+    rows = [_acu_row(),
+            _acu_row(id="guid-2", OrderType={"value": "SO"},
+                     OrderNbr={"value": "SO000456"},
+                     CustomerOrderNbr={"value": "PO-9"})]
+    src = _acu({("GET", "SalesOrder"): _Resp(200, rows)})
+
+    quotes = list(src.list_quotes())
+    assert [q["estimate_id"] for q in quotes] == ["guid-1"]
+    assert [q["estimate_number"] for q in quotes] == ["QT000123"]
+
+    orders = list(src.list_sales_orders())
+    assert [o["salesorder_number"] for o in orders] == ["SO000456"]
+
+    # And the sweep is told what it saw, under the kind the sync reconciles on.
+    assert src.listed["quote"] == {"guid-1"}
+    assert "quote" in src.listing_complete
+
+
+@pytest.mark.parametrize("status", ["Pending Approval", "Hold", "Cancelled"])
+def test_an_acumatica_quote_is_read_whatever_status_it_wears(status):
+    """``_is_trade`` asks an invoice's question — is this a financial fact —
+    and a quote's is *was this offered*.
+
+    "Pending Approval" and "Hold" are the easy half: a quote waiting on our
+    own approval was still quoted. "Cancelled" is the honest hard case, and it
+    is here rather than left implicit. Reading it means an abandoned quote can
+    sit on a worklist wearing the word "Cancelled" until somebody looks. Not
+    reading it means the row vanishes from the denominator *and* the deletion
+    sweep retires it, dangling whatever loss reason a person had recorded
+    against it — the one thing in this table nothing else can rebuild. The
+    visible wrong is the one to take, and it is the shape
+    ``ZohoApiSource.list_quotes`` already argues for under "no status
+    exclusion".
+    """
+    rows = [_acu_row(Status={"value": status})]
+    src = _acu({("GET", "SalesOrder"): _Resp(200, rows)})
+    quotes = list(src.list_quotes())
+    assert [q["estimate_id"] for q in quotes] == ["guid-1"]
+    # Carried verbatim, so the screen can show what the ERP actually says.
+    assert quotes[0]["status"] == status
+
+
+def test_a_voided_netsuite_estimate_is_still_read_where_a_voided_invoice_is_not():
+    """The same decision on the connector whose exclusion list is one word.
+
+    ``_is_trade`` drops a voided NetSuite *invoice* and must keep a voided
+    estimate, for the reason the Acumatica case above sets out. Pinned on both
+    sides so the shared helper cannot be "tidied" into applying uniformly.
+    """
+    class _Client:
+        def suiteql(self, query):
+            if "transactionline" in query:
+                return []
+            return [{"id": 9, "tranid": "SQ-9", "trandate": "2026-06-01",
+                     "status": "Voided", "entity": 55}]
+
+    src = netsuite.NetSuiteSource(_Client())
+    assert [q["estimate_id"] for q in src.list_quotes()] == ["9"]
+    assert not netsuite._is_trade(
+        netsuite.translate_document({"id": 9, "status": "Voided"}, [],
+                                    kind="invoice"))
+
+
 def test_an_acumatica_quote_puts_the_reference_and_the_customer_on_the_wire():
     """Acumatica reads and writes the same record in different clothes — every
     scalar leaves as {"value": …}. ``_plain`` undressed on the way in and
@@ -932,6 +1273,18 @@ def test_a_quote_already_in_acumatica_is_never_sent_twice():
                                   reference="QB-1-abcd")
     assert doc.already_existed is True and doc.number == "QT000123"
     assert not _acu_sent(src, "PUT"), "it was already there and was sent anyway"
+
+
+def test_an_acumatica_revision_reference_does_not_match_the_first_documents_row():
+    """The same property as Business Central's: a revision goes out under a
+    reference of its own, and the revision-1 row under the bare reference is
+    not it, whatever the server's filter answered."""
+    src = _acu({**_ACU_CLEAN, ("GET", "SalesOrder"): _Resp(200, [_acu_row()])})
+    doc = src.create_sales_quotes("Pitti", _ACU_LINES, customer_ref="C1",
+                                  reference="QB-1-abcd-r2")
+    assert doc.already_existed is False
+    (put,) = _acu_sent(src, "PUT")
+    assert put["json"]["CustomerOrderNbr"] == {"value": "QB-1-abcd-r2"}
 
 
 def test_an_acumatica_quote_with_no_stock_code_is_refused_and_names_the_line():
@@ -1465,6 +1818,11 @@ class _CanonicalStub:
 
     def __init__(self, prefix="NS"):
         self.p = prefix
+        # What the deletion sweep reads off a real source, through
+        # ``DocumentTally``. Present here so the quote stage exercises the
+        # same path the connectors take rather than the getattr fallback.
+        self.listed: dict[str, set[str]] = {"quote": {f"{prefix}-Q1"}}
+        self.listing_complete: set[str] = set()
 
     def list_contacts(self):
         return [{"contact_id": f"{self.p}-C1", "contact_name": "Acme Industrial",
@@ -1492,6 +1850,18 @@ class _CanonicalStub:
                  "line_items": [{"line_item_id": "1", "item_id": f"{self.p}-I1",
                                  "quantity": 100, "rate": 12,
                                  "item_total": 1200}]}]
+
+    def list_quotes(self, skip=None):
+        self.listing_complete.add("quote")
+        return [{"estimate_id": f"{self.p}-Q1", "estimate_number": "SQ-1001",
+                 "reference_number": "QB-0042-3f9a1c2e",
+                 "customer_id": f"{self.p}-C1",
+                 "customer_name": "Acme Industrial",
+                 "date": "2026-06-01", "currency_code": "USD",
+                 "status": "Open", "total": 250,
+                 "line_items": [{"line_item_id": "1", "item_id": f"{self.p}-I1",
+                                 "quantity": 10, "rate": 25,
+                                 "item_total": 250}]}]
 
     def list_users(self):
         return []
@@ -1547,6 +1917,24 @@ def test_multi_connector_sync(db, us_org):
     assert report.sales_txns == 1 and report.cost_records == 1
     assert not report.skipped, report.skipped
 
+    # Quotes are part of this pull now, for every connector that offers them —
+    # the stage is probed by ``hasattr(source, "list_quotes")``, so a
+    # connector gaining the method is a connector whose quotes land, with no
+    # sync-side branch naming it.
+    assert report.quote_documents == 1
+    assert report.quote_document_lines == 1
+    quote = db.scalars(select(models.QuoteDoc).where(
+        models.QuoteDoc.organization_id == us_org)).one()
+    assert quote.connector == "netsuite"
+    assert quote.connection_id == "conn-ns"
+    assert quote.external_ref == "NS-Q1"
+    assert quote.source_reference == "QB-0042-3f9a1c2e"
+    # The customer pull ran first, so the quote is attached rather than
+    # orphaned — and the status word decides nothing (see the vocabulary
+    # test above).
+    assert quote.customer_id is not None
+    assert quote.outcome == "UNRECORDED"
+
     for model in (models.Customer, models.Product, models.Vendor):
         rows = db.scalars(select(model).where(
             model.organization_id == us_org)).all()
@@ -1554,7 +1942,7 @@ def test_multi_connector_sync(db, us_org):
 
     stamped = []
     for model in (models.Customer, models.Product, models.Vendor,
-                  models.SalesTxn, models.CostRecord):
+                  models.SalesTxn, models.CostRecord, models.QuoteDoc):
         for row in db.scalars(select(model).where(
                 model.organization_id == us_org)):
             ref = getattr(row, "source_ref", None) or {}

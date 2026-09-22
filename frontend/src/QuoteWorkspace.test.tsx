@@ -69,6 +69,7 @@ function session(role: Role = "OWNER"): PlatformSession {
 function draft(over: Partial<QuoteDraftSummary>): QuoteDraftSummary {
   return {
     id: "q1", number: "QB-0001", customer: "Pitti Engineering", customerId: "c1",
+    connectionId: null, company: "",
     lineCount: 3, unpriced: 0, total: 12000, readiness: "READY", sent: null,
     ownerId: "u1", owner: "R. Nair", canEdit: true,
     createdBy: "R. Nair", updatedBy: "R. Nair",
@@ -138,6 +139,51 @@ describe("QuoteWorkspace", () => {
     // same fact, so neither is mistaken for the other.
     expect(screen.getByText("Needs a customer")).toBeInTheDocument();
     expect(screen.getByText("No customer yet")).toBeInTheDocument();
+  });
+
+  it("names the book on each draft only where the drafts span more than one company", async () => {
+    const origin = (id: string, company: string) => ({
+      connector: "zoho", connector_label: "Zoho Books", connector_short: "Zoho",
+      icon: "◆", connection_id: id, company, external_id: "", unknown: false,
+    });
+    listQuotes.mockResolvedValue([
+      draft({ id: "q1", number: "QB-0001", connectionId: "c-sls",
+              company: "SLS Engineers", origin: origin("c-sls", "SLS Engineers") }),
+      draft({ id: "q2", number: "QB-0002", connectionId: "c-4u",
+              company: "4U Precision", origin: origin("c-4u", "4U Precision") }),
+    ]);
+    mount();
+    await screen.findByText("QB-0001");
+    expect(screen.getByText(/SLS Engineers/)).toBeInTheDocument();
+    expect(screen.getByText(/4U Precision/)).toBeInTheDocument();
+  });
+
+  it("does not repeat one company's name down a single-company list", async () => {
+    listQuotes.mockResolvedValue([
+      draft({ id: "q1", number: "QB-0001", connectionId: "c-sls", company: "SLS Engineers" }),
+      draft({ id: "q2", number: "QB-0002", connectionId: "c-sls", company: "SLS Engineers" }),
+    ]);
+    mount();
+    await screen.findByText("QB-0001");
+    expect(screen.queryByText(/SLS Engineers/)).not.toBeInTheDocument();
+  });
+
+  it("shows the document a sent draft became, and the ERP's own word once synced", async () => {
+    listQuotes.mockResolvedValue([
+      draft({ id: "q1", number: "QB-0001", readiness: "SENT",
+              sent: { number: "EST-1001", systemLabel: "Zoho Books", current: true,
+                      erp: { number: "EST-1001", sourceStatus: "sent", outcome: "UNRECORDED",
+                             decidedOn: null, clientViewedAt: null } } }),
+      draft({ id: "q2", number: "QB-0002", readiness: "SENT",
+              sent: { number: "EST-1002", systemLabel: "Zoho Books", current: true, erp: null } }),
+    ]);
+    mount();
+    await screen.findByText("QB-0001");
+    expect(screen.getByText("EST-1001")).toBeInTheDocument();
+    expect(screen.getByText("Zoho Books: sent")).toBeInTheDocument();
+    // Unsynced: the number, and no word put in the ERP's mouth.
+    expect(screen.getByText("EST-1002")).toBeInTheDocument();
+    expect(screen.getAllByText(/Zoho Books:/)).toHaveLength(1);
   });
 
   it("sends from the list through the same endpoint the builder uses", async () => {

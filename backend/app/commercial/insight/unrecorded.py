@@ -61,8 +61,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Iterable, Optional
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
+from sqlalchemy import and_, or_, select
+from sqlalchemy.orm import Session, aliased
 
 from ...domain import models
 from ...domain.enums import QuoteDocOutcome, QuoteOutcomeStatus
@@ -106,6 +106,10 @@ class PendingQuote:
     """
 
     quote_document_ref: str
+    #: Which connected company's book raised it. The other half of the
+    #: reference's identity: a screen recording an outcome against this quote
+    #: sends both, so the write lands on the book the reader was looking at.
+    connection_id: Optional[str]
     number: Optional[str]
     customer_id: Optional[str]
     customer_label: str
@@ -130,6 +134,7 @@ class PendingQuote:
     def to_dict(self) -> dict:
         return {
             "quote_document_ref": self.quote_document_ref,
+            "connection_id": self.connection_id,
             "number": self.number,
             "customer_id": self.customer_id,
             "customer_label": self.customer_label,
@@ -223,11 +228,43 @@ def _load(session: Session, org: str,
     stranger's quote on a salesperson's list. It stays visible unscoped, where
     somebody can attribute it.
     """
+    #: Whether another quote in this organization answers to the same ERP
+    #: reference — the collision a company-less pointer cannot resolve.
+    _other = aliased(models.QuoteDoc)
+    _shared_reference = (
+        select(_other.quote_document_id)
+        .where(_other.organization_id == org,
+               _other.external_ref == models.QuoteDoc.external_ref,
+               _other.quote_document_id != models.QuoteDoc.quote_document_id)
+        # Correlated explicitly. This EXISTS sits *inside* another one, and
+        # auto-correlation reaches only the nearest enclosing query — left to
+        # itself it put ``quote_documents`` in its own FROM and asked "does
+        # this organization hold any colliding reference at all", which is
+        # true for every row the moment one collision exists anywhere.
+        .correlate(models.QuoteDoc)
+        .exists())
     answered = (
         select(models.QuoteOutcome.quote_outcome_id)
         .where(models.QuoteOutcome.organization_id == org,
                models.QuoteOutcome.quote_document_ref
                == models.QuoteDoc.external_ref,
+               # Qualified by the company. An ERP reference is unique only
+               # inside the book that issued it, so with two connected books
+               # holding ``SQ-1001`` an unqualified join let an outcome
+               # recorded on one clear *both* from this pile — the second
+               # quote would never be asked about again.
+               #
+               # A row that names no company answers for its reference only
+               # while that reference names one quote in this organization —
+               # the same rule ``quote_service.set_outcome`` adopts such a row
+               # under. Where two books answer to it, nothing on the row says
+               # which one it meant: both quotes stay on the list, because
+               # being asked about a quote somebody already answered is the
+               # recoverable mistake and never being asked is not.
+               or_(and_(models.QuoteOutcome.quote_document_connection_id.is_(None),
+                        ~_shared_reference),
+                   models.QuoteOutcome.quote_document_connection_id
+                   == models.QuoteDoc.connection_id),
                models.QuoteOutcome.status.in_(_RECORDED))
         .exists())
     stmt = select(models.QuoteDoc).where(
@@ -258,6 +295,7 @@ def build(session: Session, org: str, *, as_of: date,
         group, days = _group_and_age(row.expires_on, as_of)
         rows.append(PendingQuote(
             quote_document_ref=row.external_ref,
+            connection_id=row.connection_id,
             number=row.number,
             customer_id=row.customer_id,
             # The ERP's own typed customer name is a real name and a better

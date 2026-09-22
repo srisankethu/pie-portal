@@ -122,3 +122,18 @@ class EstimateResponse(BaseModel):
     #: and was reported rather than created. "Sent" and "was already sent" are
     #: different facts, and prose was the only thing distinguishing them.
     alreadyExisted: bool = False
+    #: Set when the document was created but the quote's own bookkeeping — the
+    #: outcome row that records SENT and which ERP document this quote became —
+    #: could not follow it. A successful send with a sentence beside it, never a
+    #: failed send: the document exists in somebody's ledger whatever the outcome
+    #: table says, and a refusal that lived only in a log was how the link
+    #: stayed unwritten for two weeks.
+    warning: Optional[str] = None
+    #: Which revision of the quote this document is. 1 for a first send; an
+    #: amended quote sent again is a new document and a new revision. A
+    #: counter, not a figure — nothing about a price is in it.
+    revision: Optional[int] = None
+    #: On a revision, the number of the document it replaces — which the source
+    #: still holds, and which a person voids there. Named so the desk knows
+    #: which one; the platform does not void documents (decision D2).
+    superseded: Optional[str] = None

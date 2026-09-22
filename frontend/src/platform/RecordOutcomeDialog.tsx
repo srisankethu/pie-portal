@@ -155,11 +155,17 @@ export function RecordOutcomeDialog({
   choices?: LossChoice[];
   onClose: () => void;
   /** Write it. Rejecting is how a refusal reaches this dialog, and the
-   *  `Error`'s message is shown as it arrives — see the note at the top. */
+   *  `Error`'s message is shown as it arrives — see the note at the top.
+   *
+   *  `lostTo` is who took the business, on a loss, if the person knows. It
+   *  used to be the one field that kept the Quote Builder on a form of its
+   *  own: both writers (`intelligence.outcome`, `intelligence.documentOutcome`)
+   *  carry it, so one form can now ask it everywhere. */
   onRecord: (
     status: QuoteOutcomeStatus,
     lossReason: QuoteLossReason | undefined,
     note: string | undefined,
+    lostTo: string | undefined,
   ) => Promise<void>;
 }) {
   const moves = allow.filter((s) => DECIDING.includes(s));
@@ -167,6 +173,7 @@ export function RecordOutcomeDialog({
 
   const [status, setStatus] = useState<QuoteOutcomeStatus>(first);
   const [reason, setReason] = useState<QuoteLossReason | "">("");
+  const [lostTo, setLostTo] = useState("");
   const [note, setNote] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -179,6 +186,7 @@ export function RecordOutcomeDialog({
     if (open) {
       setStatus(first);
       setReason("");
+      setLostTo("");
       setNote("");
       setError(null);
     }
@@ -194,6 +202,7 @@ export function RecordOutcomeDialog({
         status,
         status === "LOST" ? (reason as QuoteLossReason) : undefined,
         note.trim() || undefined,
+        status === "LOST" ? (lostTo.trim() || undefined) : undefined,
       );
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -240,6 +249,20 @@ export function RecordOutcomeDialog({
                 <MenuItem key={c.code} value={c.code}>{c.label}</MenuItem>
               ))}
             </TextField>
+          )}
+          {status === "LOST" && (
+            /* The one place this platform directly observes a competitor: the
+               customer needed something, we priced it, somebody else supplied
+               it. Optional — the reason is the part that has to be answered. */
+            <TextField
+              fullWidth
+              id="record-outcome-lost-to"
+              label="Who won it, if you know"
+              placeholder="Supplier name — optional"
+              value={lostTo}
+              helperText="Left blank is fine. The reason above is the part that has to be answered."
+              onChange={(e) => setLostTo(e.target.value)}
+            />
           )}
           <TextField
             fullWidth multiline minRows={2} label="Note (optional)"

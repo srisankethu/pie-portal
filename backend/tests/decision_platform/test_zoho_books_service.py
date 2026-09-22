@@ -224,6 +224,29 @@ def test_sending_the_same_quote_twice_returns_the_first_estimate():
     assert http.posts == [], "the pre-flight found it; nothing may be created again"
 
 
+def test_a_revision_reference_is_not_the_first_documents_reference():
+    """An amended quote goes out under ``<reference>-r2``, and the pre-flight
+    must not hand it the revision-1 document: the whole point of the suffix is
+    that Zoho *creates* the amended estimate. The re-check is exact on the
+    reference, so a server that answered the filter loosely would still not
+    match — and a match here would record the new content against the old
+    number, which is what happened before revisions existed."""
+    prior = {"estimate_id": "77", "estimate_number": "EST-000123",
+             "reference_number": "QB-1-abcd", "customer_name": "Pitti",
+             "line_items": [{"item_id": "44"}]}
+    created = {"estimate_id": "78", "estimate_number": "EST-000124",
+               "reference_number": "QB-1-abcd-r2", "customer_name": "Pitti",
+               "line_items": [{"item_id": "44"}]}
+    svc, http = _service(routes={"/estimates": _estimates([prior])},
+                         writes={"/estimates": FakeResponse({"code": 0,
+                                                             "estimate": created})})
+    est = svc.create_sales_quotes("Pitti", [{"code": "CNMG", "itemId": "44", "qty": 1,
+                                         "rate": 12}],
+                              customer_ref="9", reference="QB-1-abcd-r2")
+    assert est.number == "EST-000124" and est.already_existed is False
+    assert http.posts[0][1]["reference_number"] == "QB-1-abcd-r2"
+
+
 # ── failure modes ───────────────────────────────────────────────────────────
 def test_auth_failure_reads_as_books_unavailable():
     svc, _ = _service(token_body={"error": "invalid_client"})

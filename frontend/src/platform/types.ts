@@ -2514,6 +2514,11 @@ export interface UnrecordedQuote {
    *  Never `quote_documents.quote_document_id` — that surrogate is re-minted by
    *  a full re-sync and a pointer written to it would not survive one. */
   quote_document_ref: string;
+  /** Which connected company's book raised it. The other half of the
+   *  reference's identity — an ERP reference is unique only inside one book —
+   *  and what a recorded outcome is written against. Null on a row synced
+   *  before provenance was kept. */
+  connection_id: string | null;
   /** The human-facing number the ERP printed on it. Null where it has none. */
   number: string | null;
   /** Null where the quote's customer never resolved to a platform record — a

@@ -399,3 +399,37 @@ def test_a_document_with_no_recorded_connection_is_not_retired(session):
 
     assert _refs(session, models.InvoiceDoc) == {"L1"}
     assert svc.report.unattributable == 1
+
+
+def test_a_neighbours_row_cannot_pull_a_document_into_a_window_it_is_outside(
+        session):
+    """The window is this company's own, and it was another company's too.
+
+    ``ingested_in_window`` pinned the *reference* to this connection through the
+    cursor, then applied its date bound to whatever row carried that reference.
+    Where two connected companies issue one reference — which is the whole
+    premise of the qualified pointer — this company's document could sit outside
+    the covered window while the neighbour's sat inside it, and the date test
+    would pass on the neighbour's row. The reference then counted as held, the
+    listing had never looked for it, and ``retire_document`` — correctly scoped
+    to this connection — would delete *this* company's row: the one that should
+    never have been a candidate.
+
+    Here ``conn_a``'s invoice is 400 days old and outside any window a pull
+    covers, and ``conn_b`` holds the same reference dated inside it. ``conn_a``
+    then pulls an empty book. Nothing of A's may be retired, because nothing of
+    A's was ever looked for.
+
+    No connector shipped today can reach this — every reader keys
+    ``external_ref`` on a system-wide id, which ``normalize_quote_document``
+    pins — so this is the property held in place rather than a live bug fixed.
+    """
+    _sync_as(session, _Source([_invoice("SHARED", 400)]), "conn_a")
+    _sync_as(session, _Source([_invoice("SHARED", 10)]), "conn_b")
+
+    svc = _sync_as(session, _Source([]), "conn_a")
+
+    rows = session.query(models.InvoiceDoc).filter_by(
+        organization_id=ORG, external_ref="SHARED").all()
+    assert {r.connection_id for r in rows} == {"conn_a", "conn_b"}
+    assert svc.report.retired == []

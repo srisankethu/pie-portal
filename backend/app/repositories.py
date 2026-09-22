@@ -689,6 +689,20 @@ class ReadModelRepository:
         listing this is compared against was bounded that way, and comparing
         against anything else would treat a document the pull never looked for
         as one Zoho has deleted.
+
+        **Scoped to this connection's own rows, like ``retire_document``**, and
+        it was not — the cursor subquery pinned the *reference* to this book
+        while the date bound read whatever row carried that reference. Where two
+        connected companies issue one reference, this company's document could
+        sit outside the covered window and the other's inside it, and the date
+        test would pass on the neighbour's row: a document this pull never
+        looked for, reported as one the source has deleted. ``retire_document``
+        is scoped and so would delete only this company's row — which is the row
+        that should never have been a candidate. No connector shipped today
+        keys ``external_ref`` on anything but a system-wide id, so the collision
+        is not reachable; the two functions disagreeing about their own rule is
+        reason enough, and ``retire_document``'s comment already claims this one
+        behaves this way.
         """
         table = _MIRRORED.get(doc_type)
         if table is None:
@@ -697,6 +711,7 @@ class ReadModelRepository:
         rows = self.s.scalars(
             select(getattr(model, ref_col)).where(
                 model.organization_id == self.org,
+                *self._source(model),
                 getattr(model, date_col) >= start,
                 getattr(model, date_col) <= end,
                 getattr(model, ref_col).in_(self._cursor_refs(doc_type)),

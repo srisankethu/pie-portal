@@ -54,7 +54,7 @@ from ..commercial.insight import (absence, adoption, bonds, cadence, capital,
 from ..db import get_session
 from ..domain import models
 from ..domain.enums import (LOSS_REASON_NOT_RECORDED,
-                            QUOTE_OUTCOME_TRANSITIONS, DecisionStatus,
+                            DecisionStatus,
                             EnterpriseActivity, MsmeClassification,
                             MsmeEvidence, QuoteLossReason,
                             QuoteOutcomeStatus, Role)
@@ -1453,15 +1453,22 @@ def _decided_quotes(outcomes: list[models.QuoteOutcome],
         won = rec.status is QuoteOutcomeStatus.WON
         out.append(outcomes_view.DecidedQuote(
             quote_id=row.quote_id,
-            # The ERP's own number first for a quote it raised — that is what a
-            # person can search for in their own book. ``external_ref`` is the
-            # fallback and never empty; ``quote_outcome_id`` is the last resort
-            # so this can never be blank, because a blank row id is the defect
-            # this field exists to end.
+            # Readable: the ERP's own number for a quote it raised, which is
+            # what a person can search for in their own book.
             reference=(row.quote_id
                        or (rec.erp.number or rec.erp.external_ref if rec.erp else None)
                        or row.quote_document_ref
                        or row.quote_outcome_id),
+            # Unique: an ERP quote number is a per-company sequence, so two
+            # connected books both issue ``EST-1041`` and keying the grid on the
+            # number puts two different quotes under one id — the same defect
+            # the null ``quote_id`` caused, one level up. The company qualifies
+            # it, exactly as it qualifies every other pointer on this branch,
+            # and ``quote_outcome_id`` is the last resort so it cannot be blank.
+            row_id=(row.quote_id
+                    or (f"{row.quote_document_connection_id or rec.erp.connection_id}:"
+                        f"{rec.erp.external_ref}" if rec.erp else None)
+                    or row.quote_outcome_id),
             customer_id=row.customer_id or "",
             customer_label=(customer_names.get(row.customer_id or "")
                             or row.customer_ref or "Unattributed"),
@@ -1683,9 +1690,14 @@ def quote_outcomes(months: int = Query(12, ge=1, le=36),
             "value": float(sum((_line_value(ln) for ln
                                 in lines_by_quote.get(row.quote_id) or []),
                                Decimal("0"))),
+            # Through ``quote_service`` rather than off the table directly:
+            # a DRAFT row naming an ERP document may be recorded WON, and a
+            # button list that did not know that would offer Lost and not Won
+            # for a quote the API accepts either way.
             "allowed_next": sorted(
-                s.value for s in
-                QUOTE_OUTCOME_TRANSITIONS[QuoteOutcomeStatus(row.status)]),
+                s.value for s in quote_service.allowed_transitions(
+                    QuoteOutcomeStatus(row.status),
+                    names_erp_document=bool(row.quote_document_ref))),
         }
         for row in sorted(awaiting, key=lambda r: r.updated_at, reverse=True)
     ]

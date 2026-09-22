@@ -343,6 +343,37 @@ def test_a_bc_quote_reads_back_under_the_id_its_writer_returned():
     assert doc.source_ref.system == "dynamics365"
 
 
+def test_a_bc_quote_with_no_validity_date_has_no_expiry_rather_than_year_one():
+    """Business Central sends a blank date as ``0001-01-01``, not as null.
+
+    That is a valid ISO date, so every layer accepted it: ``iso_date`` returned
+    it verbatim, ``normalize`` parsed it, ``QuoteDocIn.expires_on`` has no lower
+    bound, and the Unanswered worklist then read the quote as about 740,000 days
+    past expiry — sorting it above every genuinely lapsed quote in the book,
+    because that bucket orders by days-past-expiry descending.
+
+    ``validUntilDate`` is the field it arrives on in practice: it is blank
+    unless somebody set a Quote Validity Calculation, so this is the default
+    install rather than an edge case. The reader's own comment about not
+    falling back to ``dueDate`` guards the wrong-field mistake and cannot help
+    here — an absence wearing a date gets past a guard that only checks which
+    field was read.
+    """
+    payload = dynamics365.translate_sales_quote({
+        "id": "q-blank", "number": "SQ-2001", "customerId": "c-1",
+        "documentDate": "2026-06-01", "validUntilDate": "0001-01-01",
+        "status": "Open", "salesQuoteLines": []})
+    assert payload["expiry_date"] is None
+    doc = normalize_quote_document(payload, system="dynamics365")
+    assert doc.expires_on is None
+    # A real validity date still comes through untouched.
+    dated = dynamics365.translate_sales_quote({
+        "id": "q-dated", "number": "SQ-2002", "customerId": "c-1",
+        "documentDate": "2026-06-01", "validUntilDate": "2026-06-30",
+        "status": "Open", "salesQuoteLines": []})
+    assert dated["expiry_date"] == "2026-06-30"
+
+
 def test_an_acumatica_quote_reads_back_under_the_id_its_writer_returned():
     raw = {
         "id": "so-guid", "OrderType": {"value": "QT"},
@@ -840,6 +871,38 @@ def test_a_settled_header_whose_lines_were_not_returned_is_unknown():
         src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
                                 reference="QB-1-abcd")
     assert "did not return its lines" in str(e.value)
+
+
+def test_a_403_on_a_line_after_the_header_landed_is_unknown_not_unreachable():
+    """A permission refused mid-write leaves a header in the ledger, and the
+    caller must be told that rather than "nothing was sent".
+
+    The line loop used to re-raise SourceScopeError, SourceAuthError and
+    SourceThrottleError unchanged, so the remedy they name would reach the
+    screen. It could not: all three are IngestionError subclasses, so the
+    router's last handler caught them and answered "Nothing is recorded as
+    sent" about a quote header sitting in a customer's Business Central ledger
+    — and recorded no document row, so nothing here pointed at it.
+
+    SourceWriteUnknown is the outcome that is true, it carries the reference,
+    and it is the branch that files an UNVERIFIED row. The remedy survives in
+    the message.
+    """
+    src = _bc({("GET", "salesQuotes"): _Resp(200, {"value": []}),
+               ("POST", "salesQuotes"): _Resp(201, {"id": "q-guid",
+                                                    "number": "SQ-1001"}),
+               ("POST", "salesQuoteLines"): _Resp(403)})
+    with pytest.raises(SourceWriteUnknown) as e:
+        src.create_sales_quotes("Pitti", _BC_LINES, customer_ref="C-001",
+                                reference="QB-1-abcd")
+    # It is not an IngestionError, so the router cannot mistake it for
+    # "the source was never written to".
+    assert not isinstance(e.value, IngestionError)
+    assert e.value.reference == "QB-1-abcd"
+    said = str(e.value)
+    assert "SQ-1001" in said and "incomplete" in said
+    # And the remedy the permission error named is still in the sentence.
+    assert "403" in said or "permission" in said.lower() or "grant" in said.lower()
 
 
 def test_a_bc_write_the_read_proves_never_landed_is_safe_to_retry():

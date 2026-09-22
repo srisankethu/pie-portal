@@ -462,7 +462,9 @@ def test_a_quote_the_erp_decided_counts_with_its_source_and_no_reason(
     assert reasons["PRICE"]["count"] == 5
 
 
-def _erp_raised_and_recorded(s, ref: str, *, customer: str, lost_to: str) -> None:
+def _erp_raised_and_recorded(s, ref: str, *, customer: str, lost_to: str,
+                             connection_id: str = "cx1",
+                             number: str | None = None) -> None:
     """A quote the ERP raised, with lines, that a person then recorded a loss on.
 
     The shape that makes ``quote_outcomes.quote_id`` NULL: there is no platform
@@ -475,13 +477,13 @@ def _erp_raised_and_recorded(s, ref: str, *, customer: str, lost_to: str) -> Non
 
     decided = (datetime.now(timezone.utc) - timedelta(days=2)).date()
     s.add(models.QuoteDoc(
-        organization_id=ORG, connector="zoho", connection_id="cx1",
-        external_ref=ref, number=f"EST-{ref}", customer_id=customer,
+        organization_id=ORG, connector="zoho", connection_id=connection_id,
+        external_ref=ref, number=(number or f"EST-{ref}"), customer_id=customer,
         customer_ref="Acme Engineering", date=decided - timedelta(days=5),
         source_status="sent", outcome="UNRECORDED", total=Decimal("500")))
     s.add(models.ErpQuoteLine(
         erp_quote_line_id=f"{ref}:1", organization_id=ORG, connector="zoho",
-        connection_id="cx1", external_ref=f"{ref}:1", quote_ref=ref,
+        connection_id=connection_id, external_ref=f"{ref}:1", quote_ref=ref,
         line_number=1, item_code="CNMG", description="CNMG 120408",
         qty=Decimal("5"), rate=Decimal("80"), amount=Decimal("400")))
     s.flush()
@@ -489,7 +491,7 @@ def _erp_raised_and_recorded(s, ref: str, *, customer: str, lost_to: str) -> Non
         s, ORG, quote_document_ref=ref, status=Status.LOST,
         loss_reason=Reason.PRICE, lost_to=lost_to,
         customer_ref=customer, customer_id=customer,
-        quote_document_connection_id="cx1")
+        quote_document_connection_id=connection_id)
 
 
 def test_every_decided_quote_row_carries_an_id_the_grid_can_tell_apart(
@@ -519,14 +521,48 @@ def test_every_decided_quote_row_carries_an_id_the_grid_can_tell_apart(
                       headers=_hdr(client, OWNER)).json()
     rows = body["quotes"]
     assert rows, "the fixture decides quotes, so this must not be vacuous"
-    refs = [r["reference"] for r in rows]
-    assert all(refs), "a blank row id is the defect this field exists to end"
-    assert len(set(refs)) == len(rows), sorted(refs)
+    ids = [r["row_id"] for r in rows]
+    assert all(ids), "a blank row id is the defect this field exists to end"
+    assert len(set(ids)) == len(rows), sorted(ids)
+    # ``reference`` is the readable half and is NOT required to be unique: an
+    # ERP quote number is a per-company sequence. Keying the grid on it was the
+    # first fix for this defect and reintroduced it one level up, which is why
+    # the two are separate fields.
+    assert all(r["reference"] for r in rows)
     # And the ERP-raised ones are in there, identified by the ERP's own
     # document rather than by a platform quote they never had.
     erp = [r for r in rows if r["quote_id"] is None]
     assert len(erp) == 2, "the two ERP-raised losses must both be listed"
     assert {r["reference"] for r in erp} == {"EST-erp-a", "EST-erp-b"}
+    # And the company qualifies the id, so two books issuing one number stay
+    # two rows. This is the case ``reference`` alone could not survive.
+    assert {r["row_id"] for r in erp} == {"cx1:erp-a", "cx1:erp-b"}
+
+
+def test_two_books_issuing_one_quote_number_stay_two_rows(
+        client_with_erp_decisions):
+    """The collision the readable field cannot survive, and the reason there
+    are two fields.
+
+    An ERP quote number is a per-company sequence, so two connected books both
+    print ``EST-1041``. Keyed on that string the grid sees one row where there
+    are two and silently drops a decided quote out of the evidence behind a win
+    rate — the same defect a null ``quote_id`` caused, one level up, and it was
+    introduced by the first fix for it.
+    """
+    client = client_with_erp_decisions
+    with client.Maker() as s:
+        _erp_raised_and_recorded(s, "same-1", customer="c1", lost_to="Sandvik",
+                                 connection_id="cx1", number="EST-1041")
+        _erp_raised_and_recorded(s, "same-2", customer="c1", lost_to="Iscar",
+                                 connection_id="cx2", number="EST-1041")
+        s.commit()
+
+    body = client.get("/api/v1/insight/quote-outcomes",
+                      headers=_hdr(client, OWNER)).json()
+    clash = [r for r in body["quotes"] if r["reference"] == "EST-1041"]
+    assert len(clash) == 2, "both books' quotes must be listed"
+    assert len({r["row_id"] for r in clash}) == 2, [r["row_id"] for r in clash]
 
 
 def test_the_three_readers_agree_on_one_fixture(client_with_erp_decisions):

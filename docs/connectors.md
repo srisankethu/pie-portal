@@ -240,6 +240,20 @@ decision and puts it in a win rate.
 it, and a row leaves that test only together with the vendor's own status list
 cited beside it.
 
+**A person can still record a win on one, and that took a fix.** Silence about
+the status word turned out not to be silent. An outcome row opens SENT only
+where `reached_the_customer` can read the source's own word for it, so on these
+three it opened at DRAFT — and `QUOTE_OUTCOME_TRANSITIONS[DRAFT]` allows only
+SENT and LOST. Recording a win was a 409 on every Business Central, Acumatica
+and NetSuite quote, so those books could record losses and not wins, and their
+win rates read zero wins and all losses. That is not an under-claim, it is a
+wrong number. `quote_service.allowed_transitions` now lets a person record WON
+straight from DRAFT **when the row names an ERP document**: a customer cannot
+accept a quote they never received, so somebody recording a win is asserting
+the send as well, and that claim is theirs to make. Nothing derived is widened
+— no SENT the source never said is stored, `sent_at` stays empty, and a
+platform quote still cannot be won without being sent.
+
 ## What each sign-in must already be granted
 
 A half-granted sign-in is the most common way a connection authenticates and

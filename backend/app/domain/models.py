@@ -3187,8 +3187,9 @@ class QuoteOutcome(Base):
     #: answer a reference two books both issued. NULL on rows written before it
     #: existed, which readers treat as "unqualified" — resolvable while the bare
     #: reference is unique, refused by name otherwise. The unique constraint
-    #: above still keys on the bare reference; widening it to include this
-    #: column is the day the first per-company ``list_quotes`` lands.
+    #: above keys on this column too — it was widened by ``w10qptr``, in the
+    #: same change that landed the first registry ``list_quotes``, which is the
+    #: day this comment predicted and no longer has to wait for.
     quote_document_connection_id: Mapped[Optional[str]] = mapped_column(
         String(64), index=True)
     customer_ref: Mapped[str] = mapped_column(String(255), default="")

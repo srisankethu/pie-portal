@@ -16,6 +16,7 @@ import { StatusChip, TOUCH, type Tone } from "../platform/kit";
 // and this file renders it rather than a second.
 import {
   LOSS_REASON_LABELS as REASON_LABELS,
+  LOSS_REASON_MEANING as REASON_MEANING,
   RecordOutcomeDialog,
   STATUS_WORD,
 } from "../platform/RecordOutcomeDialog";
@@ -116,8 +117,16 @@ export function QuoteOutcomeBar({ outcome, erp = null, systemLabel = "", onRecor
   const decided = next.length === 0;
   // Served, never a copy held here — the server's list excludes UNKNOWN, and a
   // second list in this file is one that drifts from the rule enforcing it.
+  // ``meaning`` beside the label, from the same module the dialog's own default
+  // choices read it from. Replacing this bar's inline loss form with the shared
+  // dialog dropped it: the dialog renders the "what this reason means
+  // downstream" line only for a choice that carries one, so the Quote Builder
+  // lost the sentence that tells somebody apart "they went elsewhere" from
+  // "the requirement died" — which are the two halves the competitor mix and
+  // the reason mix are built from, and the one thing this vocabulary exists to
+  // keep distinct.
   const choices = outcome.loss_reasons.map((code) => ({
-    code, label: REASON_LABELS[code],
+    code, label: REASON_LABELS[code], meaning: REASON_MEANING[code],
   }));
   // The ERP has decided and nobody here has: the word everything else already
   // counts, said here with the date, and one press to record it with a reason.

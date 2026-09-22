@@ -834,6 +834,44 @@ def sole_erp_quote(session: Session, org: str,
     return rows[0] if rows else None
 
 
+def allowed_transitions(status: QuoteOutcomeStatus, *,
+                        names_erp_document: bool) -> frozenset[QuoteOutcomeStatus]:
+    """What an outcome row in ``status`` may become next.
+
+    ``QUOTE_OUTCOME_TRANSITIONS`` plus one addition, and the addition is the
+    whole reason this is a function rather than three lookups of that table.
+
+    **A person may record WON on a quote that exists in an ERP, straight from
+    DRAFT.** The table forbids DRAFT → WON because a quote that never went out
+    could not have come back won, which is right for a platform quote: DRAFT
+    there means *we have not sent it*. It is wrong for a quote the ERP raised,
+    where DRAFT means only that this platform cannot read the source's word for
+    "sent" — ``_QUOTE_SENT_STATUSES`` has an entry for Zoho and for nobody
+    else, on purpose, because the other vocabularies are cited and not
+    verified. Without this, recording a win on any Business Central, Acumatica
+    or NetSuite quote was refused 409 and only a loss could be recorded, so
+    those books' win rates read zero wins and all losses.
+
+    The claim is the person's, which is what makes it admissible: a customer
+    cannot accept a quote they never received, so somebody recording WON is
+    asserting the send as well. Nothing derived is widened — no SENT the ERP
+    never said is written, and ``sent_at`` stays empty, which is the honest
+    record of "we know it was won and never learned when it went out".
+    ``OutcomeOfRecord.ever_sent`` already counts any ERP-raised quote as sent,
+    so the win-rate denominator is unchanged.
+
+    One function because three places ask: the refusal in ``set_outcome`` and
+    the two ``allowed_next`` lists the screens offer. Re-deriving the predicate
+    at each would let the API accept what the buttons never offer, or the
+    reverse — which is the shape of defect this module's own docstrings keep
+    naming.
+    """
+    allowed = set(QUOTE_OUTCOME_TRANSITIONS[status])
+    if status is QuoteOutcomeStatus.DRAFT and names_erp_document:
+        allowed.add(QuoteOutcomeStatus.WON)
+    return frozenset(allowed)
+
+
 def _opening_status(document: Optional[models.QuoteDoc]) -> QuoteOutcomeStatus:
     """The status a brand-new outcome row starts in, before its transition.
 
@@ -1474,7 +1512,12 @@ def set_outcome(session: Session, org: str, *, quote_id: Optional[str] = None,
     # made it look refused. Nothing downstream could tell that row from one
     # recorded against a quote that was never pushed.
     current = QuoteOutcomeStatus(row.status)
-    if status is not current and status not in QUOTE_OUTCOME_TRANSITIONS[current]:
+    # The reference this call would leave on the row, not only the one already
+    # there: a first recording names the ERP document in the same call that
+    # decides it, and asking the stored value alone would refuse that.
+    if status is not current and status not in allowed_transitions(
+            current,
+            names_erp_document=bool(row.quote_document_ref or quote_document_ref)):
         raise InvalidTransition(
             f"A quote that is {current.value} cannot become {status.value}")
 
@@ -1585,7 +1628,9 @@ def outcome_to_dict(row: Optional[models.QuoteOutcome]) -> Optional[dict]:
         "sent_at": clock.iso(row.sent_at),
         "decided_at": clock.iso(row.decided_at),
         "allowed_next": sorted(
-            s.value for s in QUOTE_OUTCOME_TRANSITIONS[QuoteOutcomeStatus(row.status)]),
+            s.value for s in allowed_transitions(
+                QuoteOutcomeStatus(row.status),
+                names_erp_document=bool(row.quote_document_ref))),
         "loss_reasons": [r.value for r in SELECTABLE_LOSS_REASONS],
     }
 

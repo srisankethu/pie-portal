@@ -229,6 +229,29 @@ def translate_purchase_invoice(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+#: Business Central serialises a *blank* AL ``Date`` as the literal
+#: ``0001-01-01`` rather than as null or an absent property. That is a
+#: syntactically valid ISO date, so ``iso_date`` returns it verbatim and every
+#: layer below accepts it: ``normalize._parse_date`` parses it, ``QuoteDocIn``
+#: has no lower bound, and ``insight.unrecorded`` then reads a quote as roughly
+#: 740,000 days past its expiry and sorts it above every genuinely lapsed quote
+#: in the book.
+#:
+#: An absence wearing a date is worse than the wrong field, which is what the
+#: comment in ``translate_sales_quote`` already guards against: that one keeps
+#: this reader off ``dueDate``, and it cannot help when the right field arrives
+#: blank. So the sentinel is read as the absence it is, here rather than in
+#: ``iso_date`` — the shared helper serves five connectors and this encoding is
+#: Business Central's alone.
+_BLANK_DATE = "0001-01-01"
+
+
+def bc_date(value: Any) -> Optional[str]:
+    """One Business Central date, with its blank sentinel read as absent."""
+    out = iso_date(value)
+    return None if out == _BLANK_DATE else out
+
+
 def translate_sales_quote(row: dict[str, Any]) -> dict[str, Any]:
     """One ``salesQuotes`` row as the canonical quote payload.
 
@@ -267,8 +290,12 @@ def translate_sales_quote(row: dict[str, Any]) -> dict[str, Any]:
         # landed on a chase list as overdue on a day nobody set. A name nobody
         # has confirmed is worse than an absence, and the normaliser keeps an
         # absent expiry distinct from a date.
-        "date": iso_date(row.get("documentDate")),
-        "expiry_date": iso_date(row.get("validUntilDate")),
+        "date": bc_date(row.get("documentDate")),
+        # ``validUntilDate`` is blank on a default install — it is filled from a
+        # Quote Validity Calculation on Sales & Receivables Setup or the
+        # customer card, and plenty of books set neither — so this is the field
+        # the blank sentinel actually arrives on.
+        "expiry_date": bc_date(row.get("validUntilDate")),
         "status": str(row.get("status") or ""),
         "total": row.get("totalAmountExcludingTax"),
         "currency_code": (str(row.get("currencyCode")).upper()
@@ -560,11 +587,24 @@ class BusinessCentralSource:
                     "POST",
                     self._entity(f"salesQuotes({quote_id})/salesQuoteLines"),
                     json=body)
-            except (SourceScopeError, SourceAuthError, SourceThrottleError):
+            except (SourceScopeError, SourceAuthError,
+                    SourceThrottleError) as e:
                 # These name their own remedy — a permission, a credential, a
-                # wait. Flattening them into the unknown below would leave the
-                # header just as orphaned and the reader with nothing to act on.
-                raise
+                # wait — and an earlier version re-raised them for that reason.
+                # It could not: every one of them is an ``IngestionError``, so
+                # the router's last handler caught it and answered "Nothing is
+                # recorded as sent" about a header that is sitting in the
+                # customer's ledger, recording no document row to find it by.
+                # The remedy is kept — it is the message — and the outcome is
+                # the one that is actually true, which is also the branch that
+                # files an UNVERIFIED row so the next person can see it.
+                raise SourceWriteUnknown(
+                    f"Business Central created sales quote "
+                    f"{created.get('number') or quote_id} and then refused line "
+                    f"{index} of {len(lines)} ({e}), so the quote there is "
+                    f"incomplete. Fix that and check external document number "
+                    f"{reference} — finish or delete it before sending again.",
+                    reference=reference) from e
             except Exception as e:                   # noqa: BLE001
                 # The header exists and this quote is incomplete. Neither
                 # outcome is available: reporting success would put a quote

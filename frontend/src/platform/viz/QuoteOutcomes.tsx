@@ -74,8 +74,11 @@ type SliceRow = Sourced & {
 };
 
 type QuoteRow = {
-  // `reference` identifies the row; `quote_id` is null on an ERP-raised quote.
-  reference: string; quote_id: string | null; customer_label: string; status: string;
+  // `row_id` identifies the row and is never shown; `reference` is shown and is
+  // not unique (an ERP quote number repeats across connected books);
+  // `quote_id` is null on an ERP-raised quote.
+  row_id: string; reference: string; quote_id: string | null;
+  customer_label: string; status: string;
   loss_reason: string | null; loss_reason_label: string | null;
   decided_on: string; lines: number; value: number;
 };
@@ -369,10 +372,10 @@ function OutcomePanel({
             ariaLabel="Decided quotes"
             rows={data ? typed<QuoteRow>(data.quotes) : null}
             columns={quoteColumns}
-            // Not `quote_id`: it is null for every quote the ERP raised itself,
-            // so those rows all shared one id and the grid could not tell them
-            // apart. `reference` is the platform number or the ERP's own.
-            getRowId={(r) => r.reference}
+            // Not `quote_id` (null for every ERP-raised quote) and not
+            // `reference` (an ERP quote number repeats across connected books).
+            // `row_id` is the company-qualified one, built server-side.
+            getRowId={(r) => r.row_id}
             empty={<EmptyState title="No quote has been marked won or lost"
                                reason={String(data?.empty_reason ?? "")} />}
           />

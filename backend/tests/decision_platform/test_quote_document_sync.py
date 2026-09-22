@@ -791,6 +791,62 @@ def test_a_platform_quote_that_became_an_erp_quote_is_one_row_not_two(session):
                                   status=QuoteOutcomeStatus.WON)
 
 
+@pytest.mark.parametrize("connector", ["dynamics365", "acumatica", "netsuite"])
+def test_a_win_can_be_recorded_on_a_quote_from_a_book_we_cannot_read(
+        session, connector):
+    """A person may record WON on an ERP-raised quote straight from DRAFT.
+
+    ``_QUOTE_SENT_STATUSES`` has an entry for Zoho and for nobody else, on
+    purpose: the other vocabularies are cited and not verified, and reading an
+    unchecked word as "sent" would invent a claim about a customer. The cost of
+    that silence was not silence — it was a refusal. The outcome row opened at
+    DRAFT, ``QUOTE_OUTCOME_TRANSITIONS[DRAFT]`` allows only SENT and LOST, so
+    recording a win on any Business Central, Acumatica or NetSuite quote was a
+    409 and only a loss could be recorded. Those books' win rates read zero
+    wins and all losses, which is not an under-claim, it is a wrong number.
+
+    A customer cannot accept a quote they never received, so a person recording
+    WON is asserting the send too, and that claim is theirs to make. Nothing
+    derived is widened: no SENT the ERP never said is stored, and ``sent_at``
+    stays empty — the honest record of a win whose send date we never learned.
+    """
+    session.add(models.QuoteDoc(
+        organization_id="org_a", connector=connector, connection_id="cx",
+        external_ref=f"{connector}-1", number="EST-1", customer_ref="Acme",
+        date=date(2026, 6, 1), source_status="Open", outcome="UNRECORDED",
+        total=Decimal("100")))
+    session.commit()
+
+    row = quote_service.set_outcome(
+        session, "org_a", quote_document_ref=f"{connector}-1",
+        status=QuoteOutcomeStatus.WON, customer_ref="Acme",
+        quote_document_connection_id="cx", user_id="u1")
+    assert row.status == QuoteOutcomeStatus.WON.value
+    assert row.sent_at is None, "no send date was ever learned; none is claimed"
+
+
+def test_a_platform_quote_still_cannot_be_won_without_being_sent(session):
+    """The guarantee the ERP exception must not cost.
+
+    DRAFT on a platform quote means *we have not sent it*, and a quote that
+    never went out could not have come back won — ``ever_sent`` and the
+    win-rate denominator both lean on that. The exception above is scoped to a
+    row that names an ERP document, so this path is unchanged: a draft nobody
+    has sent still refuses, and the two-step through SENT is still the way.
+    """
+    quote_service.set_outcome(
+        session, "org_a", quote_id="qd-1", status=QuoteOutcomeStatus.DRAFT,
+        customer_ref="Acme", user_id="u1")
+    with pytest.raises(quote_service.InvalidTransition):
+        quote_service.set_outcome(
+            session, "org_a", quote_id="qd-1", status=QuoteOutcomeStatus.WON,
+            user_id="u1")
+    # And the buttons agree with the refusal, which is the point of routing
+    # both through one rule.
+    assert "WON" not in quote_service.outcome_to_dict(
+        quote_service.get_outcome(session, "org_a", "qd-1"))["allowed_next"]
+
+
 def test_a_decided_quote_re_sent_keeps_the_document_its_outcome_names(session):
     """A refusal must not leave the row half-moved, and this is the path where
     the two refusals' order decides it.

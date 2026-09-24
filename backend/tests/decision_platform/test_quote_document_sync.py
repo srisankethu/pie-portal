@@ -1217,6 +1217,41 @@ def test_every_source_takes_the_argument_the_sync_passes(session):
     assert list(FixtureZohoSource().list_quotes(skip=lambda _id, _at: False))
 
 
+def test_a_quote_sent_through_the_mock_is_listed_by_the_mock_sync(session):
+    """A live book lists the estimate this platform created in it on the next
+    pull; the mock source listed only its fixtures, so a quote sent in the demo
+    never gained an ERP side and the outcome-of-record join could not be seen
+    without a live ERP. The mock writer's memory is the mock source's fourth
+    page now, in the wire shape everything else arrives in."""
+    from app.ingestion.mock_source import FixtureZohoSource
+    from app.zoho import mock_zoho
+
+    est = mock_zoho.create_sales_quotes(
+        "Pitti Engineering Ltd",
+        [{"code": "CNMG120408", "itemId": "itm-2001", "qty": 10, "rate": 450.0},
+         {"code": "FREIGHT", "itemId": None, "qty": 1, "rate": None}],
+        reference="QB-0001-abcd1234")
+    listed = {q["estimate_id"]: q for q in FixtureZohoSource().list_quotes()}
+    assert est.document_id in listed
+    row = listed[est.document_id]
+    assert row["reference_number"] == "QB-0001-abcd1234"
+    assert row["estimate_number"] == est.number and row["status"] == "sent"
+    assert row["total"] is None, "one line has no rate — no partial sum passed off as the total"
+    assert [ln["sku"] for ln in row["line_items"]] == ["CNMG120408", "FREIGHT"]
+
+    # The pull stores it as the ERP's own row: the reference the send wrote
+    # is the source reference, the lines are held, and nothing has decided it.
+    _sync(session, [row])
+    doc = _docs(session)[est.document_id]
+    assert doc.source_reference == "QB-0001-abcd1234" and doc.outcome == "UNRECORDED"
+    assert doc.number == est.number and doc.customer_id is None
+    assert session.query(models.ErpQuoteLine).filter_by(quote_ref=est.document_id).count() == 2
+
+    # Forgotten, nothing is listed — the isolation every other test relies on.
+    mock_zoho.forget_written()
+    assert est.document_id not in {q["estimate_id"] for q in FixtureZohoSource().list_quotes()}
+
+
 def test_the_demo_source_carries_lines_so_the_screen_can_be_looked_at(session):
     """Without them the one screen that reads a quote's lines cannot be seen
     without a live ERP, which is how it would rot unnoticed."""

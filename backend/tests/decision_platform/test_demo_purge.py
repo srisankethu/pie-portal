@@ -40,6 +40,13 @@ def test_purge_removes_every_demo_row(session):
     assert session.query(models.AiCallLog).count() == 0, \
         "left in place, demo runs would permanently skew the AI cost/health metrics"
     assert session.query(models.Decision).count() == 0
+    # The quoting half of the demo goes with it: the platform quote the seed
+    # minted, what it sent, how it ended, and the company it all belonged to.
+    assert removed["quote_drafts"] == 1 and removed["quote_documents"] == 1
+    assert removed["quote_outcomes"] == 1 and removed["zoho_connections"] == 1
+    for table in (models.QuoteDraft, models.QuoteDocument, models.QuoteOutcome,
+                  models.QuoteDoc, models.ErpQuoteLine, models.ZohoConnection):
+        assert session.query(table).count() == 0, table.__tablename__
 
 
 def test_purge_is_idempotent(session):
@@ -108,3 +115,25 @@ def test_purge_does_not_touch_a_real_cost_record_on_a_shared_product_id_space(se
 
     assert session.query(models.CostRecord).count() == 1
     assert session.query(models.CostRecord).one().cost_record_id == real_cost.cost_record_id
+
+
+
+def test_the_demo_holds_a_quote_this_platform_sent_that_the_erp_then_accepted(session):
+    """The lifecycle the demo shows from both sides. Sent from here into the
+    demo company's book, accepted there: the workspace reads it WON with the
+    ERP as the source, the document it became is joined by (system, company,
+    id), and every demo document names the company."""
+    from app import quote_workspace
+
+    seed_demo(session)
+    session.commit()
+
+    rows = quote_workspace.list_drafts(session, "org_pie", user_id="usr_sales")
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["customer"] == "Pitti Engineering Ltd"
+    assert row["company"] == "SLS Engineers (demo)"
+    assert row["sent"]["number"] == "QT-DEMO-0002" and row["sent"]["current"] is True
+    assert row["sent"]["erp"]["outcome"] == "WON"
+    assert row["readiness"] == "WON"
+    assert {d.connection_id for d in session.query(models.QuoteDoc)} == {"cx_demo"}

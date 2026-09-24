@@ -195,5 +195,47 @@ class FixtureZohoSource:
         the sync's one call site raises ``TypeError`` and takes the whole quote
         stage down. That is not hypothetical: the real client grew ``skip`` and
         this one did not, and nothing failed until a demo org ran a sync.
+
+        After the fixtures, whatever the mock *writer* has sent from the Quote
+        Builder — as a live book would list an estimate this platform created
+        in it. Without this a quote sent in the demo never gained an ERP side,
+        so the one join the outcome of record turns on could not be seen
+        without a live ERP.
         """
-        return list(_QUOTES)
+        return list(_QUOTES) + [_as_estimate(w) for w in _written()]
+
+
+def _written() -> list[dict[str, Any]]:
+    # Imported here, not at the top: ``app.zoho`` imports this package's
+    # ``erp.base`` and ``errors``, and a module-level import would close the
+    # cycle at load.
+    from ..zoho import mock_zoho
+    return mock_zoho.written_documents()
+
+
+def _as_estimate(w: dict[str, Any]) -> dict[str, Any]:
+    """One written document in the estimate shape ``normalize_quote_document``
+    reads — the same keys the fixtures above carry. No contact id: the mock
+    has no ledger for one, and the sync keeps a quote whose customer it
+    cannot resolve. A total only where every line has a quantity and a rate;
+    a partial sum would be a false total, and ``None`` is "not stated"."""
+    est, lines = w["document"], w["lines"]
+    day = w["written_on"].isoformat()
+    priced = all(ln.get("qty") is not None and ln.get("rate") is not None for ln in lines)
+    total = (round(sum(float(ln["qty"]) * float(ln["rate"]) for ln in lines), 2)
+             if lines and priced else None)
+    return {
+        "estimate_id": est.document_id, "estimate_number": est.number,
+        "reference_number": w["reference"], "customer_id": "",
+        "customer_name": w["customer"], "date": day, "expiry_date": "",
+        "status": "sent", "accepted_date": "", "declined_date": "",
+        "total": total, "created_time": f"{day}T00:00:00+0530",
+        "line_items": [
+            {"line_item_id": f"{est.document_id}:{i}", "item_id": ln.get("itemId") or "",
+             "sku": ln.get("code") or "", "description": ln.get("code") or "",
+             "quantity": ln.get("qty"), "unit": "", "rate": ln.get("rate"),
+             "item_total": (round(float(ln["qty"]) * float(ln["rate"]), 2)
+                            if ln.get("qty") is not None and ln.get("rate") is not None
+                            else None)}
+            for i, ln in enumerate(lines)],
+    }

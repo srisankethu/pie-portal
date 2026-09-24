@@ -619,8 +619,8 @@ Deterministic tools first, judgement second. Never report "no duplication"
 without a tool having actually looked.
 
 ```bash
-make verify        # the whole gate, ~4 min
-make verify-fast   # the edit loop, ~2.5 min — not enough to merge on
+make verify        # the whole gate, ~10 min
+make verify-fast   # the edit loop, ~3 min — not enough to merge on
 ```
 
 That is the entire list, and it is deliberately not written out here a second

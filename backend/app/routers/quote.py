@@ -289,8 +289,8 @@ def _books_for(session: Session, book: conn.CustomerBook) -> QuoteBooks:
                 f"This customer's books are {conn.system_label_for(connector)}, "
                 f"and no item master has been synced from that company yet — "
                 f"so nothing here can say what is in it. Run a sync from Data & "
-                f"connection. The quote can still go out — sent where this "
-                f"connector has a writer, or marked as sent.")),
+                f"connection. Until then the quote can be marked as sent; a "
+                f"send needs the item ids a sync brings.")),
             contact_id=book.contact_id, system=connector, writer=writer,
             connection_id=book.connection.connection_id)
     return QuoteBooks(
@@ -404,9 +404,10 @@ def quote_from_erp(body: FromErpRequest,
     """Pick up a quote the ERP raised and revise it here.
 
     A form — not a quote; nothing is minted until the person saves — with the
-    ERP quote's customer and company already set and each of its item lines
-    read through the ordinary intake — a line naming no item (freight,
-    handling) is not a catalogue question and is left out: the code resolves against that company's
+    ERP quote's customer and company already set and each of its lines read
+    through the ordinary intake — a line naming no item (freight, handling)
+    arrives under its description and reads UNRESOLVED until the desk says
+    what it is here: the code resolves against that company's
     catalogue exactly as a pasted RFQ line would, so a code the ERP wrote
     that the catalogue does not know arrives UNRESOLVED rather than trusted.
     The rate is the ERP's net rate for the line, marked as a person's price
@@ -465,11 +466,17 @@ def quote_from_erp(body: FromErpRequest,
         q, "", books.zoho,
         _customer_scope(session, principal, q.customer_ref),
         _bands(session, principal), _mapping_store(session, principal),
-        rows=[{"raw": f"{row.item_code} x{_qty(row)}", "code": row.item_code,
-               "qty": _qty(row)}
-              for row in rows if row.item_code],
+        # Every line, a line naming no item under its description: freight,
+        # handling, a service the ERP carries without a code. It arrives
+        # UNRESOLVED — the catalogue holds nothing by that name — and stays
+        # on the form until the desk says what it is here, rather than
+        # dropping off a revision with nothing saying the original charged
+        # for it.
+        rows=[{"raw": f"{row.item_code or row.description} x{_qty(row)}",
+               "code": row.item_code or row.description, "qty": _qty(row)}
+              for row in rows if row.item_code or row.description],
         pool=_sellable_pool(session, principal))
-    for ln, row in zip(lines, [r for r in rows if r.item_code]):
+    for ln, row in zip(lines, [r for r in rows if r.item_code or r.description]):
         rate = _net_rate(row)
         if rate is not None:
             ln.quoted, ln.priceSource = rate, "USER"

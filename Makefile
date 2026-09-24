@@ -91,7 +91,7 @@ test-frontend:
 
 # Deliberately outside `make verify`. It starts the API on a database of its
 # own, a Vite server and a browser — about fifteen seconds, against `verify`'s
-# four minutes of checks that need none of that. The gate stays something people
+# ten minutes of checks that need none of that. The gate stays something people
 # run without thinking about it; this is the one you run when you have touched
 # the quote screen, the login, or anything that decides what a role is sent.
 #

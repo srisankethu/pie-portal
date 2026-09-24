@@ -478,9 +478,14 @@ def test_an_erp_quote_can_be_picked_up_as_a_form_and_saved_as_a_revision(client,
     assert form["connectionId"] == COMPANY and form["company"] == "SLS Engineers"
     assert form["revisionOf"] == {"connection_id": COMPANY, "ref": "erp-1",
                                   "company": "SLS Engineers", "number": "SQ-1001"}
-    # The priced line, and not the freight line: a line naming no item is
-    # not something a catalogue can resolve, exactly as on the ERP page.
-    assert [ln["reqCode"] for ln in form["lines"]] == ["2001174"]
+    # Both lines. The freight line names no item, so it arrives under its
+    # description and reads as something the catalogue cannot resolve — on
+    # the form for the desk to decide, not dropped with nothing saying the
+    # original charged for it.
+    assert [ln["reqCode"] for ln in form["lines"]] == ["2001174", "Freight"]
+    freight = form["lines"][1]
+    assert freight["quoted"] == 500.0 and freight["supplyCode"] is None
+    assert freight["status"]["kind"] == "technical"
     ln = form["lines"][0]
     assert ln["reqQty"] == 10
     assert ln["quoted"] == 800.0, "the net rate the customer was asked for, not the list rate"
@@ -581,6 +586,57 @@ def test_a_quote_started_from_nothing_revises_nothing(client, owner):
     assert q["revisionOf"] is None
     form = client.post("/api/v1/quotes/form", json={}, headers=owner).json()
     assert form["revisionOf"] is None
+
+
+def test_a_customer_accepting_the_superseded_revision_still_decides_the_quote(client, owner):
+    """D2 leaves revision 1 live in the ERP until the desk voids it, so the
+    customer can accept it after revision 2 went out. The pointer and the
+    newest document both name revision 2, unrecorded — and the platform
+    read SENT while the ERP tab showed revision 1 accepted. A customer who
+    accepted any document this quote became has decided it: WON, from the
+    ERP, on every reader."""
+    from datetime import date
+
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteOutcomeStatus
+    from app.store import store
+
+    qid = _sent(client, owner, doc_id="est-r1", connection_id=COMPANY)
+    with client.Maker() as s:
+        quote_service.set_outcome(
+            s, ORG, quote_id=qid, status=QuoteOutcomeStatus.SENT,
+            quote_document_ref="est-r1", quote_document_connection_id=COMPANY,
+            customer_ref="Pitti")
+        s.commit()
+    client.post(f"/api/v1/quotes/{qid}/lines/L1/price", json={"price": 480}, headers=owner)
+    with client.Maker() as s:
+        draft = quote_workspace.load(s, ORG, qid)
+        quote_service.record_document(
+            s, ORG, quote_id=qid, external_system="zoho", connection_id=COMPANY,
+            number="EST-est-r2", document_id="est-r2", line_count=1, revision=2,
+            reference="QB-x-r2", fingerprint=store.priced_fingerprint(draft))
+        quote_service.set_outcome(
+            s, ORG, quote_id=qid, status=QuoteOutcomeStatus.SENT,
+            quote_document_ref="est-r2", quote_document_connection_id=COMPANY,
+            customer_ref="Pitti", repoint_from="est-r1")
+        # The sync then reads both: the old one accepted, the new one sent.
+        _erp_row(s, "est-r1", connection_id=COMPANY, status="accepted",
+                 outcome="WON", decided=date(2026, 9, 20))
+        _erp_row(s, "est-r2", connection_id=COMPANY, status="sent")
+        s.commit()
+
+    row = next(r for r in client.get("/api/v1/quotes", headers=owner).json()["quotes"]
+               if r["id"] == qid)
+    assert row["sent"]["number"] == "EST-est-r2", "the document the customer holds"
+    assert row["readiness"] == "WON", "and the quote is decided all the same"
+    with client.Maker() as s:
+        human = quote_service.get_outcome(s, ORG, qid)
+        record = quote_service.outcomes_of_record(s, ORG, [human])[qid]
+        assert (record.status.value, record.source.value) == ("WON", "ERP")
+        assert record.erp.external_ref == "est-r1", "decided by the document that was accepted"
+        old = s.query(models.QuoteDoc).filter_by(external_ref="est-r1").one()
+        erp_side = quote_service.erp_outcomes_of_record(s, ORG, [old])[old.quote_document_id]
+        assert (erp_side.status.value, erp_side.source.value) == ("WON", "ERP")
 
 
 # ── a quote belongs to the company whose catalogue priced it ────────────────

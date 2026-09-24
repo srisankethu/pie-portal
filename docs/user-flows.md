@@ -933,9 +933,10 @@ stock the last pull saw, each line carrying a "synced 12 Sep" chip because a
 figure from Tuesday's pull is Tuesday's figure; no list price, because the
 master holds none, so every line reads NO PRICE until a person prices it —
 never a guessed rate; `Create in …` refused by name; until that company's
-master has been synced at all, the refusing adapter, naming the gap. The
-quote still goes out either way: through the connector's writer where this
-platform has one (Business Central, Acumatica), or marked as sent.
+master has been synced at all, the refusing adapter, naming the gap — the
+quote can be marked as sent, and a send waits for the item ids a sync
+brings, because the connector's writer (Business Central, Acumatica) puts the
+master's id on every line.
 **Ends.** Lines land in the grid with per-line statuses (READY · READY-SUBST ·
 NO PRICE · NOT IN BOOKS · BOOKS OFFLINE · UNRESOLVED · AMBIGUOUS · PIE OFFLINE
 · CONFIRM READING) · 400 · modal cancelled.
@@ -1380,8 +1381,9 @@ alone.
 **Revise in PIE** on the ERP quote page (`POST /api/v1/quotes/from-erp`
 `{connection_id, ref}`) picks the document up here: a form — no number until
 it is saved — with the ERP quote's customer and company set and each of its
-item lines read through the ordinary intake (a line naming no item — freight,
-handling — is not a catalogue question and is left out), so a code the ERP wrote that the
+lines read through the ordinary intake (a line naming no item — freight,
+handling — arrives under its description and reads UNRESOLVED until the desk
+says what it is here), so a code the ERP wrote that the
 catalogue does not know arrives UNRESOLVED rather than trusted; each line is
 priced at the ERP's net rate for it, marked as a person's price. The form and
 the quote it becomes carry `revisionOf` — book, reference and the book's name
@@ -2116,7 +2118,7 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/quotes/field-definitions` | signed-in | The quote-level fields this organization asks for (built-in plus custom), which are required, for the builder to render |
 | POST | `/api/v1/quotes` | signed-in | Create a draft outright — customer optional and empty by default; number minted from the org's sequence (QB-0001…); stamped with the principal's organization_id. Not what "New quote" calls: see /quotes/form |
 | POST | `/api/v1/quotes/form` | signed-in | Open a blank quote form. **Creates no quote and mints no number** — a `quote_form_drafts` row scoped to the caller, in no listing, answering the Quote shape with `saved: false`. The company is still settled here |
-| POST | `/api/v1/quotes/from-erp` | signed-in | Pick up a quote the ERP raised as a form: its customer, company and item lines through the ordinary intake, priced at the ERP's net rate; `revisionOf` names the book, reference and number. 404 where the reader may not see the quote, as its lines are; 409 while its lines have not been read |
+| POST | `/api/v1/quotes/from-erp` | signed-in | Pick up a quote the ERP raised as a form: its customer, company and every line through the ordinary intake (a line naming no item arrives under its description), priced at the ERP's net rate; `revisionOf` names the book, reference and number. 404 where the reader may not see the quote, as its lines are; 409 while its lines have not been read |
 | POST | `/api/v1/quotes/form/{form_id}/save` | signed-in | Save the form: mint the number, write the quote, drop the form. The only place the builder creates a quote. Idempotent under a unique constraint, so a second click returns the quote the first made |
 | DELETE | `/api/v1/quotes/form/{form_id}` | signed-in | Throw an unsaved form away; nothing was ever written to the workspace. Idempotent — discarding one already gone answers ok |
 | DELETE | `/api/v1/quotes/{quote_id}` | signed-in | Remove an unsent draft; 409 once a document has been written for it. An unsaved form under the same id is discarded instead |

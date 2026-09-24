@@ -204,3 +204,34 @@ def test_sales_history_filed_under_the_item_is_read_for_its_sku(session):
     snap = load_snapshot(session, ORG, sales_for_customers=["c1"],
                          costs_for_products=[product.product_id])
     assert [s.product_id for s in snap.sales] == ["p_yc"]
+
+
+class _Books:
+    """One live-looking item whose name is also the code it was picked by."""
+
+    available = True
+
+    def get_item(self, code):
+        from app.zoho import ZohoItem
+        return ZohoItem(code="22000865", name="CNMG120408-UC-D2 YC0014",
+                        in_books=True, list_price=218.0, stock=20, cost=None,
+                        item_id="2263307000000277078")
+
+
+def test_an_item_picked_by_name_is_not_described_by_the_engines_status(monkeypatch):
+    """Picked by hand from the books search, whose code is the item's name, on
+    a line the engine never answered. The description used to fall back to the
+    request's, which on that line is the engine's status message — so the grid
+    read "CNMG120408-UC-D2 YC0014 / Awaiting PIE" under a chosen item."""
+    from app import store as store_module
+    monkeypatch.setattr(store_module.pie_service, "resolve",
+                        lambda text, *a, **k: _resolution(text, offline=True))
+    st = QuoteStore()
+    [ln] = st.build_lines([{"raw": "22000865 142", "code": "22000865", "qty": 142}],
+                          _Books(), connection_id=FOUR_U)
+    assert ln.reqDesc == "Awaiting PIE"
+
+    st.select_supply(ln, "CNMG120408-UC-D2 YC0014", _Books(), manual=True)
+
+    assert ln.supplyDesc != "Awaiting PIE"
+    assert ln.inBooks is True

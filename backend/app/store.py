@@ -1043,7 +1043,17 @@ class QuoteStore:
         if item is None:
             ln.inBooks = False
             return
-        ln.supplyDesc = item.name if item.name != ln.supplyCode else ln.reqDesc
+        # The request's description only where the supply *is* the request.
+        # For anything else ``reqDesc`` describes a different product — or,
+        # on a line the engine never answered, holds its status message: an
+        # item picked by name from the books search (code == name) was shown
+        # as "CNMG120408-UC-D2 YC0014 / Awaiting PIE".
+        if item.name != ln.supplyCode:
+            ln.supplyDesc = item.name
+        elif ln.supplyCode == ln.reqCode:
+            ln.supplyDesc = ln.reqDesc
+        else:
+            ln.supplyDesc = ""
         ln.inBooks = item.in_books
         ln.itemId = item.item_id
         ln.avail = item.stock

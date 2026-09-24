@@ -430,6 +430,99 @@ def test_a_mark_sent_on_top_of_an_erp_send_does_not_hide_the_erps_decision(clien
     assert platform_side.status.value == "WON" and platform_side.source.value == "ERP"
 
 
+# ── revise an ERP quote here ─────────────────────────────────────────────────
+
+def _erp_quote(client, *, ref: str, connection_id: str, customer_id: str,
+               customer: str) -> None:
+    """A quote the ERP raised: a discounted line the catalogue knows, and a
+    freight line naming no item."""
+    from datetime import date
+    from decimal import Decimal
+
+    with client.Maker() as s:
+        s.add(models.QuoteDoc(
+            organization_id=ORG, external_ref=ref, number="SQ-1001",
+            customer_id=customer_id, customer_ref=customer,
+            date=date(2026, 9, 1), source_status="sent", outcome="UNRECORDED",
+            total=Decimal("9300"), connector="zoho", connection_id=connection_id))
+        s.add(models.ErpQuoteLine(
+            organization_id=ORG, quote_ref=ref, external_ref=f"{ref}:l1",
+            line_number=0, item_code="2001174", description="Insert 2001174",
+            qty=Decimal("10"), unit="pcs", rate=Decimal("1000"),
+            # Discounted on the document: the customer was asked for 800 each.
+            amount=Decimal("8000"), connector="zoho", connection_id=connection_id))
+        s.add(models.ErpQuoteLine(
+            organization_id=ORG, quote_ref=ref, external_ref=f"{ref}:l2",
+            line_number=1, item_code="", description="Freight",
+            qty=Decimal("1"), unit="nos", rate=Decimal("500"),
+            amount=Decimal("500"), connector="zoho", connection_id=connection_id))
+        s.commit()
+
+
+@pytest.mark.requires_pie
+def test_an_erp_quote_can_be_picked_up_as_a_form_and_saved_as_a_revision(client, owner):
+    """The ERP's lines through the ordinary intake — resolved against this
+    company's catalogue, priced at what the customer was actually asked to
+    pay — into a form that says which quote it revises, and a quote that
+    still says so once saved."""
+    mine, _ = _two_companies(client)
+    _erp_quote(client, ref="erp-1", connection_id=COMPANY, customer_id=mine,
+               customer="Alpha Tools")
+
+    r = client.post("/api/v1/quotes/from-erp",
+                    json={"connection_id": COMPANY, "ref": "erp-1"}, headers=owner)
+    assert r.status_code == 200, r.text
+    form = r.json()
+    assert form["saved"] is False and form["number"] == ""
+    assert form["customer"] == "Alpha Tools" and form["customerId"] == mine
+    assert form["connectionId"] == COMPANY and form["company"] == "SLS Engineers"
+    assert form["revisionOf"] == {"connection_id": COMPANY, "ref": "erp-1",
+                                  "company": "SLS Engineers"}
+    # The priced line, and not the freight line: a line naming no item is
+    # not something a catalogue can resolve, exactly as on the ERP page.
+    assert [ln["reqCode"] for ln in form["lines"]] == ["2001174"]
+    ln = form["lines"][0]
+    assert ln["reqQty"] == 10
+    assert ln["quoted"] == 800.0, "the net rate the customer was asked for, not the list rate"
+    assert ln["priceSource"] == "USER", "somebody chose it in the ERP — not a rate nobody looked at"
+
+    saved = client.post(f"/api/v1/quotes/form/{form['id']}/save", headers=owner).json()
+    assert saved["saved"] is True and saved["number"] == "QB-0001"
+    assert saved["revisionOf"] == form["revisionOf"]
+    again = client.get(f"/api/v1/quotes/{saved['id']}", headers=owner).json()
+    assert again["revisionOf"]["ref"] == "erp-1"
+    assert again["lines"][0]["quoted"] == 800.0
+
+
+def test_a_quote_the_reader_may_not_see_cannot_be_picked_up(client, owner, sales):
+    """The 404 the lines endpoint gives, for the reason it gives it: whether
+    a reference exists in a book you cannot read is itself something you
+    should not learn — and a form built from it would be a copy of it."""
+    mine, _ = _two_companies(client)
+    _erp_quote(client, ref="erp-1", connection_id=COMPANY, customer_id=mine,
+               customer="Alpha Tools")
+    # Nobody assigned Alpha Tools to this salesperson.
+    r = client.post("/api/v1/quotes/from-erp",
+                    json={"connection_id": COMPANY, "ref": "erp-1"}, headers=sales)
+    assert r.status_code == 404, r.text
+    # A reference in another book, and one that names nothing, are the same 404.
+    r = client.post("/api/v1/quotes/from-erp",
+                    json={"connection_id": "cx_other", "ref": "erp-1"}, headers=owner)
+    assert r.status_code == 404, r.text
+    r = client.post("/api/v1/quotes/from-erp",
+                    json={"connection_id": COMPANY, "ref": "erp-none"}, headers=owner)
+    assert r.status_code == 404, r.text
+    with client.Maker() as s:
+        assert s.query(models.QuoteFormDraft).count() == 0, "a refusal opens no form"
+
+
+def test_a_quote_started_from_nothing_revises_nothing(client, owner):
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=owner).json()
+    assert q["revisionOf"] is None
+    form = client.post("/api/v1/quotes/form", json={}, headers=owner).json()
+    assert form["revisionOf"] is None
+
+
 # ── a quote belongs to the company whose catalogue priced it ────────────────
 
 def _two_companies(client) -> tuple[str, str]:

@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from .. import approvals, clock, enquiry, quote_fields, quote_workspace, resolution
 from ..authz import Principal, current_principal
 from ..commercial import policy as policy_service, quote_service
+from ..commercial.insight import quote_book
 from ..domain import models
 from ..domain.enums import QuoteDocumentChannel, QuoteDocumentWriteState, QuoteOutcomeStatus
 from ..domain.origin import Companies
@@ -38,10 +39,12 @@ from ..identity import service as identity_service
 from ..db import get_session
 from ..trust import audit
 from ..ingestion import connections as conn
+from .insight import _assigned_customer_ids
 from ..schemas import (
     CreateQuoteRequest,
     DiscountRequest,
     EstimateResponse,
+    FromErpRequest,
     IntakeRequest,
     SelectSupplyRequest,
     SetCustomCostRequest,
@@ -390,6 +393,92 @@ def _company_for_new_quote(session: Session, org: str,
     except quote_workspace.CompanyMismatch as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
     return company
+
+
+@router.post("/from-erp")
+def quote_from_erp(body: FromErpRequest,
+                   principal: Principal = Depends(current_principal),
+                   session: Session = Depends(get_session)):
+    """Pick up a quote the ERP raised and revise it here.
+
+    A form — not a quote; nothing is minted until the person saves — with the
+    ERP quote's customer and company already set and each of its lines read
+    through the ordinary intake: the code resolves against that company's
+    catalogue exactly as a pasted RFQ line would, so a code the ERP wrote
+    that the catalogue does not know arrives UNRESOLVED rather than trusted.
+    The rate is the ERP's net rate for the line, marked as a person's price
+    (``priceSource`` USER): somebody chose it in the ERP, and it is not the
+    catalogue's list rate that the "nobody has looked at this" chip is for.
+
+    **Visible through the book, or not at all.** The same 404 the lines and
+    the diagnosis endpoints give: a salesperson who may not read the quote may
+    not copy it, and whether a reference exists in a book they cannot see is
+    itself something they should not learn.
+
+    The form remembers which quote it revises (``revisionOf``), and the quote
+    it becomes on save keeps that — the builder says so above the lines and
+    the ERP page can show that a revision exists.
+    """
+    org = principal.organization_id
+    visible = [
+        q for q in quote_book.build(
+            session, org, customer_names={},
+            customer_ids=_assigned_customer_ids(session, principal),
+            companies=Companies(session, org))
+        if q.quote_document_ref == body.ref
+        and (q.origin or {}).get("connection_id") == body.connection_id
+    ]
+    if len(visible) != 1:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such quote")
+    source = visible[0]
+    # The customer has to belong to the company — it does, by construction,
+    # but the one function that decides what a company means for a new quote
+    # is the one that says so here too.
+    company = _company_for_new_quote(session, org, CreateQuoteRequest(
+        customer=source.customer_label, customer_id=source.customer_id,
+        connection_id=body.connection_id))
+    q = quote_workspace.create_form(
+        session, org, user_id=principal.user_id,
+        customer=source.customer_label, customer_id=source.customer_id,
+        connection_id=company,
+        source_erp={"connection_id": body.connection_id, "ref": body.ref})
+    rows = quote_book.lines_for(session, org, quote_ref=body.ref,
+                                connection_id=body.connection_id)
+    books = books_for_quote(q.id, principal, session)
+    lines = store.add_rfq(
+        q, "", books.zoho,
+        _customer_scope(session, principal, q.customer_ref),
+        _bands(session, principal), _mapping_store(session, principal),
+        rows=[{"raw": f"{row.item_code} x{_qty(row)}", "code": row.item_code,
+               "qty": _qty(row)}
+              for row in rows if row.item_code],
+        pool=_sellable_pool(session, principal))
+    for ln, row in zip(lines, [r for r in rows if r.item_code]):
+        rate = _net_rate(row)
+        if rate is not None:
+            ln.quoted, ln.priceSource = rate, "USER"
+    return _saved(session, principal, q)
+
+
+def _qty(row: Any) -> float | int:
+    """The ERP's quantity as the intake states one: a whole number where it
+    is whole, so "x10" reads as ten and not as ten-point-nought; one where
+    the line carries none, which is what a pasted line with no quantity gets."""
+    if row.qty is None:
+        return 1
+    q = Decimal(str(row.qty))
+    return int(q) if q == q.to_integral_value() else float(q)
+
+
+def _net_rate(row: Any) -> Optional[float]:
+    """What the ERP quoted per unit on this line — ``amount / qty`` where both
+    are there, else ``rate``; ``None`` where the line carries no price. The
+    same reading ``quote_diagnosis._net_unit_price`` makes, for the same
+    reason: on a discounting book ``rate`` is list, before the line's
+    discount, and the customer was asked to pay the net."""
+    if row.amount is not None and row.qty:
+        return float(Decimal(str(row.amount)) / Decimal(str(row.qty)))
+    return float(row.rate) if row.rate is not None else None
 
 
 # ── the unsaved form ─────────────────────────────────────────────────────────
@@ -1629,6 +1718,10 @@ def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
     # Owner, for the same reason the ERP page names its Book.
     out["company"] = (Companies(session, org).label_for(q.connectionId)
                       if q.connectionId else "")
+    if q.revisionOf:
+        out["revisionOf"] = {
+            **q.revisionOf,
+            "company": Companies(session, org).label_for(q.revisionOf["connection_id"])}
     newest = quote_service.latest_document(session, org, quote_id=q.id)
     unverified = (newest is not None and
                   newest.write_state == QuoteDocumentWriteState.UNVERIFIED.value)

@@ -11,7 +11,7 @@
 // 3. **Nothing can be edited, by anybody.** Not "the edit button is hidden from
 //    a salesperson" — there is no edit control for any role, because a change
 //    typed here would be overwritten by the next sync.
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -21,6 +21,7 @@ import type { PlatformSession } from "./platform/types";
 
 const listErpQuotes = vi.fn();
 const erpQuoteLines = vi.fn();
+const reviseErpQuote = vi.fn();
 
 vi.mock("./api", async () => {
   const actual = await vi.importActual<typeof import("./api")>("./api");
@@ -30,6 +31,7 @@ vi.mock("./api", async () => {
       ...actual.api,
       listErpQuotes: (...a: unknown[]) => listErpQuotes(...a),
       erpQuoteLines: (...a: unknown[]) => erpQuoteLines(...a),
+      reviseErpQuote: (...a: unknown[]) => reviseErpQuote(...a),
     },
   };
 });
@@ -159,7 +161,8 @@ beforeEach(() => {
   vi.stubGlobal("fetch", stubFetch());
 });
 afterEach(() => {
-  listErpQuotes.mockReset(); erpQuoteLines.mockReset(); vi.unstubAllGlobals();
+  listErpQuotes.mockReset(); erpQuoteLines.mockReset(); reviseErpQuote.mockReset();
+  vi.unstubAllGlobals();
 });
 
 describe("the quote", () => {
@@ -706,5 +709,48 @@ describe("the diagnosis", () => {
     expect(assessed).toBeNull();
     // And no claim that the check found nothing — it was never put the question.
     expect(screen.queryByText(/Nothing on this quote stood out/)).toBeNull();
+  });
+});
+
+
+// ── revise in PIE ───────────────────────────────────────────────────────────
+//
+// The button hands the server both halves of the pointer — an ERP reference
+// is unique only inside one connected book — and opens the form the server
+// made. It is not offered where this platform already holds a quote for the
+// document (that one is opened instead), nor where the book is unknown.
+describe("revising an ERP quote here", () => {
+  const ORIGIN = {
+    connector: "zoho", connector_label: "Zoho Books", connector_short: "Zoho",
+    icon: "zoho", connection_id: "cx_sls", company: "SLS Engineers",
+    external_id: REF, unknown: false,
+  };
+
+  function drawQualified(over: Partial<ErpQuote> = {}) {
+    listErpQuotes.mockResolvedValue({ quotes_listed: [quote({ origin: ORIGIN, ...over })] });
+    erpQuoteLines.mockResolvedValue(lines());
+    return render(
+      <MemoryRouter initialEntries={[`/quotes/erp/cx_sls/${REF}`]}>
+        <Routes>
+          <Route path="/quotes/erp/:connection/:ref"
+                 element={<ErpQuoteScreen session={session()} />} />
+          <Route path="/quotes/:id" element={<div>builder for {"f-1"}</div>} />
+        </Routes>
+      </MemoryRouter>);
+  }
+
+  it("posts the book and the reference, and opens the form", async () => {
+    reviseErpQuote.mockResolvedValue({ id: "f-1", saved: false });
+    drawQualified();
+    fireEvent.click(await screen.findByRole("button", { name: "Revise in PIE" }));
+    await waitFor(() => expect(reviseErpQuote).toHaveBeenCalledWith("tok", "cx_sls", REF));
+    expect(await screen.findByText("builder for f-1")).toBeInTheDocument();
+  });
+
+  it("is not offered where this platform already holds the quote", async () => {
+    drawQualified({ platform_quote: { quote_id: "q-9", number: "QB-0009" } });
+    expect(await screen.findByRole("button", { name: "Open in the Quote Builder" }))
+      .toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Revise in PIE" })).toBeNull();
   });
 });

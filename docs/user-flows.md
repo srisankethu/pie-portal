@@ -1376,6 +1376,19 @@ to Sandvik"), the Outcome chip reads the outcome of record with a tip naming
 who decided, and the tab's piles count that outcome rather than the ERP's word
 alone.
 
+**Revise in PIE** on the ERP quote page (`POST /api/v1/quotes/from-erp`
+`{connection_id, ref}`) picks the document up here: a form — no number until
+it is saved — with the ERP quote's customer and company set and each of its
+lines read through the ordinary intake, so a code the ERP wrote that the
+catalogue does not know arrives UNRESOLVED rather than trusted; each line is
+priced at the ERP's net rate for it, marked as a person's price. The form and
+the quote it becomes carry `revisionOf` — book, reference and the book's name
+— and the builder says "Revises SQ-1001 from Contoso" above the lines. Offered
+only where this platform holds no quote for the document already (that one is
+opened instead) and where the book is known: an ERP reference is unique only
+inside one, so the endpoint takes the company and 404s — as the lines do —
+where the reader may not see the quote.
+
 ### 8.4 Attribution: what PIE changed (`#/what-pie-changed`)
 
 **Trigger.** Nav (manager/owner); a salesperson's bookmarked URL gets a
@@ -2101,6 +2114,7 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/quotes/field-definitions` | signed-in | The quote-level fields this organization asks for (built-in plus custom), which are required, for the builder to render |
 | POST | `/api/v1/quotes` | signed-in | Create a draft outright — customer optional and empty by default; number minted from the org's sequence (QB-0001…); stamped with the principal's organization_id. Not what "New quote" calls: see /quotes/form |
 | POST | `/api/v1/quotes/form` | signed-in | Open a blank quote form. **Creates no quote and mints no number** — a `quote_form_drafts` row scoped to the caller, in no listing, answering the Quote shape with `saved: false`. The company is still settled here |
+| POST | `/api/v1/quotes/from-erp` | signed-in | Pick up a quote the ERP raised as a form: its customer, company and lines through the ordinary intake, priced at the ERP's net rate; `revisionOf` names the book and reference. 404 where the reader may not see the quote, as its lines are |
 | POST | `/api/v1/quotes/form/{form_id}/save` | signed-in | Save the form: mint the number, write the quote, drop the form. The only place the builder creates a quote. Idempotent under a unique constraint, so a second click returns the quote the first made |
 | DELETE | `/api/v1/quotes/form/{form_id}` | signed-in | Throw an unsaved form away; nothing was ever written to the workspace. Idempotent — discarding one already gone answers ok |
 | DELETE | `/api/v1/quotes/{quote_id}` | signed-in | Remove an unsent draft; 409 once a document has been written for it. An unsaved form under the same id is discarded instead |

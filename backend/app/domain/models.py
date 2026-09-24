@@ -2130,6 +2130,12 @@ class QuoteDraft(Base):
     customer_name: Mapped[str] = mapped_column(String(255), default="")
     #: Who started the draft. It is a shared workspace, so this attributes
     #: rather than scopes: a colleague may open, price and send it.
+    #: The ERP quote this one revises, where it was started from one —
+    #: ``POST /quotes/from-erp``. Both halves, because an ERP reference is
+    #: unique only inside the book that issued it (``w10qptr``). NULL is
+    #: "revises nothing", which every quote before ``x11qsrc`` is.
+    source_erp_connection_id: Mapped[Optional[str]] = mapped_column(String(64))
+    source_erp_quote_ref: Mapped[Optional[str]] = mapped_column(String(128))
     salesperson_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     #: Who last changed it, so the list can say "R. Nair, 10:42".
     updated_by_user_id: Mapped[Optional[str]] = mapped_column(String(64))
@@ -2210,6 +2216,12 @@ class QuoteFormDraft(Base):
     owner_user_id: Mapped[Optional[str]] = mapped_column(String(64), index=True)
     customer_id: Mapped[Optional[str]] = mapped_column(String(64))
     customer_name: Mapped[str] = mapped_column(String(255), default="")
+    #: The ERP quote this one revises, where it was started from one —
+    #: ``POST /quotes/from-erp``. Both halves, because an ERP reference is
+    #: unique only inside the book that issued it (``w10qptr``). NULL is
+    #: "revises nothing", which every quote before ``x11qsrc`` is.
+    source_erp_connection_id: Mapped[Optional[str]] = mapped_column(String(64))
+    source_erp_quote_ref: Mapped[Optional[str]] = mapped_column(String(128))
     #: Decided when the form is opened, for the same reason ``QuoteDraft``
     #: decides it at creation: every line on one quote resolves against one
     #: company's catalogue.

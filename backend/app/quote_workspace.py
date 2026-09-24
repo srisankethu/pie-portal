@@ -75,6 +75,13 @@ def format_number(sequence: int) -> str:
 
 
 # ── create ───────────────────────────────────────────────────────────────────
+def _pointer(connection_id: Optional[str], ref: Optional[str]) -> Optional[dict[str, str]]:
+    """The ``revisionOf`` a row's two columns amount to — both or neither."""
+    if not ref or not connection_id:
+        return None
+    return {"connection_id": connection_id, "ref": ref}
+
+
 def create(session: Session, org: str, *, user_id: Optional[str],
            customer: str = "", customer_id: Optional[str] = None,
            connection_id: Optional[str] = None) -> Quote:
@@ -88,15 +95,21 @@ def create(session: Session, org: str, *, user_id: Optional[str],
     """
     return _mint(session, org, user_id=user_id, customer=customer,
                  customer_id=customer_id, connection_id=connection_id,
-                 lines=[], fields={}, form_draft_id=None, updated_by=user_id)
+                 lines=[], fields={}, form_draft_id=None, updated_by=user_id,
+                 source_erp=None)
 
 
 def _mint(session: Session, org: str, *, user_id: Optional[str],
           customer: str, customer_id: Optional[str],
           connection_id: Optional[str], lines: list[dict[str, Any]],
           fields: dict[str, Any], form_draft_id: Optional[str],
-          updated_by: Optional[str]) -> Quote:
+          updated_by: Optional[str],
+          source_erp: Optional[dict[str, str]]) -> Quote:
     """Write the quote row, number and all. The one place a number is minted.
+
+    ``source_erp`` is the ERP quote this one revises — carried from the form
+    it was promoted from, or ``None``. Written here and never again: which
+    document a quote started from is a fact about its birth.
 
     Two callers: ``create`` starts an empty quote directly, and ``save_form``
     promotes a form somebody has filled in. They differ in what the row carries
@@ -119,6 +132,8 @@ def _mint(session: Session, org: str, *, user_id: Optional[str],
             # another tenant's ``QB-0042`` either.
             reference=f"{format_number(seq)}-{uuid.uuid4().hex[:8]}",
             form_draft_id=form_draft_id,
+            source_erp_connection_id=(source_erp or {}).get("connection_id"),
+            source_erp_quote_ref=(source_erp or {}).get("ref"),
             lines=list(lines), fields=dict(fields),
             created_at=clock.now(), updated_at=clock.now())
         try:
@@ -318,7 +333,8 @@ def _to_quote(row: models.QuoteDraft) -> Quote:
         lines=[Line.from_state(state) for state in (row.lines or [])],
         savedAt=clock.iso(row.updated_at),
         ownerId=row.salesperson_id, fields=dict(row.fields or {}),
-        saved=True)
+        saved=True,
+        revisionOf=_pointer(row.source_erp_connection_id, row.source_erp_quote_ref))
 
 
 # ── the unsaved form ─────────────────────────────────────────────────────────
@@ -333,8 +349,12 @@ def _to_quote(row: models.QuoteDraft) -> Quote:
 # to a salesperson or carry none at all, and §1 refuses both.
 def create_form(session: Session, org: str, *, user_id: Optional[str],
                 customer: str = "", customer_id: Optional[str] = None,
-                connection_id: Optional[str] = None) -> Quote:
+                connection_id: Optional[str] = None,
+                source_erp: Optional[dict[str, str]] = None) -> Quote:
     """Open a blank form. No number is minted and no quote exists yet.
+
+    ``source_erp`` names the ERP quote the form revises, where it was opened
+    from one; the pointer rides the form into the quote ``save_form`` mints.
 
     Collects this person's abandoned *empty* forms on the way through — a tab
     closed on an untouched form leaves a row nothing will ever discard, and one
@@ -354,6 +374,8 @@ def create_form(session: Session, org: str, *, user_id: Optional[str],
         owner_user_id=user_id,
         customer_id=(customer_id or None), customer_name=(customer or "").strip(),
         connection_id=connection_id,
+        source_erp_connection_id=(source_erp or {}).get("connection_id"),
+        source_erp_quote_ref=(source_erp or {}).get("ref"),
         lines=[], fields={}, created_at=clock.now(), updated_at=clock.now())
     session.add(row)
     session.flush()
@@ -425,7 +447,9 @@ def save_form(session: Session, org: str, form_id: str,
     quote = _mint(session, org, user_id=owner, customer=customer,
                   customer_id=customer_id, connection_id=connection_id,
                   lines=lines, fields=fields, form_draft_id=form_id,
-                  updated_by=user_id)
+                  updated_by=user_id,
+                  source_erp=_pointer(row.source_erp_connection_id,
+                                      row.source_erp_quote_ref))
     session.delete(row)
     session.flush()
     return quote
@@ -477,7 +501,8 @@ def _to_unsaved(row: models.QuoteFormDraft) -> Quote:
         customerId=row.customer_id or None, reference="",
         lines=[Line.from_state(state) for state in (row.lines or [])],
         savedAt=None, ownerId=row.owner_user_id,
-        fields=dict(row.fields or {}), saved=False)
+        fields=dict(row.fields or {}), saved=False,
+        revisionOf=_pointer(row.source_erp_connection_id, row.source_erp_quote_ref))
 
 
 # ── ownership ────────────────────────────────────────────────────────────────

@@ -477,6 +477,11 @@ export interface Quote {
    *  three-company desk can see the two agree. Empty where nothing is
    *  connected. */
   company: string;
+  /** The ERP quote this one was started from ("Revise in PIE" on the ERP
+   *  page), or null for a quote that revises nothing. Both halves of the
+   *  pointer, because an ERP reference is unique only inside one book, and
+   *  the book's name so the banner can say it. */
+  revisionOf: { connection_id: string; ref: string; company: string } | null;
   number: string;
   /** Whether a quote exists for this yet.
    *

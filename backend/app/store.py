@@ -685,6 +685,11 @@ class Quote:
     #: the mistake CLAUDE.md §1 records against ``_identity_candidate``.
     #: Defaults True so every quote built any other way is unchanged.
     saved: bool = True
+    #: The ERP quote this one was started from, as ``{"connection_id", "ref"}``
+    #: — set once, at creation, by the row that says so; ``None`` for a quote
+    #: that revises nothing. The company's *name* is added by the router,
+    #: which has a session; this object does not.
+    revisionOf: Optional[Dict[str, str]] = None
 
     @property
     def customer_ref(self) -> str:
@@ -772,6 +777,9 @@ class Quote:
             # catalogue that produced it — the screen says which one, rather
             # than leaving the reader to assume there is only ever one.
             "connectionId": self.connectionId,
+            # Which ERP quote this revises, if any — the builder says so above
+            # the lines, and the ERP page shows the revision exists.
+            "revisionOf": dict(self.revisionOf) if self.revisionOf else None,
             # Shown so that when a send fails in a way nobody can resolve from
             # here, the person has the string to search for in Zoho.
             "reference": self.reference,

@@ -263,6 +263,15 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   // a win: a decline the ERP recorded still wants a reason, which the ERP
   // cannot hold. Scoped by the server the way the worklist is.
   const canRecord = !quote.recorded && erpOutcome(quote) !== "WON";
+  // Offered where this platform holds no quote for the document yet — one
+  // it does hold is opened, above — and where the book is known: the server
+  // refuses a bare reference, because two connected books can both hold it.
+  const canRevise = !quote.platform_quote && Boolean(quote.origin?.connection_id);
+  const revise = async () => {
+    const form = await api.reviseErpQuote(
+      session.token, quote.origin!.connection_id!, quote.quote_document_ref);
+    navigate(pathFor("quotes", form.id));
+  };
   const fields = Object.entries(attributes).filter(
     ([key]) => !(SUPERSEDED_BY[key] && attributes[SUPERSEDED_BY[key]]));
   const heading = (t: string) => (
@@ -287,6 +296,12 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
               <Button size="small" variant="outlined" sx={TOUCH}
                       onClick={() => setRecording(true)}>
                 Record outcome
+              </Button>
+            )}
+            {canRevise && (
+              <Button size="small" variant="outlined" sx={TOUCH}
+                      onClick={() => { void revise(); }}>
+                Revise in PIE
               </Button>
             )}
           </Stack>

@@ -123,6 +123,18 @@ export const api = {
                              connection_id: connectionId ?? null }),
     }, t),
 
+  /** Pick up a quote the ERP raised, as a form: its customer, its company
+   *  and its lines read through the ordinary intake, priced at what the
+   *  customer was actually asked to pay. **Creates no quote** — the form is
+   *  saved like any other, and the quote it becomes remembers which ERP
+   *  quote it revises (`Quote.revisionOf`). 404 where the reader may not see
+   *  the quote, exactly as its lines are. */
+  reviseErpQuote: (t: string, connectionId: string, ref: string) =>
+    req<Quote>("/api/v1/quotes/from-erp", {
+      method: "POST",
+      body: JSON.stringify({ connection_id: connectionId, ref }),
+    }, t),
+
   /** Save the form: the quote is created here and nowhere else.
    *
    *  Idempotent on the server under a unique constraint, so a double-click or a

@@ -1047,6 +1047,18 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
         </Alert>
       )}
 
+      {/* Which ERP quote this one was started from. Not dismissible for the
+          reason the banner below is not: it is a fact about the quote, and the
+          one the desk needs when the customer asks which quotation this
+          replaces. */}
+      {quote.revisionOf && (
+        <Alert severity="info" sx={{ mb: 2 }}>
+          <AlertTitle>Revises {quote.revisionOf.ref} from {quote.revisionOf.company}</AlertTitle>
+          The lines and prices came from that quote and were resolved against
+          this company's catalogue again. Nothing here changes the original.
+        </Alert>
+      )}
+
       {/* This is a form, not a quote yet. Said out loud, with the button that
           changes it, because every other screen in this product treats a quote
           as something the whole desk can see — and until this is saved, nobody

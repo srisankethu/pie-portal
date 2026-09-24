@@ -327,6 +327,11 @@ export interface QuoteDraftSummary {
      *  another way, and `number` is empty. Optional only so older fixtures
      *  need not build it; the server always sends it. */
     channel?: "ERP" | "MANUAL";
+    /** Which send this is: 1 for the first, 2 and up for an amendment re-sent
+     *  under a new reference. The server sends it on every sent row; it was
+     *  undeclared here, and the contract check only ever saw a list with no
+     *  sent draft in it. */
+    revision: number;
     /** What the ERP says about the same document, once synced. */
     erp: ErpSide | null;
   } | null;

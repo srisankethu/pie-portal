@@ -443,7 +443,8 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
           Dismissal and "review the price" are both absent, and neither is an
           oversight: nothing here was recorded, so there is no diagnosis to
           dismiss, and an issued document cannot be re-priced from this screen. */}
-      <ErpQuoteDiagnosis quote={quote} lines={lines} token={session.token} />
+      <ErpQuoteDiagnosis quote={quote} lines={lines} token={session.token}
+                         connectionId={connection || quote.origin?.connection_id || null} />
 
       <ErpQuoteSummary quote={quote} lines={lines} />
     </Box>
@@ -455,12 +456,17 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
  *  A component rather than three lines inline because the hook must not run
  *  until the quote is loaded — `ErpQuoteScreen` returns early on four states
  *  before it has one, and a hook cannot live behind an early return. */
-function ErpQuoteDiagnosis({ quote, lines, token }: {
+function ErpQuoteDiagnosis({ quote, lines, token, connectionId }: {
   quote: ErpQuote; lines?: ErpQuoteLines; token: string;
+  connectionId: string | null;
 }) {
   const held = lines?.lines ?? [];
+  // Qualified by the company the page was opened with. The hook took this
+  // argument when the route did and no caller passed it, so the one request
+  // on this screen that was still unqualified was the diagnosis — which
+  // 404s exactly when the qualifier matters, two books sharing a reference.
   const diagnosis = useErpQuoteDiagnosis(
-    quote.quote_document_ref, held.length > 0, token);
+    quote.quote_document_ref, held.length > 0, token, connectionId);
   const dismissReasons = useDismissReasons(token);
 
   // Nothing to ask about. The breakdown has not been read, or no line on it

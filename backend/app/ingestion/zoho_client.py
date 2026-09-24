@@ -1066,9 +1066,21 @@ class ZohoApiSource(ZohoTransport):
         # book, and treating the part it missed as deleted would destroy real
         # history on a bad network day.
         self.listing_complete: set[str] = set()
+        # Paths whose listing hit ``ZOHO_MAX_PAGES`` with more pages behind it.
+        # A capped generator ends exactly like a finished one — the ``for``
+        # simply runs out — so without this the two were indistinguishable to
+        # the code that marks a listing complete, and the deletion sweep then
+        # read every document past the cap as one Zoho had deleted. The
+        # warning below was the only witness, and a log line is not a guard.
+        self.truncated: set[str] = set()
 
     def _paginate(self, path: str, key: str, **params: Any) -> Iterator[dict[str, Any]]:
-        """Yield every record across pages, bounded by ZOHO_MAX_PAGES."""
+        """Yield every record across pages, bounded by ZOHO_MAX_PAGES.
+
+        Reaching the cap is recorded in ``truncated`` rather than only logged:
+        the two listing-complete sites consult it, because a listing that was
+        cut off at page N is not evidence about anything on page N+1.
+        """
         for page in range(1, settings.ZOHO_MAX_PAGES + 1):
             body = self._get(path, page=page, per_page=settings.ZOHO_PAGE_SIZE, **params)
             rows = body.get(key) or []
@@ -1077,8 +1089,11 @@ class ZohoApiSource(ZohoTransport):
             ctx = body.get("page_context") or {}
             if not ctx.get("has_more_page") or not rows:
                 return
+        self.truncated.add(path)
         log.warning("zoho %s: stopped at the ZOHO_MAX_PAGES limit (%d) — raise it if "
-                    "the account has more history than that.", path, settings.ZOHO_MAX_PAGES)
+                    "the account has more history than that. This listing is NOT "
+                    "treated as complete, so nothing past the cap is retired.",
+                    path, settings.ZOHO_MAX_PAGES)
 
 
     # ── pulls (the ZohoSource protocol) ──────────────────────────────────────
@@ -1522,7 +1537,10 @@ class ZohoApiSource(ZohoTransport):
         # only what changed, so the set of ids it produced says nothing about
         # what Zoho no longer holds, and letting the deletion sweep read it as
         # authoritative would delete the entire unchanged book.
-        if not stopped_early:
+        # And not when the paginator hit its cap: a listing cut off at page N
+        # says nothing about page N+1, and marking it complete would let the
+        # sweep retire everything it never reached.
+        if not stopped_early and path not in self.truncated:
             self.listing_complete.add(kind)
 
     def list_invoices(self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:
@@ -2091,9 +2109,12 @@ class ZohoApiSource(ZohoTransport):
         # abandoned by an exception or by the consumer breaking out early —
         # the guard ``_mirror`` needs before it may read absence as deletion.
         # This listing is never incremental (it sorts on ``date`` and has no
-        # high-water short circuit), so reaching the end always means the
-        # whole window was seen.
-        self.listing_complete.add("quote")
+        # high-water short circuit), so reaching the end means the whole
+        # window was seen — unless the paginator hit ``ZOHO_MAX_PAGES``, which
+        # ends the loop the same way and is the one case this must not read
+        # as "seen everything".
+        if "estimates" not in self.truncated:
+            self.listing_complete.add("quote")
 
     def list_vendor_payments(
             self, skip: Optional[SkipPredicate] = None) -> Iterable[dict[str, Any]]:

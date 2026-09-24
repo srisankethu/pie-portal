@@ -564,7 +564,13 @@ export interface SyncRun {
   notes: {
     demo_data_removed?: Record<string, number>;
     commercial?: Record<string, unknown>;
-    quotes?: { read?: number; lines?: number; undated_decisions?: number };
+    quotes?: { read?: number; lines?: number; undated_decisions?: number;
+               unreadable_view_stamps?: number };
+    /** What the deletion sweep removed this run, by document kind. Absent when
+     *  nothing was — which is the ordinary run. A retired quote leaves any
+     *  loss reason a person recorded against it dangling, so this is the
+     *  number that says how often that happened. */
+    retired?: Record<string, number>;
   };
 }
 

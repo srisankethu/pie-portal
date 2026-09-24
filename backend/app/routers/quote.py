@@ -546,17 +546,22 @@ def set_customer(quote_id: str, body: SetCustomerRequest,
     # as removing a sent quote is (decision D4): a different customer is a new
     # quote. Choosing the same customer again is not a change and still
     # re-resolves the lines.
+    #
+    # ``latest_document``, not ``latest_written_document`` — the same read the
+    # delete guard makes, for the same reason. An UNVERIFIED send may have
+    # landed, and the next press retries it under the *same reference*: every
+    # writer's pre-flight matches on that reference alone, so a quote moved
+    # to another customer in between would either adopt the first customer's
+    # document as its own or file a second one under that reference in the
+    # new customer's book. A row the source did not confirm still fences the
+    # customer, in the sentence that says what to settle first.
     changing = (body.customer_id or None) != (q.customerId or None) or (
         not body.customer_id and body.customer.strip() != q.customer)
-    written = quote_service.latest_written_document(
+    newest = quote_service.latest_document(
         session, principal.organization_id, quote_id=quote_id)
-    if changing and written is not None:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"This quote was sent to {q.customer} as "
-            f"{conn.system_label_for(written.external_system)} "
-            f"{written.external_document_number}, which sits on their account "
-            f"there. Start a new quote for another customer.")
+    if changing and newest is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            _customer_fenced_by(q, newest))
     q.customer, q.customerId = body.customer.strip(), body.customer_id or None
     quote_workspace.save(session, q, principal.user_id)
     books = books_for_quote(quote_id, principal, session)
@@ -1686,6 +1691,31 @@ def _send_capability(session: Session, org: str, q: Quote) -> tuple[bool, Option
 #: your books", "Create quote").
 _NO_SYSTEM = {"system": "", "systemLabel": "your books", "systemShort": "books",
               "documentTerm": "quote"}
+
+
+def _customer_fenced_by(q: Quote, newest: models.QuoteDocument) -> str:
+    """Why the customer on this quote cannot change, from the row that says so.
+
+    Three rows, three sentences, and the one that reads the number is the only
+    one that has a number to read. A MANUAL row records that a person said the
+    quote went out — no document id, an empty number — and the first wording
+    named "Zoho Books " followed by nothing, asserting a ledger entry that was
+    never written on the strength of a row that says in as many words that
+    nothing was.
+    """
+    label = conn.system_label_for(newest.external_system)
+    if newest.write_state == QuoteDocumentWriteState.UNVERIFIED.value:
+        return (f"A send of this quote is unverified — look for reference "
+                f"{newest.reference} in {label} first. Until that is settled "
+                f"the quote stays with {q.customer}: the next Send retries "
+                f"under that reference, and a document may already sit on "
+                f"their account there.")
+    if newest.channel == QuoteDocumentChannel.MANUAL.value:
+        return (f"This quote was marked as sent to {q.customer}, so it stays "
+                f"theirs. Start a new quote for another customer.")
+    return (f"This quote was sent to {q.customer} as {label} "
+            f"{newest.external_document_number}, which sits on their account "
+            f"there. Start a new quote for another customer.")
 
 
 def _system_words(connector: str) -> dict[str, str]:

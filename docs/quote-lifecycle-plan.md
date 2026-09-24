@@ -216,7 +216,7 @@ ERP-raised quote, pointing at the newest document through
 | Table | Owns | Never holds |
 |---|---|---|
 | `quote_drafts` | the quote as the desk built it: lines with cost, fields, owner, catalogue company, number, reference | any status (readiness stays derived) |
-| `quote_documents` | one row per send or manual send: system, **company** (new), ERP id and number, **revision** (new), reference actually sent, fingerprint of lines, **header fingerprint** (new), **channel** ERP/MANUAL (new), **write state** WRITTEN/UNVERIFIED (new), policy version | anything a later event changes — it is append-only history |
+| `quote_documents` | one row per send or manual send: system, **company** (new), ERP id and number, **revision** (new), reference actually sent, fingerprint of lines, ~~header fingerprint~~ (planned, then dropped — see Phase 2), **channel** ERP/MANUAL (new), **write state** WRITTEN/UNVERIFIED (new), policy version | anything a later event changes — it is append-only history |
 | `quote_outcomes` | what a person knows: DRAFT/SENT/WON/LOST, loss reason, who won, note; the document it is about, **qualified by company** (new) | anything the sync could rewrite |
 | `erp_quotes` / `erp_quote_lines` | the ERP's own view, verbatim status and the sync's classification, from every connector that reads quotes | a human fact, a PIE id, a status the platform decided |
 

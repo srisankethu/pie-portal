@@ -34,7 +34,7 @@ import pytest
 # The quote endpoints, their seeded database and the two role headers already
 # exist next door. A third copy of that fixture is exactly the responsibility
 # duplication CLAUDE.md §2 asks to prevent, so this imports them.
-from test_quote_flow import client, mgmt_hdr, sales_hdr  # noqa: F401
+from test_quote_flow import _clean_quote, client, mgmt_hdr, sales_hdr  # noqa: F401
 
 TYPES_TS = Path(__file__).resolve().parents[2] / "frontend" / "src" / "types.ts"
 
@@ -261,8 +261,18 @@ def test_the_workspace_list_matches_the_draft_summary_interface(client, mgmt_hdr
     document, which is exactly the kind of addition that drifts."""
     client.post("/api/v1/quotes", json={"customer": "Pitti Engineering"},
                 headers=mgmt_hdr)
+    # And one that has been sent, because the list used to be checked with
+    # no sent row in it and ``sent`` is where the drift was: the server put
+    # ``revision`` on every sent row and the interface never declared it, and
+    # this test passed the whole time because nothing it listed had been sent.
+    sent_id = _clean_quote(client, mgmt_hdr)
+    est = client.post(f"/api/v1/quotes/{sent_id}/estimate", headers=mgmt_hdr).json()
+    assert est["ok"] is True, est
     rows = client.get("/api/v1/quotes", headers=mgmt_hdr).json()["quotes"]
     assert rows, "no rows to check the contract against"
+    assert any(r["sent"] is not None for r in rows), (
+        "the list holds no sent row, so the half of the shape that drifts "
+        "was not checked")
     for row in rows:
         assert_matches(row, "QuoteDraftSummary", types)
 

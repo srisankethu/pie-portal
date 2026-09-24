@@ -215,7 +215,8 @@ def assess_erp_quote(quote_ref: str,
         if row.item_code and _net_unit_price(row) is not None
     ]
     return _diagnose(session, principal, quote_id=quote_ref, lines=lines,
-                     as_of=quote.raised_on, record=False)
+                     as_of=quote.raised_on, record=False,
+                     connection_id=connection or None)
 
 
 def _net_unit_price(row: Any) -> Optional[Decimal]:
@@ -243,7 +244,8 @@ def _net_unit_price(row: Any) -> Optional[Decimal]:
 
 
 def _diagnose(session: Session, principal: Principal, *, quote_id: str,
-              lines: list[LineIn], as_of: date, record: bool) -> dict[str, Any]:
+              lines: list[LineIn], as_of: date, record: bool,
+              connection_id: Optional[str] = None) -> dict[str, Any]:
     """The engine loop, shared by the two endpoints that run it.
 
     Extracted when the ERP quote page needed the same pass over the same engine
@@ -285,7 +287,13 @@ def _diagnose(session: Session, principal: Principal, *, quote_id: str,
             knowable_by=knowable_by, th=th,
             segment=service.segment_roster(session, principal.organization_id,
                                            line.customer_id),
-            backfill_before=cutover)
+            backfill_before=cutover,
+            # The book the caller opened, where it named one. Without it the
+            # engine's source read falls back to picking a winner among the
+            # connected companies holding this reference — the guess the
+            # qualifier on this endpoint exists to remove, and one that the
+            # 404 guard above has already resolved correctly for the lines.
+            connection_id=connection_id)
         stored = (service.record(session, principal.organization_id,
                                  quote_id=quote_id, result=result)
                   if record else None)

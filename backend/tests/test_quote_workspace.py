@@ -439,6 +439,62 @@ def test_changing_to_a_customer_from_another_company_is_refused(client, owner):
     assert ok.json()["customerId"] == mine
 
 
+def test_the_customer_cannot_change_while_a_send_is_unverified(client, owner):
+    """The delete guard reads ``latest_document`` and refuses on an UNVERIFIED
+    row; the customer guard read ``latest_written_document`` and let one
+    through. The retry that row exists for runs under the *same reference*,
+    and every writer's pre-flight matches on that reference alone — so a
+    quote moved to another customer in between either adopts the first
+    customer's document as its own or files a second one under its reference
+    in the new customer's book. Same read as the delete guard, same refusal,
+    the sentence that says what to settle first."""
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteDocumentWriteState
+    from app.store import store
+
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=owner).json()
+    _seed_lines(client, q["id"], _line("L1"))
+    with client.Maker() as s:
+        draft = quote_workspace.load(s, ORG, q["id"])
+        quote_service.record_document(
+            s, ORG, quote_id=q["id"], external_system="zoho", number="",
+            document_id=None, line_count=1, reference=q["reference"],
+            fingerprint=store.priced_fingerprint(draft),
+            write_state=QuoteDocumentWriteState.UNVERIFIED)
+        s.commit()
+    assert _readiness(client, owner, q["id"]) == "UNVERIFIED_SEND"
+
+    moved = client.put(f"/api/v1/quotes/{q['id']}/customer",
+                       json={"customer": "Beta Works"}, headers=owner)
+    assert moved.status_code == 409, moved.text
+    assert q["reference"] in moved.json()["detail"]
+    assert "unverified" in moved.json()["detail"].lower()
+    # The two guards agree about the row, and the same customer is no change.
+    assert client.delete(f"/api/v1/quotes/{q['id']}", headers=owner).status_code == 409
+    same = client.put(f"/api/v1/quotes/{q['id']}/customer",
+                      json={"customer": "Pitti"}, headers=owner)
+    assert same.status_code == 200, same.text
+    assert client.get(f"/api/v1/quotes/{q['id']}", headers=owner).json()["customer"] == "Pitti"
+
+
+def test_a_quote_marked_as_sent_keeps_its_customer_without_naming_a_document(client, owner):
+    """A MANUAL row has no document id and an empty number. The refusal used
+    to read "sent to Pitti as Zoho Books , which sits on their account there"
+    — a ledger entry asserted on the strength of a row whose own response said
+    nothing was written."""
+    q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=owner).json()
+    _seed_lines(client, q["id"], _line("L1"))
+    marked = client.post(f"/api/v1/quotes/{q['id']}/mark-sent", headers=owner).json()
+    assert marked["ok"] is True, marked
+
+    moved = client.put(f"/api/v1/quotes/{q['id']}/customer",
+                       json={"customer": "Beta Works"}, headers=owner)
+    assert moved.status_code == 409, moved.text
+    detail = moved.json()["detail"]
+    assert "marked as sent" in detail and "Pitti" in detail
+    assert "Zoho Books" not in detail and " ," not in detail
+
+
 def test_a_customer_with_no_recorded_company_is_not_refused_here(client, owner):
     """Provenance not recorded is ``book_for_customer``'s question, at the send."""
     with client.Maker() as s:

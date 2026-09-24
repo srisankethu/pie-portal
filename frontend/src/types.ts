@@ -698,6 +698,13 @@ export interface QuoteOutcome {
    *  quote the platform priced and never pushed. Both non-null is normal and
    *  means one estimate, priced here and raised there. */
   quote_document_ref: string | null;
+  /** Whose quote the row says it is — the name it was recorded against and
+   *  the platform id where one was resolved. Sent by the server and read by
+   *  nothing in the browser yet; declared because the contract check reads
+   *  both directions, and a field the server sends that the browser does not
+   *  name is indistinguishable from a rename. */
+  customer_ref: string;
+  customer_id: string | null;
   status: QuoteOutcomeStatus;
   note: string | null;
   /** Null is the NOT_RECORDED bucket: a loss decided before the vocabulary

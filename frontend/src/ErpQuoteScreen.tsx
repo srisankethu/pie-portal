@@ -268,9 +268,15 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   // refuses a bare reference, because two connected books can both hold it.
   const canRevise = !quote.platform_quote && Boolean(quote.origin?.connection_id);
   const revise = async () => {
-    const form = await api.reviseErpQuote(
-      session.token, quote.origin!.connection_id!, quote.quote_document_ref);
-    navigate(pathFor("quotes", form.id));
+    try {
+      const form = await api.reviseErpQuote(
+        session.token, quote.origin!.connection_id!, quote.quote_document_ref);
+      navigate(pathFor("quotes", form.id));
+    } catch (e) {
+      // The server's own sentence, on the page — a refusal that only reached
+      // the console would leave a button that does nothing.
+      setError(e instanceof Error ? e.message : String(e));
+    }
   };
   const fields = Object.entries(attributes).filter(
     ([key]) => !(SUPERSEDED_BY[key] && attributes[SUPERSEDED_BY[key]]));

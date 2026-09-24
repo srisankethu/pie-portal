@@ -57,6 +57,7 @@ from ..db import get_session
 # answers to "whose book is this" in one file, and a second copy here would be
 # a third — on the path that decides whether somebody sees a quote at all.
 from .insight import _assigned_customer_ids
+from .quote_intelligence import _NO_SUCH_PLATFORM_QUOTE, _holds_platform_quote
 from ..domain import models
 
 router = APIRouter(prefix="/api/v1/quote-diagnosis", tags=["quote-diagnosis"])
@@ -327,6 +328,17 @@ def for_quote(quote_id: str,
     """
     rows = service.for_quote(session, principal.organization_id,
                              quote_id=quote_id)
+    # Scoped as ``quote_intelligence.quote_audit`` is, with the same 404 for
+    # "not yours" and "not there". Org-scoped alone this route answered for
+    # any id in the book — the account each card names, the quantities and
+    # the quoted prices — while an unknown id answered ``lines: []``, which
+    # is the enumeration that sentence exists to withhold. The stored rows'
+    # own customers count as attribution here: they are what the reader was
+    # shown, and a quote assessed but never snapshotted has no other trail.
+    if not _holds_platform_quote(session, principal, quote_id,
+                                 when_unattributed=False,
+                                 also=[row.customer_id for row in rows]):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _NO_SUCH_PLATFORM_QUOTE)
     th = load_for_org(session, principal.organization_id)
     return {"quote_id": quote_id,
             **_quote_level([_stored_facts(row) for row in rows], principal, th,

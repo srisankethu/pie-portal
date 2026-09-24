@@ -91,6 +91,24 @@ describe("the send button", () => {
     expect(screen.getByRole("button", { name: /Already sent/ })).toBeDisabled();
   });
 
+  it("says the sent document is behind the screen, and offers the amendment", () => {
+    // `current` is the server's comparison of the priced content against the
+    // document's fingerprint. False, the chip must not imply the customer
+    // holds what is on screen, and the one verb becomes "Send amendment".
+    const stale = {
+      number: "EST-0002", lineCount: 1, revision: 1, channel: "ERP" as const,
+      current: false, system: "zoho", systemLabel: "Zoho Books",
+      documentTerm: "estimate", erp: null,
+    };
+    const { onCreateEstimate } = show([], null, { estimate: stale });
+    expect(screen.getByText(/amended since/)).toBeInTheDocument();
+    const send = screen.getByRole("button", { name: "Send amendment to Zoho Books" });
+    expect(send).toBeEnabled();
+    fireEvent.click(send);
+    expect(onCreateEstimate).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: /Already sent/ })).toBeNull();
+  });
+
   it("tells the next person to look for an unverified send before sending again", () => {
     /* The reply was lost and the re-read failed. The sentence used to live
        only in the reply to the press, so the person who closed the tab was

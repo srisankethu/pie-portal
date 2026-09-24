@@ -564,3 +564,29 @@ def test_a_salesperson_still_cannot_walk_the_price_with_the_reading_wired(
 
     assert len(set(seen.values())) == 1, seen
     assert all(str(price) in text for price, text in echoed.items()), echoed
+
+
+# ── what is on record is read by whoever holds the quote ─────────────────────
+
+def test_the_stored_diagnoses_answer_only_for_a_quote_the_reader_holds(client):
+    """Scoped like ``quote_audit``, with one 404 for "not yours" and "not
+    there". Org-scoped alone this read answered for any id in the book, and an
+    unknown id answered ``lines: []`` — the two are trivially distinguishable,
+    which is the enumeration the sentence exists to withhold. A manager reads
+    the book; a salesperson reads the cards they were shown."""
+    from app.routers.quote_intelligence import _NO_SUCH_PLATFORM_QUOTE
+
+    _assess(client, SALES, quote_id="q-mine")          # c1 is this desk's account
+
+    mine = client.get("/api/v1/quote-diagnosis/quote/q-mine", headers=_hdr(client, SALES))
+    assert mine.status_code == 200 and len(mine.json()["lines"]) == 1
+
+    for quote_id in ("q-nobody-assessed", "q-mine-typo"):
+        r = client.get(f"/api/v1/quote-diagnosis/quote/{quote_id}",
+                       headers=_hdr(client, SALES))
+        assert r.status_code == 404, r.text
+        assert r.json()["detail"] == _NO_SUCH_PLATFORM_QUOTE
+    # The same id, read by somebody the book is not narrowed for.
+    r = client.get("/api/v1/quote-diagnosis/quote/q-nobody-assessed",
+                   headers=_hdr(client, MANAGER))
+    assert r.status_code == 200 and r.json()["lines"] == []

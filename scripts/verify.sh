@@ -87,8 +87,9 @@ PY="${PYTHON:-python3}"
 # when the engine is missing, so everything else still executes.
 #
 # This used to be a hard stop, which was wrong in the way that matters — it let
-# one missing credential decide whether lint, 1174 tests and the migration check
-# ran at all. A red check nobody can fix is a check people learn to ignore.
+# one missing credential decide whether lint, five thousand tests and the
+# migration checks ran at all. A red check nobody can fix is a check people
+# learn to ignore. Set PIE_PARSER_ROOT to point at a checkout elsewhere.
 #
 # Skipped, never silently passed: the seam is covered by the `pie-contract` job,
 # which fetches the engine and runs exactly the marked set.

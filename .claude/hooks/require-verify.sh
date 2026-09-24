@@ -61,8 +61,11 @@ Source has changed since the last green \`make verify\`, so this turn is not don
 
 Run it now:
 
-    make verify          full gate (~4m: lint, §1 invariants, 1174 backend
-                         tests, frontend build, migrations on an EMPTY database)
+    make verify          the full gate, eight steps (~10m): lint, §1 invariants,
+                         the published spec, 5,300+ backend tests and the
+                         connector matrix, frontend tests/types/build, migrations
+                         on an EMPTY database on SQLite and PostgreSQL (with RLS
+                         and the queues), and the pg_dump/restore drill
     make verify-fast     inner loop only — does NOT stamp, does NOT count
 $MIGRATION_NOTE
 

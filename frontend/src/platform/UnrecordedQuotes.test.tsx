@@ -214,6 +214,7 @@ describe("recording a loss", () => {
   it("names the ERP's own reference, not a platform quote id", async () => {
     const write = vi.spyOn(intelligence, "documentOutcome").mockResolvedValue(
       { quote_id: null, quote_document_ref: "zoho-1", status: "LOST",
+        customer_ref: "Pitti Engineering", customer_id: "cst_1",
         note: null, loss_reason: "PRICE", lost_to: null, sent_at: null,
         decided_at: "2026-03-17T00:00:00Z", allowed_next: [],
         loss_reasons: [] });

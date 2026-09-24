@@ -747,6 +747,14 @@ describe("revising an ERP quote here", () => {
     expect(await screen.findByText("builder for f-1")).toBeInTheDocument();
   });
 
+  it("shows the server's refusal where the quote cannot be picked up", async () => {
+    reviseErpQuote.mockRejectedValue(new Error("no such quote"));
+    drawQualified();
+    fireEvent.click(await screen.findByRole("button", { name: "Revise in PIE" }));
+    expect(await screen.findByText(/no such quote/)).toBeInTheDocument();
+    expect(screen.queryByText("builder for f-1")).toBeNull();
+  });
+
   it("is not offered where this platform already holds the quote", async () => {
     drawQualified({ platform_quote: { quote_id: "q-9", number: "QB-0009" } });
     expect(await screen.findByRole("button", { name: "Open in the Quote Builder" }))

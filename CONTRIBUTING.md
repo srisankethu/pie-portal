@@ -45,7 +45,7 @@ delete head branches** and it happens without anybody remembering.
 
 ```bash
 make setup      # once, from a bare clone: pie-parser, pinned tooling, npm, database
-make verify     # the gate — ~4 min
+make verify     # the gate — ~10 min
 ```
 
 `make verify` runs `scripts/verify.sh`, and **CI runs that same script**. That is
@@ -54,23 +54,28 @@ section for what it replaced.
 
 | # | Check | Guards |
 |---|---|---|
-| 1 | `ruff check .` | The rule set in `ruff.toml`, at the version pinned in `backend/requirements-dev.txt`. Now covers tests and scripts, not just `backend/app` |
+| 1 | `ruff check .` | The rule set in `ruff.toml`, at the version pinned in `backend/requirements-dev.txt`. Covers tests and scripts, not just `backend/app` |
 | 2 | §1 layer invariants | A deterministic layer importing `ai/`, or `ai/` importing `commercial/`. The rule that makes every number auditable |
-| 3 | backend suite | 1174 tests, parallel, each worker on its own database |
-| 4 | frontend | `tsc -b` and the production build |
-| 5 | migrations from nothing | `alembic upgrade head` on an **empty** database, the drift test, and exactly one head |
+| 3 | the published ingestion contract | `docs/spec` is generated from the schemas; a hand edit to either side fails here |
+| 4 | backend suite, then the connector matrix | 5,300-odd tests in parallel, each worker on its own database; then `pytest -m matrix`, every connector against every stage it declares |
+| 5 | frontend | vitest, `tsc -b` and the production build |
+| 6 | migrations from nothing — SQLite | `alembic upgrade head` on an **empty** database, the drift test, and exactly one head |
+| 7 | migrations from nothing — PostgreSQL | the same two checks on a disposable server (`scripts/pg_sandbox.sh`), then row-level security against a role that is neither superuser nor owner, and the two queue suites — the only place a concurrent claim is a real race |
+| 8 | restore drill | on that server, the backup procedure in `docs/hosting.md` performed: seed, `pg_dump`, restore into an empty database, compare every row, every money Σ, every audit chain and every erasure receipt |
 
-Check 5 is the one worth understanding. A developer's own database is already
-migrated, so it can never exercise the empty case — and the empty case is the one
-production runs. CLAUDE.md §4 is an account of what happens when nobody checks:
-the schema and the models had drifted apart in 130 places, invisibly.
+Checks 6 and 7 are the ones worth understanding. A developer's own database is
+already migrated, so it can never exercise the empty case — and the empty case
+is the one production runs. CLAUDE.md §4 is an account of what happens when
+nobody checks: the schema and the models had drifted apart in 130 places,
+invisibly. Where no PostgreSQL binaries exist, 7 and 8 are skipped with a
+visible note and the run does not stamp as verified.
 
 `verify.sh` runs every step and reports all failures at the end rather than
 stopping at the first, so one red build tells you everything that is wrong.
 
-For the edit loop, `make verify-fast` drops 4 and 5 and finishes in about two and
-a half minutes. It deliberately does **not** stamp, so it cannot be mistaken for
-a verified state, and it is not enough to merge on.
+For the edit loop, `make verify-fast` runs 1–4 without the connector matrix and
+skips 5–8, finishing in about three minutes. It deliberately does **not** stamp,
+so it cannot be mistaken for a verified state, and it is not enough to merge on.
 
 ### Why it is one script now
 

@@ -111,11 +111,24 @@ def _resolve_products(session: Session, org: str,
                       refs: Iterable[str]) -> dict[str, Optional[models.Product]]:
     """Resolve every distinct product ref in one pass over the catalogue.
 
-    ``_resolve_product`` loads the whole product table per call, which is
-    exactly the N+1 this module exists to avoid on a forty-line RFQ.
+    ``quote_support._resolve_product`` is this function for one ref, so the
+    quote drawer and the batched assessment cannot disagree about which
+    product a code names.
+
+    **The SKU is an identifier here, and it was missing.** A line quoted by
+    the item master's SKU (``22000865``, which that master names
+    ``CNMG120408-UC-D2 YC0014``) matched no id, no Zoho item id and no name,
+    so a product with fifteen invoices behind it was reported as having no
+    sales history. The SKU is read from ``item_connector_records``, where the
+    sync writes it through ``identity.matchers.normalize_sku``, and it counts
+    only when it names exactly one product: some masters put an HSN code in
+    the SKU field for hundreds of items, and picking one of those would be
+    another item's history under this line's name.
     """
     from ..decisions.quote_support import _norm
+    from ..identity.matchers import normalize_sku
 
+    refs = [(ref or "").strip() for ref in refs]
     rows = list(session.scalars(
         select(models.Product).where(models.Product.organization_id == org)))
     by_id: dict[str, models.Product] = {}
@@ -127,13 +140,26 @@ def _resolve_products(session: Session, org: str,
             by_ext[p.external_id] = p
         by_norm.setdefault(_norm(p.name), p)
 
+    skus = {s for s in (normalize_sku(ref) for ref in refs) if s}
+    products_by_sku: dict[str, set[str]] = defaultdict(set)
+    if skus:
+        rec = models.ItemConnectorRecord
+        for sku, product_id in session.execute(
+                select(rec.sku, rec.product_id).where(
+                    rec.organization_id == org, rec.sku.in_(skus),
+                    rec.product_id.is_not(None))):
+            products_by_sku[sku].add(product_id)
+
     out: dict[str, Optional[models.Product]] = {}
     for ref in refs:
-        ref = (ref or "").strip()
         if not ref:
             out[ref] = None
             continue
         match = by_id.get(ref) or by_ext.get(ref)
+        if match is None:
+            owners = products_by_sku.get(normalize_sku(ref) or "", set())
+            if len(owners) == 1:
+                match = by_id.get(next(iter(owners)))
         if match is None:
             n = _norm(ref)
             match = by_norm.get(n)

@@ -22,7 +22,7 @@ import itertools
 import re
 import uuid
 from dataclasses import asdict, dataclass, field, fields
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from . import clock, pricing
 from .pie_service import Bands, Candidate, Resolution, pie_service
@@ -883,7 +883,9 @@ class QuoteStore:
                     bands: Optional[Bands] = None,
                     mapping_store: Any = None,
                     connection_id: Optional[str] = None,
-                    pool: Any = None) -> List[Line]:
+                    pool: Any = None,
+                    book: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None
+                    ) -> List[Line]:
         """``pool`` is this organization's sellable book as candidate records.
 
         A **built** pool, never a session — the same rule ``mapping_store``
@@ -901,6 +903,12 @@ class QuoteStore:
         resolve against. The two are different halves of the same question —
         which catalogue, and which book beside it — and both reach
         ``pie_service.resolve``.
+
+        ``book`` answers "which item in this company's own master *is* this
+        code" — ``ReadModelRepository.exact_item`` bound to the quote's
+        company, passed as a function for the reason ``pool`` is a built
+        object: this store holds no session. It is asked only when the engine
+        selected nothing; see :meth:`_take_from_book`.
         """
         lines: List[Line] = []
         for row in rows:
@@ -930,16 +938,64 @@ class QuoteStore:
                 identityCandidate=_identity_candidate(res),
                 service="PIE" if res.pie_offline else None,
             )
+            if ln.supplyCode is None and book is not None:
+                self._take_from_book(ln, book(ln.reqCode))
             self._enrich_from_zoho(ln, zoho)
             lines.append(ln)
         return lines
+
+    @staticmethod
+    def _take_from_book(ln: Line, hit: Optional[Dict[str, Any]]) -> None:
+        """Put the item a line names on it, when the engine could not.
+
+        A customer who writes ``22000865`` has written this business's own
+        SKU for ``CNMG120408-UC-D2 YC0014``. The engine resolves against the
+        manufacturers' catalogues, which do not hold a distributor's SKUs, so
+        it answered UNRESOLVED — or, down, nothing at all — and the line asked
+        "which item is this?" about an item the books hold under exactly that
+        code. That is an identity lookup, not an equivalence: ``hit`` is the
+        one active item whose SKU or name *is* the code, and nothing is
+        scored, ranked or remembered. So it is EXACT and selected, the way an
+        exact catalogue hit is — and it asserts no mapping: the line's
+        ``identityCandidate`` is left as the engine set it, so confirming this
+        writes nothing the engine will later read as a customer's code.
+
+        Asked only when the engine selected nothing. An engine answer is never
+        overridden by this one; the books are the fallback, not the rival.
+
+        The supply code is the line's own ``reqCode``, not the item's name.
+        ``hit`` is by definition the item whose SKU or name normalises to that
+        code, and everything that reads a supply code back — the books' own
+        ``get_item``, ``quote_service._resolve_products`` — normalises before
+        comparing, so it names the same item. Using the name instead made the
+        line read as a substitution of ``22000865`` by
+        ``CNMG120408-UC-D2 YC0014``, which is one item written two ways.
+        """
+        if not hit:
+            return
+        code = ln.reqCode
+        desc = hit.get("name") or code
+        ln.candidates = [Candidate(code=code, desc=desc, rel="EXACT",
+                                   brand=hit.get("manufacturer"))] + [
+            c for c in ln.candidates if c.code != code]
+        ln.supplyCode = code
+        ln.supplyDesc = desc
+        ln.reqDesc = desc
+        ln.rel, ln.sel = "EXACT", "AUTO"
+        # The line is answered, whether or not the engine was reachable for
+        # it — the books did the answering.
+        ln.service = None
+        ln.notes = [f"Found in this company's item master: {desc}."
+                    ] + list(ln.notes)
 
     def add_rfq(self, quote: Quote, text: str, zoho: ZohoService,
                 customer_scope: Optional[str] = None,
                 bands: Optional[Bands] = None,
                 mapping_store: Any = None,
                 rows: Optional[List[Dict[str, Any]]] = None,
-                pool: Any = None) -> List[Line]:
+                pool: Any = None,
+                book: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None
+                ) -> List[Line]:
         """``customer_scope`` is the customer's cross-connector identity.
 
         It arrives as an opaque string rather than being looked up here: this
@@ -958,7 +1014,8 @@ class QuoteStore:
         # one grid, where the lines are read as comparable.
         new = self.build_lines(rows or _split_rfq(text), zoho, customer_scope,
                                bands, mapping_store,
-                               connection_id=quote.connectionId, pool=pool)
+                               connection_id=quote.connectionId, pool=pool,
+                               book=book)
         quote.lines.extend(new)
         return new
 
@@ -1089,7 +1146,10 @@ class QuoteStore:
                      customer_id: Optional[str], zoho: ZohoService,
                      customer_scope: Optional[str] = None,
                      bands: Optional[Bands] = None,
-                     mapping_store: Any = None) -> int:
+                     mapping_store: Any = None,
+                     pool: Any = None,
+                     book: Optional[Callable[[str], Optional[Dict[str, Any]]]] = None
+                     ) -> int:
         """Point the quote at a customer, re-resolving what is already on it.
 
         The quote opens with no customer and the desk chooses one — often
@@ -1119,8 +1179,13 @@ class QuoteStore:
         rows = [{"raw": ln.raw, "code": ln.reqCode, "qty": ln.reqQty,
                  "proposed": ln.proposed, "reading": ln.reading}
                 for ln in quote.lines]
+        # The same pool and book the lines were first resolved with. Without
+        # them, naming the customer re-resolved every line against the
+        # manufacturer catalogue alone, and a line the books had answered
+        # went back to "which item is this?".
         fresh = self.build_lines(rows, zoho, customer_scope, bands, mapping_store,
-                                 connection_id=quote.connectionId)
+                                 connection_id=quote.connectionId, pool=pool,
+                                 book=book)
         kept = 0
         for old, new in zip(quote.lines, fresh):
             # Same id: the snapshots and approval requests filed under this

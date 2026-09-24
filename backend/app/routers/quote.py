@@ -563,7 +563,9 @@ def set_customer(quote_id: str, body: SetCustomerRequest,
     kept = store.set_customer(q, body.customer, body.customer_id, books.zoho,
                               _customer_scope(session, principal, q.customer_ref),
                               _bands(session, principal),
-                              _mapping_store(session, principal))
+                              _mapping_store(session, principal),
+                              pool=_sellable_pool(session, principal),
+                              book=_book(session, principal, q))
     out = _saved(session, principal, q)
     if q.lines:
         out["note"] = (
@@ -633,7 +635,8 @@ def intake(quote_id: str, body: IntakeRequest,
                           # this RFQ then resolves against one book, so a sync
                           # landing mid-intake cannot make one quote resolve two
                           # ways — the same reason the source snapshots itself.
-                          pool=_sellable_pool(session, principal))
+                          pool=_sellable_pool(session, principal),
+                          book=_book(session, principal, q))
     if read.provider_called:
         # ``provider_called``, not ``used_ai``. The gate used to be success, so
         # the three paths where the enquiry was sent and the answer was
@@ -814,6 +817,17 @@ def _mapping_store(session: Session, principal: Principal) -> Optional[Any]:
 
 def _sellable_pool(session: Session, principal: Principal) -> Optional[Any]:
     return sellable_pool_for(session, principal.organization_id)
+
+
+def _book(session: Session, principal: Principal, quote: Quote):
+    """"Which item in this quote's company's master is this code", as a function.
+
+    The quote's company and no other — the one ``item_search`` searches and
+    the one whose books price the line — so an SKU another company uses for
+    a different item cannot answer here.
+    """
+    repo = ReadModelRepository(session, principal.organization_id)
+    return lambda code: repo.exact_item(code, connection_id=quote.connectionId)
 
 
 def _bands(session: Session, principal: Principal) -> Optional[Bands]:

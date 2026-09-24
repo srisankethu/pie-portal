@@ -444,33 +444,9 @@ class ReadModelRepository:
         words = [w for w in (text or "").split() if w]
         if not words or limit <= 0:
             return []
-        rec, prod = models.ItemConnectorRecord, models.Product
-        clauses = [rec.organization_id == self.org,
-                   rec.connection_id == connection_id]
-        for word in words[:8]:
-            like = f"%{word.lower()}%"
-            clauses.append(or_(func.lower(rec.sku).like(like),
-                               func.lower(rec.description).like(like)))
-        rows = self.s.execute(
-            select(rec.sku, rec.description, rec.external_id,
-                   prod.name, prod.manufacturer, prod.uom, prod.active)
-            .outerjoin(prod, prod.product_id == rec.product_id)
-            .where(*clauses)
-            # A generous read behind a small answer: the re-rank below decides
-            # the order, and it can only rank what the query returned. Bounded
-            # so a one-letter search cannot walk a whole master into memory.
-            .limit(max(limit * 10, 200))
-        ).all()
+        out = self._book_rows(connection_id, max(limit * 10, 200),
+                              *self._every_word(words))
         wanted = normalize_sku(" ".join(words))
-        # ``description`` is the name as the sync passed it, so it is the
-        # fallback when the record points at no product row — not a second
-        # field with a second meaning.
-        out = [{"code": (name or description or external_id),
-                "name": name or description, "externalId": external_id,
-                "manufacturer": manufacturer, "uom": uom,
-                "active": bool(active) if active is not None else True,
-                "_sku": sku}
-               for sku, description, external_id, name, manufacturer, uom, active in rows]
         # Exact normalised SKU first, then the shortest name — a match that is
         # most of the field beats one buried in a long description — then the
         # code, so two equal rows always come back in the same order.
@@ -482,6 +458,82 @@ class ReadModelRepository:
         # The normalised key drops out here. It did its job in the sort and it
         # is not a code anything downstream may use — see the docstring.
         return [{k: v for k, v in r.items() if k != "_sku"} for r in out[:limit]]
+
+    def exact_item(self, code: str, *,
+                   connection_id: Optional[str]) -> Optional[dict[str, Any]]:
+        """The one active item in this company's synced master that ``code`` *is*.
+
+        *Is*, by the rule ``ZohoBooksService._find_item`` prices by: the
+        normalised SKU equals the normalised code, or failing that the
+        normalised name does. A code that is a SKU for several items answers
+        None rather than one of them — some masters carry an HSN code in the
+        SKU field for hundreds of items, and choosing among those would put
+        somebody else's item on the line. An inactive item cannot go on a
+        document, so it is not an answer either.
+
+        The rows come from the query :meth:`search_items` runs, in its shape,
+        ``code`` being the item's name: two searches over one master that
+        disagreed would be the drift CLAUDE.md §2 is about. The SKU is matched
+        by equality on the stored normalised key — exact and indexed, so
+        ``2200-0865`` finds ``22000865``. The name inherits that method's
+        stated limit: every word must appear literally, so a name typed with
+        its separators removed is not found here.
+        """
+        wanted = normalize_sku(code)
+        if wanted is None:
+            return None
+        rec = models.ItemConnectorRecord
+        for rows in (
+                lambda: self._book_rows(connection_id, 200, rec.sku == wanted),
+                lambda: [r for r in self._book_rows(
+                             connection_id, 200,
+                             *self._every_word((code or "").split()))
+                         if normalize_sku(r["name"]) == wanted]):
+            hits = {r["externalId"]: r for r in rows() if r["active"]}
+            if len(hits) == 1:
+                row = next(iter(hits.values()))
+                return {k: v for k, v in row.items() if k != "_sku"}
+            if hits:
+                return None
+        return None
+
+    @staticmethod
+    def _every_word(words: list[str]) -> list[Any]:
+        """One clause per word: it appears in the SKU or in the name."""
+        rec = models.ItemConnectorRecord
+        return [or_(func.lower(rec.sku).like(f"%{word.lower()}%"),
+                    func.lower(rec.description).like(f"%{word.lower()}%"))
+                for word in words[:8]]
+
+    def _book_rows(self, connection_id: Optional[str], cap: int,
+                   *clauses: Any) -> list[dict[str, Any]]:
+        """Rows of one company's synced master meeting ``clauses``, unranked.
+
+        Each row keeps the normalised SKU under ``_sku`` for the caller to
+        rank or match on and then drop — it is never a code to publish.
+        """
+        rec, prod = models.ItemConnectorRecord, models.Product
+        clauses = (rec.organization_id == self.org,
+                   rec.connection_id == connection_id, *clauses)
+        rows = self.s.execute(
+            select(rec.sku, rec.description, rec.external_id,
+                   prod.name, prod.manufacturer, prod.uom, prod.active)
+            .outerjoin(prod, prod.product_id == rec.product_id)
+            .where(*clauses)
+            # A generous read behind a small answer: the re-rank below decides
+            # the order, and it can only rank what the query returned. Bounded
+            # so a one-letter search cannot walk a whole master into memory.
+            .limit(cap)
+        ).all()
+        # ``description`` is the name as the sync passed it, so it is the
+        # fallback when the record points at no product row — not a second
+        # field with a second meaning.
+        return [{"code": (name or description or external_id),
+                 "name": name or description, "externalId": external_id,
+                 "manufacturer": manufacturer, "uom": uom,
+                 "active": bool(active) if active is not None else True,
+                 "_sku": sku}
+                for sku, description, external_id, name, manufacturer, uom, active in rows]
 
     # ── sales / cost ─────────────────────────────────────────────────────────
     def upsert_sales_txn(self, t: SalesTxnIn, customer_id: str, product_id: str) -> models.SalesTxn:

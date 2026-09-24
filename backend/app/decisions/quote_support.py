@@ -106,29 +106,17 @@ def _resolve_customer(session: Session, org: str, ref: str) -> Optional[models.C
 
 
 def _resolve_product(session: Session, org: str, ref: str) -> Optional[models.Product]:
+    """One ref through ``quote_service._resolve_products`` — one matcher.
+
+    This used to be a second copy of that function's rules, and the copy is
+    where the SKU was missing from both: a line quoted by its SKU found no
+    product here and the drawer said "not found in sales history" about an
+    item with fifteen invoices.
+    """
     if not ref:
         return None
-    rows = session.scalars(
-        select(models.Product).where(models.Product.organization_id == org)).all()
-    for p in rows:
-        if ref in (p.product_id, p.external_id):
-            return p
-    n = _norm(ref)
-    if not n:
-        return None
-    for p in rows:
-        if _norm(p.name) == n:
-            return p
-    # normalized containment either way (handles "CNMG 120408-MP" vs
-    # "CNMG 120408-MP insert"); require a reasonably specific token to avoid
-    # matching on a trivial shared prefix.
-    best: Optional[models.Product] = None
-    for p in rows:
-        pn = _norm(p.name)
-        if pn and len(n) >= 4 and (n in pn or pn in n):
-            if best is None or abs(len(pn) - len(n)) < abs(len(_norm(best.name)) - len(n)):
-                best = p
-    return best
+    from ..commercial.quote_service import _resolve_products
+    return _resolve_products(session, org, [ref]).get(ref.strip())
 
 
 def _decision_key(org: str, customer_id: str, product_ids: list[str]) -> str:

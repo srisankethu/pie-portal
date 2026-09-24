@@ -227,6 +227,21 @@ export default function DataGridImpl<T>({
   const stripHeight = data
     .slice(0, Math.min(data.length, pageSize))
     .reduce((sum, r) => sum + (isDetail<T>(r) ? detailHeightOf(r.__detailFor) : 0), 0);
+
+  // ag-grid asks `getRowHeight` once per row node and keeps the answer. A
+  // strip's node survives a data update — its id is its parent's — so when a
+  // line gained problems after first paint (the quote checks arrive after the
+  // lines do), its strip kept the one-problem height and the other two drew
+  // over the line below. Re-measured whenever any strip's height changes, and
+  // only then: resetting on every render would re-lay the grid under somebody
+  // typing a rate.
+  const stripHeights = strips
+    ? data.map((r) => (isDetail<T>(r) ? `${r.__parentId}=${detailHeightOf(r.__detailFor)}` : ""))
+        .filter(Boolean).join("|")
+    : "";
+  useEffect(() => {
+    if (api && stripHeights) api.resetRowHeights();
+  }, [api, stripHeights]);
   const auto = 32 + (filters ? 32 : 0) + rowsThisPage * rowHeight + stripHeight + 48;
 
   return (

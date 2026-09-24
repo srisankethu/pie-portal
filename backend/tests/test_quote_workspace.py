@@ -383,6 +383,53 @@ def test_a_legacy_document_joins_while_the_bare_id_is_unique(client, owner):
     assert next(r for r in rows if r["id"] == qid)["sent"]["erp"]["sourceStatus"] == "viewed"
 
 
+def test_a_mark_sent_on_top_of_an_erp_send_does_not_hide_the_erps_decision(client, owner):
+    """One outcome of record, read from both directions.
+
+    Sent to the ERP as revision 1, then re-priced and marked as sent by hand
+    as revision 2 — a MANUAL row with no document id — and then the customer
+    accepts revision 1's estimate in the ERP. The platform side used to join
+    the ERP through the newest confirmed document, the MANUAL row, and read
+    SENT; the ERP side joined the same human row to the estimate through the
+    pointer a mark-sent never clears, and read WON. The record joins through
+    the newest ERP-written document now, and the two agree."""
+    from datetime import date
+
+    from app.commercial import quote_service
+    from app.domain.enums import QuoteOutcomeStatus
+
+    qid = _sent(client, owner, doc_id="est-1", connection_id=COMPANY)
+    with client.Maker() as s:
+        quote_service.set_outcome(
+            s, ORG, quote_id=qid, status=QuoteOutcomeStatus.SENT,
+            quote_document_ref="est-1", quote_document_connection_id=COMPANY,
+            customer_ref="Pitti")
+        s.commit()
+    client.post(f"/api/v1/quotes/{qid}/lines/L1/price", json={"price": 480},
+                headers=owner)
+    marked = client.post(f"/api/v1/quotes/{qid}/mark-sent", headers=owner).json()
+    assert marked["ok"] is True and marked["revision"] == 2, marked
+    with client.Maker() as s:
+        _erp_row(s, "est-1", connection_id=COMPANY, status="accepted",
+                 outcome="WON", decided=date(2026, 9, 20))
+        s.commit()
+
+    row = next(r for r in client.get("/api/v1/quotes", headers=owner).json()["quotes"]
+               if r["id"] == qid)
+    # The *sent* document is the mark-sent, and the ERP holds nothing for it…
+    assert row["sent"]["channel"] == "MANUAL" and row["sent"]["erp"] is None
+    # …and the quote is still won: the ERP accepted a document it produced.
+    assert row["readiness"] == "WON"
+
+    with client.Maker() as s:
+        human = quote_service.get_outcome(s, ORG, qid)
+        platform_side = quote_service.outcomes_of_record(s, ORG, [human])[qid]
+        doc = s.query(models.QuoteDoc).filter_by(external_ref="est-1").one()
+        erp_side = quote_service.erp_outcomes_of_record(s, ORG, [doc])[doc.quote_document_id]
+    assert (platform_side.status, platform_side.source) == (erp_side.status, erp_side.source)
+    assert platform_side.status.value == "WON" and platform_side.source.value == "ERP"
+
+
 # ── a quote belongs to the company whose catalogue priced it ────────────────
 
 def _two_companies(client) -> tuple[str, str]:

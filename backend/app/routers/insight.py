@@ -1910,15 +1910,25 @@ def quote_book_lines(quote_ref: str,
             customer_ids=_assigned_customer_ids(session, principal),
             companies=Companies(session, org))
     }
-    if quote_ref not in {ref for ref, _ in visible} or (
-            connection and (quote_ref, connection) not in visible):
+    # Exactly one document, or none. A bare reference two connected books
+    # both hold used to pass this guard and come back as both quotes' lines
+    # interleaved under one document — a breakdown matching no quote anybody
+    # holds. It is the same 404 as a reference naming nothing, the rule
+    # ``quote_diagnosis.assess_erp_quote`` applies to the same pair: picking
+    # either would serve a document the reader is not looking at.
+    candidates = [cid for ref, cid in visible
+                  if ref == quote_ref and (not connection or cid == connection)]
+    if len(candidates) != 1:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such quote")
+    company = candidates[0]
 
+    # Qualified by the book the reference resolved to, named or not, so the
+    # lines are that document's even where the caller gave the bare form.
     rows = quote_book_view.lines_for(session, org, quote_ref=quote_ref,
-                                     connection_id=connection or None)
+                                     connection_id=company)
     return _envelope(
         {"quote_document_ref": quote_ref,
-         "connection_id": connection or None,
+         "connection_id": company,
          "lines": [row.to_dict() for row in rows],
          "lines_held": bool(rows)},
         th=th,

@@ -662,9 +662,11 @@ def list_drafts(session: Session, org: str, *, user_id: str = "",
         select(models.QuoteOutcome).where(
             models.QuoteOutcome.organization_id == org,
             models.QuoteOutcome.quote_id.in_([q.id for q in quotes])))}
+    # ``erp_by_quote`` is deliberately not passed: it is keyed on the *sent*
+    # document, which a mark-sent makes a MANUAL row with no ERP side, and
+    # the record joins through the newest ERP-channel document instead.
     records = quote_service.outcomes_of_record(
-        session, org, human_by_quote.values(),
-        written=sent_by_quote, erp=erp_by_quote)
+        session, org, human_by_quote.values(), written=sent_by_quote)
     out = []
     for row, quote in zip(rows, quotes):
         summary = quote.to_dict(False)["summary"]

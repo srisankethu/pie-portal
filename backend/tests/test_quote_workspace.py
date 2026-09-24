@@ -542,6 +542,112 @@ def test_a_quote_marked_as_sent_keeps_its_customer_without_naming_a_document(cli
     assert "Zoho Books" not in detail and " ," not in detail
 
 
+def _business_central(client, monkeypatch) -> None:
+    """A connected Business Central company, its secret and its spec faked —
+    ``_books_for`` decides which catalogue a book gets, and that is the
+    question; what the writer is built from is the connector's own test."""
+    from app.config import settings
+    from app.ingestion import connections as conn, erp
+
+    # Live, or ``select_zoho_service`` answers the mock whatever the reason —
+    # and the question here is which catalogue a *live* book gets.
+    monkeypatch.setattr(settings, "ZOHO_QUOTE_SERVICE", "live")
+    monkeypatch.setattr(conn, "credential_material", lambda s, c: "material")
+
+    class _Spec:
+        def build_source(self, material):
+            assert material == "material"
+            return "the writer"
+
+    monkeypatch.setattr(erp, "get_spec", lambda key: _Spec())
+    with client.Maker() as s:
+        s.add(models.ZohoConnection(connection_id="cx_bc", organization_id=ORG,
+                                    label="Contoso BC", zoho_organization_id="bc-1",
+                                    connector="dynamics365"))
+        s.commit()
+
+
+def _synced_item(client, *, code: str, external_id: str, connection_id: str = "cx_bc") -> None:
+    from datetime import datetime, timezone
+
+    from app.identity.matchers import normalize_sku
+
+    with client.Maker() as s:
+        s.add(models.Product(product_id=f"p_{external_id}", organization_id=ORG,
+                             connector="dynamics365", connection_id=connection_id,
+                             external_id=external_id, name=code))
+        s.add(models.ItemIdentity(identity_id=f"id_{external_id}", organization_id=ORG))
+        s.add(models.ItemConnectorRecord(
+            record_id=f"rec_{external_id}", organization_id=ORG,
+            identity_id=f"id_{external_id}", connector="dynamics365",
+            connection_id=connection_id, external_id=external_id,
+            sku=normalize_sku(code), product_id=f"p_{external_id}",
+            last_synced_at=datetime(2026, 9, 12, 6, tzinfo=timezone.utc)))
+        s.commit()
+
+
+def test_a_registry_connectors_book_reads_the_synced_master(client, monkeypatch):
+    """Every line on a Business Central quote read BOOKS OFFLINE — honest about
+    live prices and blind to what the sync already held. The book gets the
+    synced catalogue once anything has been synced, and the refusing adapter,
+    naming the gap, until then."""
+    from app.ingestion import connections as conn
+    from app.ingestion.synced_catalogue import SyncedCatalogue
+    from app.routers.quote import _books_for
+
+    _business_central(client, monkeypatch)
+    with client.Maker() as s:
+        book = conn.CustomerBook(connection=s.get(models.ZohoConnection, "cx_bc"),
+                                 contact_id="cust-7")
+        books = _books_for(s, book)
+        assert books.system == "dynamics365" and books.writer == "the writer"
+        assert books.connection_id == "cx_bc" and books.contact_id == "cust-7"
+        assert books.zoho.available is False
+        assert "no item master has been synced" in books.zoho.reason
+        assert "Business Central" in books.zoho.reason
+
+    _synced_item(client, code="CNMG 120408-MP", external_id="ITEM-900")
+    with client.Maker() as s:
+        book = conn.CustomerBook(connection=s.get(models.ZohoConnection, "cx_bc"),
+                                 contact_id="cust-7")
+        books = _books_for(s, book)
+        assert isinstance(books.zoho, SyncedCatalogue) and books.zoho.available
+        assert books.writer == "the writer", "the writer is the same object either way"
+        item = books.zoho.get_item("CNMG120408MP")
+        assert item.in_books is True and item.item_id == "ITEM-900"
+
+
+def test_a_line_answered_from_the_sync_says_so_and_carries_no_list_price(client, monkeypatch):
+    """The enrichment every intake runs, against the synced catalogue: the item
+    is in the books with its id, nothing is auto-quoted because the master
+    holds no selling price, and the line says when the answer was true."""
+    from app.ingestion.synced_catalogue import SyncedCatalogue
+    from app.store import store
+
+    _business_central(client, monkeypatch)
+    _synced_item(client, code="CNMG 120408-MP", external_id="ITEM-900")
+    with client.Maker() as s:
+        books = SyncedCatalogue(s, ORG, connection_id="cx_bc", connector="dynamics365",
+                                label="Business Central")
+        held = _line("L1", code="CNMG 120408-MP", price=None)
+        held.inBooks, held.listPrice, held.itemId = None, None, None
+        store._enrich_from_zoho(held, books)
+        absent = _line("L2", code="KCMT 090304 LF", price=None)
+        absent.inBooks, absent.listPrice, absent.itemId = None, None, None
+        store._enrich_from_zoho(absent, books)
+
+    assert held.inBooks is True and held.itemId == "ITEM-900"
+    assert held.listPrice is None and held.quoted is None
+    assert held.status()["label"] == "NO PRICE", "priced by a person, never by a guess"
+    assert held.booksAsOf == "2026-09-12"
+    assert held.to_dict(False)["booksAsOf"] == "2026-09-12", "both roles see the date"
+    assert held.service is None, "not BOOKS OFFLINE: the books answered"
+
+    assert absent.inBooks is False and absent.status()["label"] == "NOT IN BOOKS"
+    assert absent.flags()["missingBooks"] is True
+    assert absent.booksAsOf == "2026-09-12", "absent as of the last pull"
+
+
 def test_a_customer_with_no_recorded_company_is_not_refused_here(client, owner):
     """Provenance not recorded is ``book_for_customer``'s question, at the send."""
     with client.Maker() as s:

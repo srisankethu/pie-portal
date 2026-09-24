@@ -249,10 +249,15 @@ def _books_for(session: Session, book: conn.CustomerBook) -> QuoteBooks:
     adapter is both halves at once. Everything else is resolved through the
     spec — a connector gaining a writer needs no edit here.
 
-    A registry connector gets a *refusing* catalogue rather than a stub. Its
-    item master is synced on a schedule, not read live, so there is no live
-    price to answer with — and the honest answer to "what does this cost right
-    now" is that we do not know, which is what BOOKS OFFLINE already means.
+    A registry connector gets the **synced** catalogue rather than a refusing
+    one. Its item master is pulled on a schedule, not read live, and until now
+    that meant every line on one of its quotes read BOOKS OFFLINE — honest
+    about live prices and useless about everything the sync already knew:
+    whether the item exists in that book, its id there (which the writer
+    needs on the line), and the stock the last pull saw. ``SyncedCatalogue``
+    answers those and refuses the rest: it carries no selling price because
+    the master has none, stamps every answer with the date it was true, and
+    refuses to create an item, because a sync is not a ledger.
     """
     connector = conn.connector_of(book.connection)
     if connector == conn.ZOHO_CONNECTOR:
@@ -262,16 +267,30 @@ def _books_for(session: Session, book: conn.CustomerBook) -> QuoteBooks:
                           connection_id=book.connection.connection_id)
 
     from ..ingestion import erp
+    from ..ingestion.synced_catalogue import SyncedCatalogue
 
     material = conn.credential_material(session, book.connection)
     writer = erp.get_spec(connector).build_source(material)
+    catalogue = SyncedCatalogue(
+        session, book.connection.organization_id,
+        connection_id=book.connection.connection_id, connector=connector,
+        label=conn.system_label_for(connector))
+    if not catalogue.available:
+        # Nothing has been synced for this company yet, so there is nothing to
+        # answer from. The refusing adapter says so, in the sentence the line
+        # status shows, rather than a catalogue that answers NOT IN BOOKS about
+        # a book it has never read.
+        return QuoteBooks(
+            zoho=select_zoho_service(reason=(
+                f"This customer's books are {conn.system_label_for(connector)}, "
+                f"and no item master has been synced from that company yet — "
+                f"so nothing here can say what is in it. Run a sync from Data & "
+                f"connection. The quote can still be sent.")),
+            contact_id=book.contact_id, system=connector, writer=writer,
+            connection_id=book.connection.connection_id)
     return QuoteBooks(
-        zoho=select_zoho_service(reason=(
-            f"This customer's books are {connector}, which this platform syncs "
-            f"on a schedule rather than reading live — so there is no live price "
-            f"or stock to show here. The quote can still be sent.")),
-        contact_id=book.contact_id, system=connector, writer=writer,
-        connection_id=book.connection.connection_id)
+        zoho=catalogue, contact_id=book.contact_id, system=connector,
+        writer=writer, connection_id=book.connection.connection_id)
 
 
 def zoho_for_quote(books: QuoteBooks = Depends(books_for_quote)) -> ZohoService:

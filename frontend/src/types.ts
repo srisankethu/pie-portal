@@ -124,6 +124,11 @@ export interface Line {
   createPhase: string | null;
   service: string | null;
   incompatReason: string | null;
+  /** When the books facts on this line were last true — an ISO date for a
+   *  line answered from a synced item master, `null` for one read live. A
+   *  stock figure from Tuesday's pull is Tuesday's stock, and a line that
+   *  cannot say so reads as though the books were consulted just now. */
+  booksAsOf: string | null;
   status: LineStatus;
   flags: LineFlags;
   candidates: Candidate[];

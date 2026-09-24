@@ -927,8 +927,14 @@ list · removed.
 **Branches.** Empty text → 400 · live books but the customer matches nothing /
 credential dead → a **refusing adapter**: every line reads BOOKS OFFLINE and a
 later send is refused with that sentence — never a fallback to a different
-book · a registry-ERP book → catalogue refuses live price/stock but the quote
-can still be sent through its writer.
+book · a registry-ERP book (Business Central, Acumatica, NetSuite, Prophet
+21, Sage) → the **synced catalogue**: in-books, the source's item id and the
+stock the last pull saw, each line carrying a "synced 12 Sep" chip because a
+figure from Tuesday's pull is Tuesday's figure; no list price, because the
+master holds none, so every line reads NO PRICE until a person prices it —
+never a guessed rate; `Create in …` refused by name; until that company's
+master has been synced at all, the refusing adapter, naming the gap. The
+quote can be sent through the connector's writer either way.
 **Ends.** Lines land in the grid with per-line statuses (READY · READY-SUBST ·
 NO PRICE · NOT IN BOOKS · BOOKS OFFLINE · UNRESOLVED · AMBIGUOUS · PIE OFFLINE
 · CONFIRM READING) · 400 · modal cancelled.

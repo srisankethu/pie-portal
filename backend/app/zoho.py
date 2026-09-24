@@ -73,6 +73,12 @@ class ZohoItem:
     # ``None`` means the books did not state one, which is not the same as zero
     # and not the same as the default — see ``store.Quote.to_dict``.
     tax_percentage: Optional[float] = None
+    #: When this answer was last true, as an ISO date, where it was read from
+    #: a sync rather than from the ledger. A live adapter leaves it ``None``:
+    #: what it says is current by construction. ``SyncedCatalogue`` fills it,
+    #: because a stock figure from Tuesday's pull is Tuesday's stock, and a line
+    #: that cannot say so reads as though the books were consulted just now.
+    as_of: Optional[str] = None
 
 
 #: The Zoho name for the neutral record every connector's write returns. Kept

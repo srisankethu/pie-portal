@@ -778,14 +778,20 @@ nothing.
 **Changes**
 
 - A `SourceCatalogue` backed by the synced master for registry connectors —
-  `ingestion/item_master.SyncedCatalogue` (extend `item_master.py`, which already
-  reads `item_connector_records`): `get_item(code)` answers `in_books`, `item_id =
-  external_id`, the master's list price where the source carries one, `stock` from
-  the latest stock snapshot or `None`, `cost = None` unless a costed record exists,
-  and an `as_of` stamp. `_books_for` hands it to `QuoteBooks.zoho` instead of the
-  refusing adapter; the line status reads "SYNCED 12 Sep" rather than BOOKS
-  OFFLINE, and `select_supply` copies `externalId` from search results onto
-  `itemId`. `create_item` stays refused for these connectors (no live write).
+  `ingestion/synced_catalogue.SyncedCatalogue` — a new module beside
+  `zoho_books_service`, the other implementation of the same protocol. (The
+  first draft of this plan said "extend `item_master.py`, which already reads
+  `item_connector_records`"; it does not — that module reads uploaded
+  spreadsheets.) `get_item(code)` answers `in_books`, `item_id = external_id`,
+  `stock` = `available` from the latest stock snapshot or `None`, `cost` =
+  the snapshot's `purchase_rate` or `None`, and an `as_of` stamp; `list_price`
+  is **always `None`** because the synced master carries no selling price and
+  none of the connectors reads one, so no line on these books auto-quotes at
+  list. `_books_for` hands it to `QuoteBooks.zoho` instead of the refusing
+  adapter once anything has been synced (and keeps the refusal, naming the
+  gap, until then); the line carries `booksAsOf` and the grid shows "synced
+  12 Sep" beside its other chips rather than BOOKS OFFLINE. `create_item`
+  stays refused for these connectors (no live write).
 - **Revise an ERP quote in PIE** (G13): `POST /api/v1/quotes/from-erp` with
   `{connection_id, ref}` builds a form from `erp_quote_lines` (code, description,
   qty, rate) through the ordinary `build_lines`, bound to that connection's
@@ -924,7 +930,7 @@ different masters is connected.
 `latest_document` (unchanged, now also covers manual sends), `sole_erp_quote`
 (qualifier), `book_for_customer` (draft-level refusal), `origin.Companies`
 (every label), `settle_by_read` (unchanged), `_mirror` / `_RETIRE_FROM` (quotes
-added), `item_master.py` (synced catalogue), `RecordOutcomeDialog` (one form),
+added), `synced_catalogue.py` (new — the synced catalogue), `RecordOutcomeDialog` (one form),
 `CompanyFilter`, `DataGrid`, `FilterChip`, `FormDialog`. No new table, no new
 package, no new protocol with one implementer.
 

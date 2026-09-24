@@ -54,6 +54,7 @@ import type { Line, LineIntelligence } from "../types";
 import { problemsFor, type Fix, type LineProblem, type ProblemTone } from "./lineProblems";
 import { relTone } from "../rel";
 import { money } from "../money";
+import { formatDate } from "../when";
 import { DataGrid, numeric, type ColDef } from "../platform/DataGrid";
 import { EmptyState, StatusChip, TOUCH, type Tone } from "../platform/kit";
 
@@ -160,6 +161,10 @@ function Flags({ line, wrap, systemShort }:
     // is dense and shares a 66px row, so it takes the short name.
     line.flags.missingBooks ? [`not in ${systemShort}`, "warn" as Tone] : null,
     line.flags.manualReview ? ["manual review", "warn" as Tone] : null,
+    // A line answered from a synced master rather than a live ledger says
+    // when that answer was true — "not in D365 BC" is a claim about the
+    // last pull, and so is the stock figure beside it.
+    line.booksAsOf ? [`synced ${formatDate(line.booksAsOf)}`, "neutral" as Tone] : null,
   ].filter(Boolean) as [string, Tone][];
   if (!flags.length) return null;
   // The grid cell is a fixed 66px row, so there it stays one clipped line; the

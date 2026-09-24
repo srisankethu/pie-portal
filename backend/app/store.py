@@ -462,6 +462,9 @@ class Line:
     createPhase: Optional[str] = None  # None | progress | failed
     service: Optional[str] = None      # None | BOOKS | AVAIL | PIE
     incompatReason: Optional[str] = None
+    # When the books facts on this line were last true — ``None`` for a live
+    # read, a date for one answered from a sync. See ``ZohoItem.as_of``.
+    booksAsOf: Optional[str] = None
 
     # ── derivation ───────────────────────────────────────────────────────────
     def substituted(self) -> bool:
@@ -570,6 +573,9 @@ class Line:
             "lineTotal": (self.quoted * self.reqQty) if self.quoted is not None else None,
             "createPhase": self.createPhase,
             "service": self.service,
+            # Both roles: a date, never a value. The one thing a synced answer
+            # must say about itself is how old it is.
+            "booksAsOf": self.booksAsOf,
             "incompatReason": self.incompatReason,
             "status": st,
             "flags": self.flags(),
@@ -997,6 +1003,7 @@ class QuoteStore:
         ln.costSource = None if item.cost is None else ("DEMO" if item.synthetic
                                                         else "BOOKS")
         ln.taxPercent = item.tax_percentage
+        ln.booksAsOf = item.as_of
         ln.family = self._family_of(ln)
         if item.in_books and item.list_price is not None:
             # Auto-quote at list so a long tender is not a column of typing —

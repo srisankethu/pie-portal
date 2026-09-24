@@ -99,7 +99,7 @@ tests.
 
 ```bash
 cd backend
-python -m pytest -q                      # the default suite (138)
+python -m pytest -q                      # the default suite (5,300-odd; matrix and live excluded)
 python -m pytest -q tests/decision_platform/test_signals_detectors.py
 python -m pytest -q -k "margin"
 python -m pytest -m live                 # opt-in: real AI provider, costs money

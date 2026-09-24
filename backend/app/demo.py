@@ -381,16 +381,21 @@ def _seed_erp_quote(session: Session, org: str) -> None:
 def _seed_connection(session: Session, org: str) -> None:
     """The one connected company the demo's documents belong to.
 
-    No credential and nothing to pull: in fixture mode the offline source
-    answers for it like any other, and a real sync purges it before it
-    enumerates the companies to pull (``jobs.execute_sync``). It exists so
-    every demo document can name its book, which is what every reader now
-    keys on.
+    **Disabled, and that is load-bearing.** It has no credential and nothing
+    to pull, and three things read "the organization's first enabled Zoho
+    company": ``connections.get_zoho_credentials`` with no connection named,
+    ``catalog.seed_company_catalogues`` on every boot, and the sync's target
+    list. Enabled, this row would have been that company on a fresh clone —
+    the boot would have bound the shipped catalogue to it and the first live
+    pull would have tried to decrypt a secret it does not hold. Disabled it
+    is a name: ``origin.Companies`` labels by it (no enabled filter, on
+    purpose), every demo document names it, and nothing tries to pull from
+    it. A real sync purges it anyway.
     """
     session.add(models.ZohoConnection(
         connection_id=_DEMO_CONNECTION_ID, organization_id=org,
         connector=_DEMO_CONNECTOR, label="SLS Engineers (demo)",
-        zoho_organization_id="demo-book", enabled=True))
+        zoho_organization_id="demo-book", enabled=False))
 
 
 def _seed_sent_quote(session: Session, org: str) -> None:
@@ -415,12 +420,20 @@ def _seed_sent_quote(session: Session, org: str) -> None:
     from .store import Line, store
 
     sent_on = _d(2)
+    th = policy_service.load_for_org(session, org)
     quote = quote_workspace.create(
         session, org, user_id="usr_sales", customer="Pitti Engineering Ltd",
         customer_id="cst_pitti", connection_id=_DEMO_CONNECTION_ID)
+
+    def clear_of_the_floor(cost: float) -> float:
+        # Five points above the organization's margin floor, whatever the
+        # policy says today: a seeded send below the floor would be a quote
+        # the gate refuses, recorded as though it had passed.
+        return float(round(cost / (1 - float(th.margin_floor) - 0.05), 0))
+
     lines = [
-        ("prd_dnmg", "DNMG 150608-MP insert", 20, 506.0, 430.0, 372.0),
-        ("prd_cnmg", "CNMG 120408-MP insert", 30, 452.0, 414.0, 349.0),
+        ("prd_dnmg", "DNMG 150608-MP insert", 20, 506.0, clear_of_the_floor(372.0), 372.0),
+        ("prd_cnmg", "CNMG 120408-MP insert", 30, 452.0, clear_of_the_floor(349.0), 349.0),
     ]
     for n, (pid, desc, qty, list_price, quoted, cost) in enumerate(lines):
         quote.lines.append(Line(
@@ -430,12 +443,14 @@ def _seed_sent_quote(session: Session, org: str) -> None:
             inBooks=True, itemId=pid, listPrice=list_price, quoted=quoted,
             priceSource="USER", cost=cost, costSource="BOOKS"))
     quote_workspace.save(session, quote, "usr_sales")
+    draft = session.get(models.QuoteDraft, quote.id)
+    draft.created_at = draft.updated_at = _stamp(sent_on)
     doc = quote_service.record_document(
         session, org, quote_id=quote.id, external_system=_DEMO_CONNECTOR,
         connection_id=_DEMO_CONNECTION_ID, number="QT-DEMO-0002",
         document_id=_DEMO_SENT_QUOTE_REF, line_count=len(lines),
         fingerprint=store.priced_fingerprint(quote), reference=quote.reference,
-        thresholds_version=policy_service.load_for_org(session, org).version)
+        thresholds_version=th.version)
     doc.written_at = _stamp(sent_on)
     outcome = quote_service.set_outcome(
         session, org, quote_id=quote.id, status=QuoteOutcomeStatus.SENT,
@@ -532,14 +547,15 @@ def purge_demo_seed(session: Session, organization_id: str) -> dict[str, int]:
     declaration of the same field is left alone.
     """
     subject_ids = list(DEMO_CUSTOMER_IDS | DEMO_PRODUCT_IDS)
-    # The platform quotes the seed minted are keyed on their customer — a
-    # demo customer's id is fixed and no real quote can name one — and their
-    # ids are what the rows hanging off them are keyed on. Empty, the `in_`
-    # below matches nothing, which is the idempotent second purge.
+    # The platform quote the seed minted is found by the document the seed
+    # recorded for it — a fixed ERP id no live send ever produces — not by
+    # its customer: a person can start a quote for a demo customer from the
+    # builder before the first real sync, and that is their work, kept. Empty,
+    # the `in_` below matches nothing, which is the idempotent second purge.
     demo_quote_ids = list(session.scalars(
-        select(models.QuoteDraft.quote_id).where(
-            models.QuoteDraft.organization_id == organization_id,
-            models.QuoteDraft.customer_id.in_(list(DEMO_CUSTOMER_IDS))))) or ["-"]
+        select(models.QuoteDocument.quote_id).where(
+            models.QuoteDocument.organization_id == organization_id,
+            models.QuoteDocument.external_document_id.in_(list(DEMO_QUOTE_REFS))))) or ["-"]
     removed = {
         # Outcomes first: they point at documents and at quotes.
         "quote_outcomes": session.query(models.QuoteOutcome).filter(
@@ -557,11 +573,7 @@ def purge_demo_seed(session: Session, organization_id: str) -> dict[str, int]:
         ).delete(synchronize_session=False),
         "quote_drafts": session.query(models.QuoteDraft).filter(
             models.QuoteDraft.organization_id == organization_id,
-            models.QuoteDraft.customer_id.in_(list(DEMO_CUSTOMER_IDS)),
-        ).delete(synchronize_session=False),
-        "quote_form_drafts": session.query(models.QuoteFormDraft).filter(
-            models.QuoteFormDraft.organization_id == organization_id,
-            models.QuoteFormDraft.customer_id.in_(list(DEMO_CUSTOMER_IDS)),
+            models.QuoteDraft.quote_id.in_(demo_quote_ids),
         ).delete(synchronize_session=False),
         "decisions": session.query(models.Decision).filter(
             models.Decision.organization_id == organization_id,

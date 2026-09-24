@@ -23,6 +23,7 @@ from decimal import Decimal
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import approvals, clock, enquiry, quote_fields, quote_workspace, resolution
@@ -39,7 +40,7 @@ from ..identity import service as identity_service
 from ..db import get_session
 from ..trust import audit
 from ..ingestion import connections as conn
-from .insight import _assigned_customer_ids
+from .insight import LINES_NOT_READ, _assigned_customer_ids
 from ..schemas import (
     CreateQuoteRequest,
     DiscountRequest,
@@ -288,7 +289,8 @@ def _books_for(session: Session, book: conn.CustomerBook) -> QuoteBooks:
                 f"This customer's books are {conn.system_label_for(connector)}, "
                 f"and no item master has been synced from that company yet — "
                 f"so nothing here can say what is in it. Run a sync from Data & "
-                f"connection. The quote can still be sent.")),
+                f"connection. The quote can still go out — sent where this "
+                f"connector has a writer, or marked as sent.")),
             contact_id=book.contact_id, system=connector, writer=writer,
             connection_id=book.connection.connection_id)
     return QuoteBooks(
@@ -402,8 +404,9 @@ def quote_from_erp(body: FromErpRequest,
     """Pick up a quote the ERP raised and revise it here.
 
     A form — not a quote; nothing is minted until the person saves — with the
-    ERP quote's customer and company already set and each of its lines read
-    through the ordinary intake: the code resolves against that company's
+    ERP quote's customer and company already set and each of its item lines
+    read through the ordinary intake — a line naming no item (freight,
+    handling) is not a catalogue question and is left out: the code resolves against that company's
     catalogue exactly as a pasted RFQ line would, so a code the ERP wrote
     that the catalogue does not know arrives UNRESOLVED rather than trusted.
     The rate is the ERP's net rate for the line, marked as a person's price
@@ -431,19 +434,32 @@ def quote_from_erp(body: FromErpRequest,
     if len(visible) != 1:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such quote")
     source = visible[0]
+    # The breakdown first, before anything is opened: a header the sync
+    # holds whose lines it has not read yet would make an empty form, and a
+    # form with no lines is a quote of nothing wearing the ERP's number.
+    # Refused with the sentence the lines endpoint gives, which says which
+    # sync fills them in.
+    rows = quote_book.lines_for(session, org, quote_ref=body.ref,
+                                connection_id=body.connection_id)
+    if not rows:
+        raise HTTPException(status.HTTP_409_CONFLICT, LINES_NOT_READ)
+    # The book's label is a name or a placeholder, and the placeholder is not
+    # a customer: a form started from a quote nobody attributed starts with
+    # no customer, which is a question the desk answers — never "Unattributed"
+    # written down as though somebody had chosen it.
+    customer = ("" if source.customer_label == quote_book.UNATTRIBUTED
+                else source.customer_label)
     # The customer has to belong to the company — it does, by construction,
     # but the one function that decides what a company means for a new quote
     # is the one that says so here too.
     company = _company_for_new_quote(session, org, CreateQuoteRequest(
-        customer=source.customer_label, customer_id=source.customer_id,
+        customer=customer, customer_id=source.customer_id,
         connection_id=body.connection_id))
     q = quote_workspace.create_form(
         session, org, user_id=principal.user_id,
-        customer=source.customer_label, customer_id=source.customer_id,
+        customer=customer, customer_id=source.customer_id,
         connection_id=company,
         source_erp={"connection_id": body.connection_id, "ref": body.ref})
-    rows = quote_book.lines_for(session, org, quote_ref=body.ref,
-                                connection_id=body.connection_id)
     books = books_for_quote(q.id, principal, session)
     lines = store.add_rfq(
         q, "", books.zoho,
@@ -1719,9 +1735,17 @@ def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
     out["company"] = (Companies(session, org).label_for(q.connectionId)
                       if q.connectionId else "")
     if q.revisionOf:
+        # The book's name and the ERP's own number for the document: the
+        # reference is the system's id (a 19-digit Zoho estimate id, a BC
+        # number), and the banner has to read as a person reads the ERP.
         out["revisionOf"] = {
             **q.revisionOf,
-            "company": Companies(session, org).label_for(q.revisionOf["connection_id"])}
+            "company": Companies(session, org).label_for(q.revisionOf["connection_id"]),
+            "number": session.scalar(
+                select(models.QuoteDoc.number).where(
+                    models.QuoteDoc.organization_id == org,
+                    models.QuoteDoc.connection_id == q.revisionOf["connection_id"],
+                    models.QuoteDoc.external_ref == q.revisionOf["ref"]))}
     newest = quote_service.latest_document(session, org, quote_id=q.id)
     unverified = (newest is not None and
                   newest.write_state == QuoteDocumentWriteState.UNVERIFIED.value)

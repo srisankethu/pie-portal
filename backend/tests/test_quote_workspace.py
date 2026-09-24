@@ -477,7 +477,7 @@ def test_an_erp_quote_can_be_picked_up_as_a_form_and_saved_as_a_revision(client,
     assert form["customer"] == "Alpha Tools" and form["customerId"] == mine
     assert form["connectionId"] == COMPANY and form["company"] == "SLS Engineers"
     assert form["revisionOf"] == {"connection_id": COMPANY, "ref": "erp-1",
-                                  "company": "SLS Engineers"}
+                                  "company": "SLS Engineers", "number": "SQ-1001"}
     # The priced line, and not the freight line: a line naming no item is
     # not something a catalogue can resolve, exactly as on the ERP page.
     assert [ln["reqCode"] for ln in form["lines"]] == ["2001174"]
@@ -486,12 +486,24 @@ def test_an_erp_quote_can_be_picked_up_as_a_form_and_saved_as_a_revision(client,
     assert ln["quoted"] == 800.0, "the net rate the customer was asked for, not the list rate"
     assert ln["priceSource"] == "USER", "somebody chose it in the ERP — not a rate nobody looked at"
 
+    assert form["revisionOf"]["number"] == "SQ-1001", "the ERP's number, which is what a person calls it"
+
     saved = client.post(f"/api/v1/quotes/form/{form['id']}/save", headers=owner).json()
     assert saved["saved"] is True and saved["number"] == "QB-0001"
     assert saved["revisionOf"] == form["revisionOf"]
     again = client.get(f"/api/v1/quotes/{saved['id']}", headers=owner).json()
     assert again["revisionOf"]["ref"] == "erp-1"
     assert again["lines"][0]["quoted"] == 800.0
+
+    # And the book knows: the ERP quote now names the revision started from
+    # it, so the page opens that rather than offering to pick it up again.
+    from app.commercial.insight import quote_book
+    from app.domain.origin import Companies
+    with client.Maker() as s:
+        book = {q.quote_document_ref: q for q in quote_book.build(
+            s, ORG, customer_names={}, customer_ids=None, companies=Companies(s, ORG))}
+    assert book["erp-1"].platform_revision == {"quote_id": saved["id"], "number": "QB-0001"}
+    assert book["erp-1"].to_dict()["platform_revision"]["number"] == "QB-0001"
 
 
 def test_a_quote_the_reader_may_not_see_cannot_be_picked_up(client, owner, sales):
@@ -514,6 +526,54 @@ def test_a_quote_the_reader_may_not_see_cannot_be_picked_up(client, owner, sales
     assert r.status_code == 404, r.text
     with client.Maker() as s:
         assert s.query(models.QuoteFormDraft).count() == 0, "a refusal opens no form"
+
+
+def test_a_quote_whose_lines_were_never_read_cannot_be_picked_up(client, owner):
+    """A header the sync holds without its breakdown would make a form of
+    nothing wearing the ERP's number. Refused, with the sentence the lines
+    endpoint gives — the one that says which sync reads them — and no form
+    is opened."""
+    from datetime import date
+    from decimal import Decimal
+
+    mine, _ = _two_companies(client)
+    with client.Maker() as s:
+        s.add(models.QuoteDoc(
+            organization_id=ORG, external_ref="erp-header", number="SQ-1002",
+            customer_id=mine, customer_ref="Alpha Tools", date=date(2026, 9, 1),
+            source_status="sent", outcome="UNRECORDED", total=Decimal("100"),
+            connector="zoho", connection_id=COMPANY))
+        s.commit()
+    r = client.post("/api/v1/quotes/from-erp",
+                    json={"connection_id": COMPANY, "ref": "erp-header"}, headers=owner)
+    assert r.status_code == 409, r.text
+    assert "have not been read from your ERP yet" in r.json()["detail"]
+    with client.Maker() as s:
+        assert s.query(models.QuoteFormDraft).count() == 0
+
+
+def test_an_unattributed_erp_quote_starts_with_no_customer_not_a_placeholder(client, owner):
+    """The book labels a quote nobody attributed "Unattributed". That is a
+    label, and it was being written down as the customer's name."""
+    from datetime import date
+    from decimal import Decimal
+
+    with client.Maker() as s:
+        s.add(models.QuoteDoc(
+            organization_id=ORG, external_ref="erp-walkin", number="SQ-1003",
+            customer_id=None, customer_ref="", date=date(2026, 9, 1),
+            source_status="sent", outcome="UNRECORDED", total=Decimal("800"),
+            connector="zoho", connection_id=COMPANY))
+        s.add(models.ErpQuoteLine(
+            organization_id=ORG, quote_ref="erp-walkin", external_ref="erp-walkin:l1",
+            line_number=0, item_code="2001174", description="Insert", qty=Decimal("1"),
+            unit="pcs", rate=Decimal("800"), amount=Decimal("800"),
+            connector="zoho", connection_id=COMPANY))
+        s.commit()
+    r = client.post("/api/v1/quotes/from-erp",
+                    json={"connection_id": COMPANY, "ref": "erp-walkin"}, headers=owner)
+    assert r.status_code == 200, r.text
+    assert r.json()["customer"] == "" and r.json()["customerId"] is None
 
 
 def test_a_quote_started_from_nothing_revises_nothing(client, owner):
@@ -646,13 +706,22 @@ def _business_central(client, monkeypatch) -> None:
     # and the question here is which catalogue a *live* book gets.
     monkeypatch.setattr(settings, "ZOHO_QUOTE_SERVICE", "live")
     monkeypatch.setattr(conn, "credential_material", lambda s, c: "material")
+    real_spec = erp.get_spec
 
     class _Spec:
+        """The real spec — its words, its terms — with only the writer faked."""
+
+        def __init__(self, inner):
+            self._inner = inner
+
         def build_source(self, material):
             assert material == "material"
             return "the writer"
 
-    monkeypatch.setattr(erp, "get_spec", lambda key: _Spec())
+        def __getattr__(self, name):
+            return getattr(self._inner, name)
+
+    monkeypatch.setattr(erp, "get_spec", lambda key: _Spec(real_spec(key)))
     with client.Maker() as s:
         s.add(models.ZohoConnection(connection_id="cx_bc", organization_id=ORG,
                                     label="Contoso BC", zoho_organization_id="bc-1",
@@ -732,13 +801,105 @@ def test_a_line_answered_from_the_sync_says_so_and_carries_no_list_price(client,
     assert held.inBooks is True and held.itemId == "ITEM-900"
     assert held.listPrice is None and held.quoted is None
     assert held.status()["label"] == "NO PRICE", "priced by a person, never by a guess"
-    assert held.booksAsOf == "2026-09-12"
-    assert held.to_dict(False)["booksAsOf"] == "2026-09-12", "both roles see the date"
+    assert held.booksAsOf == "2026-09-12T06:00:00+00:00"
+    assert held.to_dict(False)["booksAsOf"] == held.booksAsOf, "both roles see the stamp"
     assert held.service is None, "not BOOKS OFFLINE: the books answered"
 
     assert absent.inBooks is False and absent.status()["label"] == "NOT IN BOOKS"
     assert absent.flags()["missingBooks"] is True
-    assert absent.booksAsOf == "2026-09-12", "absent as of the last pull"
+    assert absent.booksAsOf == "2026-09-12T06:00:00+00:00", "absent as of the last pull"
+
+
+class _RegistryWriter:
+    """A registry connector's writer as the send sees it: the master's id on
+    every line, and a refusal naming the line that arrives without one —
+    the contract ``dynamics365`` and ``acumatica`` keep, pinned by their own
+    tests. What this proves is the seam in front of it."""
+
+    def __init__(self) -> None:
+        self.received: list[list[dict]] = []
+
+    def create_sales_quotes(self, customer, lines, *, customer_ref=None, reference=None):
+        from app.ingestion.errors import SourceWriteRefused
+        from app.zoho import ZohoEstimate
+
+        missing = [ln["code"] for ln in lines if not ln.get("itemId")]
+        if missing:
+            raise SourceWriteRefused(
+                f"Business Central holds no item for {', '.join(missing)}; the "
+                f"line cannot be written.", codes=missing)
+        self.received.append([dict(ln) for ln in lines])
+        return ZohoEstimate(document_id=f"bc-{len(self.received)}", number="SQ-1001",
+                            customer=customer, line_count=len(lines))
+
+
+def test_a_registry_customers_quote_sends_with_item_ids_from_the_master(client, owner, monkeypatch):
+    """End to end from the synced master to the writer: the item id the sync
+    holds lands on the line the writer receives, and a line the master does
+    not hold reaches the writer without one — where the connector's own
+    refusal names it. The plan's Phase 5 test, as the seam allows."""
+    from app.ingestion.synced_catalogue import SyncedCatalogue
+    from app.routers.quote import QuoteBooks, books_for_quote
+    from app.store import store
+
+    _business_central(client, monkeypatch)
+    _synced_item(client, code="CNMG 120408-MP", external_id="ITEM-900")
+    with client.Maker() as s:
+        s.add(models.Customer(customer_id="c_bc", organization_id=ORG,
+                              connector="dynamics365", connection_id="cx_bc",
+                              external_id="cust-7", name="Contoso Ltd"))
+        s.commit()
+    q = client.post("/api/v1/quotes", json={"customer": "Contoso Ltd", "customer_id": "c_bc",
+                                            "connection_id": "cx_bc"}, headers=owner).json()
+    assert q["connectionId"] == "cx_bc", q
+
+    reads = client.Maker()
+    catalogue = SyncedCatalogue(reads, ORG, connection_id="cx_bc", connector="dynamics365",
+                                label="Business Central")
+    held = _line("L1", code="CNMG 120408-MP", price=None)
+    held.inBooks, held.listPrice, held.itemId = None, None, None
+    store._enrich_from_zoho(held, catalogue)
+    held.quoted, held.priceSource = 480.0, "USER"
+    _seed_lines(client, q["id"], held)
+
+    writer = _RegistryWriter()
+    client.app.dependency_overrides[books_for_quote] = lambda: QuoteBooks(
+        zoho=catalogue, contact_id="cust-7", system="dynamics365",
+        connection_id="cx_bc", writer=writer)
+    try:
+        sent = client.post(f"/api/v1/quotes/{q['id']}/estimate", headers=owner).json()
+        assert sent["ok"] is True, sent
+        assert sent["documentNumber"] == "SQ-1001" and sent["system"] == "dynamics365"
+        [lines] = writer.received
+        assert lines == [{"code": "CNMG 120408-MP", "itemId": "ITEM-900",
+                          "qty": 10, "rate": 480.0}]
+        with client.Maker() as s:
+            doc = quote_service_latest(s, q["id"])
+            assert doc.external_system == "dynamics365" and doc.connection_id == "cx_bc"
+            assert doc.external_document_id == "bc-1"
+
+        # A line the master does not hold: enriched, it reads NOT IN BOOKS,
+        # and the send carries it to the writer with no id, which refuses by
+        # name. Nothing is written; the first document stands.
+        absent = _line("L2", code="KCMT 090304 LF", price=None)
+        absent.inBooks, absent.listPrice, absent.itemId = None, None, None
+        store._enrich_from_zoho(absent, catalogue)
+        absent.quoted, absent.priceSource = 300.0, "USER"
+        assert absent.status()["label"] == "NOT IN BOOKS"
+        _seed_lines(client, q["id"], absent)
+        refused = client.post(f"/api/v1/quotes/{q['id']}/estimate", headers=owner).json()
+        assert refused["ok"] is False, refused
+        assert "KCMT 090304 LF" in refused["message"]
+        assert refused["blockers"] == ["L2"]
+        assert len(writer.received) == 1
+    finally:
+        client.app.dependency_overrides.pop(books_for_quote, None)
+        reads.close()
+
+
+def quote_service_latest(s, quote_id):
+    from app.commercial import quote_service
+    return quote_service.latest_document(s, ORG, quote_id=quote_id)
 
 
 def test_a_customer_with_no_recorded_company_is_not_refused_here(client, owner):

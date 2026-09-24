@@ -1053,7 +1053,9 @@ export default function QuoteBuilder({ session }: { session: PlatformSession }) 
           replaces. */}
       {quote.revisionOf && (
         <Alert severity="info" sx={{ mb: 2 }}>
-          <AlertTitle>Revises {quote.revisionOf.ref} from {quote.revisionOf.company}</AlertTitle>
+          <AlertTitle>
+            Revises {quote.revisionOf.number ?? quote.revisionOf.ref} from {quote.revisionOf.company}
+          </AlertTitle>
           The lines and prices came from that quote and were resolved against
           this company's catalogue again. Nothing here changes the original.
         </Alert>

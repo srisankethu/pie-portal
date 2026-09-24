@@ -42,7 +42,7 @@ from __future__ import annotations
 
 from datetime import date
 from decimal import Decimal
-from typing import Optional, Sequence
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field, field_validator
@@ -246,8 +246,7 @@ _NO_SUCH_PLATFORM_QUOTE = (
 
 
 def _holds_platform_quote(session: Session, principal: Principal,
-                          quote_id: str, *, when_unattributed: bool,
-                          also: Sequence[Optional[str]] = ()) -> bool:
+                          quote_id: str, *, when_unattributed: bool) -> bool:
     """Whether this principal holds the platform quote named by ``quote_id``.
 
     ``_may_record_erp_quote`` scoped the other key on the reasoning that
@@ -383,15 +382,6 @@ def _holds_platform_quote(session: Session, principal: Principal,
     for snapshot in snapshots_for_quote(session, org, quote_id):
         if snapshot.customer_id:
             return _holds_account(session, principal, snapshot.customer_id)
-    # ``also``: accounts a caller's own rows name for this quote, consulted
-    # after the three above and never before them. The diagnosis read passes
-    # the stored diagnoses' customers — evidence of the trail's kind, written
-    # when the quote was assessed and before anybody recorded an outcome —
-    # so a salesperson can read the cards they were shown on a quote that
-    # has no trail yet, and cannot read anybody else's.
-    for customer_id in also:
-        if customer_id:
-            return _holds_account(session, principal, customer_id)
     return when_unattributed
 
 

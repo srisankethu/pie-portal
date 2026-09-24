@@ -392,6 +392,10 @@ export interface ErpQuote {
    *  it — joined server-side on system, company and the ERP's own id. Null
    *  for a quote raised in the ERP by hand, which is most of them. */
   platform_quote?: { quote_id: string; number: string } | null;
+  /** The PIE quote somebody started from this document ("Revise in PIE"),
+   *  where one exists — the other direction from `platform_quote`. The page
+   *  opens it rather than offering to pick the document up again. */
+  platform_revision?: { quote_id: string; number: string } | null;
   /** What a person here recorded about this document, if a decision: the
    *  status, the reason and the winner where it was a loss, and when. Null
    *  where nobody has said. */
@@ -481,7 +485,12 @@ export interface Quote {
    *  page), or null for a quote that revises nothing. Both halves of the
    *  pointer, because an ERP reference is unique only inside one book, and
    *  the book's name so the banner can say it. */
-  revisionOf: { connection_id: string; ref: string; company: string } | null;
+  revisionOf: {
+    connection_id: string; ref: string; company: string;
+    /** The ERP's own number for the document, where the sync holds it —
+     *  what a person calls the quote; `ref` is the system's id. */
+    number: string | null;
+  } | null;
   number: string;
   /** Whether a quote exists for this yet.
    *

@@ -137,3 +137,53 @@ def test_the_demo_holds_a_quote_this_platform_sent_that_the_erp_then_accepted(se
     assert row["sent"]["erp"]["outcome"] == "WON"
     assert row["readiness"] == "WON"
     assert {d.connection_id for d in session.query(models.QuoteDoc)} == {"cx_demo"}
+
+
+def test_the_demo_company_is_never_the_first_enabled_one(session):
+    """Three things read "the organization's first enabled Zoho company" —
+    credential resolution with no connection named, the boot-time catalogue
+    binding, the sync's targets — and every one of them would have found the
+    demo row. It is a name for the demo's documents, and nothing to pull."""
+    from app.ingestion import connections as conn
+
+    seed_demo(session)
+    session.commit()
+    row = session.get(models.ZohoConnection, "cx_demo")
+    assert row is not None and row.enabled is False
+    assert conn.list_connections(session, "org_pie", enabled_only=True) == []
+    assert conn.get_zoho_credentials(session, "org_pie") is None
+
+
+def test_the_seeded_send_is_priced_clear_of_the_floor(session):
+    """A seeded send below the margin floor would be a quote the gate
+    refuses, recorded as though it had passed. Priced off the policy in
+    force, so the demo cannot drift under it when the policy moves."""
+    from app import quote_workspace
+    from app.commercial import policy
+
+    seed_demo(session)
+    session.commit()
+    th = policy.load_for_org(session, "org_pie")
+    [row] = quote_workspace.list_drafts(session, "org_pie", user_id="usr_sales")
+    quote = quote_workspace.load(session, "org_pie", row["id"])
+    for ln in quote.lines:
+        assert ln.quoted is not None and ln.cost is not None
+        assert (ln.quoted - ln.cost) / ln.quoted > float(th.margin_floor)
+
+
+def test_purge_keeps_a_persons_own_quote_for_a_demo_customer(session):
+    """The demo customers are fake; a quote somebody started for one from
+    the builder is not. The purge removes what the seed minted — found by
+    the document it recorded — and leaves that quote where it is."""
+    from app import quote_workspace
+
+    seed_demo(session)
+    theirs = quote_workspace.create(session, "org_pie", user_id="usr_sales",
+                                    customer="Pitti Engineering Ltd",
+                                    customer_id="cst_pitti", connection_id="cx_demo")
+    session.commit()
+
+    removed = purge_demo_seed(session, "org_pie")
+    session.commit()
+    assert removed["quote_drafts"] == 1
+    assert session.get(models.QuoteDraft, theirs.id) is not None

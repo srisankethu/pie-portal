@@ -163,7 +163,13 @@ def translate_item(row: dict[str, Any]) -> dict[str, Any]:
         "category_name": str(row.get("itemCategoryCode") or "") or None,
         "status": "inactive" if row.get("blocked") else "active",
         "item_type": "service" if item_type == "service" else item_type or None,
-        "purchase_rate": row.get("unitCost"),
+        # ``unitCost`` is a non-nullable decimal on BC's item card, so an item
+        # nobody has costed carries 0 — and 0 read as a cost is a 100% margin
+        # on every line that names it, which is the benign default CLAUDE.md
+        # §1 refuses. ``None`` is "not stated", the reading Acumatica's
+        # ``LastCost or AverageCost`` already takes; the synced catalogue then
+        # answers no cost rather than a free item.
+        "purchase_rate": row.get("unitCost") or None,
         "track_inventory": item_type == "inventory",
     }
     # BC states quantity on hand as `inventory`; absent means this API

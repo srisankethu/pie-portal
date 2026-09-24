@@ -31,9 +31,11 @@ line the platform had never heard of.
   books and every one reads NO PRICE until a person prices it. That is the
   truth about what was synced, and an invented list price — say, the last
   invoice rate — would be exactly the number a desk quotes without looking.
-* ``as_of`` — when this answer was last true: the record's ``last_synced_at``,
-  else the snapshot's date. A price read live is current by construction; one
-  read from a sync is as old as the sync, and the line says so.
+* ``as_of`` — when this answer was last true: the record's ``last_synced_at``
+  as a stamp, else the snapshot's date. A price read live is current by
+  construction; one read from a sync is as old as the sync, and the line says
+  so. An item the master holds as inactive answers ``in_books=False`` with
+  its id and stock beside it, exactly as the live adapter answers one.
 
 ``create_item`` refuses. There is no live write to a registry connector's item
 master, and a refusal that names the book is the same answer the adapter it
@@ -62,6 +64,7 @@ from typing import Optional
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from .. import clock
 from ..domain import models
 from ..identity.matchers import normalize_sku
 from ..zoho import ZohoItem, ZohoWriteRefused
@@ -112,16 +115,24 @@ class SyncedCatalogue:
                             list_price=None, stock=None, cost=None,
                             as_of=self._master_stamp())
         snapshot = self._latest_snapshot(rec.product_id) if rec.product_id else None
+        # The stamp itself, not a calendar day cut here: the screen renders it
+        # in the business's zone like every other timestamp, so a pull at
+        # 23:30 in Chennai is not Tuesday's here and Wednesday's there. A
+        # snapshot carries a date already.
         as_of = None
         if rec.last_synced_at is not None:
-            as_of = rec.last_synced_at.date().isoformat()
+            as_of = clock.iso(rec.last_synced_at)
         elif snapshot is not None:
             as_of = snapshot.as_of.isoformat()
         return ZohoItem(
             code=code,
             name=((product.name if product is not None else "")
                   or rec.description or code),
-            in_books=True,
+            # An inactive (BC: blocked) item exists in the master and cannot
+            # be put on a document — the reading the live adapter takes, for
+            # the same reason: reporting it available moves the failure to
+            # the send. A record with no product row cannot say, and is held.
+            in_books=(product.active if product is not None else True),
             list_price=None,
             stock=(int(snapshot.available) if snapshot is not None
                    and snapshot.available is not None else None),
@@ -152,27 +163,33 @@ class SyncedCatalogue:
                        rec.connection_id == self._connection_id))
         # ``sku`` holds the normalised key the identity layer writes, so an
         # exact comparison on it is the same match ``search_items`` re-ranks by.
+        # Ordered, so two records that normalise to one SKU answer the same
+        # way on every read and every backend — the first written wins, and
+        # the master that holds two is what a sync report should be saying.
+        base = base.order_by(rec.created_at, rec.record_id)
         if wanted:
             row = self._s.execute(base.where(rec.sku == wanted).limit(1)).first()
             if row is not None:
                 return row[0], row[1]
         # Then the product's name, which is what a person types and what the
         # item screens show; ``search_items`` publishes that as the code for
-        # exactly this reason.
-        row = self._s.execute(base.where(prod.name == code).limit(1)).first()
+        # exactly this reason. Case-insensitive, as the live adapter's name
+        # leg is; punctuation is the SKU leg's business.
+        row = self._s.execute(base.where(func.lower(prod.name) == code.lower())
+                              .limit(1)).first()
         if row is not None:
             return row[0], row[1]
         return None, None
 
     def _master_stamp(self) -> Optional[str]:
-        """When this company's master was last pulled, as an ISO date — the
-        newest ``last_synced_at`` across its records. Cached per instance."""
+        """When this company's master was last pulled — the newest
+        ``last_synced_at`` across its records, as a stamp. Cached per instance."""
         if self._master_as_of == "":
             newest = self._s.scalar(
                 select(func.max(models.ItemConnectorRecord.last_synced_at)).where(
                     models.ItemConnectorRecord.organization_id == self._org,
                     models.ItemConnectorRecord.connection_id == self._connection_id))
-            self._master_as_of = newest.date().isoformat() if newest else None
+            self._master_as_of = clock.iso(newest) if newest else None
         return self._master_as_of
 
     def _latest_snapshot(self, product_id: str) -> Optional[models.StockSnapshot]:

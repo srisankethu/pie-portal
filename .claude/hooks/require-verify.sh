@@ -51,9 +51,10 @@ mkdir -p .claude && printf '%s' "$SIG" > "$GUARD"
 MIGRATION_NOTE=""
 if ! git diff HEAD --quiet -- backend/app/domain backend/alembic 2>/dev/null; then
   MIGRATION_NOTE="
-This change touches models or migrations, so the empty-database run in step 5 is
-the one that matters. Your own database is already migrated and cannot exercise
-it. CLAUDE.md §4 is an account of what happens when nobody checks."
+This change touches models or migrations, so the empty-database runs in steps 6
+and 7 (SQLite, then PostgreSQL) are the ones that matter. Your own database is
+already migrated and cannot exercise them. CLAUDE.md §4 is an account of what
+happens when nobody checks."
 fi
 
 cat >&2 <<EOF

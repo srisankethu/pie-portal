@@ -69,7 +69,12 @@ def customer_label(customer_id: Optional[str], customer_ref: str,
     same table under two spellings of the same customer is the kind of difference
     nobody reports as a bug and everybody distrusts.
     """
-    return names.get(customer_id or "") or customer_ref or "Unattributed"
+    return names.get(customer_id or "") or customer_ref or UNATTRIBUTED
+
+
+#: The label for a quote whose counterparty nobody recorded. Named so a caller
+#: that must not write it down as a customer can tell it from a real name.
+UNATTRIBUTED = "Unattributed"
 
 
 @dataclass(frozen=True)
@@ -109,6 +114,12 @@ class BookQuote:
     #: direction), never stored on this table, which the sync rewrites whole.
     #: ``None`` for a quote raised in the ERP by hand, which is most of them.
     platform_quote: Optional[dict[str, str]]
+    #: The PIE quote somebody *started from* this document — "Revise in PIE"
+    #: — where one exists: ``{"quote_id", "number"}``, read off the draft's
+    #: own pointer, qualified by company. The other direction from
+    #: ``platform_quote``: that one was written *into* the ERP, this one was
+    #: read *out of* it. ``None`` for most quotes.
+    platform_revision: Optional[dict[str, str]]
     #: What a person here recorded about this document, if anything — the
     #: ``quote_outcomes`` row naming it by the ERP's own id: its status, the
     #: reason and the winner where it was a loss, and when. ``None`` where
@@ -157,6 +168,7 @@ class BookQuote:
             "company": self.company,
             "origin": self.origin,
             "platform_quote": self.platform_quote,
+            "platform_revision": self.platform_revision,
             "recorded": self.recorded,
             "outcome_of_record": self.outcome_of_record,
             "outcome_source": self.outcome_source,
@@ -207,6 +219,7 @@ def build(session: Session, org: str, *, customer_names: dict[str, str],
 
     docs = session.scalars(stmt).all()
     written = _platform_quotes(session, org, docs)
+    revised = _platform_revisions(session, org, docs)
     records = quote_service.erp_outcomes_of_record(session, org, docs)
     rows = [
         BookQuote(
@@ -225,6 +238,7 @@ def build(session: Session, org: str, *, customer_names: dict[str, str],
                      else "Source not recorded"),
             origin=companies.of(row).to_dict() if companies else None,
             platform_quote=written.get(row.quote_document_id),
+            platform_revision=revised.get(row.quote_document_id),
             recorded=_recorded(records[row.quote_document_id].human),
             outcome_of_record=_of_record(records[row.quote_document_id]),
             outcome_source=(records[row.quote_document_id].source.value
@@ -259,6 +273,34 @@ def _of_record(rec: quote_service.OutcomeOfRecord) -> str:
     record. An open quote is UNRECORDED here whatever its lifecycle state,
     which is what this tab has always meant by the word."""
     return rec.status.value if rec.decided else "UNRECORDED"
+
+
+def _platform_revisions(session: Session, org: str,
+                        docs: list[models.QuoteDoc]) -> dict[str, dict[str, str]]:
+    """Which of these ERP quotes a platform quote was started from, keyed by
+    the ERP row's id.
+
+    Read off ``quote_drafts``' own pointer (``source_erp_connection_id``,
+    ``source_erp_quote_ref``), qualified by company because an ERP reference
+    is unique only inside one book; the newest draft per document answers.
+    Without this the page that offers "Revise in PIE" could not tell a
+    document already picked up from one that was not, and offered it again.
+    One query for the whole book.
+    """
+    refs = {d.external_ref for d in docs}
+    if not refs:
+        return {}
+    by_key: dict[tuple[Optional[str], str], dict[str, str]] = {}
+    for q in session.scalars(
+            select(models.QuoteDraft)
+            .where(models.QuoteDraft.organization_id == org,
+                   models.QuoteDraft.source_erp_quote_ref.in_(refs))
+            .order_by(models.QuoteDraft.created_at.desc(),
+                      models.QuoteDraft.quote_id.desc())):
+        by_key.setdefault((q.source_erp_connection_id, q.source_erp_quote_ref),
+                          {"quote_id": q.quote_id, "number": q.number})
+    return {d.quote_document_id: by_key[(d.connection_id, d.external_ref)]
+            for d in docs if (d.connection_id, d.external_ref) in by_key}
 
 
 def _platform_quotes(session: Session, org: str,

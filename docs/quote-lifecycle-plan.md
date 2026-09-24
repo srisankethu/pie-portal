@@ -5,8 +5,19 @@ recommendation. Phase 0 landed (`71f2a6b`). Phase 1 landed (`9d520f5`).
 Phase 2 landed (`d4767a6`), with two departures noted in place. Phase 3 landed
 (`a37d87d`, `104a5b0`, `ad6f803`), with three departures noted in place and an
 adversarial review answered. Phase 4 is complete: the qualified pointer, the
-deletion sweep and counters, and the three connectors that read quotes.
-Phases 5–6 next.**
+deletion sweep and counters, and the three connectors that read quotes — merged
+as PR #275 (`4c2007c`), its review survivors and a completeness sweep closed
+after the merge (`24a86dd`, `62772ea`). Phase 5 landed in three commits — 5A
+the synced catalogue (`5ab7452`), 5B revise-from-ERP with migration `x11qsrc`
+(`1c851cd`), 5C the demo's connected company and PIE-sent quote (`869b099`) —
+and Phase 6 (`3d614e3`) closed the contract and scoping items; an adversarial
+review over Phases 5–6 followed, and its findings were fixed. Two departures
+are noted in place: the catalogue module is `ingestion/synced_catalogue.py`,
+not `item_master.py`; and of the Phase 5 tests named below, the end-to-end
+registry send runs for Business Central through the builder with a writer
+double (`test_quote_workspace`) — NetSuite has no quote writer, so there is no
+NetSuite send to test, and the connector writers' own refusals are pinned in
+`test_erp_connectors`.**
 
 The question this answers: *how do we handle quotes the ERP raised, quotes across
 several connected companies and ERPs, a PIE quote not yet sent to the ERP, and a

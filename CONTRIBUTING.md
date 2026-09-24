@@ -68,7 +68,9 @@ already migrated, so it can never exercise the empty case — and the empty case
 is the one production runs. CLAUDE.md §4 is an account of what happens when
 nobody checks: the schema and the models had drifted apart in 130 places,
 invisibly. Where no PostgreSQL binaries exist, 7 and 8 are skipped with a
-visible note and the run does not stamp as verified.
+visible note; the run still stamps, and its verdict reads "VERIFIED — but
+narrowed" naming what went uncovered, so a narrowed run never reads as a full
+one.
 
 `verify.sh` runs every step and reports all failures at the end rather than
 stopping at the first, so one red build tells you everything that is wrong.

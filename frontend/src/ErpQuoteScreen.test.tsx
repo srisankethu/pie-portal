@@ -755,6 +755,28 @@ describe("revising an ERP quote here", () => {
     expect(screen.queryByText("builder for f-1")).toBeNull();
   });
 
+  it("opens the revision that already exists rather than picking the document up again", async () => {
+    drawQualified({ platform_revision: { quote_id: "q-7", number: "QB-0007" } });
+    expect(await screen.findByText(/Being revised in PIE as QB-0007/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Open the revision" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Revise in PIE" })).toBeNull();
+  });
+
+  it("makes one form of a double click", async () => {
+    let release = () => {};
+    reviseErpQuote.mockReturnValue(new Promise((resolve) => {
+      release = () => resolve({ id: "f-1", saved: false });
+    }));
+    drawQualified();
+    const button = await screen.findByRole("button", { name: "Revise in PIE" });
+    fireEvent.click(button);
+    fireEvent.click(button);
+    expect(reviseErpQuote).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "Opening…" })).toBeDisabled();
+    release();
+    expect(await screen.findByText("builder for f-1")).toBeInTheDocument();
+  });
+
   it("is not offered where this platform already holds the quote", async () => {
     drawQualified({ platform_quote: { quote_id: "q-9", number: "QB-0009" } });
     expect(await screen.findByRole("button", { name: "Open in the Quote Builder" }))

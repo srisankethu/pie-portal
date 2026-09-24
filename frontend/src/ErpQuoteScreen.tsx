@@ -179,6 +179,9 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   const [lines, setLines] = useState<ErpQuoteLines | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
+  /** A revise in flight. One click is one form; a second press while the
+   *  first is answering must not open a second. */
+  const [revising, setRevising] = useState(false);
   /** Bumped after an outcome is recorded, so the page re-reads what the
    *  server now says rather than patching a copy of it. */
   const [nonce, setNonce] = useState(0);
@@ -266,8 +269,11 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   // Offered where this platform holds no quote for the document yet — one
   // it does hold is opened, above — and where the book is known: the server
   // refuses a bare reference, because two connected books can both hold it.
-  const canRevise = !quote.platform_quote && Boolean(quote.origin?.connection_id);
+  const canRevise = !quote.platform_quote && !quote.platform_revision
+    && Boolean(quote.origin?.connection_id);
   const revise = async () => {
+    if (revising) return;
+    setRevising(true);
     try {
       const form = await api.reviseErpQuote(
         session.token, quote.origin!.connection_id!, quote.quote_document_ref);
@@ -276,6 +282,7 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
       // The server's own sentence, on the page — a refusal that only reached
       // the console would leave a button that does nothing.
       setError(e instanceof Error ? e.message : String(e));
+      setRevising(false);
     }
   };
   const fields = Object.entries(attributes).filter(
@@ -305,9 +312,9 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
               </Button>
             )}
             {canRevise && (
-              <Button size="small" variant="outlined" sx={TOUCH}
+              <Button size="small" variant="outlined" sx={TOUCH} disabled={revising}
                       onClick={() => { void revise(); }}>
-                Revise in PIE
+                {revising ? "Opening…" : "Revise in PIE"}
               </Button>
             )}
           </Stack>
@@ -387,6 +394,25 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
         >
           Built in PIE as {quote.platform_quote.number || "a draft"} and written into
           {" "}{quote.company} from there.
+        </Alert>
+      )}
+
+      {/* The other direction: a quote somebody started here *from* this
+          document. Opened rather than picked up again — the button above
+          is withheld while this exists, so one document does not gain a
+          second revision by a second reader pressing the same button. */}
+      {!quote.platform_quote && quote.platform_revision && (
+        <Alert
+          severity="info"
+          sx={{ mb: 2 }}
+          action={
+            <Button size="small" sx={TOUCH}
+                    onClick={() => navigate(pathFor("quotes", quote.platform_revision!.quote_id))}>
+              Open the revision
+            </Button>
+          }
+        >
+          Being revised in PIE as {quote.platform_revision.number || "a draft"}.
         </Alert>
       )}
 

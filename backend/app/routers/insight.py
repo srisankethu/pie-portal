@@ -85,6 +85,18 @@ MIN_MONTHS = 1
 MAX_MONTHS = 12
 
 
+#: Why a quote the book holds has no lines, in the one sentence both the
+#: lines endpoint and the revise-from-ERP refusal give — a reader who acted
+#: on a shorter one got nowhere, and two spellings of the advice would drift.
+LINES_NOT_READ = (
+    "The lines on this quote have not been read from your ERP yet. Two things "
+    "stop a sync filling them in: a pull that already holds the quote refreshes "
+    "its status without re-reading the breakdown, and a pull only covers quotes "
+    "raised inside its own date window. A full sync reaching back past this "
+    "quote's date is what reads them. Data & connection reports how many lines "
+    "the last run actually read.")
+
+
 def _envelope(data: dict, *, th: Any, empty_reason: Optional[str] = None,
               **extra: Any) -> dict:
     """Every insight response, with the two facts about it that are not data.
@@ -1938,15 +1950,7 @@ def quote_book_lines(quote_ref: str,
         # raised inside its date window — so "run a sync" is not advice unless
         # it says which sync. The sync screen's Quotes row carries the number
         # that tells the two apart.
-        empty_reason=(None if rows else
-                      "The lines on this quote have not been read from your "
-                      "ERP yet. Two things stop a sync filling them in: a pull "
-                      "that already holds the quote refreshes its status "
-                      "without re-reading the breakdown, and a pull only covers "
-                      "quotes raised inside its own date window. A full sync "
-                      "reaching back past this quote's date is what reads them. "
-                      "Data & connection reports how many lines the last run "
-                      "actually read."))
+        empty_reason=(None if rows else LINES_NOT_READ))
 
 
 @router.get("/cashflow")

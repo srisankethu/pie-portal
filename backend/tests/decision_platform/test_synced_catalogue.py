@@ -88,7 +88,7 @@ def test_an_item_the_sync_holds_is_in_the_books_with_its_id_and_its_stock(sessio
     assert item.cost == 371.0
     assert item.list_price is None, "the master carries no selling price"
     assert item.synthetic is False
-    assert item.as_of == "2026-09-12"
+    assert item.as_of == "2026-09-12T06:30:00+00:00"
 
 
 def test_a_code_the_sync_does_not_hold_is_not_in_the_books_as_of_the_sync(session):
@@ -98,11 +98,11 @@ def test_a_code_the_sync_does_not_hold_is_not_in_the_books_as_of_the_sync(sessio
     assert item.item_id is None
     # Absent *as of the last pull*: an item created in the book since is not
     # known here, and the line says how old that answer is.
-    assert item.as_of == "2026-09-12"
+    assert item.as_of == "2026-09-12T06:30:00+00:00"
 
 
 def test_the_products_name_is_tried_after_the_sku(session):
-    item = _catalogue(session).get_item("Freight & handling")
+    item = _catalogue(session).get_item("freight & HANDLING")
     assert item is not None and item.in_books is True and item.item_id == "SVC-1"
     assert item.stock is None and item.cost is None, "no snapshot is not nought"
     # No stamp on the record and no snapshot to fall back on: unknown, not today.
@@ -130,3 +130,24 @@ def test_creating_an_item_is_refused_and_names_the_book(session):
 
 def test_an_empty_code_answers_nothing(session):
     assert _catalogue(session).get_item("") is None
+
+
+def test_an_inactive_item_is_not_in_the_books_but_is_still_named(session):
+    """The live adapter's reading: a blocked item exists and cannot go on a
+    document, so it reads NOT IN BOOKS — with its id and stock beside it."""
+    session.get(models.Product, "p_cnmg").active = False
+    session.flush()
+    item = _catalogue(session).get_item("CNMG120408MP")
+    assert item.in_books is False
+    assert item.item_id == "ITEM-900" and item.stock == 42
+
+
+def test_two_records_on_one_sku_answer_the_same_way_every_time(session):
+    """Ordered, not whichever row the planner returned first."""
+    from datetime import datetime, timezone
+    _record(session, rid="rec_twin", connection_id=BC, external_id="ITEM-901",
+            sku="CNMG120408MP", product_id=None,
+            synced_at=datetime(2026, 9, 13, tzinfo=timezone.utc))
+    session.flush()
+    answers = {_catalogue(session).get_item("CNMG120408MP").item_id for _ in range(5)}
+    assert answers == {"ITEM-900"}, "the first written, on every read"

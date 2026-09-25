@@ -145,6 +145,16 @@ function quoteLineNote(s: SyncRun): string | undefined {
   return "no lines read — already held, or the detail call did not run";
 }
 
+function retiredTotal(s: SyncRun): number {
+  return Object.values(s.notes?.retired ?? {}).reduce((a, b) => a + b, 0);
+}
+
+function retiredNote(s: SyncRun): string | undefined {
+  const byKind = Object.entries(s.notes?.retired ?? {});
+  if (byKind.length === 0) return undefined;
+  return byKind.map(([kind, n]) => `${count(n)} ${kind}`).join(" · ");
+}
+
 function factGroups(s: SyncRun): { title: string; rows: FactRow[] }[] {
   return [
     {
@@ -208,6 +218,16 @@ function factGroups(s: SyncRun): { title: string; rows: FactRow[] }[] {
           // indistinguishable from a broken line pull unless the second number
           // is on screen beside the first.
           note: quoteLineNote(s),
+        },
+        // What the deletion sweep removed. Listed unconditionally, at zero,
+        // for the reason the rows above are — and because this number used to
+        // exist only on the in-memory run report, so the sweep's one stated
+        // mitigation (a retired quote leaves a person's loss reason dangling
+        // *and counted*) counted into a value nobody could read afterwards.
+        {
+          label: "Retired", value: count(retiredTotal(s)),
+          tip: "Documents the ERP no longer holds, removed here so they stop counting as revenue, cost or a receivable. Only a listing that ran to its end may retire anything; a pull cut short retires nothing. A retired quote keeps any outcome a person recorded about it, with the pointer left dangling rather than deleted.",
+          note: retiredNote(s),
         },
         {
           label: "Payments out", value: count(s.vendor_payments),

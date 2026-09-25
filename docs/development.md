@@ -21,7 +21,12 @@ pie-portal/
 │   │   ├── repositories.py    org-scoped data access (the isolation seam)
 │   │   │
 │   │   ├── domain/            models.py (ORM) · enums.py · schemas.py
-│   │   ├── ingestion/         Zoho source → normalize → idempotent sync
+│   │   ├── ingestion/         Zoho source → normalize → idempotent sync;
+│   │   │                      erp/ is the connector registry (BC, Acumatica,
+│   │   │                      NetSuite, P21, Sage) and synced_catalogue.py the
+│   │   │                      catalogue a registry connector's quote reads
+│   │   ├── commercial/        deterministic numbers; quote_service.py is the
+│   │   │                      quote lifecycle (documents, outcomes, one rule)
 │   │   ├── signals/           the five deterministic detectors
 │   │   ├── context/           permission-scoped fact bundle for the AI
 │   │   ├── ai/                provider · prompt · contract · telemetry · metrics
@@ -29,7 +34,8 @@ pie-portal/
 │   │   ├── routers/           HTTP surface
 │   │   │
 │   │   ├── pie_service.py     PIE engine wrapper (Quote Builder)
-│   │   ├── store.py           in-memory quote store (Quote Builder)
+│   │   ├── store.py           the quote as a working object (Quote Builder)
+│   │   ├── quote_workspace.py the shared workspace: forms, numbering, the list
 │   │   ├── pricing.py         quote pricing + margin floor
 │   │   └── zoho.py            Zoho adapter for the Quote Builder
 │   │
@@ -93,7 +99,7 @@ tests.
 
 ```bash
 cd backend
-python -m pytest -q                      # the default suite (138)
+python -m pytest -q                      # the default suite (5,300-odd; matrix and live excluded)
 python -m pytest -q tests/decision_platform/test_signals_detectors.py
 python -m pytest -q -k "margin"
 python -m pytest -m live                 # opt-in: real AI provider, costs money
@@ -120,6 +126,11 @@ under xdist, which is too much for the edit loop and affordable in the gate —
 | `test_ai_decision_service.py` | signal → decision generation |
 | `test_api_authz.py` | role scope, org isolation, lifecycle |
 | `test_quote_support.py` | Quote Builder ↔ platform integration |
+| `test_quote_workspace.py`, `test_quote_flow.py` | the quote lifecycle: forms, sends, revisions, mark-sent, the customer fence, revise-from-ERP |
+| `test_quote_outcomes.py`, `test_quote_book.py`, `test_unrecorded_quotes.py` | one outcome of record from both directions; the ERP book and its worklist |
+| `test_quote_document_sync.py`, `test_erp_connectors.py`, `spec_conformance/` | the quote pull per connector, the deletion sweep, every connector against its own fixtures |
+| `test_synced_catalogue.py` | what a registry connector's quote reads from the synced master |
+| `test_frontend_contract.py` | the API's real responses against `types.ts` and `platform/types.ts`, both directions |
 | `test_bootstrap.py` | fresh-clone startup |
 | `test_migrations.py` | migrations apply and reverse cleanly |
 

@@ -12,7 +12,7 @@ from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
 from typing import Optional
 
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
 from . import memberships
@@ -64,6 +64,14 @@ _DEMO_CONNECTOR = "zoho"
 #: The one quote the ERP "issued" in this dataset. Fixed and human-readable for
 #: the reason the customer and product ids are.
 _DEMO_QUOTE_REF = "est-demo-ace-01"
+#: The connected company every demo document belongs to. An ERP reference is
+#: unique only inside one book, and every reader is qualified by it now; a
+#: demo whose documents named no company was a demo of the unqualified path.
+_DEMO_CONNECTION_ID = "cx_demo"
+#: The estimate the demo's *platform* quote became in that company's book —
+#: sent from the Quote Builder, then accepted there, so the one join the
+#: outcome of record turns on can be seen without a live ERP.
+_DEMO_SENT_QUOTE_REF = "est-demo-pitti-01"
 
 #: The field this organization is declared to record a quote's intent in, and
 #: what it wrote on that quote. A source key, named here and nowhere
@@ -78,7 +86,8 @@ _DEMO_DECLARATION_SOURCE = "PIE demo seed"
 DEMO_CUSTOMER_IDS = frozenset(c[0] for c in _DEMO_CUSTOMERS)
 DEMO_PRODUCT_IDS = frozenset(p[0] for p in _DEMO_PRODUCTS)
 DEMO_VENDOR_IDS = frozenset(v[0] for v in _DEMO_VENDORS)
-DEMO_QUOTE_REFS = frozenset({_DEMO_QUOTE_REF})
+DEMO_QUOTE_REFS = frozenset({_DEMO_QUOTE_REF, _DEMO_SENT_QUOTE_REF})
+DEMO_CONNECTION_IDS = frozenset({_DEMO_CONNECTION_ID})
 
 #: How long after the commercial date the source system recorded the document.
 #: Not a rounding of "the same day": ``SalesTxn.source_recorded_at`` and
@@ -272,7 +281,9 @@ def seed_demo(session: Session, *, organization_id: Optional[str] = None) -> dic
     session.flush()
 
     _seed_supplier_terms(session, org)
+    _seed_connection(session, org)
     _seed_erp_quote(session, org)
+    _seed_sent_quote(session, org)
     session.flush()
 
     run_detectors(session, org, as_of=AS_OF)
@@ -343,7 +354,8 @@ def _seed_erp_quote(session: Session, org: str) -> None:
     ]
     session.add(models.QuoteDoc(
         quote_document_id="qdoc_demo_ace", organization_id=org,
-        connector=_DEMO_CONNECTOR, external_ref=_DEMO_QUOTE_REF,
+        connector=_DEMO_CONNECTOR, connection_id=_DEMO_CONNECTION_ID,
+        external_ref=_DEMO_QUOTE_REF,
         number="QT-DEMO-0001", source_reference="ACE/RFQ/2026-114",
         customer_id="cst_ace", customer_ref="ACE Designers",
         date=raised_on, expires_on=raised_on + timedelta(days=30),
@@ -356,7 +368,7 @@ def _seed_erp_quote(session: Session, org: str) -> None:
     for number, (pid, qty, price, description) in enumerate(lines):
         session.add(models.ErpQuoteLine(
             erp_quote_line_id=f"eqln_demo_ace_{number}", organization_id=org,
-            connector=_DEMO_CONNECTOR,
+            connector=_DEMO_CONNECTOR, connection_id=_DEMO_CONNECTION_ID,
             external_ref=f"{_DEMO_QUOTE_REF}:{number}",
             quote_ref=_DEMO_QUOTE_REF, line_number=number, product_id=pid,
             item_code=pid, description=description, qty=qty, unit="Nos",
@@ -364,6 +376,115 @@ def _seed_erp_quote(session: Session, org: str) -> None:
             source_ref={"system": "zoho", "record_type": "estimate",
                         "record_id": _DEMO_QUOTE_REF, "line_id": str(number)}))
     _declare_quote_intent(session, org)
+
+
+def _seed_connection(session: Session, org: str) -> None:
+    """The one connected company the demo's documents belong to.
+
+    **Disabled, and that is load-bearing.** It has no credential and nothing
+    to pull, and three things read "the organization's first enabled Zoho
+    company": ``connections.get_zoho_credentials`` with no connection named,
+    ``catalog.seed_company_catalogues`` on every boot, and the sync's target
+    list. Enabled, this row would have been that company on a fresh clone —
+    the boot would have bound the shipped catalogue to it and the first live
+    pull would have tried to decrypt a secret it does not hold. Disabled it
+    is a name: ``origin.Companies`` labels by it (no enabled filter, on
+    purpose), every demo document names it, and nothing tries to pull from
+    it. A real sync purges it anyway.
+    """
+    session.add(models.ZohoConnection(
+        connection_id=_DEMO_CONNECTION_ID, organization_id=org,
+        connector=_DEMO_CONNECTOR, label="SLS Engineers (demo)",
+        zoho_organization_id="demo-book", enabled=False))
+
+
+def _seed_sent_quote(session: Session, org: str) -> None:
+    """A quote this platform priced and sent, which the ERP then accepted.
+
+    The other half of the lifecycle the ERP quote above shows. It goes through
+    the real paths — minted by ``quote_workspace.create``, recorded by
+    ``quote_service.record_document``, moved to SENT by ``set_outcome`` — so
+    what the demo shows is what the product does, and a change to any of
+    them changes the demo with it. The ERP's own row for the estimate says
+    ``accepted``, so the workspace, Won & lost and the ERP tab all read it as
+    WON with the ERP as its source: the one rule (``quote_service.decide``),
+    seen from both sides, with no live book behind it.
+
+    Stamped historically, like everything else here: a quote sent "now" would
+    be the one row in the demo that moves relative to ``AS_OF``.
+    """
+    from . import quote_workspace
+    from .commercial import policy as policy_service
+    from .commercial import quote_service
+    from .domain.enums import QuoteOutcomeStatus
+    from .store import Line, store
+
+    sent_on = _d(2)
+    th = policy_service.load_for_org(session, org)
+    quote = quote_workspace.create(
+        session, org, user_id="usr_sales", customer="Pitti Engineering Ltd",
+        customer_id="cst_pitti", connection_id=_DEMO_CONNECTION_ID)
+
+    def clear_of_the_floor(cost: float) -> float:
+        # Five points above the organization's margin floor, whatever the
+        # policy says today: a seeded send below the floor would be a quote
+        # the gate refuses, recorded as though it had passed.
+        return float(round(cost / (1 - float(th.margin_floor) - 0.05), 0))
+
+    lines = [
+        ("prd_dnmg", "DNMG 150608-MP insert", 20, 506.0, clear_of_the_floor(372.0), 372.0),
+        ("prd_cnmg", "CNMG 120408-MP insert", 30, 452.0, clear_of_the_floor(349.0), 349.0),
+    ]
+    for n, (pid, desc, qty, list_price, quoted, cost) in enumerate(lines):
+        quote.lines.append(Line(
+            id=f"ln_demo_pitti_{n}", raw=f"{pid} x {qty}", reqCode=pid,
+            reqDesc=desc, reqQty=qty, rel="EXACT", supplyCode=pid,
+            supplyDesc=desc, candidates=[], outcome="OK", semantics="EXACT",
+            inBooks=True, itemId=pid, listPrice=list_price, quoted=quoted,
+            priceSource="USER", cost=cost, costSource="BOOKS"))
+    quote_workspace.save(session, quote, "usr_sales")
+    draft = session.get(models.QuoteDraft, quote.id)
+    draft.created_at = draft.updated_at = _stamp(sent_on)
+    doc = quote_service.record_document(
+        session, org, quote_id=quote.id, external_system=_DEMO_CONNECTOR,
+        connection_id=_DEMO_CONNECTION_ID, number="QT-DEMO-0002",
+        document_id=_DEMO_SENT_QUOTE_REF, line_count=len(lines),
+        fingerprint=store.priced_fingerprint(quote), reference=quote.reference,
+        thresholds_version=th.version)
+    doc.written_at = _stamp(sent_on)
+    outcome = quote_service.set_outcome(
+        session, org, quote_id=quote.id, status=QuoteOutcomeStatus.SENT,
+        quote_document_ref=_DEMO_SENT_QUOTE_REF,
+        quote_document_connection_id=_DEMO_CONNECTION_ID,
+        customer_ref="Pitti Engineering Ltd", customer_id="cst_pitti",
+        user_id="usr_sales")
+    outcome.sent_at = outcome.created_at = outcome.updated_at = _stamp(sent_on)
+
+    # What the ERP holds for it, as the next pull would read it back.
+    total = sum(Decimal(str(qty * quoted)) for _, _, qty, _, quoted, _ in lines)
+    session.add(models.QuoteDoc(
+        quote_document_id="qdoc_demo_pitti", organization_id=org,
+        connector=_DEMO_CONNECTOR, connection_id=_DEMO_CONNECTION_ID,
+        external_ref=_DEMO_SENT_QUOTE_REF, number="QT-DEMO-0002",
+        source_reference=quote.reference,
+        customer_id="cst_pitti", customer_ref="Pitti Engineering Ltd",
+        date=sent_on, expires_on=sent_on + timedelta(days=30),
+        source_status="accepted", outcome="WON", decided_on=_d(1),
+        total=total, source_attributes={_DEMO_QUOTE_INTENT_KEY: "Repeat order"},
+        source_recorded_at=_stamp(sent_on),
+        source_ref={"system": "zoho", "record_type": "estimate",
+                    "record_id": _DEMO_SENT_QUOTE_REF}))
+    for n, (pid, desc, qty, _, quoted, _) in enumerate(lines):
+        session.add(models.ErpQuoteLine(
+            erp_quote_line_id=f"eqln_demo_pitti_{n}", organization_id=org,
+            connector=_DEMO_CONNECTOR, connection_id=_DEMO_CONNECTION_ID,
+            external_ref=f"{_DEMO_SENT_QUOTE_REF}:{n}",
+            quote_ref=_DEMO_SENT_QUOTE_REF, line_number=n, product_id=pid,
+            item_code=pid, description=desc, qty=Decimal(qty), unit="Nos",
+            rate=Decimal(str(quoted)), amount=Decimal(str(qty * quoted)),
+            discount_percent=Decimal("0"),
+            source_ref={"system": "zoho", "record_type": "estimate",
+                        "record_id": _DEMO_SENT_QUOTE_REF, "line_id": str(n)}))
 
 
 def _declare_quote_intent(session: Session, org: str) -> None:
@@ -426,7 +547,34 @@ def purge_demo_seed(session: Session, organization_id: str) -> dict[str, int]:
     declaration of the same field is left alone.
     """
     subject_ids = list(DEMO_CUSTOMER_IDS | DEMO_PRODUCT_IDS)
+    # The platform quote the seed minted is found by the document the seed
+    # recorded for it — a fixed ERP id no live send ever produces — not by
+    # its customer: a person can start a quote for a demo customer from the
+    # builder before the first real sync, and that is their work, kept. Empty,
+    # the `in_` below matches nothing, which is the idempotent second purge.
+    demo_quote_ids = list(session.scalars(
+        select(models.QuoteDocument.quote_id).where(
+            models.QuoteDocument.organization_id == organization_id,
+            models.QuoteDocument.external_document_id.in_(list(DEMO_QUOTE_REFS))))) or ["-"]
     removed = {
+        # Outcomes first: they point at documents and at quotes.
+        "quote_outcomes": session.query(models.QuoteOutcome).filter(
+            models.QuoteOutcome.organization_id == organization_id,
+            or_(models.QuoteOutcome.quote_id.in_(demo_quote_ids),
+                models.QuoteOutcome.quote_document_ref.in_(list(DEMO_QUOTE_REFS))),
+        ).delete(synchronize_session=False),
+        "quote_documents": session.query(models.QuoteDocument).filter(
+            models.QuoteDocument.organization_id == organization_id,
+            models.QuoteDocument.quote_id.in_(demo_quote_ids),
+        ).delete(synchronize_session=False),
+        "quote_decisions": session.query(models.QuoteDecision).filter(
+            models.QuoteDecision.organization_id == organization_id,
+            models.QuoteDecision.quote_id.in_(demo_quote_ids),
+        ).delete(synchronize_session=False),
+        "quote_drafts": session.query(models.QuoteDraft).filter(
+            models.QuoteDraft.organization_id == organization_id,
+            models.QuoteDraft.quote_id.in_(demo_quote_ids),
+        ).delete(synchronize_session=False),
         "decisions": session.query(models.Decision).filter(
             models.Decision.organization_id == organization_id,
             models.Decision.subject_entity_id.in_(subject_ids),
@@ -474,6 +622,11 @@ def purge_demo_seed(session: Session, organization_id: str) -> dict[str, int]:
             models.SourceAttributeMapping.connector == _DEMO_CONNECTOR,
             models.SourceAttributeMapping.source_key == _DEMO_QUOTE_INTENT_KEY,
             models.SourceAttributeMapping.source_ref == _DEMO_DECLARATION_SOURCE,
+        ).delete(synchronize_session=False),
+        # The company last: every row above named it.
+        "zoho_connections": session.query(models.ZohoConnection).filter(
+            models.ZohoConnection.organization_id == organization_id,
+            models.ZohoConnection.connection_id.in_(list(DEMO_CONNECTION_IDS)),
         ).delete(synchronize_session=False),
         "customers": session.query(models.Customer).filter(
             models.Customer.organization_id == organization_id,

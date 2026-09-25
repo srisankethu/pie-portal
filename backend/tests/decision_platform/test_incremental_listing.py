@@ -29,6 +29,7 @@ def _source(rows: list[dict], detail: dict | None = None):
     src._until = None
     src.listed = {}
     src.listing_complete = set()
+    src.truncated = set()
     src.documents_fetched = 0
     src.documents_resumed = 0
     src.modified_since = {}

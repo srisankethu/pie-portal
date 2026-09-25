@@ -58,6 +58,7 @@ function lineWithEconomics(): Line {
     createPhase: null,
     service: null,
     incompatReason: null,
+    booksAsOf: null,
     status: { kind: "ready", label: "ready" },
     flags: {
       attention: false, procurement: false, missingBooks: false,
@@ -430,5 +431,23 @@ describe("naming the system the books are in", () => {
     render(<LineGrid {...props(false, {}, [notInBooks()])} systemShort="P21" />);
     expect(screen.getByRole("button", { name: "Create in P21" })).toBeInTheDocument();
     expect(screen.queryByText(/zoho/i)).toBeNull();
+  });
+
+  // A registry connector's books are a synced master, not a live ledger, so
+  // "not in D365 BC" is a claim about the last pull. The line carries the
+  // date that claim was true and the grid shows it; a live answer carries
+  // none and the grid must not invent one.
+  it("says when a synced answer was true, and nothing for a live one", async () => {
+    const synced = { ...notInBooks(), booksAsOf: "2026-09-12" };
+    render(<LineGrid {...props(false, {}, [synced])} systemShort="D365 BC" />);
+    await screen.findByText("Line total");
+    expect(screen.getByText("not in D365 BC")).toBeInTheDocument();
+    expect(screen.getByText("synced 12 Sept 2026")).toBeInTheDocument();
+  });
+
+  it("shows no sync date on a line the ledger answered live", async () => {
+    render(<LineGrid {...props(false, {}, [notInBooks()])} systemShort="Zoho" />);
+    await screen.findByText("Line total");
+    expect(screen.queryByText(/synced /)).toBeNull();
   });
 });

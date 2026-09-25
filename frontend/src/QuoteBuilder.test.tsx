@@ -88,6 +88,7 @@ function session(role: Role = "OWNER"): PlatformSession {
 function quote(over: Partial<Quote> = {}): Quote {
   return {
     id: "q1", customer: "", customerId: null, connectionId: null, company: "",
+    revisionOf: null,
     number: "QB-0001", saved: true, reference: "QB-0001",
     savedAt: "2026-09-02T08:00:00Z",
     system: "", systemLabel: "your books", systemShort: "books",
@@ -123,7 +124,7 @@ function line(): Line {
     costBasis: null, customCostSet: false, sel: "AUTO",
     avail: 40, availUnknown: false, inBooks: true, shortage: null,
     quoted: 1000, priceSource: "USER", recommended: null, lineTotal: 10000,
-    createPhase: null, service: null, incompatReason: null,
+    createPhase: null, service: null, incompatReason: null, booksAsOf: null,
     status: { kind: "ready", label: "ready" },
     flags: {
       attention: false, procurement: false, missingBooks: false,

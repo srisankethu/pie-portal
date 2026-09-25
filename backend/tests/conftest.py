@@ -177,6 +177,18 @@ def _platform_database():
 
 
 @pytest.fixture(autouse=True)
+def _no_leaked_mock_documents():
+    """A document one test sent through the mock writer must not be listed
+    by the mock source to the next — ``FixtureZohoSource.list_quotes`` reads
+    the writer's memory, which is process-wide by design."""
+    from app.zoho import mock_zoho
+
+    mock_zoho.forget_written()
+    yield
+    mock_zoho.forget_written()
+
+
+@pytest.fixture(autouse=True)
 def _no_leaked_zoho_token():
     """A Zoho access token must not survive from one test into the next.
 

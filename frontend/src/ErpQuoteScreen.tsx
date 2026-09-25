@@ -179,6 +179,9 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   const [lines, setLines] = useState<ErpQuoteLines | undefined>(undefined);
   const [error, setError] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
+  /** A revise in flight. One click is one form; a second press while the
+   *  first is answering must not open a second. */
+  const [revising, setRevising] = useState(false);
   /** Bumped after an outcome is recorded, so the page re-reads what the
    *  server now says rather than patching a copy of it. */
   const [nonce, setNonce] = useState(0);
@@ -263,6 +266,25 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   // a win: a decline the ERP recorded still wants a reason, which the ERP
   // cannot hold. Scoped by the server the way the worklist is.
   const canRecord = !quote.recorded && erpOutcome(quote) !== "WON";
+  // Offered where this platform holds no quote for the document yet — one
+  // it does hold is opened, above — and where the book is known: the server
+  // refuses a bare reference, because two connected books can both hold it.
+  const canRevise = !quote.platform_quote && !quote.platform_revision
+    && Boolean(quote.origin?.connection_id);
+  const revise = async () => {
+    if (revising) return;
+    setRevising(true);
+    try {
+      const form = await api.reviseErpQuote(
+        session.token, quote.origin!.connection_id!, quote.quote_document_ref);
+      navigate(pathFor("quotes", form.id));
+    } catch (e) {
+      // The server's own sentence, on the page — a refusal that only reached
+      // the console would leave a button that does nothing.
+      setError(e instanceof Error ? e.message : String(e));
+      setRevising(false);
+    }
+  };
   const fields = Object.entries(attributes).filter(
     ([key]) => !(SUPERSEDED_BY[key] && attributes[SUPERSEDED_BY[key]]));
   const heading = (t: string) => (
@@ -287,6 +309,12 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
               <Button size="small" variant="outlined" sx={TOUCH}
                       onClick={() => setRecording(true)}>
                 Record outcome
+              </Button>
+            )}
+            {canRevise && (
+              <Button size="small" variant="outlined" sx={TOUCH} disabled={revising}
+                      onClick={() => { void revise(); }}>
+                {revising ? "Opening…" : "Revise in PIE"}
               </Button>
             )}
           </Stack>
@@ -369,6 +397,25 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
         </Alert>
       )}
 
+      {/* The other direction: a quote somebody started here *from* this
+          document. Opened rather than picked up again — the button above
+          is withheld while this exists, so one document does not gain a
+          second revision by a second reader pressing the same button. */}
+      {!quote.platform_quote && quote.platform_revision && (
+        <Alert
+          severity="info"
+          sx={{ mb: 2 }}
+          action={
+            <Button size="small" sx={TOUCH}
+                    onClick={() => navigate(pathFor("quotes", quote.platform_revision!.quote_id))}>
+              Open the revision
+            </Button>
+          }
+        >
+          Being revised in PIE as {quote.platform_revision.number || "a draft"}.
+        </Alert>
+      )}
+
       {/* What the Builder bands as QUOTE DETAILS. Not collapsible, which is the
           one place this deliberately departs from it: there the band holds a
           form somebody fills in and folding it away is how you get past it;
@@ -443,7 +490,8 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
           Dismissal and "review the price" are both absent, and neither is an
           oversight: nothing here was recorded, so there is no diagnosis to
           dismiss, and an issued document cannot be re-priced from this screen. */}
-      <ErpQuoteDiagnosis quote={quote} lines={lines} token={session.token} />
+      <ErpQuoteDiagnosis quote={quote} lines={lines} token={session.token}
+                         connectionId={connection || quote.origin?.connection_id || null} />
 
       <ErpQuoteSummary quote={quote} lines={lines} />
     </Box>
@@ -455,12 +503,17 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
  *  A component rather than three lines inline because the hook must not run
  *  until the quote is loaded — `ErpQuoteScreen` returns early on four states
  *  before it has one, and a hook cannot live behind an early return. */
-function ErpQuoteDiagnosis({ quote, lines, token }: {
+function ErpQuoteDiagnosis({ quote, lines, token, connectionId }: {
   quote: ErpQuote; lines?: ErpQuoteLines; token: string;
+  connectionId: string | null;
 }) {
   const held = lines?.lines ?? [];
+  // Qualified by the company the page was opened with. The hook took this
+  // argument when the route did and no caller passed it, so the one request
+  // on this screen that was still unqualified was the diagnosis — which
+  // 404s exactly when the qualifier matters, two books sharing a reference.
   const diagnosis = useErpQuoteDiagnosis(
-    quote.quote_document_ref, held.length > 0, token);
+    quote.quote_document_ref, held.length > 0, token, connectionId);
   const dismissReasons = useDismissReasons(token);
 
   // Nothing to ask about. The breakdown has not been read, or no line on it

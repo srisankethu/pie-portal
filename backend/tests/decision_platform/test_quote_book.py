@@ -626,9 +626,40 @@ def test_two_books_holding_one_reference_serve_their_own_lines(maker):
         s.close()
     assert [ln.item_code for ln in first] == ["CNMG120408"]
     assert [ln.item_code for ln in second] == ["DNMG150608"]
-    # Unqualified it still reads both, which is why the caller resolves the
-    # document first and the endpoint 404s a reference it cannot place.
+    # Unqualified it still reads both — which is why the endpoint below
+    # resolves the reference to one book before it reads, and 404s a bare
+    # reference it cannot place.
     assert len(unqualified) == 2
+
+
+def test_a_bare_reference_two_books_hold_is_not_found(client, maker):
+    """The endpoint used to pass a bare reference through this guard when any
+    visible book held it, and serve both books' lines interleaved under one
+    document. One document or none — the rule the diagnosis endpoint applies
+    to the same pair — and, named, each book's own lines."""
+    s = maker()
+    _doc(s, "SQ-1001", connection_id="conn1")
+    _doc(s, "SQ-1001", connection_id="conn2")
+    _line(s, "SQ-1001", "a:1", code="CNMG120408", connection_id="conn1")
+    _line(s, "SQ-1001", "b:1", code="DNMG150608", connection_id="conn2")
+    s.commit()
+    s.close()
+
+    bare = client.get("/api/v1/insight/quote-book/SQ-1001/lines",
+                      headers=_hdr(client, MANAGER))
+    assert bare.status_code == 404, bare.text
+
+    second = client.get("/api/v1/insight/quote-book/SQ-1001/lines?connection=conn2",
+                        headers=_hdr(client, MANAGER))
+    assert second.status_code == 200, second.text
+    assert [ln["item_code"] for ln in second.json()["lines"]] == ["DNMG150608"]
+    assert second.json()["connection_id"] == "conn2"
+
+    # A bare reference one book holds resolves to that book, and says so.
+    alone = client.get("/api/v1/insight/quote-book/open/lines",
+                       headers=_hdr(client, MANAGER))
+    assert alone.status_code == 200, alone.text
+    assert alone.json()["connection_id"] == "conn1"
 
 
 def test_the_lines_endpoint_refuses_a_book_this_reader_cannot_see(client):

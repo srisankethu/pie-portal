@@ -124,6 +124,11 @@ export interface Line {
   createPhase: string | null;
   service: string | null;
   incompatReason: string | null;
+  /** When the books facts on this line were last true — an ISO date for a
+   *  line answered from a synced item master, `null` for one read live. A
+   *  stock figure from Tuesday's pull is Tuesday's stock, and a line that
+   *  cannot say so reads as though the books were consulted just now. */
+  booksAsOf: string | null;
   status: LineStatus;
   flags: LineFlags;
   candidates: Candidate[];
@@ -327,6 +332,11 @@ export interface QuoteDraftSummary {
      *  another way, and `number` is empty. Optional only so older fixtures
      *  need not build it; the server always sends it. */
     channel?: "ERP" | "MANUAL";
+    /** Which send this is: 1 for the first, 2 and up for an amendment re-sent
+     *  under a new reference. The server sends it on every sent row; it was
+     *  undeclared here, and the contract check only ever saw a list with no
+     *  sent draft in it. */
+    revision: number;
     /** What the ERP says about the same document, once synced. */
     erp: ErpSide | null;
   } | null;
@@ -382,6 +392,10 @@ export interface ErpQuote {
    *  it — joined server-side on system, company and the ERP's own id. Null
    *  for a quote raised in the ERP by hand, which is most of them. */
   platform_quote?: { quote_id: string; number: string } | null;
+  /** The PIE quote somebody started from this document ("Revise in PIE"),
+   *  where one exists — the other direction from `platform_quote`. The page
+   *  opens it rather than offering to pick the document up again. */
+  platform_revision?: { quote_id: string; number: string } | null;
   /** What a person here recorded about this document, if a decision: the
    *  status, the reason and the winner where it was a loss, and when. Null
    *  where nobody has said. */
@@ -467,6 +481,16 @@ export interface Quote {
    *  three-company desk can see the two agree. Empty where nothing is
    *  connected. */
   company: string;
+  /** The ERP quote this one was started from ("Revise in PIE" on the ERP
+   *  page), or null for a quote that revises nothing. Both halves of the
+   *  pointer, because an ERP reference is unique only inside one book, and
+   *  the book's name so the banner can say it. */
+  revisionOf: {
+    connection_id: string; ref: string; company: string;
+    /** The ERP's own number for the document, where the sync holds it —
+     *  what a person calls the quote; `ref` is the system's id. */
+    number: string | null;
+  } | null;
   number: string;
   /** Whether a quote exists for this yet.
    *
@@ -683,6 +707,13 @@ export interface QuoteOutcome {
    *  quote the platform priced and never pushed. Both non-null is normal and
    *  means one estimate, priced here and raised there. */
   quote_document_ref: string | null;
+  /** Whose quote the row says it is — the name it was recorded against and
+   *  the platform id where one was resolved. Sent by the server and read by
+   *  nothing in the browser yet; declared because the contract check reads
+   *  both directions, and a field the server sends that the browser does not
+   *  name is indistinguishable from a rename. */
+  customer_ref: string;
+  customer_id: string | null;
   status: QuoteOutcomeStatus;
   note: string | null;
   /** Null is the NOT_RECORDED bucket: a loss decided before the vocabulary

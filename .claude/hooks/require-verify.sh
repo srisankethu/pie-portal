@@ -51,9 +51,10 @@ mkdir -p .claude && printf '%s' "$SIG" > "$GUARD"
 MIGRATION_NOTE=""
 if ! git diff HEAD --quiet -- backend/app/domain backend/alembic 2>/dev/null; then
   MIGRATION_NOTE="
-This change touches models or migrations, so the empty-database run in step 5 is
-the one that matters. Your own database is already migrated and cannot exercise
-it. CLAUDE.md §4 is an account of what happens when nobody checks."
+This change touches models or migrations, so the empty-database runs in steps 6
+and 7 (SQLite, then PostgreSQL) are the ones that matter. Your own database is
+already migrated and cannot exercise them. CLAUDE.md §4 is an account of what
+happens when nobody checks."
 fi
 
 cat >&2 <<EOF
@@ -61,8 +62,11 @@ Source has changed since the last green \`make verify\`, so this turn is not don
 
 Run it now:
 
-    make verify          full gate (~4m: lint, §1 invariants, 1174 backend
-                         tests, frontend build, migrations on an EMPTY database)
+    make verify          the full gate, eight steps (~10m): lint, §1 invariants,
+                         the published spec, 5,300+ backend tests and the
+                         connector matrix, frontend tests/types/build, migrations
+                         on an EMPTY database on SQLite and PostgreSQL (with RLS
+                         and the queues), and the pg_dump/restore drill
     make verify-fast     inner loop only — does NOT stamp, does NOT count
 $MIGRATION_NOTE
 

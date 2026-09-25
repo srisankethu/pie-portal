@@ -172,10 +172,12 @@ describe("QuoteWorkspace", () => {
     listQuotes.mockResolvedValue([
       draft({ id: "q1", number: "QB-0001", readiness: "SENT",
               sent: { number: "EST-1001", systemLabel: "Zoho Books", current: true,
+                      revision: 1,
                       erp: { number: "EST-1001", sourceStatus: "sent", outcome: "UNRECORDED",
                              decidedOn: null, clientViewedAt: null } } }),
       draft({ id: "q2", number: "QB-0002", readiness: "SENT",
-              sent: { number: "EST-1002", systemLabel: "Zoho Books", current: true, erp: null } }),
+              sent: { number: "EST-1002", systemLabel: "Zoho Books", current: true,
+                      revision: 1, erp: null } }),
     ]);
     mount();
     await screen.findByText("QB-0001");

@@ -85,6 +85,18 @@ MIN_MONTHS = 1
 MAX_MONTHS = 12
 
 
+#: Why a quote the book holds has no lines, in the one sentence both the
+#: lines endpoint and the revise-from-ERP refusal give — a reader who acted
+#: on a shorter one got nowhere, and two spellings of the advice would drift.
+LINES_NOT_READ = (
+    "The lines on this quote have not been read from your ERP yet. Two things "
+    "stop a sync filling them in: a pull that already holds the quote refreshes "
+    "its status without re-reading the breakdown, and a pull only covers quotes "
+    "raised inside its own date window. A full sync reaching back past this "
+    "quote's date is what reads them. Data & connection reports how many lines "
+    "the last run actually read.")
+
+
 def _envelope(data: dict, *, th: Any, empty_reason: Optional[str] = None,
               **extra: Any) -> dict:
     """Every insight response, with the two facts about it that are not data.
@@ -1910,15 +1922,25 @@ def quote_book_lines(quote_ref: str,
             customer_ids=_assigned_customer_ids(session, principal),
             companies=Companies(session, org))
     }
-    if quote_ref not in {ref for ref, _ in visible} or (
-            connection and (quote_ref, connection) not in visible):
+    # Exactly one document, or none. A bare reference two connected books
+    # both hold used to pass this guard and come back as both quotes' lines
+    # interleaved under one document — a breakdown matching no quote anybody
+    # holds. It is the same 404 as a reference naming nothing, the rule
+    # ``quote_diagnosis.assess_erp_quote`` applies to the same pair: picking
+    # either would serve a document the reader is not looking at.
+    candidates = [cid for ref, cid in visible
+                  if ref == quote_ref and (not connection or cid == connection)]
+    if len(candidates) != 1:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such quote")
+    company = candidates[0]
 
+    # Qualified by the book the reference resolved to, named or not, so the
+    # lines are that document's even where the caller gave the bare form.
     rows = quote_book_view.lines_for(session, org, quote_ref=quote_ref,
-                                     connection_id=connection or None)
+                                     connection_id=company)
     return _envelope(
         {"quote_document_ref": quote_ref,
-         "connection_id": connection or None,
+         "connection_id": company,
          "lines": [row.to_dict() for row in rows],
          "lines_held": bool(rows)},
         th=th,
@@ -1928,15 +1950,7 @@ def quote_book_lines(quote_ref: str,
         # raised inside its date window — so "run a sync" is not advice unless
         # it says which sync. The sync screen's Quotes row carries the number
         # that tells the two apart.
-        empty_reason=(None if rows else
-                      "The lines on this quote have not been read from your "
-                      "ERP yet. Two things stop a sync filling them in: a pull "
-                      "that already holds the quote refreshes its status "
-                      "without re-reading the breakdown, and a pull only covers "
-                      "quotes raised inside its own date window. A full sync "
-                      "reaching back past this quote's date is what reads them. "
-                      "Data & connection reports how many lines the last run "
-                      "actually read."))
+        empty_reason=(None if rows else LINES_NOT_READ))
 
 
 @router.get("/cashflow")

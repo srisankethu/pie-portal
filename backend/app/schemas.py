@@ -25,6 +25,14 @@ class CreateQuoteRequest(BaseModel):
     connection_id: Optional[str] = None
 
 
+class FromErpRequest(BaseModel):
+    #: The connected company whose book raised the quote. Required, not
+    #: optional as it is on the reads: an ERP reference is unique only inside
+    #: one book, and a form is a write.
+    connection_id: str
+    #: The ERP's own reference for the quote — ``erp_quotes.external_ref``.
+    ref: str
+
 class SetCustomerRequest(BaseModel):
     """Who a quote is for, said after it was started — or changed."""
 

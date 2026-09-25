@@ -17,6 +17,7 @@ import type { ErpSide, QuoteOutcome } from "../types";
 function outcome(over: Partial<QuoteOutcome> = {}): QuoteOutcome {
   return {
     quote_id: "q1", quote_document_ref: "est-1", status: "SENT", note: null,
+    customer_ref: "Pitti Engineering", customer_id: "c1",
     loss_reason: null, lost_to: null, sent_at: "2026-09-10T08:00:00Z",
     decided_at: null, allowed_next: ["SENT", "WON", "LOST"],
     loss_reasons: ["PRICE", "DELIVERY", "COMPETITOR", "CUSTOMER_CANCELLED", "NO_DECISION"],

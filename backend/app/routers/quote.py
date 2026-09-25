@@ -23,11 +23,13 @@ from decimal import Decimal
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import approvals, clock, enquiry, quote_fields, quote_workspace, resolution
 from ..authz import Principal, current_principal
 from ..commercial import policy as policy_service, quote_service
+from ..commercial.insight import quote_book
 from ..domain import models
 from ..domain.enums import QuoteDocumentChannel, QuoteDocumentWriteState, QuoteOutcomeStatus
 from ..domain.origin import Companies
@@ -38,10 +40,12 @@ from ..identity import service as identity_service
 from ..db import get_session
 from ..trust import audit
 from ..ingestion import connections as conn
+from .insight import LINES_NOT_READ, _assigned_customer_ids
 from ..schemas import (
     CreateQuoteRequest,
     DiscountRequest,
     EstimateResponse,
+    FromErpRequest,
     IntakeRequest,
     SelectSupplyRequest,
     SetCustomCostRequest,
@@ -249,10 +253,15 @@ def _books_for(session: Session, book: conn.CustomerBook) -> QuoteBooks:
     adapter is both halves at once. Everything else is resolved through the
     spec — a connector gaining a writer needs no edit here.
 
-    A registry connector gets a *refusing* catalogue rather than a stub. Its
-    item master is synced on a schedule, not read live, so there is no live
-    price to answer with — and the honest answer to "what does this cost right
-    now" is that we do not know, which is what BOOKS OFFLINE already means.
+    A registry connector gets the **synced** catalogue rather than a refusing
+    one. Its item master is pulled on a schedule, not read live, and until now
+    that meant every line on one of its quotes read BOOKS OFFLINE — honest
+    about live prices and useless about everything the sync already knew:
+    whether the item exists in that book, its id there (which the writer
+    needs on the line), and the stock the last pull saw. ``SyncedCatalogue``
+    answers those and refuses the rest: it carries no selling price because
+    the master has none, stamps every answer with the date it was true, and
+    refuses to create an item, because a sync is not a ledger.
     """
     connector = conn.connector_of(book.connection)
     if connector == conn.ZOHO_CONNECTOR:
@@ -262,16 +271,31 @@ def _books_for(session: Session, book: conn.CustomerBook) -> QuoteBooks:
                           connection_id=book.connection.connection_id)
 
     from ..ingestion import erp
+    from ..ingestion.synced_catalogue import SyncedCatalogue
 
     material = conn.credential_material(session, book.connection)
     writer = erp.get_spec(connector).build_source(material)
+    catalogue = SyncedCatalogue(
+        session, book.connection.organization_id,
+        connection_id=book.connection.connection_id, connector=connector,
+        label=conn.system_label_for(connector))
+    if not catalogue.available:
+        # Nothing has been synced for this company yet, so there is nothing to
+        # answer from. The refusing adapter says so, in the sentence the line
+        # status shows, rather than a catalogue that answers NOT IN BOOKS about
+        # a book it has never read.
+        return QuoteBooks(
+            zoho=select_zoho_service(reason=(
+                f"This customer's books are {conn.system_label_for(connector)}, "
+                f"and no item master has been synced from that company yet — "
+                f"so nothing here can say what is in it. Run a sync from Data & "
+                f"connection. Until then the quote can be marked as sent; a "
+                f"send needs the item ids a sync brings.")),
+            contact_id=book.contact_id, system=connector, writer=writer,
+            connection_id=book.connection.connection_id)
     return QuoteBooks(
-        zoho=select_zoho_service(reason=(
-            f"This customer's books are {connector}, which this platform syncs "
-            f"on a schedule rather than reading live — so there is no live price "
-            f"or stock to show here. The quote can still be sent.")),
-        contact_id=book.contact_id, system=connector, writer=writer,
-        connection_id=book.connection.connection_id)
+        zoho=catalogue, contact_id=book.contact_id, system=connector,
+        writer=writer, connection_id=book.connection.connection_id)
 
 
 def zoho_for_quote(books: QuoteBooks = Depends(books_for_quote)) -> ZohoService:
@@ -371,6 +395,113 @@ def _company_for_new_quote(session: Session, org: str,
     except quote_workspace.CompanyMismatch as e:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(e))
     return company
+
+
+@router.post("/from-erp")
+def quote_from_erp(body: FromErpRequest,
+                   principal: Principal = Depends(current_principal),
+                   session: Session = Depends(get_session)):
+    """Pick up a quote the ERP raised and revise it here.
+
+    A form — not a quote; nothing is minted until the person saves — with the
+    ERP quote's customer and company already set and each of its lines read
+    through the ordinary intake — a line naming no item (freight, handling)
+    arrives under its description and reads UNRESOLVED until the desk says
+    what it is here: the code resolves against that company's
+    catalogue exactly as a pasted RFQ line would, so a code the ERP wrote
+    that the catalogue does not know arrives UNRESOLVED rather than trusted.
+    The rate is the ERP's net rate for the line, marked as a person's price
+    (``priceSource`` USER): somebody chose it in the ERP, and it is not the
+    catalogue's list rate that the "nobody has looked at this" chip is for.
+
+    **Visible through the book, or not at all.** The same 404 the lines and
+    the diagnosis endpoints give: a salesperson who may not read the quote may
+    not copy it, and whether a reference exists in a book they cannot see is
+    itself something they should not learn.
+
+    The form remembers which quote it revises (``revisionOf``), and the quote
+    it becomes on save keeps that — the builder says so above the lines and
+    the ERP page can show that a revision exists.
+    """
+    org = principal.organization_id
+    visible = [
+        q for q in quote_book.build(
+            session, org, customer_names={},
+            customer_ids=_assigned_customer_ids(session, principal),
+            companies=Companies(session, org))
+        if q.quote_document_ref == body.ref
+        and (q.origin or {}).get("connection_id") == body.connection_id
+    ]
+    if len(visible) != 1:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "no such quote")
+    source = visible[0]
+    # The breakdown first, before anything is opened: a header the sync
+    # holds whose lines it has not read yet would make an empty form, and a
+    # form with no lines is a quote of nothing wearing the ERP's number.
+    # Refused with the sentence the lines endpoint gives, which says which
+    # sync fills them in.
+    rows = quote_book.lines_for(session, org, quote_ref=body.ref,
+                                connection_id=body.connection_id)
+    if not rows:
+        raise HTTPException(status.HTTP_409_CONFLICT, LINES_NOT_READ)
+    # The book's label is a name or a placeholder, and the placeholder is not
+    # a customer: a form started from a quote nobody attributed starts with
+    # no customer, which is a question the desk answers — never "Unattributed"
+    # written down as though somebody had chosen it.
+    customer = ("" if source.customer_label == quote_book.UNATTRIBUTED
+                else source.customer_label)
+    # The customer has to belong to the company — it does, by construction,
+    # but the one function that decides what a company means for a new quote
+    # is the one that says so here too.
+    company = _company_for_new_quote(session, org, CreateQuoteRequest(
+        customer=customer, customer_id=source.customer_id,
+        connection_id=body.connection_id))
+    q = quote_workspace.create_form(
+        session, org, user_id=principal.user_id,
+        customer=customer, customer_id=source.customer_id,
+        connection_id=company,
+        source_erp={"connection_id": body.connection_id, "ref": body.ref})
+    books = books_for_quote(q.id, principal, session)
+    lines = store.add_rfq(
+        q, "", books.zoho,
+        _customer_scope(session, principal, q.customer_ref),
+        _bands(session, principal), _mapping_store(session, principal),
+        # Every line, a line naming no item under its description: freight,
+        # handling, a service the ERP carries without a code. It arrives
+        # UNRESOLVED — the catalogue holds nothing by that name — and stays
+        # on the form until the desk says what it is here, rather than
+        # dropping off a revision with nothing saying the original charged
+        # for it.
+        rows=[{"raw": f"{row.item_code or row.description} x{_qty(row)}",
+               "code": row.item_code or row.description, "qty": _qty(row)}
+              for row in rows if row.item_code or row.description],
+        pool=_sellable_pool(session, principal))
+    for ln, row in zip(lines, [r for r in rows if r.item_code or r.description]):
+        rate = _net_rate(row)
+        if rate is not None:
+            ln.quoted, ln.priceSource = rate, "USER"
+    return _saved(session, principal, q)
+
+
+def _qty(row: Any) -> float | int:
+    """The ERP's quantity as the intake states one: a whole number where it
+    is whole, so "x10" reads as ten and not as ten-point-nought; one where
+    the line carries none, which is what a pasted line with no quantity gets."""
+    if row.qty is None:
+        return 1
+    q = Decimal(str(row.qty))
+    return int(q) if q == q.to_integral_value() else float(q)
+
+
+def _net_rate(row: Any) -> Optional[float]:
+    """What the ERP quoted per unit on this line — ``amount / qty`` where both
+    are there, else ``rate``; ``None`` where the line carries no price. The
+    same reading ``quote_diagnosis._net_unit_price`` makes, for the same
+    reason: on a discounting book ``rate`` is list, before the line's
+    discount, and the customer was asked to pay the net."""
+    if row.amount is not None and row.qty:
+        return float(Decimal(str(row.amount)) / Decimal(str(row.qty)))
+    return float(row.rate) if row.rate is not None else None
 
 
 # ── the unsaved form ─────────────────────────────────────────────────────────
@@ -546,17 +677,22 @@ def set_customer(quote_id: str, body: SetCustomerRequest,
     # as removing a sent quote is (decision D4): a different customer is a new
     # quote. Choosing the same customer again is not a change and still
     # re-resolves the lines.
+    #
+    # ``latest_document``, not ``latest_written_document`` — the same read the
+    # delete guard makes, for the same reason. An UNVERIFIED send may have
+    # landed, and the next press retries it under the *same reference*: every
+    # writer's pre-flight matches on that reference alone, so a quote moved
+    # to another customer in between would either adopt the first customer's
+    # document as its own or file a second one under that reference in the
+    # new customer's book. A row the source did not confirm still fences the
+    # customer, in the sentence that says what to settle first.
     changing = (body.customer_id or None) != (q.customerId or None) or (
         not body.customer_id and body.customer.strip() != q.customer)
-    written = quote_service.latest_written_document(
+    newest = quote_service.latest_document(
         session, principal.organization_id, quote_id=quote_id)
-    if changing and written is not None:
-        raise HTTPException(
-            status.HTTP_409_CONFLICT,
-            f"This quote was sent to {q.customer} as "
-            f"{conn.system_label_for(written.external_system)} "
-            f"{written.external_document_number}, which sits on their account "
-            f"there. Start a new quote for another customer.")
+    if changing and newest is not None:
+        raise HTTPException(status.HTTP_409_CONFLICT,
+                            _customer_fenced_by(q, newest))
     q.customer, q.customerId = body.customer.strip(), body.customer_id or None
     quote_workspace.save(session, q, principal.user_id)
     books = books_for_quote(quote_id, principal, session)
@@ -1619,6 +1755,18 @@ def _view(session: Session, principal: Principal, q: Quote) -> dict[str, Any]:
     # Owner, for the same reason the ERP page names its Book.
     out["company"] = (Companies(session, org).label_for(q.connectionId)
                       if q.connectionId else "")
+    if q.revisionOf:
+        # The book's name and the ERP's own number for the document: the
+        # reference is the system's id (a 19-digit Zoho estimate id, a BC
+        # number), and the banner has to read as a person reads the ERP.
+        out["revisionOf"] = {
+            **q.revisionOf,
+            "company": Companies(session, org).label_for(q.revisionOf["connection_id"]),
+            "number": session.scalar(
+                select(models.QuoteDoc.number).where(
+                    models.QuoteDoc.organization_id == org,
+                    models.QuoteDoc.connection_id == q.revisionOf["connection_id"],
+                    models.QuoteDoc.external_ref == q.revisionOf["ref"]))}
     newest = quote_service.latest_document(session, org, quote_id=q.id)
     unverified = (newest is not None and
                   newest.write_state == QuoteDocumentWriteState.UNVERIFIED.value)
@@ -1700,6 +1848,31 @@ def _send_capability(session: Session, org: str, q: Quote) -> tuple[bool, Option
 #: your books", "Create quote").
 _NO_SYSTEM = {"system": "", "systemLabel": "your books", "systemShort": "books",
               "documentTerm": "quote"}
+
+
+def _customer_fenced_by(q: Quote, newest: models.QuoteDocument) -> str:
+    """Why the customer on this quote cannot change, from the row that says so.
+
+    Three rows, three sentences, and the one that reads the number is the only
+    one that has a number to read. A MANUAL row records that a person said the
+    quote went out — no document id, an empty number — and the first wording
+    named "Zoho Books " followed by nothing, asserting a ledger entry that was
+    never written on the strength of a row that says in as many words that
+    nothing was.
+    """
+    label = conn.system_label_for(newest.external_system)
+    if newest.write_state == QuoteDocumentWriteState.UNVERIFIED.value:
+        return (f"A send of this quote is unverified — look for reference "
+                f"{newest.reference} in {label} first. Until that is settled "
+                f"the quote stays with {q.customer}: the next Send retries "
+                f"under that reference, and a document may already sit on "
+                f"their account there.")
+    if newest.channel == QuoteDocumentChannel.MANUAL.value:
+        return (f"This quote was marked as sent to {q.customer}, so it stays "
+                f"theirs. Start a new quote for another customer.")
+    return (f"This quote was sent to {q.customer} as {label} "
+            f"{newest.external_document_number}, which sits on their account "
+            f"there. Start a new quote for another customer.")
 
 
 def _system_words(connector: str) -> dict[str, str]:

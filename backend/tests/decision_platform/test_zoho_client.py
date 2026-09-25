@@ -2055,3 +2055,44 @@ def test_a_bill_the_client_projected_normalizes_to_a_usable_cost_row():
     assert float(cost.rate) == 754.0                # kept for audit
     assert cost.source_ref.recorded_at is not None  # and it is usable evidence
     assert cost.source_ref.recorded_at.date() == date(2025, 6, 16)
+
+
+# ── the page cap is not the end of the book ─────────────────────────────────
+def _estimate_row(n: int) -> dict:
+    return {"estimate_id": f"est-{n}", "estimate_number": f"EST-{n}",
+            "customer_id": "c1", "customer_name": "Acme", "date": _today(-3),
+            "status": "sent", "total": 100, "line_items": []}
+
+
+def test_a_listing_cut_off_at_the_page_cap_is_not_complete(monkeypatch):
+    """``ZOHO_MAX_PAGES`` ends ``_paginate`` the same way a finished book does
+    — the ``for`` simply runs out — and ``list_quotes`` then marked the
+    listing complete. The deletion sweep reads a complete listing as the
+    whole truth, so every quote on the pages past the cap was retired as one
+    Zoho had deleted, and the only witness was a log line. A capped listing is
+    recorded as truncated now, and neither completion site marks it.
+    """
+    monkeypatch.setattr(settings, "ZOHO_MAX_PAGES", 1)
+    http = FakeHttp({"/estimates": lambda params: {
+        "code": 0, "estimates": [_estimate_row(int(params.get("page", 1)))],
+        "page_context": {"has_more_page": True}}})
+    src = _src(http)
+    rows = list(src.list_quotes())
+    assert len(rows) == 1
+    assert "estimates" in src.truncated
+    assert "quote" not in src.listing_complete, (
+        "a listing cut off at page 1 is not evidence about page 2")
+
+
+def test_a_listing_that_reaches_its_last_page_is_complete(monkeypatch):
+    """The control: the same book, one page long, is complete — so the guard
+    above is about the cap and not about ``has_more_page`` in general."""
+    monkeypatch.setattr(settings, "ZOHO_MAX_PAGES", 1)
+    http = FakeHttp({"/estimates": lambda params: {
+        "code": 0, "estimates": [_estimate_row(1)],
+        "page_context": {"has_more_page": False}}})
+    src = _src(http)
+    assert len(list(src.list_quotes())) == 1
+    assert "estimates" not in src.truncated
+    assert "quote" in src.listing_complete
+

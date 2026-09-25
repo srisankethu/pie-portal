@@ -255,6 +255,22 @@ def test_netsuite_voided_documents_are_not_trade():
 
 
 # ── Business Central ────────────────────────────────────────────────────────
+def test_bc_item_with_no_cost_on_its_card_carries_no_cost():
+    """``unitCost`` is non-nullable on the BC item card: an uncosted item
+    says 0. Carried as a cost, that is a free item and a 100% margin on
+    every line naming it — and once the synced catalogue reads it onto a
+    quote line, a below-cost price that passes every gate. ``None`` is what
+    "not stated" is spelled everywhere else in ingestion."""
+    from app.ingestion.erp import dynamics365
+
+    uncosted = dynamics365.translate_item({"id": "i1", "displayName": "Insert",
+                                           "number": "CNMG120408", "unitCost": 0})
+    costed = dynamics365.translate_item({"id": "i2", "displayName": "Holder",
+                                         "number": "HLD-1", "unitCost": 12.5})
+    assert uncosted["purchase_rate"] is None
+    assert costed["purchase_rate"] == 12.5
+
+
 def test_bc_invoice_keeps_item_lines_and_drops_account_lines():
     row = {
         "id": "guid-1", "number": "SI-100", "customerId": "cust-guid",

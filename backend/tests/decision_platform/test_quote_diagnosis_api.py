@@ -564,3 +564,89 @@ def test_a_salesperson_still_cannot_walk_the_price_with_the_reading_wired(
 
     assert len(set(seen.values())) == 1, seen
     assert all(str(price) in text for price, text in echoed.items()), echoed
+
+
+# ── what is on record is read by whoever holds the quote ─────────────────────
+
+def test_the_stored_diagnoses_answer_only_for_a_quote_the_reader_holds(client):
+    """Scoped like ``quote_audit``, with one 404 for "not yours" and "not
+    there". Org-scoped alone this read answered for any id in the book, and an
+    unknown id answered ``lines: []`` — the two are trivially distinguishable,
+    which is the enumeration the sentence exists to withhold. A manager reads
+    the book; a salesperson reads the cards they were shown."""
+    from app.routers.quote_intelligence import _NO_SUCH_PLATFORM_QUOTE
+
+    _assess(client, SALES, quote_id="q-mine")          # c1 is this desk's account
+
+    mine = client.get("/api/v1/quote-diagnosis/quote/q-mine", headers=_hdr(client, SALES))
+    assert mine.status_code == 200 and len(mine.json()["lines"]) == 1
+
+    for quote_id in ("q-nobody-assessed", "q-mine-typo"):
+        r = client.get(f"/api/v1/quote-diagnosis/quote/{quote_id}",
+                       headers=_hdr(client, SALES))
+        assert r.status_code == 404, r.text
+        assert r.json()["detail"] == _NO_SUCH_PLATFORM_QUOTE
+    # The same id, read by somebody the book is not narrowed for.
+    r = client.get("/api/v1/quote-diagnosis/quote/q-nobody-assessed",
+                   headers=_hdr(client, MANAGER))
+    assert r.status_code == 200 and r.json()["lines"] == []
+
+
+def test_a_planted_card_opens_nothing_but_itself(client):
+    """The walk-around the first scoping allowed: a salesperson posts one
+    assessment naming their own account on a colleague's quote id, then
+    reads the quote back. Every card on it used to come with the planted
+    one; now the planter gets their own card and nothing else — and where
+    the quote is already another desk's, the plant itself is refused."""
+    from app.routers.quote_intelligence import _NO_SUCH_PLATFORM_QUOTE
+
+    # A manager assesses a quote for an account this salesperson does not
+    # hold. c2 is nobody's here, so the quote is unattributed — the case the
+    # first version was walked around on.
+    other = client.post("/api/v1/quote-diagnosis/assess", headers=_hdr(client, MANAGER),
+                        json={"quote_id": "q-theirs", "record": True,
+                              "lines": [{"line_id": "L1", "product_id": "p1",
+                                         "customer_id": "c2", "qty": 10,
+                                         "quoted_unit_price": 850.0}]})
+    assert other.status_code == 200, other.text
+    before = client.get("/api/v1/quote-diagnosis/quote/q-theirs", headers=_hdr(client, SALES))
+    assert before.status_code == 404 and before.json()["detail"] == _NO_SUCH_PLATFORM_QUOTE
+
+    # The plant: this desk's own account, on a line of its own — a diagnosis
+    # is the one in force per line, so the same line id would replace the
+    # manager's card rather than sit beside it.
+    plant = client.post("/api/v1/quote-diagnosis/assess", headers=_hdr(client, SALES),
+                        json={"quote_id": "q-theirs", "record": True,
+                              "lines": [{"line_id": "L9", "product_id": "p1",
+                                         "customer_id": "c1", "qty": 10,
+                                         "quoted_unit_price": 850.0}]})
+    assert plant.status_code == 200, plant.text
+    after = client.get("/api/v1/quote-diagnosis/quote/q-theirs", headers=_hdr(client, SALES))
+    assert after.status_code == 200
+    assert [ln["line_id"] for ln in after.json()["lines"]] == ["L9"], "the planted card, and only that"
+    # The manager still reads both.
+    both = client.get("/api/v1/quote-diagnosis/quote/q-theirs", headers=_hdr(client, MANAGER))
+    assert len(both.json()["lines"]) == 2
+
+    # Where the outcome row already says whose quote it is, even the plant
+    # is refused: recording onto another desk's quote is a write onto it.
+    with client.Maker() as s:
+        from app.commercial import quote_service
+        from app.domain.enums import QuoteOutcomeStatus
+        quote_service.set_outcome(s, ORG, quote_id="q-held", status=QuoteOutcomeStatus.SENT,
+                                  customer_ref="Beta Works", customer_id="c2",
+                                  user_id="usr_manager")
+        s.commit()
+    refused = client.post("/api/v1/quote-diagnosis/assess", headers=_hdr(client, SALES),
+                          json={"quote_id": "q-held", "record": True,
+                                "lines": [{"line_id": "L1", "product_id": "p1",
+                                           "customer_id": "c1", "qty": 10,
+                                           "quoted_unit_price": 850.0}]})
+    assert refused.status_code == 404, refused.text
+    # Without recording, the assessment itself is still answered.
+    dry = client.post("/api/v1/quote-diagnosis/assess", headers=_hdr(client, SALES),
+                      json={"quote_id": "q-held", "record": False,
+                            "lines": [{"line_id": "L1", "product_id": "p1",
+                                       "customer_id": "c1", "qty": 10,
+                                       "quoted_unit_price": 850.0}]})
+    assert dry.status_code == 200, dry.text

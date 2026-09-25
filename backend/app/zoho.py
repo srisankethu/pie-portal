@@ -26,6 +26,7 @@ from __future__ import annotations
 import hashlib
 import threading
 import time
+from datetime import date
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Dict, List, Optional, Protocol
 
@@ -73,6 +74,12 @@ class ZohoItem:
     # ``None`` means the books did not state one, which is not the same as zero
     # and not the same as the default — see ``store.Quote.to_dict``.
     tax_percentage: Optional[float] = None
+    #: When this answer was last true — an ISO stamp, or a date where only a
+    #: date is known — where it was read from a sync rather than the ledger. A live adapter leaves it ``None``:
+    #: what it says is current by construction. ``SyncedCatalogue`` fills it,
+    #: because a stock figure from Tuesday's pull is Tuesday's stock, and a line
+    #: that cannot say so reads as though the books were consulted just now.
+    as_of: Optional[str] = None
 
 
 #: The Zoho name for the neutral record every connector's write returns. Kept
@@ -191,6 +198,10 @@ class MockZoho:
         #: one test of amend-and-resend passed against behaviour no live book
         #: has, and the real answer ("already exists") was never exercised.
         self._by_reference: Dict[str, ZohoEstimate] = {}
+        #: Every document written, in order, with what was on it — so the
+        #: offline *source* can list them back the way a live book would on
+        #: the next pull. See ``written_documents``.
+        self._written: List[dict] = []
 
     # ── deterministic derivation ─────────────────────────────────────────────
     @staticmethod
@@ -283,7 +294,29 @@ class MockZoho:
                                number=num, customer=customer, line_count=len(lines))
             if reference:
                 self._by_reference[reference] = est
+            self._written.append({
+                "reference": reference or "", "document": est, "customer": customer,
+                "lines": [dict(ln) for ln in lines], "written_on": date.today()})
             return est
+
+    def written_documents(self) -> List[dict]:
+        """What this stand-in has written, for the offline source to list back.
+
+        A quote sent through the mock never appeared in the mock *sync*, so a
+        quote this platform sent could never gain an ERP side without a live
+        book — and the one join the outcome of record turns on was unreachable
+        in the demo. ``FixtureZohoSource.list_quotes`` reads this. Copies,
+        under the lock: a sync reads while a desk may be sending.
+        """
+        with self._lock:
+            return [dict(w, lines=[dict(ln) for ln in w["lines"]]) for w in self._written]
+
+    def forget_written(self) -> None:
+        """Test hook. A document one test wrote must not be listed to the next;
+        the suite's autouse fixture calls this between tests."""
+        with self._lock:
+            self._written.clear()
+            self._by_reference.clear()
 
     @property
     def available(self) -> bool:

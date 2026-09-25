@@ -959,6 +959,16 @@ def execute_sync(session: Session, run: models.SyncRun, *,
                 # nobody could see it climb.
                 "unreadable_view_stamps": report.quote_documents_unreadable_view,
             }
+        # What the deletion sweep removed, by kind. It was appended to the
+        # report and never persisted, so the one mitigation the sweep offers —
+        # a retired quote leaves a person's loss reason dangling *and counted*
+        # — counted into a value nobody could read afterwards. A number that
+        # is only ever on an in-memory report is not a number anyone saw.
+        if report.retired:
+            by_kind: dict[str, int] = {}
+            for row in report.retired:
+                by_kind[row["kind"]] = by_kind.get(row["kind"], 0) + 1
+            notes["retired"] = by_kind
         run.notes = notes
         # Everything logged since the last phase boundary, the traceback of a
         # failed run included. The caller commits; `run_job` writes anything

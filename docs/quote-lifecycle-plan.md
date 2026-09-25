@@ -5,8 +5,19 @@ recommendation. Phase 0 landed (`71f2a6b`). Phase 1 landed (`9d520f5`).
 Phase 2 landed (`d4767a6`), with two departures noted in place. Phase 3 landed
 (`a37d87d`, `104a5b0`, `ad6f803`), with three departures noted in place and an
 adversarial review answered. Phase 4 is complete: the qualified pointer, the
-deletion sweep and counters, and the three connectors that read quotes.
-Phases 5–6 next.**
+deletion sweep and counters, and the three connectors that read quotes — merged
+as PR #275 (`4c2007c`), its review survivors and a completeness sweep closed
+after the merge (`24a86dd`, `62772ea`). Phase 5 landed in three commits — 5A
+the synced catalogue (`5ab7452`), 5B revise-from-ERP with migration `x11qsrc`
+(`1c851cd`), 5C the demo's connected company and PIE-sent quote (`869b099`) —
+and Phase 6 (`3d614e3`) closed the contract and scoping items; an adversarial
+review over Phases 5–6 followed, and its findings were fixed. Two departures
+are noted in place: the catalogue module is `ingestion/synced_catalogue.py`,
+not `item_master.py`; and of the Phase 5 tests named below, the end-to-end
+registry send runs for Business Central through the builder with a writer
+double (`test_quote_workspace`) — NetSuite has no quote writer, so there is no
+NetSuite send to test, and the connector writers' own refusals are pinned in
+`test_erp_connectors`.**
 
 The question this answers: *how do we handle quotes the ERP raised, quotes across
 several connected companies and ERPs, a PIE quote not yet sent to the ERP, and a
@@ -216,7 +227,7 @@ ERP-raised quote, pointing at the newest document through
 | Table | Owns | Never holds |
 |---|---|---|
 | `quote_drafts` | the quote as the desk built it: lines with cost, fields, owner, catalogue company, number, reference | any status (readiness stays derived) |
-| `quote_documents` | one row per send or manual send: system, **company** (new), ERP id and number, **revision** (new), reference actually sent, fingerprint of lines, **header fingerprint** (new), **channel** ERP/MANUAL (new), **write state** WRITTEN/UNVERIFIED (new), policy version | anything a later event changes — it is append-only history |
+| `quote_documents` | one row per send or manual send: system, **company** (new), ERP id and number, **revision** (new), reference actually sent, fingerprint of lines, ~~header fingerprint~~ (planned, then dropped — see Phase 2), **channel** ERP/MANUAL (new), **write state** WRITTEN/UNVERIFIED (new), policy version | anything a later event changes — it is append-only history |
 | `quote_outcomes` | what a person knows: DRAFT/SENT/WON/LOST, loss reason, who won, note; the document it is about, **qualified by company** (new) | anything the sync could rewrite |
 | `erp_quotes` / `erp_quote_lines` | the ERP's own view, verbatim status and the sync's classification, from every connector that reads quotes | a human fact, a PIE id, a status the platform decided |
 
@@ -778,14 +789,20 @@ nothing.
 **Changes**
 
 - A `SourceCatalogue` backed by the synced master for registry connectors —
-  `ingestion/item_master.SyncedCatalogue` (extend `item_master.py`, which already
-  reads `item_connector_records`): `get_item(code)` answers `in_books`, `item_id =
-  external_id`, the master's list price where the source carries one, `stock` from
-  the latest stock snapshot or `None`, `cost = None` unless a costed record exists,
-  and an `as_of` stamp. `_books_for` hands it to `QuoteBooks.zoho` instead of the
-  refusing adapter; the line status reads "SYNCED 12 Sep" rather than BOOKS
-  OFFLINE, and `select_supply` copies `externalId` from search results onto
-  `itemId`. `create_item` stays refused for these connectors (no live write).
+  `ingestion/synced_catalogue.SyncedCatalogue` — a new module beside
+  `zoho_books_service`, the other implementation of the same protocol. (The
+  first draft of this plan said "extend `item_master.py`, which already reads
+  `item_connector_records`"; it does not — that module reads uploaded
+  spreadsheets.) `get_item(code)` answers `in_books`, `item_id = external_id`,
+  `stock` = `available` from the latest stock snapshot or `None`, `cost` =
+  the snapshot's `purchase_rate` or `None`, and an `as_of` stamp; `list_price`
+  is **always `None`** because the synced master carries no selling price and
+  none of the connectors reads one, so no line on these books auto-quotes at
+  list. `_books_for` hands it to `QuoteBooks.zoho` instead of the refusing
+  adapter once anything has been synced (and keeps the refusal, naming the
+  gap, until then); the line carries `booksAsOf` and the grid shows "synced
+  12 Sep" beside its other chips rather than BOOKS OFFLINE. `create_item`
+  stays refused for these connectors (no live write).
 - **Revise an ERP quote in PIE** (G13): `POST /api/v1/quotes/from-erp` with
   `{connection_id, ref}` builds a form from `erp_quote_lines` (code, description,
   qty, rate) through the ordinary `build_lines`, bound to that connection's
@@ -924,7 +941,7 @@ different masters is connected.
 `latest_document` (unchanged, now also covers manual sends), `sole_erp_quote`
 (qualifier), `book_for_customer` (draft-level refusal), `origin.Companies`
 (every label), `settle_by_read` (unchanged), `_mirror` / `_RETIRE_FROM` (quotes
-added), `item_master.py` (synced catalogue), `RecordOutcomeDialog` (one form),
+added), `synced_catalogue.py` (new — the synced catalogue), `RecordOutcomeDialog` (one form),
 `CompanyFilter`, `DataGrid`, `FilterChip`, `FormDialog`. No new table, no new
 package, no new protocol with one implementer.
 

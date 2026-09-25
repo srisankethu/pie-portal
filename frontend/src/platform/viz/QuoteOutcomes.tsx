@@ -403,11 +403,14 @@ function OutcomePanel({
         allow={recording?.allowed_next ?? []}
         choices={lossChoices}
         onClose={() => setRecording(null)}
-        onRecord={async (status, lossReason, note) => {
+        onRecord={async (status, lossReason, note, lostTo) => {
           if (!recording) return;
+          // All four, including who won it: the dialog asks on every screen
+          // and the writer carries it, and a loss filed here without it is a
+          // loss the competitor mix never sees — terminal, so not re-recorded.
           await intelligence.outcome(
             session.token, recording.quote_id, status, recording.customer_label,
-            note, lossReason);
+            note, lossReason, lostTo);
           enqueueSnackbar(
             `${recording.quote_id} recorded as ${status.toLowerCase()}`,
             { variant: "success" });

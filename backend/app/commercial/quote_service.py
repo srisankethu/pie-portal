@@ -1082,6 +1082,16 @@ def erp_documents_for(session: Session, org: str,
     lookup per row on top of the one it already pays for the document.
     """
     docs = [d for d in documents if d is not None and d.external_document_id]
+    rows = _erp_rows_for(session, org, docs)
+    return {d.quote_id: rows[d.quote_document_id]
+            for d in docs if d.quote_document_id in rows}
+
+
+def _erp_rows_for(session: Session, org: str,
+                  docs: list[models.QuoteDocument]) -> dict[str, models.QuoteDoc]:
+    """The qualified value join ``erp_documents_for`` describes, one ERP row
+    per *document* (keyed by ``quote_document_id``) — so a quote with two
+    documents can be read through both."""
     if not docs:
         return {}
     rows = session.scalars(
@@ -1102,7 +1112,7 @@ def erp_documents_for(session: Session, org: str,
         if d.connection_id:
             found = [r for r in found if r.connection_id == d.connection_id]
         if len(found) == 1:
-            out[d.quote_id] = found[0]
+            out[d.quote_document_id] = found[0]
     return out
 
 
@@ -1202,24 +1212,70 @@ def decide(human: Optional[models.QuoteOutcome],
                            human=human, erp=erp, document=document)
 
 
-def latest_written_documents_for(session: Session, org: str,
-                                 quote_ids: Iterable[str],
-                                 ) -> dict[str, models.QuoteDocument]:
-    """``latest_written_document`` for many quotes in one query."""
+def _written_documents(session: Session, org: str, quote_ids: Iterable[str], *,
+                       channel: Optional[QuoteDocumentChannel] = None,
+                       ) -> list[models.QuoteDocument]:
+    """Every confirmed document of these quotes, newest first, ``channel``
+    narrowing it the way ``latest_written_document`` does."""
     wanted = {q for q in quote_ids if q}
     if not wanted:
-        return {}
-    out: dict[str, models.QuoteDocument] = {}
-    for doc in session.scalars(
-            select(models.QuoteDocument)
+        return []
+    stmt = (select(models.QuoteDocument)
             .where(models.QuoteDocument.organization_id == org,
                    models.QuoteDocument.quote_id.in_(wanted),
                    models.QuoteDocument.write_state
-                   == QuoteDocumentWriteState.WRITTEN.value)
-            .order_by(models.QuoteDocument.written_at.desc(),
-                      models.QuoteDocument.quote_document_id.desc())):
+                   == QuoteDocumentWriteState.WRITTEN.value))
+    if channel is not None:
+        stmt = stmt.where(models.QuoteDocument.channel == channel.value)
+    return list(session.scalars(
+        stmt.order_by(models.QuoteDocument.written_at.desc(),
+                      models.QuoteDocument.quote_document_id.desc())))
+
+
+def latest_written_documents_for(session: Session, org: str,
+                                 quote_ids: Iterable[str], *,
+                                 channel: Optional[QuoteDocumentChannel] = None,
+                                 ) -> dict[str, models.QuoteDocument]:
+    """``latest_written_document`` for many quotes in one query, ``channel``
+    narrowing it the same way."""
+    out: dict[str, models.QuoteDocument] = {}
+    for doc in _written_documents(session, org, quote_ids, channel=channel):
         out.setdefault(doc.quote_id, doc)        # newest first; first wins
     return out
+
+
+def erp_of_record_for(session: Session, org: str,
+                      quote_ids: Iterable[str]) -> dict[str, models.QuoteDoc]:
+    """The ERP row that speaks for each platform quote, keyed by quote id.
+
+    Its newest ERP-written document's row — unless an *older* document of
+    the same quote was decided in the ERP and the newest was not. D2 leaves
+    the previous document live in the ERP until the desk voids it, so a
+    customer can accept revision 1 after revision 2 went out. The pointer and
+    the newest document both name revision 2, unrecorded; the ERP tab shows
+    revision 1 accepted, on its own row. One quote, two answers — unless the
+    decision on the older document counts here too. It does: a customer who
+    accepted any document this quote became has decided the quote, and the
+    desk's next move is to void the other, not to keep chasing.
+    """
+    docs = _written_documents(session, org, quote_ids,
+                              channel=QuoteDocumentChannel.ERP)
+    rows = _erp_rows_for(session, org, docs)
+    out: dict[str, models.QuoteDoc] = {}
+    for d in docs:                              # newest first
+        row = rows.get(d.quote_document_id)
+        if row is None:
+            continue
+        current = out.get(d.quote_id)
+        if current is None or (_erp_decided(row) and not _erp_decided(current)):
+            out[d.quote_id] = row
+    return out
+
+
+def _erp_decided(row: models.QuoteDoc) -> bool:
+    """Decided *with a date* — the line ``decide`` draws for the ERP's word."""
+    return (row.decided_on is not None
+            and row.outcome in (QuoteDocOutcome.WON.value, QuoteDocOutcome.LOST.value))
 
 
 def outcomes_of_record(session: Session, org: str,
@@ -1232,20 +1288,33 @@ def outcomes_of_record(session: Session, org: str,
     The human row is the anchor: a platform quote enters the readers through
     the row the send (or a person) wrote, and ``scripts/backfill_sent_outcomes``
     opens one for every document sent before the send recorded anything. The
-    ERP side is joined through the quote's newest confirmed document —
-    ``erp_documents_for``, the qualified value join — so the ERP's word is
-    only ever read off the document this quote actually became.
+    ERP side is joined through the quote's newest document **the ERP holds**
+    — its newest ERP-channel row, through ``erp_documents_for``, the
+    qualified value join — so the ERP's word is only ever read off a document
+    this quote actually became.
 
-    ``written`` and ``erp`` let a caller that already holds the documents
-    (the workspace list does) pass them in rather than have them read twice.
+    Newest *ERP* row, not newest confirmed row of any channel. A MANUAL
+    mark-sent on top of an ERP send is confirmed and has no document id, so
+    joining through it found nothing and read the quote as SENT — while the
+    other direction, ``erp_outcomes_of_record``, still joined the same human
+    row to the ERP document through the pointer mark-sent never clears, and
+    read the ERP's WON. One quote, two answers, on the one rule that exists
+    so every reader agrees. The pointer and the newest ERP row name the same
+    document, which is what makes the two directions agree again.
+
+    ``written`` is what says a quote went out when nothing has decided it —
+    the newest confirmed row of *any* channel, a mark-sent included. ``erp``
+    lets a caller that already holds the ERP-channel join pass it in; the
+    workspace list holds the other join and does not.
     """
     rows = [r for r in rows if r.quote_id]
     if not rows:
         return {}
+    ids = [r.quote_id for r in rows]
     if written is None:
-        written = latest_written_documents_for(session, org, [r.quote_id for r in rows])
+        written = latest_written_documents_for(session, org, ids)
     if erp is None:
-        erp = erp_documents_for(session, org, [written.get(r.quote_id) for r in rows])
+        erp = erp_of_record_for(session, org, ids)
     return {r.quote_id: decide(r, erp.get(r.quote_id), written.get(r.quote_id))
             for r in rows}
 

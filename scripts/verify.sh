@@ -8,12 +8,13 @@
 # the same checks, they drifted, and the drift was invisible for eight
 # consecutive merges to main while the gate stayed red.
 #
-#   ./scripts/verify.sh          everything (~4 min)
+#   ./scripts/verify.sh          everything, eight steps (~10 min)
 #   ./scripts/verify.sh --fast   lint, invariants, the published spec, backend
-#                                tests (~2.5 min)
+#                                tests without the connector matrix (~3 min)
 #
-# --fast is for the edit loop, not for merging: it skips the frontend build, the
-# empty-database migration check and the restore drill. CI always runs the full
+# --fast is for the edit loop, not for merging: it skips the connector matrix,
+# the frontend, both empty-database migration checks, row-level security, the
+# queues and the restore drill, and it never stamps. CI always runs the full
 # thing.
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -87,8 +88,9 @@ PY="${PYTHON:-python3}"
 # when the engine is missing, so everything else still executes.
 #
 # This used to be a hard stop, which was wrong in the way that matters — it let
-# one missing credential decide whether lint, 1174 tests and the migration check
-# ran at all. A red check nobody can fix is a check people learn to ignore.
+# one missing credential decide whether lint, five thousand tests and the
+# migration checks ran at all. A red check nobody can fix is a check people
+# learn to ignore. Set PIE_PARSER_ROOT to point at a checkout elsewhere.
 #
 # Skipped, never silently passed: the seam is covered by the `pie-contract` job,
 # which fetches the engine and runs exactly the marked set.

@@ -8,12 +8,15 @@ help:
 	@echo ""
 	@echo "  make setup        one command from a bare clone: pie-parser, pinned"
 	@echo "                    dev tooling, npm deps, database"
-	@echo "  make verify       THE GATE — lint, §1 invariants, 1174 backend tests,"
-	@echo "                    frontend build, migrations on an EMPTY database,"
-	@echo "                    and the pg_dump/restore drill (~4m)"
-	@echo "  make verify-fast  the edit loop: skips the frontend build, the"
-	@echo "                    empty-database migration check and the restore"
-	@echo "                    drill (~2.5m)"
+	@echo "  make verify       THE GATE, eight steps — lint, §1 invariants, the"
+	@echo "                    published spec, 5,300+ backend tests and the"
+	@echo "                    connector matrix, frontend tests/types/build,"
+	@echo "                    migrations on an EMPTY database (SQLite, then"
+	@echo "                    PostgreSQL with RLS and the queues), and the"
+	@echo "                    pg_dump/restore drill (~10m)"
+	@echo "  make verify-fast  the edit loop: the first four steps without the"
+	@echo "                    connector matrix; skips the frontend, every"
+	@echo "                    migration check and the restore drill (~3m)"
 	@echo ""
 	@echo "  make dev          run backend (:8000) + frontend (:5173) together"
 	@echo "  make backend      run the FastAPI backend on :8000"
@@ -88,7 +91,7 @@ test-frontend:
 
 # Deliberately outside `make verify`. It starts the API on a database of its
 # own, a Vite server and a browser — about fifteen seconds, against `verify`'s
-# four minutes of checks that need none of that. The gate stays something people
+# ten minutes of checks that need none of that. The gate stays something people
 # run without thinking about it; this is the one you run when you have touched
 # the quote screen, the login, or anything that decides what a role is sent.
 #

@@ -34,9 +34,12 @@ import pytest
 # The quote endpoints, their seeded database and the two role headers already
 # exist next door. A third copy of that fixture is exactly the responsibility
 # duplication CLAUDE.md §2 asks to prevent, so this imports them.
-from test_quote_flow import client, mgmt_hdr, sales_hdr  # noqa: F401
+from test_quote_flow import _clean_quote, client, mgmt_hdr, sales_hdr  # noqa: F401
 
 TYPES_TS = Path(__file__).resolve().parents[2] / "frontend" / "src" / "types.ts"
+#: The platform screens' own type file — the worklists and the insight views.
+#: Parsed beside the first, because the shapes below are declared across both.
+PLATFORM_TYPES_TS = TYPES_TS.parent / "platform" / "types.ts"
 
 _COMMENTS = re.compile(r"/\*.*?\*/|//[^\n]*", re.S)
 _INTERFACE_HEAD = re.compile(r"export interface (\w+)\s*\{")
@@ -123,7 +126,10 @@ def _parse(source: str) -> dict[str, Interface]:
 @pytest.fixture(scope="module")
 def types() -> dict[str, Interface]:
     assert TYPES_TS.exists(), f"the browser's type file is missing: {TYPES_TS}"
-    return _parse(TYPES_TS.read_text())
+    assert PLATFORM_TYPES_TS.exists(), f"missing: {PLATFORM_TYPES_TS}"
+    # `types.ts` wins a name declared in both: it is the file the Quote
+    # Builder compiles against, and the checks below name it first.
+    return {**_parse(PLATFORM_TYPES_TS.read_text()), **_parse(TYPES_TS.read_text())}
 
 
 def _is_number(v) -> bool:
@@ -225,7 +231,7 @@ def test_the_type_file_is_fully_understood(types):
     assert len(types) >= 15, f"only {len(types)} interfaces parsed — parser broken?"
     # Spot-check the shapes these tests lean on, so a regex that quietly matches
     # nothing cannot look like a clean run.
-    assert len(types["Line"].fields) == 35
+    assert len(types["Line"].fields) == 36
     assert len(types["Economics"].fields) == 6
     assert types["Line"].fields["supplyCode"].ts == "string | null"
     assert types["Quote"].fields["marginFloor"].optional is True
@@ -261,8 +267,18 @@ def test_the_workspace_list_matches_the_draft_summary_interface(client, mgmt_hdr
     document, which is exactly the kind of addition that drifts."""
     client.post("/api/v1/quotes", json={"customer": "Pitti Engineering"},
                 headers=mgmt_hdr)
+    # And one that has been sent, because the list used to be checked with
+    # no sent row in it and ``sent`` is where the drift was: the server put
+    # ``revision`` on every sent row and the interface never declared it, and
+    # this test passed the whole time because nothing it listed had been sent.
+    sent_id = _clean_quote(client, mgmt_hdr)
+    est = client.post(f"/api/v1/quotes/{sent_id}/estimate", headers=mgmt_hdr).json()
+    assert est["ok"] is True, est
     rows = client.get("/api/v1/quotes", headers=mgmt_hdr).json()["quotes"]
     assert rows, "no rows to check the contract against"
+    assert any(r["sent"] is not None for r in rows), (
+        "the list holds no sent row, so the half of the shape that drifts "
+        "was not checked")
     for row in rows:
         assert_matches(row, "QuoteDraftSummary", types)
 
@@ -335,3 +351,102 @@ def test_the_browser_and_the_server_agree_what_an_own_book_candidate_is_called()
     assert match.group(1) == SELLABLE_LABEL, (
         f"the browser looks for brand == {match.group(1)!r} and the server "
         f"sends {SELLABLE_LABEL!r}; every own-book candidate would go unmarked")
+
+
+# ── the send, the outcome, the worklist ──────────────────────────────────────
+# Three shapes the first version of this file did not check, each read by a
+# screen that would break in a browser and nowhere else: the send's reply is
+# what the summary bar's button becomes, the outcome is what the record dialog
+# closes on, and the worklist row is the whole unanswered-quotes screen.
+
+@pytest.mark.requires_pie
+def test_the_send_answers_the_estimate_result_the_summary_bar_reads(client, mgmt_hdr, types):
+    qid = _clean_quote(client, mgmt_hdr)
+    sent = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr)
+    assert sent.status_code == 200, sent.text
+    assert sent.json()["ok"] is True, sent.json()
+    assert_matches(sent.json(), "EstimateResult", types)
+    # A second press is a refusal-shaped success — the same interface, or the
+    # button cannot tell "already sent" from "sent".
+    again = client.post(f"/api/v1/quotes/{qid}/estimate", headers=mgmt_hdr)
+    assert again.json()["alreadyExisted"] is True
+    assert_matches(again.json(), "EstimateResult", types)
+
+
+@pytest.mark.requires_pie
+def test_an_outcome_answers_the_shape_the_record_dialog_closes_on(client, mgmt_hdr, types):
+    from app.routers import quote_intelligence
+
+    client.app.include_router(quote_intelligence.router)
+    qid = _clean_quote(client, mgmt_hdr)
+    r = client.post("/api/v1/quote-intelligence/outcome", headers=mgmt_hdr,
+                    json={"quote_id": qid, "status": "SENT", "customer": "Pitti"})
+    assert r.status_code == 200, r.text
+    assert_matches(r.json(), "QuoteOutcome", types)
+    lost = client.post("/api/v1/quote-intelligence/outcome", headers=mgmt_hdr,
+                       json={"quote_id": qid, "status": "LOST", "customer": "Pitti",
+                             "loss_reason": "PRICE", "lost_to": "Sandvik"})
+    assert lost.status_code == 200, lost.text
+    assert lost.json()["lost_to"] == "Sandvik"
+    assert_matches(lost.json(), "QuoteOutcome", types)
+
+
+def test_the_unanswered_worklist_rows_are_the_shape_the_screen_reads(types):
+    from datetime import date
+    from decimal import Decimal
+
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+    from sqlalchemy.orm import sessionmaker
+
+    import dbsupport
+    from app.db import get_session
+    from app.domain import models
+    from app.routers import insight, platform_auth
+    from app.seed import SEED_PASSWORD, ensure_org_and_users
+
+    engine = dbsupport.fresh_engine()
+    Maker = sessionmaker(bind=engine, autoflush=False, expire_on_commit=False, future=True)
+    s = Maker()
+    ensure_org_and_users(s)
+    s.add(models.Customer(customer_id="c1", organization_id="org_pie", external_id="c1",
+                          name="Acme Engineering", assigned_user_id="usr_sales"))
+    # One with everything, one with nothing the screen could compute from —
+    # the row that must carry nulls rather than zeros.
+    s.add(models.QuoteDoc(organization_id="org_pie", connector="zoho", connection_id="cx_1",
+                          external_ref="q-sent", number="SLS/QTN-1", customer_id="c1",
+                          customer_ref="Acme Engineering", date=date(2026, 5, 1),
+                          expires_on=date(2026, 6, 1), source_status="sent",
+                          outcome="UNRECORDED", total=Decimal("4000")))
+    s.add(models.QuoteDoc(organization_id="org_pie", connector="zoho", connection_id="cx_1",
+                          external_ref="q-bare", number=None, customer_id=None,
+                          customer_ref="Walk-in", date=date(2026, 5, 2),
+                          expires_on=None, source_status="sent",
+                          outcome="UNRECORDED", total=None))
+    s.commit()
+    s.close()
+
+    app = FastAPI()
+    app.include_router(platform_auth.router)
+    app.include_router(insight.router)
+
+    def _override():
+        sess = Maker()
+        try:
+            yield sess
+            sess.commit()
+        finally:
+            sess.close()
+
+    app.dependency_overrides[get_session] = _override
+    tc = TestClient(app)
+    login = tc.post("/api/v1/auth/login",
+                    json={"email": "m.rao@pie.example", "password": SEED_PASSWORD})
+    assert login.status_code == 200, login.text
+    body = tc.get("/api/v1/insight/unrecorded-quotes",
+                  headers={"Authorization": f"Bearer {login.json()['token']}"})
+    assert body.status_code == 200, body.text
+    rows = body.json()["quotes"]
+    assert {r["quote_document_ref"] for r in rows} == {"q-sent", "q-bare"}
+    for row in rows:
+        assert_matches(row, "UnrecordedQuote", types)

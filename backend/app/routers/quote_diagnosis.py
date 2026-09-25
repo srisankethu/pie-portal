@@ -57,6 +57,8 @@ from ..db import get_session
 # answers to "whose book is this" in one file, and a second copy here would be
 # a third — on the path that decides whether somebody sees a quote at all.
 from .insight import _assigned_customer_ids
+from .quote_intelligence import (_NO_SUCH_PLATFORM_QUOTE, _holds_account,
+                                 _holds_platform_quote)
 from ..domain import models
 
 router = APIRouter(prefix="/api/v1/quote-diagnosis", tags=["quote-diagnosis"])
@@ -135,6 +137,13 @@ def assess(body: AssessRequest,
     ask what the engine would have said before an inconvenient bill landed.
     """
     as_of = body.as_of or date.today()
+    # Recording is a write onto the quote's trail. Refused where the quote
+    # is another desk's, allowed where nothing attributes it yet — creating
+    # the record is the operation, exactly as ``/snapshot`` reasons — so a
+    # card cannot be planted on a colleague's quote to be read back later.
+    if body.record and not _holds_platform_quote(
+            session, principal, body.quote_id, when_unattributed=True):
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _NO_SUCH_PLATFORM_QUOTE)
     return _diagnose(session, principal, quote_id=body.quote_id,
                      lines=body.lines, as_of=as_of, record=body.record)
 
@@ -215,7 +224,8 @@ def assess_erp_quote(quote_ref: str,
         if row.item_code and _net_unit_price(row) is not None
     ]
     return _diagnose(session, principal, quote_id=quote_ref, lines=lines,
-                     as_of=quote.raised_on, record=False)
+                     as_of=quote.raised_on, record=False,
+                     connection_id=connection or None)
 
 
 def _net_unit_price(row: Any) -> Optional[Decimal]:
@@ -243,7 +253,8 @@ def _net_unit_price(row: Any) -> Optional[Decimal]:
 
 
 def _diagnose(session: Session, principal: Principal, *, quote_id: str,
-              lines: list[LineIn], as_of: date, record: bool) -> dict[str, Any]:
+              lines: list[LineIn], as_of: date, record: bool,
+              connection_id: Optional[str] = None) -> dict[str, Any]:
     """The engine loop, shared by the two endpoints that run it.
 
     Extracted when the ERP quote page needed the same pass over the same engine
@@ -285,7 +296,13 @@ def _diagnose(session: Session, principal: Principal, *, quote_id: str,
             knowable_by=knowable_by, th=th,
             segment=service.segment_roster(session, principal.organization_id,
                                            line.customer_id),
-            backfill_before=cutover)
+            backfill_before=cutover,
+            # The book the caller opened, where it named one. Without it the
+            # engine's source read falls back to picking a winner among the
+            # connected companies holding this reference — the guess the
+            # qualifier on this endpoint exists to remove, and one that the
+            # 404 guard above has already resolved correctly for the lines.
+            connection_id=connection_id)
         stored = (service.record(session, principal.organization_id,
                                  quote_id=quote_id, result=result)
                   if record else None)
@@ -317,13 +334,42 @@ def for_quote(quote_id: str,
     by passing ``render.NOT_STORED``, and ``render_rollup`` writes the refusal
     out rather than leaving the line blank.
     """
-    rows = service.for_quote(session, principal.organization_id,
-                             quote_id=quote_id)
+    rows = _readable_diagnoses(session, principal, quote_id)
     th = load_for_org(session, principal.organization_id)
     return {"quote_id": quote_id,
             **_quote_level([_stored_facts(row) for row in rows], principal, th,
                            quote_id=quote_id),
             "lines": [_project_stored(row, principal, th) for row in rows]}
+
+
+def _readable_diagnoses(session: Session, principal: Principal,
+                        quote_id: str) -> list[models.QuoteDiagnosis]:
+    """The stored diagnoses this reader may see for a quote — or a 404.
+
+    Scoped as ``quote_intelligence.quote_audit`` is, with the same sentence
+    for "not yours" and "not there": org-scoped alone this read answered for
+    any id in the book — the account each card names, the quantities and the
+    quoted prices — while an unknown id answered ``lines: []``, which is the
+    enumeration that sentence exists to withhold.
+
+    A quote the outcome row or the snapshot trail attributes to this reader
+    is read whole. Otherwise a salesperson reads only the cards that name an
+    account they hold — the cards they were shown, on a quote assessed but
+    never snapshotted — and never the rest. **A held card grants that card,
+    not the quote.** The first version fed every stored card's account into
+    the attribution rule, where the first card decided for all of them; one
+    ``POST /assess`` naming the reader's own account on somebody else's
+    quote id then opened every card on it. Filtering cannot be walked that
+    way: a planted card is the only card the planter gets back.
+    """
+    rows = service.for_quote(session, principal.organization_id, quote_id=quote_id)
+    if _holds_platform_quote(session, principal, quote_id, when_unattributed=False):
+        return rows
+    mine = [row for row in rows
+            if row.customer_id and _holds_account(session, principal, row.customer_id)]
+    if not mine:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, _NO_SUCH_PLATFORM_QUOTE)
+    return mine
 
 
 @router.post("/{quote_diagnosis_id}/dismiss")

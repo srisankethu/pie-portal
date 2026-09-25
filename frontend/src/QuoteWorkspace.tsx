@@ -224,9 +224,12 @@ export default function QuoteWorkspace({ session }: { session: PlatformSession }
   const [tab, setTab] = useState<"drafts" | "erp">("drafts");
   const [book, setBook] = useState<ErpQuoteBook | null>(null);
   const [bookError, setBookError] = useState<string | null>(null);
-  /** Which outcome the ERP tab shows. The ERP's own classification — silence
-   *  is "No outcome", never a loss — so the piles are the sync's, not this
-   *  screen's. */
+  /** Which outcome the ERP tab shows. The outcome of record: a person's
+   *  recorded decision first, the ERP's own word where nobody here has said,
+   *  and silence is "No outcome", never a loss. The piles are
+   *  `quote_service.decide`'s, not this screen's — and not the sync's alone,
+   *  which this comment used to claim and which stopped being true the day
+   *  a person's loss began to outrank the ERP's "accepted". */
   const [erpFilter, setErpFilter] = useState("ALL");
   /** The ERP quote whose outcome is being recorded, or none. */
   const [recording, setRecording] = useState<ErpQuote | null>(null);

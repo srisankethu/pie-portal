@@ -30,6 +30,7 @@ from sqlalchemy.orm import sessionmaker
 
 import cost_sweep
 import dbsupport
+from app.commercial import source_concepts as sc
 from app.db import get_session
 from app.domain import models
 from app.routers import platform_auth, quote_diagnosis
@@ -89,25 +90,27 @@ def _seed(s) -> None:
 
 
 def _quote(s, ref: str, customer_id: str, number: str,
-           item_code: str = "ITEM-900") -> None:
+           item_code: str = "ITEM-900", connection_id: str | None = None,
+           attributes: dict | None = None) -> None:
     s.add(models.QuoteDoc(
         organization_id=ORG, external_ref=ref, number=number,
         customer_id=customer_id, customer_ref="Acme Engineering",
         date=RAISED, source_status="accepted", outcome="WON",
         decided_on=RAISED + timedelta(days=3), total=Decimal("20000"),
-        connector="zoho"))
+        connector="zoho", connection_id=connection_id,
+        source_attributes=attributes))
     # Two lines, and only the first is diagnosable: the second names no item
     # code, which is the ordinary shape of a freight or handling line.
     s.add(models.ErpQuoteLine(
         organization_id=ORG, quote_ref=ref, external_ref=f"{ref}:l1",
         line_number=0, item_code=item_code, description="CNMG 120408-MP",
         qty=Decimal("10"), unit="pcs", rate=Decimal("850"),
-        amount=Decimal("8500"), connector="zoho"))
+        amount=Decimal("8500"), connector="zoho", connection_id=connection_id))
     s.add(models.ErpQuoteLine(
         organization_id=ORG, quote_ref=ref, external_ref=f"{ref}:l2",
         line_number=1, item_code="", description="Freight",
         qty=Decimal("1"), unit="nos", rate=Decimal("500"),
-        amount=Decimal("500"), connector="zoho"))
+        amount=Decimal("500"), connector="zoho", connection_id=connection_id))
 
 
 @pytest.fixture()
@@ -432,3 +435,56 @@ def test_nothing_is_withheld_when_the_stamps_are_there(client):
     for who in (SALES, MANAGER):
         lines = _erp(client, who).json()["lines"]
         assert not any("EVIDENCE_WITHHELD" in ln["context"] for ln in lines), who
+
+
+# ── one reference in two connected books ─────────────────────────────────────
+
+SHARED_REF = "erp-shared-1"
+SOURCE_KEY = "cf_quote_type"
+
+
+def _two_books(c) -> None:
+    """The same reference raised in two companies of one system, with a
+    pricing reason recorded on one and left blank on the other — the one fact
+    a diagnosis reads from the source record, so the response says which book
+    it read."""
+    with c.Maker() as s:
+        sc.declare(s, ORG, connector="zoho", entity="quote",
+                   source_key=SOURCE_KEY, concept=sc.QUOTE_INTENT,
+                   value_map={"Tender enquiry": "TENDER"},
+                   source_ref="seeded", effective_from=_stamp(RAISED - timedelta(days=30)))
+        _quote(s, SHARED_REF, "c1", "QT-A", connection_id="cx_a",
+               attributes={SOURCE_KEY: "Tender enquiry"})
+        _quote(s, SHARED_REF, "c1", "QT-B", connection_id="cx_b",
+               attributes={SOURCE_KEY: ""})
+        s.commit()
+
+
+def test_the_book_the_caller_opened_is_the_one_whose_record_is_read(client):
+    """``connection`` qualified the 404 guard and the lines but never reached
+    the engine: ``_diagnose`` did not forward it, so ``_source_record`` fell
+    back to the sort its own docstring calls a guess, and every line of the
+    second company's quote was read against the first company's record."""
+    _two_books(client)
+    r = client.post(f"/api/v1/quote-diagnosis/erp-quote/{SHARED_REF}",
+                    params={"connection": "cx_b"}, headers=_hdr(client, MANAGER))
+    assert r.status_code == 200, r.text
+    intent = r.json()["lines"][0]["intent"]
+    assert intent["read"] is True
+    assert intent["headline"] == "No pricing reason has been recorded for this quote."
+    assert "PRICING_REASON_RECORDED" not in intent["codes"]
+
+    # And the other book reads as itself — the qualifier selects, it does not
+    # merely narrow to whichever sorted first.
+    r = client.post(f"/api/v1/quote-diagnosis/erp-quote/{SHARED_REF}",
+                    params={"connection": "cx_a"}, headers=_hdr(client, MANAGER))
+    assert r.status_code == 200, r.text
+    assert "PRICING_REASON_RECORDED" in r.json()["lines"][0]["intent"]["codes"]
+
+
+def test_a_reference_two_books_hold_is_not_found_without_the_book(client):
+    """Picking either would diagnose a document the reader is not holding."""
+    _two_books(client)
+    r = client.post(f"/api/v1/quote-diagnosis/erp-quote/{SHARED_REF}",
+                    headers=_hdr(client, MANAGER))
+    assert r.status_code == 404, r.text

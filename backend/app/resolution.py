@@ -476,23 +476,37 @@ def customer_scope_for(session: Session, organization_id: str,
 
 
 class CompanyNotNamed(ValueError):
-    """The organization has several companies and the caller named none.
+    """The organization has several companies and the caller named none —
+    or named one that is not among its enabled companies.
 
     Carries the valid ids so the caller is told what to pick rather than left
     to discover them. A refusal rather than a default: catalogues are per
     company now, so answering from one the caller did not choose would be a
     confidently provenanced answer about possibly the wrong company's product
     — the benign default §1 forbids, wearing a real stamp.
+
+    The second case has its own sentence. It used to get the first one, so a
+    caller that *had* named the company — the ERP page picking up a quote
+    from a disabled company — was told to name it. The id it named is never
+    echoed: an id from another tenant reads exactly as an invented one does.
     """
 
-    def __init__(self, companies: list[dict]):
+    def __init__(self, companies: list[dict], *, named: Optional[str] = None):
         self.companies = companies
-        super().__init__(
-            "This organization reads more than one company's books, and each "
-            "has its own product catalogue. Name the company this line is for "
-            "(company_id): "
-            + ", ".join(f"{c['connection_id']} ({c['label']})" if c["label"]
-                        else c["connection_id"] for c in companies))
+        choices = ", ".join(f"{c['connection_id']} ({c['label']})" if c["label"]
+                            else c["connection_id"] for c in companies)
+        if named:
+            super().__init__(
+                "The company named is not one of this organization's enabled "
+                "companies, and only an enabled company has a catalogue to "
+                "answer from. "
+                + (f"The enabled companies are (company_id): {choices}"
+                   if companies else "This organization has no enabled company."))
+        else:
+            super().__init__(
+                "This organization reads more than one company's books, and each "
+                "has its own product catalogue. Name the company this line is for "
+                "(company_id): " + choices)
 
 
 def company_for(session: Session, organization_id: str,
@@ -514,7 +528,7 @@ def company_for(session: Session, organization_id: str,
     if connection_id:
         if any(c["connection_id"] == connection_id for c in companies):
             return connection_id
-        raise CompanyNotNamed(companies)
+        raise CompanyNotNamed(companies, named=connection_id)
     if len(companies) == 1:
         return companies[0]["connection_id"]
     if not companies:

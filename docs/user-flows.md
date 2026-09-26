@@ -1391,7 +1391,12 @@ the quote it becomes carry `revisionOf` — book, reference and the book's name
 only where this platform holds no quote for the document already (that one is
 opened instead) and where the book is known: an ERP reference is unique only
 inside one, so the endpoint takes the company and 404s — as the lines do —
-where the reader may not see the quote.
+where the reader may not see the quote. A quote from a **disabled** company
+is refused by name (409): the book still lists its documents, but a revision
+resolves against that company's catalogue and a disabled company has none.
+The page shows that sentence beside the quote, not in place of it — the
+demo's one ERP quote is in exactly this state, because its company is
+disabled on purpose.
 
 ### 8.4 Attribution: what PIE changed (`#/what-pie-changed`)
 
@@ -2118,7 +2123,7 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/quotes/field-definitions` | signed-in | The quote-level fields this organization asks for (built-in plus custom), which are required, for the builder to render |
 | POST | `/api/v1/quotes` | signed-in | Create a draft outright — customer optional and empty by default; number minted from the org's sequence (QB-0001…); stamped with the principal's organization_id. Not what "New quote" calls: see /quotes/form |
 | POST | `/api/v1/quotes/form` | signed-in | Open a blank quote form. **Creates no quote and mints no number** — a `quote_form_drafts` row scoped to the caller, in no listing, answering the Quote shape with `saved: false`. The company is still settled here |
-| POST | `/api/v1/quotes/from-erp` | signed-in | Pick up a quote the ERP raised as a form: its customer, company and every line through the ordinary intake (a line naming no item arrives under its description), priced at the ERP's net rate; `revisionOf` names the book, reference and number. 404 where the reader may not see the quote, as its lines are; 409 while its lines have not been read |
+| POST | `/api/v1/quotes/from-erp` | signed-in | Pick up a quote the ERP raised as a form: its customer, company and every line through the ordinary intake (a line naming no item arrives under its description), priced at the ERP's net rate; `revisionOf` names the book, reference and number. 404 where the reader may not see the quote, as its lines are; 409 while its lines have not been read, and 409 naming the company where it is disabled |
 | POST | `/api/v1/quotes/form/{form_id}/save` | signed-in | Save the form: mint the number, write the quote, drop the form. The only place the builder creates a quote. Idempotent under a unique constraint, so a second click returns the quote the first made |
 | DELETE | `/api/v1/quotes/form/{form_id}` | signed-in | Throw an unsaved form away; nothing was ever written to the workspace. Idempotent — discarding one already gone answers ok |
 | DELETE | `/api/v1/quotes/{quote_id}` | signed-in | Remove an unsent draft; 409 once a document has been written for it. An unsaved form under the same id is discarded instead |

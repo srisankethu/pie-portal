@@ -471,7 +471,9 @@ class Line:
     # ``SYNCED`` the last pull's master, true as of ``booksAsOf``; ``DEMO``
     # the offline stand-in, whose figures are hashed from the code. ``None``
     # when no adapter has answered — an unresolved line, or a row persisted
-    # before this field existed, which must never be read as LIVE.
+    # before this field existed, which must never be read as LIVE. Copied
+    # from the adapter's own claim (``ZohoItem.source``), never inferred from
+    # a stamp: the synced master can answer without one.
     #
     # The sibling of ``costSource``, for the stock figure and the in-books
     # claim: a hashed 20 and a ledger's 20 were the same glyphs on screen,
@@ -483,8 +485,20 @@ class Line:
     booksReadAt: Optional[str] = None
 
     # ── derivation ───────────────────────────────────────────────────────────
+    def is_request(self, code: Optional[str]) -> bool:
+        """Whether ``code`` is the product that was asked for.
+
+        One predicate, through ``normalize_sku``, because the books search
+        returns the SKU as the ledger spells it and the request was typed by
+        a person: ``cnmg 120408 uc-d2`` and ``CNMG120408-UC-D2`` are one part
+        number. Compared raw in four places, a pick spelt the ledger's way
+        read as EXACT here and as a substitution there — READY · SUBST on a
+        line the same object called AUTO.
+        """
+        return bool(code) and normalize_sku(code) == normalize_sku(self.reqCode)
+
     def substituted(self) -> bool:
-        return bool(self.supplyCode) and self.supplyCode != self.reqCode
+        return bool(self.supplyCode) and not self.is_request(self.supplyCode)
 
     def shortage(self) -> Optional[int]:
         if self.avail is None or not self.supplyCode:
@@ -1065,6 +1079,17 @@ class QuoteStore:
         """
         if not ln.supplyCode:
             return
+        if code_changed:
+            # A different product: nothing the books said about the last one
+            # holds for this one. Cleared before the read rather than after,
+            # so an early return below — books offline, a read that failed —
+            # leaves the honest "not answered" rather than the previous
+            # product's stock, cost and provenance standing under the new
+            # code. A same-product re-read that fails keeps the last answer,
+            # which is still that product's, with its stamp.
+            ln.inBooks = ln.itemId = ln.avail = ln.listPrice = ln.cost = None
+            ln.costSource = ln.taxPercent = ln.booksAsOf = None
+            ln.booksSource = ln.stockKind = ln.booksReadAt = None
         if not zoho.available:
             ln.service = "BOOKS"
             return
@@ -1086,7 +1111,7 @@ class QuoteStore:
         # as "CNMG120408-UC-D2 YC0014 / Awaiting PIE".
         if item.name != ln.supplyCode:
             ln.supplyDesc = item.name
-        elif ln.supplyCode == ln.reqCode:
+        elif ln.is_request(ln.supplyCode):
             ln.supplyDesc = ln.reqDesc
         else:
             ln.supplyDesc = ""
@@ -1101,8 +1126,7 @@ class QuoteStore:
                                                         else "BOOKS")
         ln.taxPercent = item.tax_percentage
         ln.booksAsOf = item.as_of
-        ln.booksSource = ("DEMO" if item.synthetic
-                          else "SYNCED" if item.as_of else "LIVE")
+        ln.booksSource = item.source
         ln.stockKind = item.stock_kind if item.stock is not None else None
         ln.booksReadAt = item.read_at
         ln.family = self._family_of(ln)
@@ -1128,12 +1152,7 @@ class QuoteStore:
     # ── mutations ────────────────────────────────────────────────────────────
     def select_supply(self, ln: Line, code: str, zoho: ZohoService, manual: bool = False) -> None:
         cand = next((c for c in ln.candidates if c.code == code), None)
-        # The books search returns the SKU as the ledger spells it and the
-        # request was typed by a person: ``cnmg 120408 uc-d2`` and
-        # ``CNMG120408-UC-D2`` are one part number written twice. Compared
-        # raw, the second read as a COMPATIBLE substitution picked by hand —
-        # an engine word for a comparison the engine never made.
-        was_exact = normalize_sku(code) == normalize_sku(ln.reqCode)
+        was_exact = ln.is_request(code)
         code_changed = ln.supplyCode != code
         ln.supplyCode = code
         if was_exact:

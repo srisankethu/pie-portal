@@ -113,7 +113,7 @@ class SyncedCatalogue:
             # this answer is wrong about.
             return ZohoItem(code=code, name=code, in_books=False,
                             list_price=None, stock=None, cost=None,
-                            as_of=self._master_stamp())
+                            source="SYNCED", as_of=self._master_stamp())
         snapshot = self._latest_snapshot(rec.product_id) if rec.product_id else None
         # The stamp itself, not a calendar day cut here: the screen renders it
         # in the business's zone like every other timestamp, so a pull at
@@ -144,6 +144,10 @@ class SyncedCatalogue:
                   and snapshot.purchase_rate is not None else None),
             item_id=rec.external_id,
             synthetic=False,
+            # Said, not left to be inferred: a record never stamped and with
+            # no snapshot answers with ``as_of`` None, and that is still a
+            # synced answer, not a live one.
+            source="SYNCED",
             as_of=as_of,
         )
 

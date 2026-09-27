@@ -58,13 +58,15 @@ log = logging.getLogger("pie_portal.zoho.quote")
 # Zoho's own names for on-hand quantity, most specific first. An item that is
 # not inventory-tracked carries none of them, which is "availability unknown"
 # rather than "none in stock" — a distinction the line status already draws.
-_STOCK_FIELDS = ("available_stock", "actual_available_stock", "stock_on_hand")
-#: The connector-neutral word for each — what ``ZohoItem.stock_kind`` carries,
-#: so the line can say "free" of an available figure and "on hand" of the
-#: fallback, which includes committed stock and is not free.
+#: Zoho's three quantities, most specific first, each with the connector-
+#: neutral word ``ZohoItem.stock_kind`` carries for it (defined once, on
+#: ``StockSnapshot``). One table: the fallback order and the vocabulary used
+#: to be two, and a second connector mapping into the same words needs only
+#: the words.
 _STOCK_KIND = {"available_stock": "AVAILABLE",
                "actual_available_stock": "ACTUAL_AVAILABLE",
                "stock_on_hand": "ON_HAND"}
+_STOCK_FIELDS = tuple(_STOCK_KIND)
 
 
 def _money(raw: Any, ctx: str, field: str) -> Optional[float]:
@@ -164,6 +166,7 @@ class ZohoBooksService(ZohoTransport):
             list_price=_money(raw.get("rate"), ctx, "rate"),
             stock=stock,
             stock_kind=stock_kind,
+            source="LIVE",
             # The moment the ledger was asked. The line keeps this figure until
             # its next read, and says how old it is with this.
             read_at=clock.iso(clock.now()),
@@ -187,7 +190,7 @@ class ZohoBooksService(ZohoTransport):
             # of now" is a claim about a moment, like every other answer here.
             return ZohoItem(code=code, name=code, in_books=False,
                             list_price=None, stock=None, cost=None,
-                            read_at=clock.iso(clock.now()))
+                            source="LIVE", read_at=clock.iso(clock.now()))
         return self._item_from(raw, code)
 
     def _read(self, call):

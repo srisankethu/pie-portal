@@ -301,7 +301,7 @@ function LineCard({
             >
               <Stack direction="row" spacing={0.5} useFlexGap
                      sx={{ flexWrap: "wrap", alignItems: "center", mt: 0.5 }}>
-                {line.supplyCode && line.supplyCode !== line.reqCode && (
+                {line.substituted && (
                   <StatusChip label={line.relLabel} tone={relTone(line.rel)} dense />
                 )}
                 {(line.sel === "USER" || line.sel === "MANUAL") && (
@@ -312,7 +312,7 @@ function LineCard({
               </Stack>
             </CodeCell>
           </Box>
-          {line.supplyCode && line.supplyCode !== line.reqCode && (
+          {line.substituted && (
             <Typography variant="caption" color="text.secondary" sx={{ display: "block" }}>
               asked for {line.reqCode}
             </Typography>
@@ -594,7 +594,10 @@ export function LineGrid({
       cellRenderer: (p: { data?: Row }) => {
         const l = p.data;
         if (!l) return null;
-        const differs = Boolean(l.supplyCode) && l.supplyCode !== l.reqCode;
+        // The server's predicate, which normalises both spellings; comparing
+        // the two strings here called a pick spelt the ledger's way a
+        // substitution the server had just called EXACT.
+        const differs = l.substituted;
         return (
           <CodeCell
             code={l.supplyCode ?? l.reqCode}

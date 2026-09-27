@@ -1254,7 +1254,7 @@ class PieService:
                 retrieval=retrieval_info)
 
         # (4) Nothing resolved -> UNRESOLVED (no PIE match).
-        return Resolution(text, text, "No PIE match", "UNRESOLVED", None, [],
+        return Resolution(text, text, "", "UNRESOLVED", None, [],
                           outcome, semantics, notes, retrieval=retrieval_info)
 
     # ── retrieval: nearest descriptions as extra options ─────────────────────

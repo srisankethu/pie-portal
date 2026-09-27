@@ -232,6 +232,7 @@ def test_the_type_file_is_fully_understood(types):
     # Spot-check the shapes these tests lean on, so a regex that quietly matches
     # nothing cannot look like a clean run.
     assert len(types["Line"].fields) == 39
+    assert types["Line"].fields["booksSource"].ts == '"LIVE" | "SYNCED" | "DEMO" | null'
     assert len(types["Economics"].fields) == 6
     assert types["Line"].fields["supplyCode"].ts == "string | null"
     assert types["Quote"].fields["marginFloor"].optional is True

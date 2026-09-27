@@ -135,8 +135,9 @@ export interface Line {
    *  code. Null on a line no adapter has answered — and on a row persisted
    *  before the field existed, which must never be read as LIVE. */
   booksSource: "LIVE" | "SYNCED" | "DEMO" | null;
-  /** Which quantity `avail` is. Only AVAILABLE and ACTUAL_AVAILABLE are free
-   *  stock; ON_HAND includes what is already committed. Null with no figure. */
+  /** Which quantity `avail` is: AVAILABLE is what can still be sold,
+   *  ACTUAL_AVAILABLE nets off what is already promised, ON_HAND is everything
+   *  on the shelf, committed included. Null with no figure. */
   stockKind: "AVAILABLE" | "ACTUAL_AVAILABLE" | "ON_HAND" | null;
   /** When a live read happened; null for a synced answer or the stand-in. */
   booksReadAt: string | null;

@@ -61,13 +61,16 @@ function lineWithEconomics(): Line {
     booksAsOf: null,
     booksSource: null, stockKind: null, booksReadAt: null,
     status: { kind: "ready", label: "ready" },
+    // The request is CNMG120408 and the supply is 2001174, so this line IS a
+    // substitution, and the server's own predicate says so — the card and the
+    // grid read that field now rather than comparing the two codes themselves.
     flags: {
       attention: false, procurement: false, missingBooks: false,
-      manualReview: false, unresolved: false, substituted: false,
+      manualReview: false, unresolved: false, substituted: true,
     },
     candidates: [],
     notes: [],
-    substituted: false,
+    substituted: true,
     // The numbers that must never reach a salesperson's screen.
     economics: {
       cost: 760,

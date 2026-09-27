@@ -116,7 +116,7 @@ def test_the_master_answers_nothing_rather_than_a_guess(session, code, why):
 def _resolution(text, *, rel="UNRESOLVED", supply=None, offline=False,
                 candidates=()):
     return Resolution(input_text=text, reqCode=text,
-                      reqDesc="" if offline else "No PIE match",
+                      reqDesc="",
                       rel="PIE_DOWN" if offline else rel, supplyCode=supply,
                       candidates=list(candidates),
                       outcome="ERROR" if offline else "UNRESOLVED",
@@ -254,3 +254,8 @@ def test_the_same_code_spelt_differently_is_the_request_not_a_substitution(monke
                           _Books(), connection_id=FOUR_U)
     st.select_supply(ln, "CNMG120408-UC-D2 YC0014", _Books(), manual=True)
     assert (ln.rel, ln.sel) == ("EXACT", "AUTO")
+    # One predicate, everywhere it is asked: not a substitution to the status
+    # label, the flags or the wire either.
+    assert not ln.substituted()
+    assert ln.status()["label"] == "READY"
+    assert ln.to_dict(False)["substituted"] is False

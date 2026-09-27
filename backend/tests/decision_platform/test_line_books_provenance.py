@@ -55,16 +55,32 @@ class _Adapter:
 
 def test_a_live_read_is_named_live_with_the_moment_it_happened():
     ln = _line()
-    QuoteStore()._enrich_from_zoho(ln, _Adapter(_item(stock_kind="ON_HAND", read_at=READ_AT)))
+    QuoteStore()._enrich_from_zoho(ln, _Adapter(_item(source="LIVE", stock_kind="ON_HAND", read_at=READ_AT)))
     assert (ln.booksSource, ln.stockKind, ln.booksReadAt) == ("LIVE", "ON_HAND", READ_AT)
     assert ln.booksAsOf is None, "a live answer invents no pull date"
 
 
 def test_a_synced_answer_is_named_synced_as_of_the_pull():
     ln = _line()
-    QuoteStore()._enrich_from_zoho(ln, _Adapter(_item(stock_kind="AVAILABLE", as_of=PULLED_AT)))
+    QuoteStore()._enrich_from_zoho(ln, _Adapter(_item(source="SYNCED", stock_kind="AVAILABLE", as_of=PULLED_AT)))
     assert (ln.booksSource, ln.stockKind) == ("SYNCED", "AVAILABLE")
     assert (ln.booksAsOf, ln.booksReadAt) == (PULLED_AT, None)
+
+
+def test_a_synced_answer_without_a_stamp_is_still_synced_not_live():
+    """The synced master answers with ``as_of`` None for a record never
+    stamped and with no snapshot (``test_synced_catalogue`` pins that). The
+    first version of this field inferred LIVE from exactly that absence — the
+    re-derived predicate §1 describes. The adapter says what it is."""
+    ln = _line()
+    QuoteStore()._enrich_from_zoho(ln, _Adapter(_item(source="SYNCED", stock=None, as_of=None)))
+    assert (ln.booksSource, ln.booksAsOf, ln.booksReadAt) == ("SYNCED", None, None)
+
+
+def test_an_adapter_that_does_not_say_is_not_recorded_and_never_live():
+    ln = _line()
+    QuoteStore()._enrich_from_zoho(ln, _Adapter(_item(read_at=READ_AT)))
+    assert ln.booksSource is None, "no claim was made, so none is recorded"
 
 
 def test_the_stand_in_is_named_demo_and_claims_no_read():
@@ -77,7 +93,7 @@ def test_the_stand_in_is_named_demo_and_claims_no_read():
 
 def test_an_unknown_figure_has_no_kind_but_still_says_who_was_asked():
     ln = _line()
-    QuoteStore()._enrich_from_zoho(ln, _Adapter(_item(stock=None, stock_kind=None, read_at=READ_AT)))
+    QuoteStore()._enrich_from_zoho(ln, _Adapter(_item(source="LIVE", stock=None, stock_kind=None, read_at=READ_AT)))
     assert ln.avail is None and ln.stockKind is None
     assert (ln.booksSource, ln.booksReadAt) == ("LIVE", READ_AT)
     assert ln.to_dict(False)["availUnknown"] is True
@@ -86,7 +102,7 @@ def test_an_unknown_figure_has_no_kind_but_still_says_who_was_asked():
 def test_a_code_the_ledger_does_not_hold_is_absent_as_of_now():
     ln = _line()
     QuoteStore()._enrich_from_zoho(ln, _Adapter(_item(
-        in_books=False, list_price=None, stock=None, read_at=READ_AT)))
+        source="LIVE", in_books=False, list_price=None, stock=None, read_at=READ_AT)))
     assert ln.inBooks is False
     assert (ln.booksSource, ln.booksReadAt) == ("LIVE", READ_AT)
 
@@ -94,7 +110,7 @@ def test_a_code_the_ledger_does_not_hold_is_absent_as_of_now():
 def test_both_roles_read_the_sources_and_stamps_and_neither_reads_a_value():
     ln = _line()
     QuoteStore()._enrich_from_zoho(ln, _Adapter(_item(
-        stock_kind="AVAILABLE", read_at=READ_AT, cost=318.5)))
+        source="LIVE", stock_kind="AVAILABLE", read_at=READ_AT, cost=318.5)))
     for mgmt in (False, True):
         d = ln.to_dict(mgmt)
         assert (d["booksSource"], d["stockKind"], d["booksReadAt"]) == ("LIVE", "AVAILABLE", READ_AT)
@@ -110,6 +126,27 @@ def test_a_row_persisted_before_the_fields_existed_is_not_read_as_live():
         old.pop(key)
     back = Line.from_state(old)
     assert (back.booksSource, back.stockKind, back.booksReadAt) == (None, None, None)
+
+
+def test_a_product_change_the_books_cannot_answer_leaves_no_stale_provenance():
+    """Enriched live for one product, then moved to another while the books
+    are offline: the previous product's stock, cost and provenance must not
+    stand under the new code. The line says the books did not answer."""
+    class _Offline:
+        available = False
+
+        def get_item(self, code):
+            raise AssertionError("not asked while offline")
+
+    ln = _line()
+    store = QuoteStore()
+    store._enrich_from_zoho(ln, _Adapter(_item(source="LIVE", stock_kind="AVAILABLE",
+                                               read_at=READ_AT, cost=318.5)))
+    assert (ln.avail, ln.booksSource) == (20, "LIVE")
+    store.select_supply(ln, "2001175", _Offline(), manual=True)
+    assert ln.supplyCode == "2001175" and ln.service == "BOOKS"
+    assert (ln.avail, ln.cost, ln.inBooks) == (None, None, None)
+    assert (ln.booksSource, ln.stockKind, ln.booksReadAt, ln.booksAsOf) == (None, None, None, None)
 
 
 # ── the engine writes no status into a description ──────────────────────────

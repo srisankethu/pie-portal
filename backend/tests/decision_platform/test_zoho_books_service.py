@@ -131,6 +131,7 @@ def test_the_stock_figure_says_which_quantity_it_is_and_when_it_was_read():
     svc, _ = _service(routes={"/items": _items([ITEM])})
     item = svc.get_item("CNMG120408KCP25")
     assert (item.stock, item.stock_kind) == (42, "AVAILABLE")
+    assert item.source == "LIVE", "the adapter says which it is; nothing infers it"
     assert item.read_at and item.read_at.endswith("+00:00"), "an ISO stamp, UTC"
     assert item.as_of is None, "live: no pull date to claim"
 
@@ -150,6 +151,7 @@ def test_a_code_zoho_does_not_hold_is_absent_as_of_now():
     svc, _ = _service(routes={"/items": _items([])})
     item = svc.get_item("XZ-NOTREAL")
     assert item.in_books is False and item.stock_kind is None
+    assert item.source == "LIVE"
     assert item.read_at, "absent as of a moment, like every other answer"
 
 

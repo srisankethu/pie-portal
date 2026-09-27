@@ -939,10 +939,12 @@ brings, because the connector's writer (Business Central, Acumatica) puts the
 master's id on every line.
 
 Whichever adapter answers, the line says so. Every line a book has answered
-carries `booksSource` — LIVE, SYNCED or DEMO — beside `booksAsOf`; the stock
-figure carries `stockKind` — AVAILABLE, ACTUAL_AVAILABLE or ON_HAND, because
-the live adapter falls back through three of Zoho's fields and only the first
-two are free stock; and a live read carries `booksReadAt`, the moment the
+carries `booksSource` — LIVE, SYNCED or DEMO, said by the adapter itself and
+never inferred from a stamp, because the synced master can answer without one;
+the stock figure carries `stockKind` — AVAILABLE (what can still be sold),
+ACTUAL_AVAILABLE (net of what is already promised) or ON_HAND (everything on
+the shelf, committed included), because the live adapter falls back through
+three of Zoho's fields and used to forget which; and a live read carries `booksReadAt`, the moment the
 ledger was asked, because a line is persisted whole and served again on every
 open, and a figure read last week must not read as this morning's. Sources and
 stamps, for both roles; never a value. A row persisted before these fields

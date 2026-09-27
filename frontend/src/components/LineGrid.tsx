@@ -116,7 +116,10 @@ function CodeCell({
   const clamp = wrap
     ? { overflowWrap: "anywhere" as const }
     : { overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const };
-  const description = desc ? (
+  // A description that is the code again says nothing twice: a line the
+  // engine never answered has no description, so the request's falls back to
+  // the code, and the caption used to repeat the line above it.
+  const description = desc && desc !== code ? (
     <Typography
       component="div"
       variant="caption"

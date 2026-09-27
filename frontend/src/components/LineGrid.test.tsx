@@ -59,6 +59,7 @@ function lineWithEconomics(): Line {
     service: null,
     incompatReason: null,
     booksAsOf: null,
+    booksSource: null, stockKind: null, booksReadAt: null,
     status: { kind: "ready", label: "ready" },
     flags: {
       attention: false, procurement: false, missingBooks: false,

@@ -116,7 +116,7 @@ def test_the_master_answers_nothing_rather_than_a_guess(session, code, why):
 def _resolution(text, *, rel="UNRESOLVED", supply=None, offline=False,
                 candidates=()):
     return Resolution(input_text=text, reqCode=text,
-                      reqDesc="Awaiting PIE" if offline else "No PIE match",
+                      reqDesc="" if offline else "No PIE match",
                       rel="PIE_DOWN" if offline else rel, supplyCode=supply,
                       candidates=list(candidates),
                       outcome="ERROR" if offline else "UNRESOLVED",
@@ -221,17 +221,36 @@ class _Books:
 def test_an_item_picked_by_name_is_not_described_by_the_engines_status(monkeypatch):
     """Picked by hand from the books search, whose code is the item's name, on
     a line the engine never answered. The description used to fall back to the
-    request's, which on that line is the engine's status message — so the grid
-    read "CNMG120408-UC-D2 YC0014 / Awaiting PIE" under a chosen item."""
+    request's, which on that line was the engine's status message — so the grid
+    read "CNMG120408-UC-D2 YC0014 / Awaiting PIE" under a chosen item. The
+    engine writes no status into a description now, so the request's is the
+    code; the supply's must still not be it."""
     from app import store as store_module
     monkeypatch.setattr(store_module.pie_service, "resolve",
                         lambda text, *a, **k: _resolution(text, offline=True))
     st = QuoteStore()
     [ln] = st.build_lines([{"raw": "22000865 142", "code": "22000865", "qty": 142}],
                           _Books(), connection_id=FOUR_U)
-    assert ln.reqDesc == "Awaiting PIE"
+    assert ln.reqDesc == "22000865", "the code — never the engine's status"
 
     st.select_supply(ln, "CNMG120408-UC-D2 YC0014", _Books(), manual=True)
 
     assert ln.supplyDesc != "Awaiting PIE"
     assert ln.inBooks is True
+
+
+def test_the_same_code_spelt_differently_is_the_request_not_a_substitution(monkeypatch):
+    """The books search returns the SKU as the ledger spells it; the request
+    was typed by a person. ``cnmg 120408 uc-d2`` and ``CNMG120408-UC-D2`` are
+    one part number written twice, and the line used to call the second a
+    COMPATIBLE substitution picked by hand — an engine word for a comparison
+    the engine never made, beside a "manual" chip, on one product."""
+    from app import store as store_module
+    monkeypatch.setattr(store_module.pie_service, "resolve",
+                        lambda text, *a, **k: _resolution(text))
+    st = QuoteStore()
+    [ln] = st.build_lines([{"raw": "cnmg 120408 uc-d2 yc0014 x10",
+                            "code": "cnmg 120408 uc-d2 yc0014", "qty": 10}],
+                          _Books(), connection_id=FOUR_U)
+    st.select_supply(ln, "CNMG120408-UC-D2 YC0014", _Books(), manual=True)
+    assert (ln.rel, ln.sel) == ("EXACT", "AUTO")

@@ -124,6 +124,8 @@ class SyncedCatalogue:
             as_of = clock.iso(rec.last_synced_at)
         elif snapshot is not None:
             as_of = snapshot.as_of.isoformat()
+        stock = (int(snapshot.available) if snapshot is not None
+                 and snapshot.available is not None else None)
         return ZohoItem(
             code=code,
             name=((product.name if product is not None else "")
@@ -134,8 +136,10 @@ class SyncedCatalogue:
             # the send. A record with no product row cannot say, and is held.
             in_books=(product.active if product is not None else True),
             list_price=None,
-            stock=(int(snapshot.available) if snapshot is not None
-                   and snapshot.available is not None else None),
+            stock=stock,
+            # ``available``, by the rule at the top of this module — never
+            # on_hand in its place — so the word is the same one every time.
+            stock_kind="AVAILABLE" if stock is not None else None,
             cost=(float(snapshot.purchase_rate) if snapshot is not None
                   and snapshot.purchase_rate is not None else None),
             item_id=rec.external_id,

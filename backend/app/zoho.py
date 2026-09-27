@@ -80,6 +80,21 @@ class ZohoItem:
     #: because a stock figure from Tuesday's pull is Tuesday's stock, and a line
     #: that cannot say so reads as though the books were consulted just now.
     as_of: Optional[str] = None
+    #: Which quantity ``stock`` is, in a connector-neutral word: ``AVAILABLE``
+    #: (on hand less committed — free stock), ``ACTUAL_AVAILABLE`` (available
+    #: less what is already on sales orders) or ``ON_HAND`` (everything on the
+    #: shelf, committed included). ``None`` when there is no figure. Carried
+    #: because the live adapter falls back through three of Zoho's fields and
+    #: used to forget which one answered — and the line then called every one
+    #: of them "free".
+    stock_kind: Optional[str] = None
+    #: When a *live* read happened — an ISO stamp the adapter writes at the
+    #: moment it asked the ledger. ``None`` for a synced answer (``as_of`` says
+    #: when that was true) and for the stand-in (a stamp would claim a read
+    #: that did not happen). Carried because a line is persisted whole and
+    #: served again on every open: without it a figure read last week reads
+    #: as this morning's.
+    read_at: Optional[str] = None
 
 
 #: The Zoho name for the neutral record every connector's write returns. Kept
@@ -246,7 +261,8 @@ class MockZoho:
                             synthetic=True)
         return ZohoItem(code=code, name=name, in_books=in_books,
                         list_price=float(list_price), stock=stock_val,
-                        cost=float(cost), synthetic=True)
+                        cost=float(cost), synthetic=True,
+                        stock_kind="AVAILABLE" if stock_val is not None else None)
 
     # ── protocol ─────────────────────────────────────────────────────────────
     def get_item(self, code: str) -> Optional[ZohoItem]:
@@ -264,6 +280,7 @@ class MockZoho:
                 code=code, name=name or code, in_books=True,
                 list_price=list_price if list_price is not None else base.list_price,
                 stock=base.stock, cost=base.cost, synthetic=True,
+                stock_kind=base.stock_kind,
             )
             self._created[code] = item
             self._not_in_books.discard(code)

@@ -89,6 +89,9 @@ def test_an_item_the_sync_holds_is_in_the_books_with_its_id_and_its_stock(sessio
     assert item.list_price is None, "the master carries no selling price"
     assert item.synthetic is False
     assert item.as_of == "2026-09-12T06:30:00+00:00"
+    # The word the line will use for the figure, and no claim of a live read.
+    assert item.stock_kind == "AVAILABLE"
+    assert item.read_at is None
 
 
 def test_a_code_the_sync_does_not_hold_is_not_in_the_books_as_of_the_sync(session):
@@ -105,6 +108,7 @@ def test_the_products_name_is_tried_after_the_sku(session):
     item = _catalogue(session).get_item("freight & HANDLING")
     assert item is not None and item.in_books is True and item.item_id == "SVC-1"
     assert item.stock is None and item.cost is None, "no snapshot is not nought"
+    assert item.stock_kind is None, "no figure, no kind"
     # No stamp on the record and no snapshot to fall back on: unknown, not today.
     assert item.as_of is None
 

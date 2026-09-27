@@ -121,7 +121,36 @@ def test_the_match_is_exact_not_zohos_ranking():
 def test_an_item_with_no_stock_tracking_reports_unknown_not_zero():
     bare = {k: v for k, v in ITEM.items() if k != "available_stock"}
     svc, _ = _service(routes={"/items": _items([bare])})
-    assert svc.get_item("CNMG120408KCP25").stock is None
+    item = svc.get_item("CNMG120408KCP25")
+    assert item.stock is None
+    assert item.stock_kind is None, "no figure, no kind"
+    assert item.read_at, "asked, and it said so — the stamp is the answer's, not the figure's"
+
+
+def test_the_stock_figure_says_which_quantity_it_is_and_when_it_was_read():
+    svc, _ = _service(routes={"/items": _items([ITEM])})
+    item = svc.get_item("CNMG120408KCP25")
+    assert (item.stock, item.stock_kind) == (42, "AVAILABLE")
+    assert item.read_at and item.read_at.endswith("+00:00"), "an ISO stamp, UTC"
+    assert item.as_of is None, "live: no pull date to claim"
+
+
+def test_the_on_hand_fallback_is_named_on_hand_not_free():
+    """``stock_on_hand`` includes committed stock. The adapter falls back to
+    it when Zoho carries no available figure, and used to hand it over as a
+    bare integer that the line then called "free"."""
+    only_on_hand = {k: v for k, v in ITEM.items() if k != "available_stock"}
+    only_on_hand["stock_on_hand"] = "7"
+    svc, _ = _service(routes={"/items": _items([only_on_hand])})
+    assert (svc.get_item("CNMG120408KCP25").stock,
+            svc.get_item("CNMG120408KCP25").stock_kind) == (7, "ON_HAND")
+
+
+def test_a_code_zoho_does_not_hold_is_absent_as_of_now():
+    svc, _ = _service(routes={"/items": _items([])})
+    item = svc.get_item("XZ-NOTREAL")
+    assert item.in_books is False and item.stock_kind is None
+    assert item.read_at, "absent as of a moment, like every other answer"
 
 
 def test_an_inactive_item_is_not_quotable():

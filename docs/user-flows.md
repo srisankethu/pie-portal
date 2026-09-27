@@ -937,6 +937,16 @@ master has been synced at all, the refusing adapter, naming the gap — the
 quote can be marked as sent, and a send waits for the item ids a sync
 brings, because the connector's writer (Business Central, Acumatica) puts the
 master's id on every line.
+
+Whichever adapter answers, the line says so. Every line a book has answered
+carries `booksSource` — LIVE, SYNCED or DEMO — beside `booksAsOf`; the stock
+figure carries `stockKind` — AVAILABLE, ACTUAL_AVAILABLE or ON_HAND, because
+the live adapter falls back through three of Zoho's fields and only the first
+two are free stock; and a live read carries `booksReadAt`, the moment the
+ledger was asked, because a line is persisted whole and served again on every
+open, and a figure read last week must not read as this morning's. Sources and
+stamps, for both roles; never a value. A row persisted before these fields
+existed carries `null` in all three and is never inferred to be live.
 **Ends.** Lines land in the grid with per-line statuses (READY · READY-SUBST ·
 NO PRICE · NOT IN BOOKS · BOOKS OFFLINE · UNRESOLVED · AMBIGUOUS · PIE OFFLINE
 · CONFIRM READING) · 400 · modal cancelled.

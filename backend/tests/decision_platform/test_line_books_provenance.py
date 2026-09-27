@@ -114,9 +114,14 @@ def test_a_row_persisted_before_the_fields_existed_is_not_read_as_live():
 
 # ── the engine writes no status into a description ──────────────────────────
 
-def test_no_catalogue_is_a_state_not_a_description():
-    from app.pie_service import pie_service
-    res = pie_service.resolve("CNMG 120408 provenance x10", connection_id=None)
+def test_no_catalogue_is_a_state_not_a_description(monkeypatch):
+    """The branch under test is "this company has no catalogue", which comes
+    after the engine is loaded — so the engine is stubbed, not required: CI
+    runs this suite without pie-parser on disk, and there the real call was
+    PIE_DOWN before it reached the branch."""
+    from app import pie_service as ps
+    monkeypatch.setattr(ps.pie_service, "_ensure_module", lambda: object())
+    res = ps.pie_service.resolve("CNMG 120408 provenance x10", connection_id=None)
     assert res.rel == "UNRESOLVED"
     assert res.reqDesc == "", "the grid used to read 'No catalogue' as the product's caption"
     assert any("no decoded catalogue" in note for note in res.notes)
@@ -128,6 +133,7 @@ def test_an_engine_failure_is_a_state_not_a_description(monkeypatch):
     class _View:
         path = "/nowhere"
 
+    monkeypatch.setattr(ps.pie_service, "_ensure_module", lambda: object())
     monkeypatch.setattr(ps.pie_service, "_view", lambda connection_id: _View())
 
     def boom(*a, **k):

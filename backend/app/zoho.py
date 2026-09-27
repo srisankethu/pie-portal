@@ -46,7 +46,7 @@ class ZohoItem:
     name: str
     in_books: bool
     list_price: Optional[float]   # standard selling price (₹)
-    stock: Optional[int]          # on-hand quantity; None == availability unknown
+    stock: Optional[int]          # the quantity ``stock_kind`` names; None == unknown
     cost: Optional[float]         # landed cost (₹) — never sent to a sales client
     # The item's id in the books it came from, when the adapter has one. Carried
     # so a later write can name the item it already resolved instead of matching
@@ -80,6 +80,29 @@ class ZohoItem:
     #: because a stock figure from Tuesday's pull is Tuesday's stock, and a line
     #: that cannot say so reads as though the books were consulted just now.
     as_of: Optional[str] = None
+    #: Which quantity ``stock`` is, in a connector-neutral word. The three are
+    #: defined once, on ``StockSnapshot``: ``AVAILABLE`` is what can still be
+    #: sold, ``ACTUAL_AVAILABLE`` nets off what is already promised, and
+    #: ``ON_HAND`` is everything on the shelf, committed included. ``None``
+    #: when there is no figure. Carried because the live adapter falls back
+    #: through three of Zoho's fields and used to forget which one answered —
+    #: and the line then called every one of them "free".
+    stock_kind: Optional[str] = None
+    #: Which adapter this answer came from — ``LIVE`` (the connected ledger,
+    #: read now), ``SYNCED`` (the last pull's master) or ``DEMO`` (the offline
+    #: stand-in). Said by the producer, because nothing else can say it: the
+    #: synced master can answer without a stamp (a record never stamped, and
+    #: no snapshot), so "no ``as_of``, therefore live" is a guess — the
+    #: re-derived predicate CLAUDE.md §1 describes. ``None`` only from an
+    #: adapter that does not say, which the line then reports as not recorded.
+    source: Optional[str] = None
+    #: When a *live* read happened — an ISO stamp the adapter writes at the
+    #: moment it asked the ledger. ``None`` for a synced answer (``as_of`` says
+    #: when that was true) and for the stand-in (a stamp would claim a read
+    #: that did not happen). Carried because a line is persisted whole and
+    #: served again on every open: without it a figure read last week reads
+    #: as this morning's.
+    read_at: Optional[str] = None
 
 
 #: The Zoho name for the neutral record every connector's write returns. Kept
@@ -243,10 +266,11 @@ class MockZoho:
             # against it is written against behaviour production does not have.
             return ZohoItem(code=code, name=name, in_books=False,
                             list_price=None, stock=None, cost=None,
-                            synthetic=True)
+                            synthetic=True, source="DEMO")
         return ZohoItem(code=code, name=name, in_books=in_books,
                         list_price=float(list_price), stock=stock_val,
-                        cost=float(cost), synthetic=True)
+                        cost=float(cost), synthetic=True, source="DEMO",
+                        stock_kind="AVAILABLE" if stock_val is not None else None)
 
     # ── protocol ─────────────────────────────────────────────────────────────
     def get_item(self, code: str) -> Optional[ZohoItem]:
@@ -263,7 +287,8 @@ class MockZoho:
             item = ZohoItem(
                 code=code, name=name or code, in_books=True,
                 list_price=list_price if list_price is not None else base.list_price,
-                stock=base.stock, cost=base.cost, synthetic=True,
+                stock=base.stock, cost=base.cost, synthetic=True, source="DEMO",
+                stock_kind=base.stock_kind,
             )
             self._created[code] = item
             self._not_in_books.discard(code)

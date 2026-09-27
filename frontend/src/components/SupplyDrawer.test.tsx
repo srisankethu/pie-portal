@@ -50,6 +50,7 @@ function lineWithCaveats(over: Partial<Line> = {}): Line {
     quoted: null, priceSource: null, recommended: null, lineTotal: null,
     costBasis: null, customCostSet: false,
     createPhase: null, service: null, incompatReason: null, booksAsOf: null,
+    booksSource: null, stockKind: null, booksReadAt: null,
     status: { kind: "technical", label: "unresolved" },
     flags: {
       attention: true, procurement: false, missingBooks: false,

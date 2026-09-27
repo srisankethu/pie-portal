@@ -182,6 +182,13 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   /** A revise in flight. One click is one form; a second press while the
    *  first is answering must not open a second. */
   const [revising, setRevising] = useState(false);
+  /* The server's refusal to pick the quote up: a sentence beside the quote,
+     not in place of it. It used to go into `error`, which is the page's own
+     load failure — so the quote that had just been drawn was replaced by
+     "This did not load" and a "Try again" that reloads, for a document that
+     loaded fine. Seen in a real browser; the unit test covering the refusal
+     asked only whether the sentence appeared. */
+  const [refusal, setRefusal] = useState<string | null>(null);
   /** Bumped after an outcome is recorded, so the page re-reads what the
    *  server now says rather than patching a copy of it. */
   const [nonce, setNonce] = useState(0);
@@ -193,6 +200,7 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   useEffect(() => {
     let live = true;
     setError(null);
+    setRefusal(null);
     setQuote(undefined);
     setLines(undefined);
 
@@ -274,6 +282,7 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
   const revise = async () => {
     if (revising) return;
     setRevising(true);
+    setRefusal(null);
     try {
       const form = await api.reviseErpQuote(
         session.token, quote.origin!.connection_id!, quote.quote_document_ref);
@@ -281,7 +290,7 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
     } catch (e) {
       // The server's own sentence, on the page — a refusal that only reached
       // the console would leave a button that does nothing.
-      setError(e instanceof Error ? e.message : String(e));
+      setRefusal(e instanceof Error ? e.message : String(e));
       setRevising(false);
     }
   };
@@ -381,6 +390,12 @@ export default function ErpQuoteScreen({ session }: { session: PlatformSession }
           left holding a QB number in one tab and an estimate number in the
           other with nothing saying they are one quote. The one control on this
           page besides "All quotes", and it opens the draft, not the document. */}
+      {refusal && (
+        <Alert severity="warning" sx={{ mb: 2 }} onClose={() => setRefusal(null)}>
+          {refusal}
+        </Alert>
+      )}
+
       {quote.platform_quote && (
         <Alert
           severity="info"

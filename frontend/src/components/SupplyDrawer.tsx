@@ -61,7 +61,7 @@ export function SupplyDrawer({
    *  select and revert controls are not. */
   readOnly?: boolean;
 }) {
-  const exactSelected = line.supplyCode === line.reqCode;
+  const exactSelected = Boolean(line.supplyCode) && !line.substituted;
   const pricingDelta =
     line.quoted !== null && line.economics?.recommended !== null && line.economics?.recommended !== undefined
       ? line.quoted - line.economics.recommended

@@ -937,6 +937,18 @@ master has been synced at all, the refusing adapter, naming the gap — the
 quote can be marked as sent, and a send waits for the item ids a sync
 brings, because the connector's writer (Business Central, Acumatica) puts the
 master's id on every line.
+
+Whichever adapter answers, the line says so. Every line a book has answered
+carries `booksSource` — LIVE, SYNCED or DEMO, said by the adapter itself and
+never inferred from a stamp, because the synced master can answer without one;
+the stock figure carries `stockKind` — AVAILABLE (what can still be sold),
+ACTUAL_AVAILABLE (net of what is already promised) or ON_HAND (everything on
+the shelf, committed included), because the live adapter falls back through
+three of Zoho's fields and used to forget which; and a live read carries `booksReadAt`, the moment the
+ledger was asked, because a line is persisted whole and served again on every
+open, and a figure read last week must not read as this morning's. Sources and
+stamps, for both roles; never a value. A row persisted before these fields
+existed carries `null` in all three and is never inferred to be live.
 **Ends.** Lines land in the grid with per-line statuses (READY · READY-SUBST ·
 NO PRICE · NOT IN BOOKS · BOOKS OFFLINE · UNRESOLVED · AMBIGUOUS · PIE OFFLINE
 · CONFIRM READING) · 400 · modal cancelled.
@@ -1391,7 +1403,12 @@ the quote it becomes carry `revisionOf` — book, reference and the book's name
 only where this platform holds no quote for the document already (that one is
 opened instead) and where the book is known: an ERP reference is unique only
 inside one, so the endpoint takes the company and 404s — as the lines do —
-where the reader may not see the quote.
+where the reader may not see the quote. A quote from a **disabled** company
+is refused by name (409): the book still lists its documents, but a revision
+resolves against that company's catalogue and a disabled company has none.
+The page shows that sentence beside the quote, not in place of it — the
+demo's one ERP quote is in exactly this state, because its company is
+disabled on purpose.
 
 ### 8.4 Attribution: what PIE changed (`#/what-pie-changed`)
 
@@ -2118,7 +2135,7 @@ shims, are mounted but are not flows and are not listed here.
 | GET | `/api/v1/quotes/field-definitions` | signed-in | The quote-level fields this organization asks for (built-in plus custom), which are required, for the builder to render |
 | POST | `/api/v1/quotes` | signed-in | Create a draft outright — customer optional and empty by default; number minted from the org's sequence (QB-0001…); stamped with the principal's organization_id. Not what "New quote" calls: see /quotes/form |
 | POST | `/api/v1/quotes/form` | signed-in | Open a blank quote form. **Creates no quote and mints no number** — a `quote_form_drafts` row scoped to the caller, in no listing, answering the Quote shape with `saved: false`. The company is still settled here |
-| POST | `/api/v1/quotes/from-erp` | signed-in | Pick up a quote the ERP raised as a form: its customer, company and every line through the ordinary intake (a line naming no item arrives under its description), priced at the ERP's net rate; `revisionOf` names the book, reference and number. 404 where the reader may not see the quote, as its lines are; 409 while its lines have not been read |
+| POST | `/api/v1/quotes/from-erp` | signed-in | Pick up a quote the ERP raised as a form: its customer, company and every line through the ordinary intake (a line naming no item arrives under its description), priced at the ERP's net rate; `revisionOf` names the book, reference and number. 404 where the reader may not see the quote, as its lines are; 409 while its lines have not been read, and 409 naming the company where it is disabled |
 | POST | `/api/v1/quotes/form/{form_id}/save` | signed-in | Save the form: mint the number, write the quote, drop the form. The only place the builder creates a quote. Idempotent under a unique constraint, so a second click returns the quote the first made |
 | DELETE | `/api/v1/quotes/form/{form_id}` | signed-in | Throw an unsaved form away; nothing was ever written to the workspace. Idempotent — discarding one already gone answers ok |
 | DELETE | `/api/v1/quotes/{quote_id}` | signed-in | Remove an unsent draft; 409 once a document has been written for it. An unsaved form under the same id is discarded instead |

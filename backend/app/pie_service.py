@@ -958,8 +958,12 @@ class PieService:
                 # is known about this text. `resolution.py` asks
                 # `catalog_available` first and says so in the caller's own
                 # words; this is the floor under that.
+                # ``reqDesc`` is a description, and this line has none: the
+                # state is ``rel`` and the note below. A status written here
+                # was rendered as the product's caption, searched as its
+                # name, and offered to the ledger as the item's name.
                 return Resolution(
-                    input_text=text, reqCode=text, reqDesc="No catalogue",
+                    input_text=text, reqCode=text, reqDesc="",
                     rel="UNRESOLVED", supplyCode=None, candidates=[],
                     outcome="UNRESOLVED", semantics="UNKNOWN",
                     notes=["This company has no decoded catalogue, so nothing "
@@ -1027,7 +1031,7 @@ class PieService:
         except Exception:  # noqa: BLE001 — deliberate: isolate engine failures
             log.exception("pie-parser resolution failed for %r", text)
             return Resolution(
-                input_text=text, reqCode=text, reqDesc="Awaiting PIE",
+                input_text=text, reqCode=text, reqDesc="",
                 rel="PIE_DOWN", supplyCode=None, candidates=[],
                 outcome="ERROR", semantics="UNKNOWN", pie_offline=True,
                 notes=["The resolution engine is unavailable for this line."],
@@ -1250,7 +1254,7 @@ class PieService:
                 retrieval=retrieval_info)
 
         # (4) Nothing resolved -> UNRESOLVED (no PIE match).
-        return Resolution(text, text, "No PIE match", "UNRESOLVED", None, [],
+        return Resolution(text, text, "", "UNRESOLVED", None, [],
                           outcome, semantics, notes, retrieval=retrieval_info)
 
     # ── retrieval: nearest descriptions as extra options ─────────────────────

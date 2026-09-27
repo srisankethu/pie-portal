@@ -34,6 +34,7 @@ import time
 from decimal import Decimal
 from typing import Any, List, Optional
 
+from .. import clock
 from ..config import settings
 from ..identity.matchers import normalize_sku
 from ..zoho import (
@@ -57,7 +58,15 @@ log = logging.getLogger("pie_portal.zoho.quote")
 # Zoho's own names for on-hand quantity, most specific first. An item that is
 # not inventory-tracked carries none of them, which is "availability unknown"
 # rather than "none in stock" — a distinction the line status already draws.
-_STOCK_FIELDS = ("available_stock", "actual_available_stock", "stock_on_hand")
+#: Zoho's three quantities, most specific first, each with the connector-
+#: neutral word ``ZohoItem.stock_kind`` carries for it (defined once, on
+#: ``StockSnapshot``). One table: the fallback order and the vocabulary used
+#: to be two, and a second connector mapping into the same words needs only
+#: the words.
+_STOCK_KIND = {"available_stock": "AVAILABLE",
+               "actual_available_stock": "ACTUAL_AVAILABLE",
+               "stock_on_hand": "ON_HAND"}
+_STOCK_FIELDS = tuple(_STOCK_KIND)
 
 
 def _money(raw: Any, ctx: str, field: str) -> Optional[float]:
@@ -83,16 +92,17 @@ def _money(raw: Any, ctx: str, field: str) -> Optional[float]:
             f"Zoho returned an unusable {field} for {ctx}: {e.detail}") from e
 
 
-def _stock(raw: dict[str, Any], ctx: str) -> Optional[int]:
-    """On-hand quantity, or None when Zoho does not track it for this item."""
+def _stock(raw: dict[str, Any], ctx: str) -> tuple[Optional[int], Optional[str]]:
+    """The quantity and which of Zoho's fields said so — ``(None, None)`` when
+    Zoho does not track stock for this item."""
     for field in _STOCK_FIELDS:
         if raw.get(field) not in (None, ""):
             try:
-                return int(_parse_decimal(raw[field], ctx, field))
+                return int(_parse_decimal(raw[field], ctx, field)), _STOCK_KIND[field]
             except NormalizationError as e:
                 raise ZohoUnavailable(
                     f"Zoho returned an unusable {field} for {ctx}: {e.detail}") from e
-    return None
+    return None, None
 
 
 class ZohoBooksService(ZohoTransport):
@@ -148,12 +158,18 @@ class ZohoBooksService(ZohoTransport):
         # so for quoting purposes it is not in the books. Reporting it as
         # available would move the failure to the moment the estimate is sent.
         active = str(raw.get("status") or "active").lower() == "active"
+        stock, stock_kind = _stock(raw, ctx)
         return ZohoItem(
             code=str(raw.get("sku") or code),
             name=str(raw.get("name") or code),
             in_books=active,
             list_price=_money(raw.get("rate"), ctx, "rate"),
-            stock=_stock(raw, ctx),
+            stock=stock,
+            stock_kind=stock_kind,
+            source="LIVE",
+            # The moment the ledger was asked. The line keeps this figure until
+            # its next read, and says how old it is with this.
+            read_at=clock.iso(clock.now()),
             cost=_money(raw.get("purchase_rate"), ctx, "purchase_rate"),
             item_id=(str(raw["item_id"]) if raw.get("item_id") else None),
             # Read through `_money` for the reason every other number here is:
@@ -170,9 +186,11 @@ class ZohoBooksService(ZohoTransport):
         if raw is None:
             # Known code, absent from this company's books: the NOT IN BOOKS
             # state, with no price attached. Deliberately not None — None reads
-            # as "nothing to say about this code at all".
+            # as "nothing to say about this code at all". Stamped: "absent as
+            # of now" is a claim about a moment, like every other answer here.
             return ZohoItem(code=code, name=code, in_books=False,
-                            list_price=None, stock=None, cost=None)
+                            list_price=None, stock=None, cost=None,
+                            source="LIVE", read_at=clock.iso(clock.now()))
         return self._item_from(raw, code)
 
     def _read(self, call):

@@ -25,6 +25,7 @@ from dataclasses import asdict, dataclass, field, fields
 from typing import Any, Callable, Dict, List, Optional
 
 from . import clock, pricing
+from .identity.matchers import normalize_sku
 from .pie_service import Bands, Candidate, Resolution, pie_service
 from .ingestion.errors import (SourceUnavailable, SourceWriteRefused,
                                SourceWriteUnknown)
@@ -465,10 +466,39 @@ class Line:
     # When the books facts on this line were last true — ``None`` for a live
     # read, a date for one answered from a sync. See ``ZohoItem.as_of``.
     booksAsOf: Optional[str] = None
+    # Which adapter answered this line's books facts — in-books, stock, cost,
+    # tax. ``LIVE`` is the connected ledger, read at ``booksReadAt``;
+    # ``SYNCED`` the last pull's master, true as of ``booksAsOf``; ``DEMO``
+    # the offline stand-in, whose figures are hashed from the code. ``None``
+    # when no adapter has answered — an unresolved line, or a row persisted
+    # before this field existed, which must never be read as LIVE. Copied
+    # from the adapter's own claim (``ZohoItem.source``), never inferred from
+    # a stamp: the synced master can answer without one.
+    #
+    # The sibling of ``costSource``, for the stock figure and the in-books
+    # claim: a hashed 20 and a ledger's 20 were the same glyphs on screen,
+    # and the only cue was a quote-level alert keyed on a process-wide flag.
+    booksSource: Optional[str] = None   # None | LIVE | SYNCED | DEMO
+    # Which quantity ``avail`` is. See ``ZohoItem.stock_kind``.
+    stockKind: Optional[str] = None     # None | AVAILABLE | ACTUAL_AVAILABLE | ON_HAND
+    # When a live read happened. See ``ZohoItem.read_at``.
+    booksReadAt: Optional[str] = None
 
     # ── derivation ───────────────────────────────────────────────────────────
+    def is_request(self, code: Optional[str]) -> bool:
+        """Whether ``code`` is the product that was asked for.
+
+        One predicate, through ``normalize_sku``, because the books search
+        returns the SKU as the ledger spells it and the request was typed by
+        a person: ``cnmg 120408 uc-d2`` and ``CNMG120408-UC-D2`` are one part
+        number. Compared raw in four places, a pick spelt the ledger's way
+        read as EXACT here and as a substitution there — READY · SUBST on a
+        line the same object called AUTO.
+        """
+        return bool(code) and normalize_sku(code) == normalize_sku(self.reqCode)
+
     def substituted(self) -> bool:
-        return bool(self.supplyCode) and self.supplyCode != self.reqCode
+        return bool(self.supplyCode) and not self.is_request(self.supplyCode)
 
     def shortage(self) -> Optional[int]:
         if self.avail is None or not self.supplyCode:
@@ -576,6 +606,12 @@ class Line:
             # Both roles: a date, never a value. The one thing a synced answer
             # must say about itself is how old it is.
             "booksAsOf": self.booksAsOf,
+            # Both roles, and the same rule: sources and stamps, never values.
+            # Which adapter answered, which quantity the stock figure is, and
+            # when a live read happened.
+            "booksSource": self.booksSource,
+            "stockKind": self.stockKind,
+            "booksReadAt": self.booksReadAt,
             "incompatReason": self.incompatReason,
             "status": st,
             "flags": self.flags(),
@@ -1043,6 +1079,17 @@ class QuoteStore:
         """
         if not ln.supplyCode:
             return
+        if code_changed:
+            # A different product: nothing the books said about the last one
+            # holds for this one. Cleared before the read rather than after,
+            # so an early return below — books offline, a read that failed —
+            # leaves the honest "not answered" rather than the previous
+            # product's stock, cost and provenance standing under the new
+            # code. A same-product re-read that fails keeps the last answer,
+            # which is still that product's, with its stamp.
+            ln.inBooks = ln.itemId = ln.avail = ln.listPrice = ln.cost = None
+            ln.costSource = ln.taxPercent = ln.booksAsOf = None
+            ln.booksSource = ln.stockKind = ln.booksReadAt = None
         if not zoho.available:
             ln.service = "BOOKS"
             return
@@ -1064,7 +1111,7 @@ class QuoteStore:
         # as "CNMG120408-UC-D2 YC0014 / Awaiting PIE".
         if item.name != ln.supplyCode:
             ln.supplyDesc = item.name
-        elif ln.supplyCode == ln.reqCode:
+        elif ln.is_request(ln.supplyCode):
             ln.supplyDesc = ln.reqDesc
         else:
             ln.supplyDesc = ""
@@ -1079,6 +1126,9 @@ class QuoteStore:
                                                         else "BOOKS")
         ln.taxPercent = item.tax_percentage
         ln.booksAsOf = item.as_of
+        ln.booksSource = item.source
+        ln.stockKind = item.stock_kind if item.stock is not None else None
+        ln.booksReadAt = item.read_at
         ln.family = self._family_of(ln)
         if item.in_books and item.list_price is not None:
             # Auto-quote at list so a long tender is not a column of typing —
@@ -1102,7 +1152,7 @@ class QuoteStore:
     # ── mutations ────────────────────────────────────────────────────────────
     def select_supply(self, ln: Line, code: str, zoho: ZohoService, manual: bool = False) -> None:
         cand = next((c for c in ln.candidates if c.code == code), None)
-        was_exact = code == ln.reqCode
+        was_exact = ln.is_request(code)
         code_changed = ln.supplyCode != code
         ln.supplyCode = code
         if was_exact:
@@ -1262,7 +1312,13 @@ class QuoteStore:
             return ""
         ln.createPhase = "progress"
         try:
-            item = zoho.create_item(ln.supplyCode, ln.supplyDesc or ln.reqDesc, ln.listPrice)
+            # The code is the last fallback, not the request's description:
+            # on a line the engine never answered that field is empty now and
+            # used to hold the engine's status, which would have become the
+            # item's name in the books.
+            item = zoho.create_item(ln.supplyCode,
+                                    ln.supplyDesc or ln.reqDesc or ln.supplyCode,
+                                    ln.listPrice)
         except (SourceWriteRefused, SourceWriteUnknown, SourceUnavailable) as e:
             ln.createPhase = "failed"
             return str(e)

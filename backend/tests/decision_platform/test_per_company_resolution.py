@@ -171,6 +171,25 @@ def test_a_company_id_from_another_tenant_reads_as_no_such_company(two_companies
     s.close()
 
 
+def test_a_named_company_that_is_disabled_is_refused_as_not_enabled_not_as_unnamed(
+        two_companies):
+    """The caller named a company; the answer must not be "name the company".
+    It says the one named is not enabled and lists those that are — without
+    echoing the id, which keeps it the refusal an invented id gets."""
+    s = two_companies()
+    s.get(models.ZohoConnection, SLS).enabled = False
+    s.commit()
+
+    with pytest.raises(resolution.CompanyNotNamed) as e:
+        resolution.company_for(s, ORG, SLS)
+    assert [c["connection_id"] for c in e.value.companies] == [FOURU]
+    assert "not one of this organization's enabled companies" in str(e.value)
+    assert "4U Precision" in str(e.value)
+    assert "Name the company" not in str(e.value)
+    assert SLS not in str(e.value)
+    s.close()
+
+
 # ── the quote carries it ────────────────────────────────────────────────────
 
 @requires_pie

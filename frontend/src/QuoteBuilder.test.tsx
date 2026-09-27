@@ -125,6 +125,7 @@ function line(): Line {
     avail: 40, availUnknown: false, inBooks: true, shortage: null,
     quoted: 1000, priceSource: "USER", recommended: null, lineTotal: 10000,
     createPhase: null, service: null, incompatReason: null, booksAsOf: null,
+    booksSource: null, stockKind: null, booksReadAt: null,
     status: { kind: "ready", label: "ready" },
     flags: {
       attention: false, procurement: false, missingBooks: false,

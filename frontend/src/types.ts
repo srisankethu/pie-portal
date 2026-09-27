@@ -129,6 +129,18 @@ export interface Line {
    *  stock figure from Tuesday's pull is Tuesday's stock, and a line that
    *  cannot say so reads as though the books were consulted just now. */
   booksAsOf: string | null;
+  /** Which adapter answered this line's books facts: the connected ledger
+   *  read live (at `booksReadAt`), the last pull's synced master (true as of
+   *  `booksAsOf`), or the offline stand-in, whose figures are hashed from the
+   *  code. Null on a line no adapter has answered — and on a row persisted
+   *  before the field existed, which must never be read as LIVE. */
+  booksSource: "LIVE" | "SYNCED" | "DEMO" | null;
+  /** Which quantity `avail` is: AVAILABLE is what can still be sold,
+   *  ACTUAL_AVAILABLE nets off what is already promised, ON_HAND is everything
+   *  on the shelf, committed included. Null with no figure. */
+  stockKind: "AVAILABLE" | "ACTUAL_AVAILABLE" | "ON_HAND" | null;
+  /** When a live read happened; null for a synced answer or the stand-in. */
+  booksReadAt: string | null;
   status: LineStatus;
   flags: LineFlags;
   candidates: Candidate[];

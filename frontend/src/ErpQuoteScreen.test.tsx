@@ -747,12 +747,21 @@ describe("revising an ERP quote here", () => {
     expect(await screen.findByText("builder for f-1")).toBeInTheDocument();
   });
 
-  it("shows the server's refusal where the quote cannot be picked up", async () => {
-    reviseErpQuote.mockRejectedValue(new Error("no such quote"));
+  it("shows the server's refusal beside the quote, not in place of it", async () => {
+    reviseErpQuote.mockRejectedValue(
+      new Error("SLS Engineers is disabled, so there is no catalogue to resolve this quote's lines against here."));
     drawQualified();
     fireEvent.click(await screen.findByRole("button", { name: "Revise in PIE" }));
-    expect(await screen.findByText(/no such quote/)).toBeInTheDocument();
+    expect(await screen.findByText(/SLS Engineers is disabled/)).toBeInTheDocument();
     expect(screen.queryByText("builder for f-1")).toBeNull();
+    // The quote that had loaded is still on the page — this is the revise
+    // refusing, not the page failing to load — and the button is still
+    // offered. The first version put the sentence into the page's own load
+    // error, which replaced the quote with "This did not load" and a "Try
+    // again" that reloads; this assertion is what that version lacked.
+    expect(screen.getByText("Quotation total")).toBeInTheDocument();
+    expect(screen.queryByText(/did not load/)).toBeNull();
+    expect(screen.getByRole("button", { name: "Revise in PIE" })).toBeEnabled();
   });
 
   it("opens the revision that already exists rather than picking the document up again", async () => {

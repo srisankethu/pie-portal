@@ -435,6 +435,21 @@ def quote_from_erp(body: FromErpRequest,
     if len(visible) != 1:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "no such quote")
     source = visible[0]
+    # Visible is not revisable. The book lists a disabled company's documents
+    # — they happened, and their outcomes still count — but a revision
+    # resolves its lines against that company's catalogue, and a disabled
+    # company has none. ``_company_for_new_quote`` below would refuse it too,
+    # but as "name the company", to a caller that just did: seen on the
+    # demo's one ERP quote, whose company is disabled on purpose. Refused
+    # here by name instead, with what would change the answer.
+    if body.connection_id not in {
+            c.connection_id
+            for c in conn.list_connections(session, org, enabled_only=True)}:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"{source.company} is disabled, so there is no catalogue to "
+            f"resolve this quote's lines against here. Enable that company "
+            f"under Data & connection to revise its quotes in PIE.")
     # The breakdown first, before anything is opened: a header the sync
     # holds whose lines it has not read yet would make an empty form, and a
     # form with no lines is a quote of nothing wearing the ERP's number.

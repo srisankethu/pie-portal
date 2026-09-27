@@ -11,7 +11,7 @@ import type { Line } from "./types";
  *  asked about `supplyDesc || reqDesc || …`, preferring the *description* — so
  *  the two panels of one drawer identified one line differently and each
  *  reported "no history" about a different thing. On an unresolved line it was
- *  worse than inconsistent: `reqDesc` holds the resolver's status message, so
+ *  worse than inconsistent: `reqDesc` used to hold the resolver's status message, so
  *  the panel looked up a product called "No PIE match" and told the reader, in
  *  quotation marks, that “No PIE match” was not found in the sales history. */
 export function productRef(line: Line): string {

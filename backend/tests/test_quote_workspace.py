@@ -581,6 +581,31 @@ def test_an_unattributed_erp_quote_starts_with_no_customer_not_a_placeholder(cli
     assert r.json()["customer"] == "" and r.json()["customerId"] is None
 
 
+def test_a_quote_from_a_disabled_company_is_refused_by_name(client, owner):
+    """The book still lists a disabled company's documents — they happened —
+    but a revision resolves against that company's catalogue, and a disabled
+    company has none. Refused with the company's name and what would change
+    the answer, not with the "name the company" sentence the caller had just
+    answered. The demo's one ERP quote is in exactly this state: its company
+    is disabled on purpose, so nothing pulls from it."""
+    mine, _ = _two_companies(client)
+    _erp_quote(client, ref="erp-1", connection_id=COMPANY, customer_id=mine,
+               customer="Alpha Tools")
+    with client.Maker() as s:
+        s.get(models.ZohoConnection, COMPANY).enabled = False
+        s.commit()
+
+    r = client.post("/api/v1/quotes/from-erp",
+                    json={"connection_id": COMPANY, "ref": "erp-1"}, headers=owner)
+    assert r.status_code == 409, r.text
+    assert r.json()["detail"].startswith("SLS Engineers is disabled")
+    assert "Name the company" not in r.text
+    # Nothing was opened for it: the desk holds no form for a quote that
+    # cannot be revised.
+    with client.Maker() as s:
+        assert s.query(models.QuoteFormDraft).count() == 0
+
+
 def test_a_quote_started_from_nothing_revises_nothing(client, owner):
     q = client.post("/api/v1/quotes", json={"customer": "Pitti"}, headers=owner).json()
     assert q["revisionOf"] is None
